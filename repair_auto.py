@@ -1,0 +1,477 @@
+"""Orchestration helpers for post-create repair execution.
+
+This layer keeps the Flask blueprint from knowing the exact action ordering.
+It still receives IO callbacks/deps from the blueprint, so imports stay light
+and testable.
+"""
+from __future__ import annotations
+
+from typing import Any, Callable
+
+from . import repair_executor as rex
+from . import repair_gate as rgate
+
+
+PostVerify = Callable[[dict, str, dict], dict]
+DeleteUac = Callable[[str, str, list[dict[str, Any]]], dict[str, Any]]
+DeleteSearchDraft = Callable[[str, str, list[dict[str, Any]]], dict[str, Any]]
+CreateJob = Callable[[int, str, dict[str, Any], dict[str, Any], bool], str]
+JobsAhead = Callable[[str], int]
+
+
+def _with_common(out: dict, *, job_id: str, plan: dict[str, Any],
+                 executed: list[dict[str, Any]], unsupported: list[dict[str, Any]]) -> dict:
+    out.update({
+        "job_id": job_id,
+        "repair_plan": plan,
+        "executed_actions": executed[:40],
+        "unsupported_actions": unsupported[:40],
+    })
+    return out
+
+
+def execute_next_in_place(login: str, ctx: dict, plan: dict[str, Any], deps: rex.RepairDeps,
+                          *, job_id: str = "", post_verify: PostVerify | None = None) -> tuple[dict, int] | None:
+    """Execute one supported in-place repair action type.
+
+    Order matches the existing endpoint contract: content first, then promo,
+    callouts, rename. Recreate/UAC replace is intentionally not handled here
+    because it is async queue work.
+    """
+    body = ctx.get("body") or {}
+    results = ctx.get("results") or []
+
+    content_repairs, content_unsupported = rgate.executable_content_repairs(body, plan or {})
+    if content_repairs:
+        out, status = rex.execute_content_repair(login, ctx, content_repairs, deps)
+        if post_verify:
+            post_verify(out, login, ctx)
+        return _with_common(
+            out,
+            job_id=job_id,
+            plan=plan,
+            executed=[{k: v for k, v in a.items() if k != "item"} for a in content_repairs],
+            unsupported=content_unsupported,
+        ), status
+
+    # keywords_repair (UpdateUnifiedAdGroups) — подтверждённый no-op: Яндекс возвращает success,
+    # но ключи в группе не появляются. NO_KEYWORDS_LIVE/WRONG_AUTOTARGET теперь идут в
+    # resume_or_recreate_campaign (repair_planner). Блок убран из in-place пути.
+
+    promo_ids, promo_actions, promo_unsupported = rgate.executable_promo_campaign_ids(results, plan or {})
+    if promo_ids and promo_actions:
+        out, status = rex.execute_promo_repair(login, ctx, promo_ids, deps)
+        if post_verify:
+            post_verify(out, login, ctx)
+        return _with_common(
+            out,
+            job_id=job_id,
+            plan=plan,
+            executed=promo_actions,
+            unsupported=promo_unsupported,
+        ), status
+
+    callout_ids, callout_actions, callout_unsupported = rgate.executable_callout_campaign_ids(results, plan or {})
+    if callout_ids and callout_actions:
+        out, status = rex.execute_callouts_repair(login, ctx, callout_ids, deps)
+        if post_verify:
+            post_verify(out, login, ctx)
+        return _with_common(
+            out,
+            job_id=job_id,
+            plan=plan,
+            executed=callout_actions,
+            unsupported=callout_unsupported,
+        ), status
+
+    rename_names, rename_actions, rename_unsupported = rgate.executable_rename_campaigns(plan or {})
+    if rename_names and rename_actions:
+        out, status = rex.execute_rename_repair(login, ctx, rename_names, deps)
+        if post_verify:
+            post_verify(out, login, ctx)
+        return _with_common(
+            out,
+            job_id=job_id,
+            plan=plan,
+            executed=rename_actions,
+            unsupported=rename_unsupported,
+        ), status
+
+    return None
+
+
+def execute_safe_post_create(login: str, ctx: dict, plan: dict[str, Any], deps: rex.RepairDeps,
+                             *, post_verify: PostVerify | None = None) -> dict:
+    """Execute idempotent post-create repairs once.
+
+    Content rebuild is excluded here: immediately after create_set, Grid can
+    lag and a false ``NO_ADS_LIVE`` could duplicate groups. Recreate/UAC replace
+    also stays in queue/manual repair because it deletes or creates campaigns.
+    """
+    body = ctx.get("body") or {}
+    results = ctx.get("results") or []
+    executed: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    outputs: list[dict[str, Any]] = []
+
+    promo_ids, promo_actions, _ = rgate.executable_promo_campaign_ids(results, plan or {})
+    if promo_ids and promo_actions:
+        out, status = rex.execute_promo_repair(login, ctx, promo_ids, deps)
+        outputs.append({"action": "create_or_attach_promo", "status": status, "result": out})
+        if 200 <= int(status) < 300 and out.get("ok"):
+            executed.extend(promo_actions)
+        else:
+            failed.append({"action": "create_or_attach_promo", "status": status, "result": out})
+
+    callout_ids, callout_actions, _ = rgate.executable_callout_campaign_ids(results, plan or {})
+    if callout_ids and callout_actions:
+        out, status = rex.execute_callouts_repair(login, ctx, callout_ids, deps)
+        outputs.append({"action": "ensure_callouts", "status": status, "result": out})
+        if 200 <= int(status) < 300 and out.get("ok"):
+            executed.extend(callout_actions)
+        else:
+            failed.append({"action": "ensure_callouts", "status": status, "result": out})
+
+    # keywords_repair удалён из safe-post-create пути: UpdateUnifiedAdGroups — подтверждённый no-op
+    # (ключи не добавляются). NO_KEYWORDS_LIVE → resume_or_recreate_campaign (плановый recreate,
+    # не in-place). execute_keywords_repair в repair_executor сохранён, но авто-вызов убран.
+
+    rename_names, rename_actions, _ = rgate.executable_rename_campaigns(plan or {})
+    if rename_names and rename_actions:
+        out, status = rex.execute_rename_repair(login, ctx, rename_names, deps)
+        outputs.append({"action": "rename_campaign", "status": status, "result": out})
+        if 200 <= int(status) < 300 and out.get("ok"):
+            executed.extend(rename_actions)
+        else:
+            failed.append({"action": "rename_campaign", "status": status, "result": out})
+
+    summary = {
+        "ok": not failed,
+        "executed": len(executed),
+        "failed": len(failed),
+        "executed_actions": executed[:40],
+        "failed_actions": failed[:20],
+        "results": outputs[:20],
+        "skipped_actions": [
+            "rebuild_missing_content",
+            "resume_or_recreate_campaign",
+            "keywords_repair",  # no-op: UpdateUnifiedAdGroups не добавляет ключи; NO_KEYWORDS_LIVE → recreate
+        ],
+        "uses_direct_units": False,
+    }
+    if outputs and post_verify:
+        post_verify(summary, login, ctx)
+    if not outputs:
+        summary["ok"] = True
+        summary["note"] = "нет безопасных post-create in-place действий"
+    return summary
+
+
+def recreate_force_names(items: list[dict[str, Any]], uac_replacements: list[dict[str, Any]],
+                         search_deletions: list[dict[str, Any]] | None = None) -> list[str]:
+    """Build force-name list for UAC replace items and deleted search campaigns.
+
+    UAC replace names force-recreate existing items whose current name matches the replaced
+    campaign. Search deletion names are added so that even if Grid cache still shows the
+    deleted campaign, the resume step does not skip it.
+    """
+    repl_names = [
+        str(r.get("name") or "").strip()
+        for r in uac_replacements or []
+        if str(r.get("name") or "").strip()
+    ]
+    del_names = [
+        str(r.get("name") or "").strip()
+        for r in search_deletions or []
+        if str(r.get("name") or "").strip()
+    ]
+    force_names = list(repl_names) + del_names
+    for it in items or []:
+        item_name = str((it or {}).get("name") or "").strip()
+        if item_name and any(
+            rn == item_name
+            or rn.startswith(item_name + " — ")
+            or item_name.startswith(rn + " — ")
+            for rn in repl_names
+        ):
+            force_names.append(item_name)
+    return force_names
+
+
+def build_recreate_queue_body(body: dict[str, Any], items: list[dict[str, Any]],
+                              uac_replacements: list[dict[str, Any]], *,
+                              parent_job_id: str,
+                              search_deletions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Build the async recreate repair body used by manual and automatic queueing."""
+    repair_body = rgate.repair_queue_body(
+        body,
+        items,
+        parent_job_id=parent_job_id,
+        force_names=recreate_force_names(items, uac_replacements, search_deletions),
+    )
+    repair_body["_skip_auto_post_repair"] = True
+    repair_body["_skip_auto_queued_repair"] = True
+    return repair_body
+
+
+def auto_recreate_request(parent_job_id: str, job_snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    """Return queue inputs for automatic recreate after a parent job is done."""
+    body = job_snapshot.get("body") if isinstance(job_snapshot.get("body"), dict) else {}
+    if (
+        body.get("_repair_parent_job_id")
+        or body.get("_deferred_id")
+        or body.get("_skip_auto_queued_repair")
+    ):
+        return None
+
+    result = job_snapshot.get("result") if isinstance(job_snapshot.get("result"), dict) else {}
+    if not result or result.get("error"):
+        return None
+
+    live = result.get("live_verification") if isinstance(result.get("live_verification"), dict) else {}
+    plan = live.get("repair_plan") if isinstance(live.get("repair_plan"), dict) else {}
+    if not plan or plan.get("status") != "actionable":
+        return None
+
+    try:
+        summary = rgate.summarize_repair_gate(body, result.get("results") or [], plan)
+    except Exception:  # noqa: BLE001
+        summary = {}
+    if int((summary or {}).get("queued_recreate_items") or 0) <= 0:
+        return None
+
+    # Если в плане есть requires_campaign_delete (NO_KEYWORDS_LIVE / WRONG_AUTOTARGET) — авто-удаление
+    # существующей поисковой кампании рискованно без явного подтверждения. Такие элементы видны в
+    # repair_plan.actions (recreate_delete_campaigns в summarize) и исполняются только при
+    # body._auto_recreate_with_delete=true (или через явный POST на /create_set_repair).
+    if int((summary or {}).get("recreate_delete_campaigns") or 0) > 0:
+        if not rgate.truthy(body.get("_auto_recreate_with_delete")):
+            return {
+                "queued": False,
+                "source": "auto_after_done",
+                "requires_explicit_trigger": True,
+                "recreate_delete_campaigns": int((summary or {}).get("recreate_delete_campaigns") or 0),
+                "note": ("авто-recreate заблокирован: план содержит requires_campaign_delete "
+                         "(NO_KEYWORDS_LIVE/WRONG_AUTOTARGET) — нужен явный триггер "
+                         "или body._auto_recreate_with_delete=true"),
+                "uses_direct_units": False,
+            }
+
+    login = (job_snapshot.get("login") or result.get("login") or "").strip()
+    if not login:
+        return {
+            "queued": False,
+            "source": "auto_after_done",
+            "error": "login не сохранён в job",
+            "uses_direct_units": False,
+        }
+
+    return {
+        "source": "auto_after_done",
+        "login": login,
+        "ctx": {
+            "login": login,
+            "agency": (job_snapshot.get("agency") or body.get("agency") or ""),
+            "body": body,
+            "results": result.get("results") or [],
+        },
+        "plan": plan,
+        "parent_job_id": parent_job_id,
+        "saved_session": job_snapshot.get("session") or {},
+        "summary": summary,
+    }
+
+
+def delayed_content_repair_request(parent_job_id: str, job_snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    """Return scheduling inputs for guarded delayed content repair."""
+    body = job_snapshot.get("body") if isinstance(job_snapshot.get("body"), dict) else {}
+    if (
+        body.get("_repair_parent_job_id")
+        or body.get("_deferred_id")
+        or body.get("_skip_auto_post_repair")
+        or body.get("_skip_delayed_content_repair")
+    ):
+        return None
+
+    result = job_snapshot.get("result") if isinstance(job_snapshot.get("result"), dict) else {}
+    if not result or result.get("error"):
+        return None
+
+    live = result.get("live_verification") if isinstance(result.get("live_verification"), dict) else {}
+    plan = live.get("repair_plan") if isinstance(live.get("repair_plan"), dict) else {}
+    if not plan or plan.get("status") != "actionable":
+        return None
+
+    try:
+        summary = rgate.summarize_repair_gate(body, result.get("results") or [], plan)
+    except Exception:  # noqa: BLE001
+        summary = {}
+    if int((summary or {}).get("in_place_content_repairs") or 0) <= 0:
+        return None
+
+    login = (job_snapshot.get("login") or result.get("login") or "").strip()
+    if not login:
+        return {
+            "scheduled": False,
+            "source": "delayed_after_done",
+            "error": "login не сохранён в job",
+            "uses_direct_units": False,
+        }
+
+    return {
+        "source": "delayed_after_done",
+        "login": login,
+        "agency": (job_snapshot.get("agency") or body.get("agency") or ""),
+        "parent_job_id": parent_job_id,
+        "content_repairs": int((summary or {}).get("in_place_content_repairs") or 0),
+        "summary": summary,
+        "uses_direct_units": False,
+    }
+
+
+def queue_recreate_repair_job(login: str, ctx: dict[str, Any], plan: dict[str, Any], *,
+                              parent_job_id: str, saved_session: dict[str, Any],
+                              delete_uac: DeleteUac, create_job: CreateJob,
+                              jobs_ahead: JobsAhead, dedup_login: bool = True,
+                              delete_search_draft: "DeleteSearchDraft | None" = None) -> dict[str, Any]:
+    """Queue resume/recreate repair items without Direct API units."""
+    body = ctx.get("body") or {}
+    items, unsupported = rgate.executable_recreate_items(body, plan or {})
+    if not items:
+        return {"queued": False, "reason": "no_recreate_items", "unsupported_actions": unsupported[:40]}
+
+    uac_replacements = rgate.executable_uac_replace_campaigns(plan or {})
+    deleted_uac = {"deleted": [], "failed": []}
+    if uac_replacements:
+        deleted_uac = delete_uac(
+            login,
+            (ctx.get("agency") or body.get("agency") or ""),
+            uac_replacements,
+        )
+        if deleted_uac.get("failed"):
+            return {
+                "queued": False,
+                "error": "не удалось удалить неполный UAC draft перед recreate",
+                "failed_campaigns": deleted_uac.get("failed")[:40],
+                "deleted_campaigns": deleted_uac.get("deleted")[:40],
+                "uses_direct_units": False,
+            }
+
+    # Поисковые кампании с requires_campaign_delete (NO_KEYWORDS_LIVE/WRONG_AUTOTARGET):
+    # удаляются ТОЛЬКО если callback передан и campaign находится в статусе DRAFT.
+    search_deletions = rgate.executable_recreate_delete_campaigns(plan or {})
+    deleted_search: dict[str, Any] = {"deleted": [], "failed": [], "blocked_non_draft": []}
+    if search_deletions and delete_search_draft is not None:
+        deleted_search = delete_search_draft(
+            login,
+            (ctx.get("agency") or body.get("agency") or ""),
+            search_deletions,
+        )
+        # blocked_non_draft → ничего не удалено (консервативный блок) → безопасный аборт.
+        # failed без deleted → удаления не произошло вовсе → безопасный аборт.
+        # failed при непустом deleted → часть кампаний УЖЕ удалена → recreate ОБЯЗАН идти:
+        #   возврат queued:False здесь привёл бы к безвозвратной потере удалённых кампаний
+        #   (delete+recreate не атомарны). Продолжаем; deleted names попадут в _repair_force_names
+        #   через build_recreate_queue_body/recreate_force_names(search_deletions=...).
+        _safe_to_abort = bool(
+            deleted_search.get("blocked_non_draft")
+            or (deleted_search.get("failed") and not deleted_search.get("deleted"))
+        )
+        if _safe_to_abort:
+            return {
+                "queued": False,
+                "error": "не удалось удалить поисковые DRAFT-кампании перед recreate",
+                "failed_campaigns": (deleted_search.get("failed") or [])[:40],
+                "blocked_non_draft": (deleted_search.get("blocked_non_draft") or [])[:40],
+                "deleted_search_campaigns": (deleted_search.get("deleted") or [])[:40],
+                "uses_direct_units": False,
+            }
+
+    repair_body = build_recreate_queue_body(
+        body,
+        items,
+        uac_replacements,
+        parent_job_id=parent_job_id,
+        search_deletions=search_deletions if (search_deletions and delete_search_draft) else None,
+    )
+    new_job_id = create_job(len(items), login, repair_body, saved_session, dedup_login)
+    return {
+        "queued": True,
+        "new_job_id": new_job_id,
+        "queued_items": len(items),
+        "ahead": jobs_ahead(new_job_id),
+        "transport": "cookie_grid",
+        "uses_direct_units": False,
+        "deleted_uac_campaigns": deleted_uac.get("deleted")[:40],
+        "deleted_search_campaigns": (deleted_search.get("deleted") or [])[:40],
+        "unsupported_actions": unsupported[:40],
+    }
+
+
+def recreate_queue_preflight(login: str, body: dict[str, Any], plan: dict[str, Any],
+                             active_jobs: dict[str, dict[str, Any]],
+                             terminal_statuses: set[str]) -> dict[str, Any]:
+    """Return recreate items and an active-job conflict, without mutating state."""
+    items, unsupported = rgate.executable_recreate_items(body or {}, plan or {})
+    conflict = None
+    if items:
+        for job_id, job in (active_jobs or {}).items():
+            if (
+                job.get("status") not in terminal_statuses
+                and (job.get("login") or "").strip() == login
+            ):
+                conflict = {
+                    "error": f"у аккаунта {login} уже есть активная job — repair не поставлен",
+                    "active_job_id": job_id,
+                }
+                break
+    return {
+        "items": items,
+        "unsupported_actions": unsupported[:40],
+        "conflict": conflict,
+    }
+
+
+def recreate_queue_failure_response(job_id: str, login: str, queued: dict[str, Any],
+                                    plan: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    """Format the failed recreate queue response for the repair endpoint."""
+    status = 502 if queued.get("error") else 422
+    return {
+        "error": queued.get("error") or "repair recreate не поставлен",
+        "job_id": job_id,
+        "login": login,
+        "repair_plan": plan,
+        **queued,
+    }, status
+
+
+def recreate_queue_success_response(job_id: str, login: str, queued: dict[str, Any],
+                                    plan: dict[str, Any],
+                                    unsupported: list[dict[str, Any]]) -> dict[str, Any]:
+    """Format the successful recreate queue response for the repair endpoint."""
+    return {
+        "ok": True,
+        "execute": True,
+        "job_id": job_id,
+        "new_job_id": queued.get("new_job_id"),
+        "login": login,
+        "queued_items": queued.get("queued_items"),
+        "ahead": queued.get("ahead"),
+        "transport": queued.get("transport"),
+        "uses_direct_units": queued.get("uses_direct_units"),
+        "deleted_uac_campaigns": queued.get("deleted_uac_campaigns", []),
+        "unsupported_actions": queued.get("unsupported_actions", unsupported[:40]),
+        "repair_plan": plan,
+    }
+
+
+def no_safe_action_response(job_id: str, plan: dict[str, Any],
+                            unsupported: list[dict[str, Any]]) -> dict[str, Any]:
+    """Format the no-executable-action response for the repair endpoint."""
+    return {
+        "error": "в плане нет действий, которые repair executor умеет безопасно выполнить",
+        "job_id": job_id,
+        "execute": False,
+        "repair_plan": plan,
+        "unsupported_actions": unsupported[:40],
+    }

@@ -1,0 +1,28 @@
+{
+  "_comment": "Мэппинг типа сайта → шаблон URL страницы модели. Используется в blueprint.py (_model_page_href). Проверено HEAD-запросами к шаблонам vitmp.ru 2026-06-22.",
+  "_format": "/auto/{brand_slug}/{model_slug}  или  /catalog/{brand_slug}/{model_slug}",
+
+  "site_type_url": {
+    "Мультибренд":  "/auto/{brand_slug}/{model_slug}",
+    "Монобренд":    "/auto/{brand_slug}/{model_slug}",
+    "Квиз":         null,
+    "С пробегом":   "/catalog/{brand_slug}/{model_slug}",
+    "Мульти + БУ":  "/auto/{brand_slug}/{model_slug}",
+    "Неопределено": null,
+    "Не трогать!":  null
+  },
+
+  "_template_verified": {
+    "multi-1.vitmp.ru":    "/auto/lada/granta → 200",
+    "multi-2.vitmp.ru":    "/auto/lada/granta (same engine)",
+    "multi-3.vitmp.ru":    "/auto/lada/granta (same engine)",
+    "haval.vitmp.ru":      "/auto/haval/jolion → 200",
+    "lada.vitmp.ru":       "/auto/lada/granta → 200",
+    "belgee.vitmp.ru":     "/auto/belgee/x50 → 200",
+    "bu-1.vitmp.ru":       "/catalog/lada/granta → 200",
+    "bu-2.vitmp.ru":       "/catalog/lada/granta → 200",
+    "bu-3.vitmp.ru":       "/catalog/lada/granta → 200",
+    "multi-bu-1.vitmp.ru": "/auto/lada/granta → 200",
+    "quiz-1.vitmp.ru":     "null (квиз, нет страниц моделей)"
+  }
+}

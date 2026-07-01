@@ -1,0 +1,19 @@
+[Unit]
+Description=SEOAdvanced Direct Automation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scripts/home/seoadvanced
+Environment=DIRECT_HOST=127.0.0.1
+Environment=DIRECT_PORT=5020
+ExecStart=/root/venv/bin/python3 -m direct.main
+Restart=always
+RestartSec=5
+
+# Direct queue and throttling are intentionally single-process in memory.
+# Do not run this app with multiple workers or Werkzeug reloader.
+
+[Install]
+WantedBy=multi-user.target

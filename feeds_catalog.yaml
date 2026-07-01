@@ -1,0 +1,45 @@
+# ============================================================================
+#  КАТАЛОГ ТОВАРНЫХ ФИДОВ (для Товарной РК / выпадающего списка на сайте)
+#  Хост — ПЛЕЙСХОЛДЕР: autopark-193.ru подставляется доменом клиента.
+#  Итоговый URL фида = https://<домен_клиента><path>.
+#  Пример: site="myauto.ru", path="/yandex-used-auto.xml"
+#          → https://myauto.ru/yandex-used-auto.xml
+#  ⚠️ Это URL ИСТОЧНИКА фида. Для товарной РК нужен feed_id (фид, зарегистрированный
+#     в аккаунте). Сопоставление URL → feed_id — отдельный шаг (см. CLAUDE.md / FLOW.md).
+# ============================================================================
+
+host_placeholder: "autopark-193.ru"     # что заменяем на домен клиента
+
+groups:
+  - group: "БУ"                          # подержанные авто
+    items:
+      - label: "Универсальный фид (БУ)"
+        path: "/yandex-catalog-custom-name.xml"
+        kind: "universal"
+      - label: "Фид БУ авто"
+        path: "/yandex-used-auto.xml"
+        kind: "feed"
+      - label: "БУ — забронировать"
+        path: "/used-zabronirovat-01-a.xml"
+        kind: "feed"
+      - label: "БУ — доступ к распродаже"
+        path: "/used-dostup-k-rasprodazhe-01-a.xml"
+        kind: "feed"
+
+  - group: "Новые авто"
+    items:
+      - label: "Универсальный фид (новые)"
+        path: "/yandex-catalog-model-design-custom-name.xml"
+        kind: "universal"
+      - label: "Новые — доступ к распродаже"
+        path: "/dostup-k-rasprodazhe-01-a.xml"
+        kind: "feed"
+      - label: "Новые — забронировать"
+        path: "/zabronirovat-01-a.xml"
+        kind: "feed"
+      - label: "Новые — кредит"
+        path: "/credit-page-01-a.xml"
+        kind: "feed"
+      - label: "Новые — забронировать (без фона)"
+        path: "/zabronirovat-01-a-without-bg.xml"
+        kind: "feed_no_bg"

@@ -1,0 +1,114 @@
+"""Pure UAC/tp6-tp7 invariant checks for post-create live verification."""
+from __future__ import annotations
+
+import re
+from typing import Any
+
+
+_TP_PREFIX_RE = re.compile(r"^tp(?P<tp>\d+)_(?P<pay>cpc|cpa)_(?P<surface>site|kviz)", re.I)
+_CPC_PRICING = {"PER_CLICK"}
+_CPA_PRICING = {"PER_CONVERSION", "PER_ACTION"}
+
+
+def _campaign_pay_mode(name: str) -> str:
+    m = _TP_PREFIX_RE.search(name or "")
+    return (m.group("pay").lower() if m else "")
+
+
+def _tp7_requires_model_filter(name: str) -> bool:
+    """tp7 campaigns with concrete ct-model code must not run on the whole feed."""
+    if not re.search(r"^tp7_", name or "", re.I):
+        return False
+    m = re.search(r"_ct(\d{4})(?:_|\b)", name or "", re.I)
+    if not m:
+        return False
+    return m.group(1) not in {"0000", "0111"}
+
+
+def _repair(name: str, cid: int | None) -> dict[str, Any]:
+    return {"kind": "recreate_or_resume_campaign", "name": name, "id": cid}
+
+
+def verify_uac_detail(name: str, campaign_id: int | None,
+                      detail: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return ``(issues, repair_candidates)`` for one normalized UAC detail row."""
+    nm = str(name or "")
+    cid = campaign_id
+    issues: list[dict[str, Any]] = []
+    repair: list[dict[str, Any]] = []
+    tp = 7 if re.search(r"^tp7_", nm, re.I) else 6
+    title_n = int(detail.get("titles") or 0)
+    text_n = int(detail.get("texts") or 0)
+    sitelink_n = int(detail.get("sitelinks") or 0)
+    media_n = int(detail.get("content") or 0) or int(detail.get("images") or 0) + int(detail.get("videos") or 0)
+    status = str(detail.get("status") or "").lower()
+    pay_mode = _campaign_pay_mode(nm)
+    pricing = str(detail.get("pricing") or "").upper()
+
+    if status and status not in {"draft", "drafted"}:
+        issues.append({"severity": "error", "code": "UAC_NOT_DRAFT", "name": nm, "id": cid, "actual": status})
+        repair.append({"kind": "stop_or_recreate_campaign", "name": nm, "id": cid})
+    if pay_mode == "cpc" and pricing and pricing not in _CPC_PRICING:
+        issues.append({"severity": "error", "code": "UAC_PRICING_MISMATCH",
+                       "name": nm, "id": cid, "actual": pricing, "expected": "PER_CLICK"})
+        repair.append(_repair(nm, cid))
+    if pay_mode == "cpa" and pricing and pricing not in _CPA_PRICING:
+        issues.append({"severity": "error", "code": "UAC_PRICING_MISMATCH",
+                       "name": nm, "id": cid, "actual": pricing, "expected": sorted(_CPA_PRICING)})
+        repair.append(_repair(nm, cid))
+    if detail.get("week_limit") is not None and float(detail.get("week_limit") or 0) <= 0:
+        issues.append({"severity": "error", "code": "UAC_BUDGET_MISSING",
+                       "name": nm, "id": cid, "actual": detail.get("week_limit")})
+        repair.append(_repair(nm, cid))
+    limit_period = str(detail.get("limit_period") or "").lower()
+    if limit_period and limit_period != "week":
+        issues.append({"severity": "error", "code": "UAC_LIMIT_PERIOD_MISMATCH",
+                       "name": nm, "id": cid, "actual": limit_period, "expected": "week"})
+        repair.append(_repair(nm, cid))
+    if int(detail.get("counters") or 0) <= 0:
+        issues.append({"severity": "error", "code": "UAC_COUNTER_MISSING", "name": nm, "id": cid})
+        repair.append(_repair(nm, cid))
+    if int(detail.get("goals") or 0) <= 0:
+        issues.append({"severity": "error", "code": "UAC_GOAL_MISSING", "name": nm, "id": cid})
+        repair.append(_repair(nm, cid))
+    if int(detail.get("regions") or 0) <= 0:
+        issues.append({"severity": "error", "code": "UAC_REGION_MISSING", "name": nm, "id": cid})
+        repair.append(_repair(nm, cid))
+    if not detail.get("has_tracking_params"):
+        issues.append({"severity": "warn", "code": "UAC_UTM_MISSING", "name": nm, "id": cid})
+        repair.append(_repair(nm, cid))
+    if detail.get("yandex_maps_enabled") is True:
+        issues.append({"severity": "error", "code": "UAC_MAPS_ENABLED", "name": nm, "id": cid})
+        repair.append(_repair(nm, cid))
+    if detail.get("alternative_texts_enabled") is True:
+        issues.append({"severity": "error", "code": "UAC_ALTERNATIVE_TEXTS_ENABLED", "name": nm, "id": cid})
+        repair.append(_repair(nm, cid))
+    if detail.get("recommendations_management_enabled") is True:
+        issues.append({"severity": "error", "code": "UAC_RECOMMENDATIONS_ENABLED", "name": nm, "id": cid})
+        repair.append(_repair(nm, cid))
+    if detail.get("price_recommendations_management_enabled") is True:
+        issues.append({"severity": "error", "code": "UAC_PRICE_RECOMMENDATIONS_ENABLED", "name": nm, "id": cid})
+        repair.append(_repair(nm, cid))
+    if title_n < 5:
+        issues.append({"severity": "error", "code": "UAC_TITLES_MISSING",
+                       "name": nm, "id": cid, "actual": title_n, "expected": 5})
+        repair.append(_repair(nm, cid))
+    if text_n < 3:
+        issues.append({"severity": "error", "code": "UAC_TEXTS_MISSING",
+                       "name": nm, "id": cid, "actual": text_n, "expected": 3})
+        repair.append(_repair(nm, cid))
+    if sitelink_n < 8:
+        issues.append({"severity": "warn", "code": "UAC_SITELINKS_MISSING",
+                       "name": nm, "id": cid, "actual": sitelink_n, "expected": 8})
+        repair.append(_repair(nm, cid))
+    if media_n <= 0:
+        issues.append({"severity": "warn", "code": "UAC_MEDIA_MISSING", "name": nm, "id": cid, "actual": media_n})
+        repair.append(_repair(nm, cid))
+    if tp == 7 and not detail.get("has_feed"):
+        issues.append({"severity": "error", "code": "UAC_FEED_MISSING", "name": nm, "id": cid})
+        repair.append(_repair(nm, cid))
+    if tp == 7 and _tp7_requires_model_filter(nm) and not detail.get("has_model_filter"):
+        issues.append({"severity": "error", "code": "UAC_PRODUCT_MODEL_FILTER_MISSING",
+                       "name": nm, "id": cid, "fields": detail.get("feed_filter_fields") or []})
+        repair.append(_repair(nm, cid))
+    return issues, repair

@@ -1,0 +1,13 @@
+# Пресет аудиторий для формы (чекбоксы). id → ca_retargeting_condition.goals.
+# Можно дополнять. type — для группировки/подсказки.
+audiences:
+  - {id: "2499680510",  name: "Автокредит",                 type: "INTERESTS"}
+  - {id: "2499680141",  name: "Автомобили",                 type: "INTERESTS"}
+  - {id: "2499680398",  name: "Подержанные автомобили",     type: "INTERESTS"}
+  - {id: "2499680410",  name: "Продажа автомобилей",        type: "INTERESTS"}
+  - {id: "19900000024", name: "Авто.ру (прил. Android)",    type: "APPLICATION"}
+  - {id: "19900830535", name: "Дром Авто (прил. iOS)",      type: "APPLICATION"}
+  - {id: "19000725181", name: "авто.ru",                    type: "HOST"}
+  - {id: "19000000115", name: "auto.ru",                    type: "HOST"}
+  - {id: "19000000677", name: "auto.drom.ru",               type: "HOST"}
+  - {id: "19000000530", name: "drom.ru",                    type: "HOST"}
