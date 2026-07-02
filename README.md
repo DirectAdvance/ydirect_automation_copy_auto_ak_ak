@@ -16,6 +16,18 @@
 
 ### Разделение кода
 
+- `routes_*.py` — Flask route-слой `/direct/*`. `blueprint.py` остаётся местом для legacy
+  helper/adapter-логики, но больше не содержит `@bp.route`.
+- `routes_create_set.py` — `/api/create_set`, legacy `/api/create`, verification/repair endpoints.
+  Важно: `/direct/api/create_set` должен всегда смотреть на endpoint `direct.api_create_set`;
+  это закреплено smoke-тестом `tests/test_routes.py`.
+- `routes_content_editor.py` — отдельный редактор `/direct/automation/content` для массовой правки
+  AI-сгенерированного контента. Direct API v5 вызывается только с валидными top-level полями:
+  campaigns без subtype `TextCampaignFieldNames`, adgroups/ads с обязательным
+  `SelectionCriteria.CampaignIds`, responsive ads через `Titles`/`Texts`.
+  Отдельная документация сервиса: `CONTENT_EDITOR.md` и `CONTENT_EDITOR_COOKIE_GRID.md`.
+- `create_set_*.py` — вынесенные части create_set orchestration: context, feeds, minus, assets,
+  text/tp1/feed builders, finalize, repairing, corrections и master-product ветка.
 - `precreate.py` — план и исполнение предсоздания перед upload-циклом (`precreate` report,
   promo, callouts-reuse, будущие минус-библиотеки/изображения/AI-content).
 - `verifier.py` / `live_verifier.py` / `uac_verifier.py` / `grid_content_verifier.py` /

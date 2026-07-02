@@ -570,7 +570,7 @@ table.da-table a { color: var(--violet-400,#8b7cff); text-decoration: none; }
             <span>Под стиль сайта <small style="color:var(--text-muted)">(снять — без CPA-кампаний)</small></span>
           </label>
           <label class="da-chk" id="ac-singlefeed-row" style="cursor:pointer"
-                 title="Включено — фид-кампании (tp1/tp3/tp5/tp7) создаются только по ПЕРВОМУ фиду аккаунта, без размножения по всем фидам. Меньше кампаний.">
+                 title="Включено — фид-кампании (tp1/tp5/tp7) создаются только по ПЕРВОМУ фиду аккаунта, без размножения по всем фидам. Меньше кампаний.">
             <input type="checkbox" id="ac-single-feed">
             <span>Загружать кампании по одному фиду <small style="color:var(--text-muted)">(только первый фид)</small></span>
           </label>
@@ -2238,10 +2238,10 @@ function renderUnitsChoice(data){
   document.addEventListener('keydown',onKey);
 }
 // Вариант 1: создать остаток СЕЙЧАС через куки (приватный веб-API Директа, без баллов).
-// tp1–tp4 + tp6/tp7 создаются по кукам без баллов; tp3/tp5 (товарная галерея) пока уходят на авто-докрутку.
+// tp1–tp5 + tp6/tp7 создаются по кукам без баллов; товарные ветки уходят на Grid/UAC-докрутку.
 async function cookiesCreateNow(did){
   const go=await uiConfirm('🍪 Создать остаток СЕЙЧАС — поставить его в очередь и продолжить, не дожидаясь сброса баллов.\n\n'+
-    '⚠️ НЕБЕЗОПАСНО (приватный веб-API Директа): ВСЕ типы — РСЯ/Поиск (tp1–tp4), Товарная галерея (tp3/tp5) '+
+    '⚠️ НЕБЕЗОПАСНО (приватный веб-API Директа): ВСЕ типы — РСЯ/Поиск (tp1–tp5), Мастер/Товарка (tp6/tp7) '+
     'и Мастер/Товарная (tp6/tp7) — создаются ПО КУКАМ БЕЗ расхода баллов. Товарной галерее нужен URL-фид на аккаунте.\n\n'+
     'Поставить остаток в очередь сейчас?', {confirm:'Да, в очередь', cancel:'Отмена'});
   if(!go) return;
@@ -2886,7 +2886,8 @@ function fmtDur(sec){
   return (m||1)+' '+pl(m||1,'минута','минуты','минут');
 }
 const JOBS = new Map();          // jobId → {jobId, login, panel, total, kind, publish, terminal}
-const JOBS_LS = 'direct_create_jobs_v2';
+const JOBS_LS_OLD = 'direct_create_jobs_v2';
+const JOBS_LS = 'direct_create_jobs_v3';
 const JOBSTACK_COLLAPSE_LS = 'direct_jobstack_collapsed';
 let _JOBS_POLL = null;
 
@@ -2953,6 +2954,7 @@ function _jobsSave(){
 async function _jobsRestore(){
   // СЕРВЕРНЫЙ источник правды: очередь живёт на сервере (видна с любого устройства, переживает
   // обновление страницы и рестарт сервиса). localStorage — лишь быстрый фолбэк до ответа сервера.
+  try{ localStorage.removeItem(JOBS_LS_OLD); }catch(e){}
   try{ const arr=JSON.parse(localStorage.getItem(JOBS_LS)||'[]');
        arr.forEach(d=>{
          if(!d||!d.jobId) return;
@@ -3109,6 +3111,11 @@ function _jobRenderSummary(jobId, s){
   if(data.units_exhausted) renderUnitsChoice(data);   // 152 → выбор: авто-докрутка / куки сейчас
 }
 function _jobsPollStart(){ if(_JOBS_POLL) return; _JOBS_POLL=setInterval(_jobsPollTick, 2000); _jobsPollTick(); }
+function _dropStaleJob(jobId){
+  const c=_jobCard(jobId); if(c) c.remove();
+  JOBS.delete(jobId); _jobsSave(); _jobStackChrome();
+  if(![...JOBS.values()].some(j=>!j.terminal)) clearTopMsg();
+}
 async function jsonOrError(r){
   const ct=(r.headers.get('content-type')||'').toLowerCase();
   if(ct.includes('application/json')) return await r.json();
@@ -3124,7 +3131,7 @@ async function _jobsPollTick(){
         ? ('/direct/api/copy_status/'+encodeURIComponent(j.jobId))
         : ('/direct/api/create_set_status?job_id='+encodeURIComponent(j.jobId)));
       if(sr.status===404){ // джоба устарела на сервере (рестарт/очистка) — снимаем шкалу
-        const c=_jobCard(j.jobId); if(c) c.remove(); JOBS.delete(j.jobId); _jobsSave(); continue;
+        _dropStaleJob(j.jobId); continue;
       }
       const s=await sr.json(); if(!s) continue;
       _jobUpdateCard(j.jobId, s);
@@ -3927,6 +3934,13 @@ function setTopMsg(html, ok){
   top.innerHTML=html; top.style.display='block';
   if(_TOPMSG_TIMER) clearTimeout(_TOPMSG_TIMER);
   _TOPMSG_TIMER=setTimeout(()=>{ top.style.display='none'; top.innerHTML=''; top.removeAttribute('data-panel'); top.removeAttribute('data-ts'); }, TOPMSG_TTL);
+}
+function clearTopMsg(){
+  const top=document.getElementById('ac-topmsg'); if(!top) return;
+  if(_TOPMSG_TIMER) clearTimeout(_TOPMSG_TIMER);
+  _TOPMSG_TIMER=null;
+  top.style.display='none'; top.innerHTML='';
+  top.removeAttribute('data-panel'); top.removeAttribute('data-ts');
 }
 function _refreshTopMsg(panel){
   const top=document.getElementById('ac-topmsg'); if(!top) return;

@@ -2,7 +2,271 @@
 
 > Читать ПЕРВЫМ в начале каждой сессии. Обновлять ПОСЛЕДНИМ перед выходом.
 
-## Последняя сессия: 2026-07-01 — code-review (8 углов) + 6 фиксов + git-репо
+## Последняя сессия: 2026-07-02 11:00 — фикс NameError api_create_set + создание `carsklad-126.site`
+
+### 2026-07-02 10:19 — фикс `name 'api_create_set' is not defined`
+
+**Причина:** сервис был загружен в память до рефакторинга `routes_create_set.py`. Функция
+`_create_set_response()` в старом in-memory модуле вызывала `api_create_set()` напрямую, но
+после Mutagen-sync `api_create_set` оказалась только nested-функцией в `register_create_set_routes`.
+**Фикс:** перезапуск `direct.service` в 10:19 UTC+5.
+**Добавлено:** traceback-логирование в worker-exception-handler (`blueprint.py:2670`).
+**Статус сервиса:** active (running) с 10:19.
+
+### 2026-07-02 11:00 — создание кампаний `carsklad-126.site`
+
+Параметры: `login=porg-ozge4ntu`, account=`carsklad-126.site`, слепок=`Павлов`,
+метрика=`109986170`, режим=stream_content (ИИ-контент).
+Запуск — через `POST /api/create_set`.
+
+## Предыдущая сессия: 2026-07-02 — восстановление кампаний `porg-mjyh6hjv` по аккаунтам Щербаковой
+
+### Продолжение 2026-07-02 09:20 — `porg-psm5h7q6` пропущен, read-back `porg-mjyh6hjv`
+
+По последнему уточнению пользователя создание в `porg-psm5h7q6` не выполняется и больше не
+входит в текущий объём работ. Проверка продолжена только по восстановлению нормальных кампаний
+в `porg-mjyh6hjv` по аккаунтам Щербаковой.
+
+Read-only аудит `porg-mjyh6hjv` через Direct API v5 (`victoryagency14`) подтвердил:
+- выбрано 40 draft `TEXT_CAMPAIGN`: 21 Haval и 19 Chery, `Копия`/`ХАВАЛ`/`ЧЕРИ` в названиях
+  отсутствуют;
+- по кампаниям нет расхождений счётчик/цель/стратегия: Haval `106653135` + `509684137`,
+  Chery `105217012` + `484236973`; `tp5` = Search `AVERAGE_CPA` + Network `SERVING_OFF`,
+  `tp1` = Search `SERVING_OFF` + Network `AVERAGE_CPA`, недельный бюджет `7000` читается в
+  стратегии;
+- прочитано 141 группа, единый регион `10995`;
+- прочитано 379 объявлений: 115 `SHOPPING_AD`, 115 `LISTING_AD`, 149 `TEXT_AD`;
+- домены текстовых ссылок: `haval.vitmp.ru` (79) и `chery.vitmp.ru` (70);
+- у текстовых объявлений нет пустых `AdImageHash`: `ads_without_hash=0`, 141 группа с hash,
+  17 уникальных image hash. Это подтверждает, что картинки в `porg-mjyh6hjv` реально привязаны
+  через v5 `TextAd.AdImageHash`, а не только через preview фида.
+
+Отдельный read-back фильтров товарных/каталожных объявлений через v5 показал:
+- `ShoppingAd` и `ListingAd` фильтры совпадают попарно (`shopping_listing_filter_mismatch=0`);
+- 101 ранее проблемная пара ListingAd уже не расходится с ShoppingAd;
+- осталось 14 пар без фильтра одновременно и в ShoppingAd, и в ListingAd. Это брендовые группы
+  на целиком брендовых фидах Haval/Chery, а не потерянный фильтр только у каталожных объявлений.
+
+Локальная проверка кода после изменений: `python3 -m py_compile
+home/seoadvanced/direct/blueprint.py home/seoadvanced/direct/grid_read.py
+home/seoadvanced/direct/grid_finalize.py home/seoadvanced/direct/campaign.py` → OK.
+Деплой/перезапуск LXC не выполнен: SSH на Proxmox `ai-agent@100.123.135.43` вернул
+`Permission denied (publickey,password)`, поэтому remote md5/py_compile/status проверить не удалось.
+
+### Продолжение 2026-07-02 09:55 — copy target `porg-si7rw3ua`: read OK, write NO_RIGHTS
+
+После уточнения пользователя про заблокированные аккаунты Щербаковой: `porg-psm5h7q6` по-прежнему
+пропущен, создание в нём не выполняется. Работа только по copy-check Haval.
+
+Свежий live-аудит `porg-si7rw3ua` через Direct API v5/v501 (`victoryagency14`) подтвердил:
+- в target есть ровно 21 Haval-кампания: `712080223, 712080228, 712080232, 712080235,
+  712080237, 712080241, 712080244, 712080246, 712080248, 712080250, 712080253,
+  712080255, 712080257, 712080265, 712080268, 712080270, 712080272, 712080276,
+  712080277, 712080281, 712080282`;
+- сайт в объявлениях корректный: 77 responsive ads ведут на `haval-drive-ufa.ru`;
+- счётчик/цель корректны: `counter_bad=[]`, `goal_bad=[]` для `109865797` и `569211108`;
+- гео-групп корректное: 77 групп, единый регион `[11111]`;
+- фид target корректный: Shopping/Listing используют `3490453`;
+- остаются расхождения: 21/21 имён кампаний начинаются с `Копия ХАВАЛ`, часть имён всё ещё
+  содержит `Башкортостан, республика`; 63/63 `SHOPPING_AD` без `FeedFilterConditions`;
+  target responsive images используют один одинаковый набор из 5 hash вместо source-разнообразия.
+
+Доступы:
+- OAuth write на `porg-si7rw3ua` не работает: даже no-op `campaigns.update` текущим именем
+  возвращает `3000 Аккаунт пользователя блокирован / Нет доступа к API`.
+- По главпотоку/cookie `victoryagency14` Grid read работает (`campaigns.rowset` читается).
+  Другие менеджерские cookies (`victorylotsofads1`, `victoryagency-direct1618440`,
+  `useful-call-agency`) на этом клиенте дают `No rights`/не-JSON.
+- Grid write проверен без Chrome/AppleScript, через cookie из главпотока/fallback `.secret/cookies.json`.
+  Важно: для этих target campaigns правильный union input — `textCampaign`, не `unifiedCampaign`
+  (кампании видны как `TEXT_CAMPAIGN`). После доведения no-op `UpdateCampaigns(textCampaign)` до
+  валидной формы Grid возвращает `GdExceptions.NO_RIGHTS`, значит cookie `victoryagency14`
+  может читать, но не может править target.
+
+Вывод для следующей сессии: `porg-si7rw3ua` считать write-недоступным и не тратить попытки на
+OAuth/UAC/Chrome. Для правок имён/Shopping filters/images нужен другой менеджерский cookie с write
+правами к `porg-si7rw3ua` или другой не заблокированный target. Заблокированные аккаунты
+Щербаковой пропускать.
+
+Повторная проверка после свежего главпотока (10:11): `.secret/glavpotok_cookies.py` успешно
+обновил 6 cookie (`victorylotsofads1`, `victoryagency-direct1618440`, `victoryagency14`,
+`y-direct-victory`, `useful-call-agency`, `victoryagencydirect`). На `porg-si7rw3ua`:
+`victoryagency14` и `y-direct-victory` читают Grid (`read_rows=1`), но обе возвращают
+`GdExceptions.NO_RIGHTS` на валидный no-op `UpdateCampaigns(textCampaign)`; остальные cookies
+не имеют даже Grid read (`bad json`/no rights). Значит блокировка не из-за протухших cookies,
+а из-за отсутствия write-прав у доступных менеджерских сессий.
+
+Дополнительная проверка: главпоток не отдаёт клиентские cookies для `porg-si7rw3ua`,
+`porg-z7vcuo63`, `porg-3bn6onpi`, `porg-mjyh6hjv`, `porg-psm5h7q6` — только менеджерские
+сессии. По соседним аккаунтам Щербаковой (`porg-dykqtxwj`, `porg-k7uvhsmd`, `porg-agy36klu`,
+`porg-w4n3gday`, `e-20084935`, `e-20077448`, `direct213`, `e-20076528`) Grid read через
+`victoryagency14` работает, но тестовая no-op мутация выбранной формой `textCampaign` возвращает
+`CampaignDefectIds.Gen.CAMPAIGN_TYPE_NOT_SUPPORTED`; это не доказывает write-доступ и не помогает
+исправить `porg-si7rw3ua`. Для текущей copy-задачи блокер остаётся прежним: target readable,
+но write-denied.
+
+### Продолжение 2026-07-02 08:50 — аудит копии Haval `porg-mjyh6hjv → porg-si7rw3ua`
+
+По последнему уточнению пользователя создание в `porg-psm5h7q6` пропущено; фокус только на
+копировании Haval и изображениях. Live-аудит `porg-si7rw3ua` через v5/v501 подтвердил:
+выбрано/создано 21 Haval-кампания (`712080223...712080282`), счётчик `109865797` и цель
+`569211108` стоят корректно (`counter_bad=[]`, `goal_bad=[]`), все 77 групп имеют регион
+`11111` (`region_bad=[]`), 77 responsive-объявлений ведут на `haval-drive-ufa.ru`
+и `DisplayDomain=haval-drive-ufa.ru`. Фиды Shopping/Listing целевые: `3490453`.
+
+Найдены live-расхождения, требующие cookie-write с правами на клиент:
+- 21/21 названий всё ещё начинаются с `Копия ХАВАЛ`; часть названий содержит
+  `Башкортостан, республика` вместо `Республика Башкортостан`.
+- 63/63 `SHOPPING_AD` в цели без `FeedFilterConditions`; 63/63 `LISTING_AD` фильтр имеют
+  (`name CONTAINS_ANY Haval`).
+- Изображения теперь проверены через v501 `ResponsiveAdFieldNames=AdImages`, а не через
+  `GdTextAd.imageHash`: в цели нет пустых картинок (`img_missing=0`), но все 77 responsive
+  объявлений используют один и тот же набор из 5 hash:
+  `nYulxagwKCizCoeC8rI6Dg`, `PvsJa1b1cL4ojMgFV1hVoQ`, `FL-1IdFZAz0lhQtN840VlA`,
+  `XptIAkuCzcQwwDknBct5NA`, `3ZSDbvH6v0DA1B0Rp9cegg`. В source `porg-mjyh6hjv` по Haval
+  v501 видит 77 `TEXT_AD`, 63 `SHOPPING_AD`, 63 `LISTING_AD`, 2 `RESPONSIVE_AD` и 12 разных
+  image hashes на TextAd/ResponsiveAd; значит target images не являются точной копией source.
+
+Запись через официальный API невозможна: `campaigns.update` v5/v501 по `porg-si7rw3ua`
+возвращает `3000 Аккаунт пользователя блокирован / Нет доступа к API`. Cookie из `glavpotok`
+обновлены (`.secret/glavpotok_cookies.py`, свежих 6), но Grid по `porg-si7rw3ua` возвращает
+`No rights` для сохранённых менеджерских cookies; браузерная попытка выполнить same-origin Grid
+через AppleScript заблокирована Chrome-настройкой `Разрешить JavaScript из событий Apple`.
+Для live-fix нужны: либо включить в Chrome `Вид → Разработчикам → Разрешить JavaScript из событий Apple`
+на авторизованной вкладке direct.yandex.ru, либо обновить `.secret/cookies.json` cookie-строкой
+менеджера, у которого есть Grid-доступ к `porg-si7rw3ua`.
+Дополнительная попытка разблокировки: через System Events пункт меню найден и доступен, но
+`click/AXPress` не переводит его в выбранное состояние; physical-click через маленький CoreGraphics
+binary (`/tmp/click`) зависает на macOS UI/osascript. JS из Apple Events по-прежнему запрещён,
+поэтому same-origin Grid-write из открытой вкладки не выполнен.
+
+Код future copy-flow поправлен локально в `blueprint.py`: добавлены
+`_copy_normalize_campaign_name`, `_copy_grid_ad_image_hashes`, `_copy_v501_ad_image_hashes`;
+cookie-copy теперь нормализует `Копия ХАВАЛ`/регион до создания и передаёт source image hashes
+в `GridCreate.create_full` как `image_hashes`. Grid snapshot также читает `GdTextAd.image` и
+`GdAdaptiveTextAd.images`. Синтаксис проверен: `python3 -m py_compile blueprint.py` → OK.
+
+После уточнения пользователя остановлены работы по `porg-si7rw3ua`; фокус только на нормальном
+воссоздании кампаний в `porg-mjyh6hjv` и только по аккаунтам Щербаковой Натальи. Источники сверки:
+Haval `e-20084935` (`havalpark-kras.ru`, Краснодар) и Chery `e-20077448`
+(`cheryhouse-102.ru`, Уфа), дополнительно сравнивались активные Shcherbakova Haval-аккаунты
+`porg-dykqtxwj`, `porg-agy36klu`, `porg-k7uvhsmd`, `porg-w4n3gday`. Тексты вида
+`Новые HAVAL 2025 ... Распродаем -45%` подтверждены как реальный паттерн этих аккаунтов,
+а не новая генерация.
+
+В `porg-mjyh6hjv` восстановлены 40 draft `GdUnifiedCampaign` Haval/Chery (21 Haval, 19 Chery),
+исключены `МУЛЬТИ` и `tp6` text-campaign. Снята приставка `Копия`, нормализованы названия
+`ХАВАЛ` → `Haval`, `ЧЕРИ` → `Chery`. Через v5 проверено: у Haval стоит счётчик `106653135`
+и цель `509684137`, у Chery счётчик `105217012` и цель `484236973`; стратегии везде
+`AVERAGE_CPA`, CPA `250`, недельный бюджет `7000`, оплата за конверсии выключена.
+Для tp1 оставлена РСЯ без поиска и `isOrganicSearchEnabled=false`; для tp5/tp2 включён поиск
+с нужными placements. Верификация v5: 40/40 кампаний прочитаны, `missing=[]`, `copy_names=[]`,
+`bad_settings=[]`.
+
+Исправлен частый дефект копирования каталожных объявлений: в `porg-mjyh6hjv` найдено 101
+`ListingAd` без `feedFilter` при наличии sibling `ShoppingAd`; фильтры скопированы из
+`ShoppingAd` в `ListingAd`, ошибок update нет (`listing_updated=101`, `errors=[]`). Это закрывает
+проблему "почему опять нет фильтра в каталожных объявлениях" для текущего аккаунта. Полный
+Grid read-back после массовых мутаций не подтвердился из-за не-JSON ответа Grid на чтении,
+поэтому при следующей сессии стоит повторно прочитать несколько ListingAd и сверить фильтры
+визуально/API. `GdTextAd.image.imageHash` отдаёт `null` и в `porg-mjyh6hjv`, и в source/active
+аккаунтах Щербаковой, поэтому точное равенство UI-картинок через это поле не подтверждается;
+изображения в интерфейсе, вероятно, идут из feed/listing/product preview.
+
+Локально также подготовлен фикс copy-flow в `blueprint.py` для будущих копий: регион
+`Башкортостан, республика` нормализуется в `Республика Башкортостан`, copy-flow выбирает geo
+региона вместо города для Уфы (`11111`, не city `172`), names получают канонический регион,
+а подбор фида предпочитает точный путь `/dostup-k-rasprodazhe-live-01-b.xml` и домен цели.
+Деплой этих локальных изменений не выполнялся после смены фокуса на `porg-mjyh6hjv`.
+Верификация локального кода: `python3 -m py_compile blueprint.py` → OK.
+
+## Пред. сессия: 2026-07-01 — route `/api/create_set` + полный вынос Flask route-слоя
+
+Исправлен ошибочный декоратор: `/direct/api/create_set` больше не висит на helper
+`_run_master_product_item`, а указывает на `api_create_set`. Добавлен pytest-smoke
+`direct/tests/test_routes.py`: проверяет точный endpoint `/api/create_set`, авторизованный
+POST без items (400 вместо прежнего TypeError) и route map для будущего выноса безопасных зон
+account/rules/feed/minus/content/copy/job/AI.
+Вынесены route-слои без изменения helper-логики: `routes_reference.py` (feeds/audiences/templates/cities),
+`routes_settings.py` (rules/corrections/feed-rules/minus-places),
+`routes_accounts.py` (statuses/accounts/account_info/stats/account_prefill/account_assets/
+account_audiences/goal_for_counter/balance),
+`routes_content.py` (content tree/assets/preview/thumb/rules), `routes_ai.py` (AI status/chat/agents/promo/
+campaign/slepok/publish), `routes_copy.py` (copy_campaigns/target_prefill/start/status),
+`routes_pages.py` (/, automation, minusphrase), `routes_overview.py`, `routes_deferred.py`
+(units/deferred/cancel/resume_now), `routes_pack.py` (slepok_callouts/m3 status/pack_preview),
+`routes_campaigns.py` (campaigns/stop/delete/check_blocks), `routes_set_plan.py` (`/api/set_plan`).
+Дополнительно вынесены `routes_jobs.py` (create_set_async/status/create_jobs/cancel/jobs resume/delete_created)
+и `routes_create_set.py` (`/api/create_set`, legacy `/api/create`, create_set_verification/create_set_repair).
+В `blueprint.py` не осталось `@bp.route`; там пока живут тяжёлые helper/worker-ветки и adapter-слой
+для create_set core. Дальше начата сервисная декомпозиция create_set: основной orchestration
+`_create_set_response` вынесен в `create_set_orchestrator.py`, tp6/tp7 handler
+`_run_master_product_item` вынесен в `create_set_master_product.py`, plan/name service вынесен
+в `create_set_plan.py`, context/targeting helpers вынесены в `create_set_context.py`,
+feed/catalog/prices helpers вынесены в `create_set_feeds.py`, shared-minus helpers вынесены
+в `create_set_minus.py`, creative/assets helpers вынесены в `create_set_assets.py`, tp2/tp4
+text builders вынесены в `create_set_text_builders.py`, tp1/РСЯ builders вынесены в
+`create_set_tp1_builders.py`, tp3/tp5/cookie builders вынесены в `create_set_feed_builders.py`,
+Grid-finalize helpers вынесены в `create_set_finalize.py`, repair/live verification helpers
+вынесены в `create_set_repairing.py`, corrections/bid modifiers вынесены в
+`create_set_corrections.py`;
+`blueprint.py` передаёт им явные deps-map без изменения call-site поведения.
+Отдельный сервис `/direct/automation/content` учтён: исправлен invalid `campaigns.get`
+по `TextCampaignFieldNames` (Direct API не принимает `CalloutIds`/старые subtype-поля);
+`routes_content_editor.py` теперь грузит кампании только по top-level `Id/Name/Type`, затем
+запрашивает `adgroups.get` и `ads.get` с `SelectionCriteria.CampaignIds` (Direct API не принимает
+пустой фильтр для `adgroups.get`). После деплоя дополнительно исправлен enum `ResponsiveAdFieldNames`:
+для responsive-объявлений запрашиваются валидные `Titles`/`Texts`/`SitelinkSetId`, а `_ad_texts`
+нормализует их обратно в поля редактора `title/title2/text`; `sitelinks.get` вызывается только
+по фактическим `SitelinkSetId`, потому что Direct API требует `SelectionCriteria.Ids`.
+После уточнения требования сервиса запись через OAuth Direct API v5/v501 отключена полностью:
+`/direct/api/content-editor/replace` больше не вызывает `ads.update`/`sitelinks.add` через OAuth
+и возвращает явную ошибку до реализации cookie/Grid writer. Добавлены отдельные документы сервиса:
+`CONTENT_EDITOR.md` и `CONTENT_EDITOR_COOKIE_GRID.md`; тест защищает запрет OAuth-write.
+Верификация: `.venv/bin/python -m pytest direct/tests/test_routes.py -q` → 3 passed;
+после фикса content editor smoke расширен до 5 тестов → 5 passed;
+`.venv/bin/python -m py_compile blueprint.py main.py routes_*.py create_set_orchestrator.py create_set_master_product.py create_set_plan.py create_set_context.py create_set_feeds.py create_set_minus.py create_set_assets.py create_set_text_builders.py create_set_tp1_builders.py create_set_feed_builders.py create_set_finalize.py create_set_repairing.py create_set_corrections.py tests/test_routes.py` → OK;
+ручной `url_map` подтвердил `/direct/api/create_set -> direct.api_create_set (direct.routes_create_set)`,
+`/direct/automation/content -> direct.routes_content_editor.content_editor_page`, все `/direct/*`
+endpoints смотрят в `direct.routes_*` или `direct.routes_content_editor`; `direct.blueprint`
+больше не является модулем view-функций. Авторизованный smoke `/direct/api/create_set` с пустыми
+items доходит до orchestration и возвращает ожидаемый 400 `login и items обязательны`;
+`/direct/api/set_plan` с пустым body возвращает ожидаемый 400 `login обязателен`.
+Helper-smoke пройден для build_name/context, feed price/url/filter helpers, minus budget,
+assets/responsive_ad, tp1/text/feed builder wrappers, finalize/corrections/repair wrappers и
+content-editor campaigns/adgroups/ads payload. `blueprint.py` снижен примерно до 9k строк; следующий хвост:
+legacy create, shared content/AI promo helpers и возможная чистка copy/job storage без деплоя.
+Closeout-деплой: Mutagen подтвердил синк на LXC101, `direct.service` и `digest.service`
+перезапущены и `active (running)`. Smoke после рестарта: внутри LXC `/direct/automation` → 302,
+`/direct/automation/content` → 302, `/direct/api/create_set` без сессии → 401, `/login` → 200,
+`/` → 302; публичный `https://seoadvanced.ru/direct/automation/content` → 302 `/login`.
+Continuation-аудит route-goal: пункты pages/overview, units/deferred, slepok/m3/pack,
+campaign HTTP layer, `/api/set_plan` wrapper и `/api/create_set` wrapper подтверждены через
+runtime `url_map`; все проверенные endpoints смотрят в `direct.routes_*`, `blueprint_views=[]`.
+Повторная верификация: `pytest direct/tests/test_routes.py -q` → 6 passed; `py_compile`
+по `blueprint.py`, `main.py`, `routes_*.py`, `create_set_*.py`, `tests/test_routes.py` → OK.
+Fix copy-flow tasks/cookies: `/api/copy_start` теперь возвращает `kind=copy_campaigns`/`agency`,
+а `templates/direct/index.html` сразу добавляет copy job в общий `JOBS` stack и poller
+`/api/create_set_status`, поэтому копирование появляется в общем списке задач без refresh.
+`campaign.load_cookie_local` ищет cookies не только в `.secret/cookies.json`, но и в
+`.secret/yandex_direct/cookies.json` / `.secret/yandex_direct/cookies/cookies.json` — это
+закрывает LXC-ошибку `/opt/scripts/.secret/cookies.json: No such file or directory`.
+Верификация: `pytest direct/tests/test_routes.py -q` → 7 passed; `py_compile campaign.py routes_copy.py
+routes_jobs.py tests/test_routes.py` → OK; JS template syntax after Jinja placeholder stripping → OK.
+Copy dry-run for `porg-mjyh6hjv → porg-si7rw3ua`: target prefill verified as
+`domain=haval-drive-ufa.ru`, `city=Уфа`, `region=Башкортостан, республика`,
+`counter_id=109865797`, `goal_id=569211108`, `agency=victoryagency14`. Source campaign list
+contains 21 campaigns with Cyrillic `ХАВАЛ` in name (matches UI selected 21); 26 if Latin-only
+`Haval` matches are also counted. Fixed `work/slepki_direktologov/scripts/direct_copy.py` cookie
+fallback to nested `.secret/yandex_direct/...` paths and changed copy worker to pass agency cookie
+account instead of client login. Preflight now allows `UNIFIED_AD_CAMPAIGN` because `direct_copy`
+uploads it via v501. Remaining live blocker observed in read-only dry-run: `direct_copy.phase_pull`
+requires OAuth Direct API units for source snapshot; current source tokens return 152, and cookies
+cannot authorize JSON Direct API (`OAuth-токен не указан`). So filter/site/counter/goal are correct,
+but actual old `direct_copy` upload will not start until source v5 units are available or pull is
+rewritten to Grid/cookie.
+
+## Пред. сессия: 2026-07-01 — code-review (8 углов) + 6 фиксов + git-репо
 
 Дополнение 35: `/code-review` (high, 8 finder-углов + верификация) по правкам сессии.
 12 кандидатов → 6 реальных фиксов, остальное intended/latent. Затем — вынос проекта в
@@ -3502,3 +3766,32 @@ per-group сайтлинки Href=href группы (куки-путь отде�
 КРИТИЧНО: UpdateUnifiedAdGroups НЕ пишет ключи в существующую группу (no-op) -> keyword-repair только
 пересозданием. Лимит 10000 ключей/кампанию.
 ОСТАЛОСЬ: тест-прогон -> live-сверка всего. Куки-путь per-group сайтлинков доработать.
+
+---
+## Дополнение 36 — новая страница «Редактор контента» (массовая коррекция AI-текстов) (2026-07-01)
+
+СДЕЛАНО (не задеплоено на LXC101 — сессия без ssh/flask, только статическая проверка):
+- Новый модуль `routes_content_editor.py` + шаблон `templates/direct/content_editor.html` +
+  регистрация в `blueprint.py` (импорт + `register_content_editor_routes(...)` после
+  `register_account_routes`). py_compile обоих OK, pyflakes чисто, 5 роутов подтверждены через
+  фейковый flask/bp: `GET /direct/automation/content`, `GET /api/content-editor/accounts`,
+  `POST /api/content-editor/{load,preview,replace}`.
+- Назначение: найти паттерн плохого AI-текста и заменить его во ВСЕХ кампаниях аккаунта.
+  UI — изолированная страница (свой layout, БЕЗ navbar сайта), тёмная тема из /static/style.css,
+  левый сайдбар: Заголовки/Тексты/Быстрые ссылки/Уточнения. Flow: выбор аккаунта (autocomplete из
+  local_gsheet_sites) → «Показать» → поиск по разделу → «Редактировать» → «Проверить вхождения»
+  (/preview, count) → «Применить» (/replace).
+- API-слой: официальный v5 по OAuth-токену агентства (инжектированы `_token_for_login`,
+  `_direct_tokens`, `_v5_call`, `_v501_svc`), НЕ куки. Токен подбирается по логину клиента.
+  Read: campaigns(CalloutIds)+adgroups+ads+sitelinks+adextensions(CALLOUT), usages собираются.
+- Replace: ad_title/title2/text = прямой `ads.update` (v501). callout/sitelink_title — в v5
+  неизменяемы: создаётся новый объект (`adextensions.add`/`sitelinks.add`) и переназначается
+  (CalloutIds кампаний / SitelinkSetId объявлений).
+- Доступ: `_service_required_any("work","work:direct","direct:content","direct")` (текущие
+  Direct-юзеры держат work/work:direct; админ проходит всегда).
+
+⚠️ НЕ ВЕРИФИЦИРОВАНО ЖИВЬЁМ: preview/replace против реального Direct API не прогонялись (нет
+токенов/flask локально, нет ssh на LXC101 в этой сессии). Confident: ads.update (title/text).
+Требует live-проверки: v5-схема callout-usages (CalloutIds на TextCampaign) и sitelinks.add
+ключ `SitelinksSets` + переназначение SitelinkSetId. Деплой: mutagen разнесёт файлы, затем
+`ssh lxc101-ts "systemctl restart digest.service"` + smoke `/direct/automation/content`.

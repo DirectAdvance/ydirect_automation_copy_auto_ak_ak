@@ -5,6 +5,29 @@
 
 ---
 
+## Текущий срез — 2026-07-01
+
+Рефакторинг монолита остановлен на безопасном срезе перед продолжением завтра:
+- route-слой `/direct/*` вынесен из `blueprint.py` в `routes_*.py`; в `blueprint.py` не осталось
+  `@bp.route` и view-функций;
+- `/direct/api/create_set` закреплён за endpoint `direct.api_create_set`, smoke в
+  `tests/test_routes.py` защищает url_map от повторного попадания на helper;
+- безопасные зоны вынесены: account/rules/feed/minus/content routes, AI/promo routes,
+  copy-flow, job queue/status, set_plan и основные create_set endpoints;
+- create_set частично разложен по сервисным модулям `create_set_*.py`; orchestration и helper-логика
+  работают через явные deps-map без изменения внешнего API;
+- отдельная страница `/direct/automation/content` учтена: загрузка кампаний больше не запрашивает
+  невалидные `TextCampaignFieldNames`, а `adgroups.get`/`ads.get` получают обязательный фильтр
+  `SelectionCriteria.CampaignIds`; responsive-объявления читаются через валидные поля
+  `ResponsiveAdFieldNames=["Titles","Texts","SitelinkSetId"]`; `sitelinks.get` вызывается только
+  по фактическим `SitelinkSetId`; запись через OAuth API отключена, следующий шаг для рабочего
+  редактора — cookie/Grid writer по `CONTENT_EDITOR_COOKIE_GRID.md`.
+
+Хвост на следующий подход: остатки legacy create/shared helper-логики в `blueprint.py`,
+shared content/AI promo helpers и необязательная чистка copy/job storage.
+
+---
+
 ## Решение (коротко)
 
 | Что | Вердикт | Когда |

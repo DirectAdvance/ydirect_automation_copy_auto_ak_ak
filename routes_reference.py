@@ -1,0 +1,82 @@
+"""Reference-data routes for the Direct automation UI."""
+
+from __future__ import annotations
+
+from typing import Callable
+
+from flask import jsonify, request
+
+
+def register_reference_routes(
+    bp,
+    access,
+    *,
+    list_feeds_for_site: Callable,
+    load_json: Callable[[str], dict],
+    load_audiences: Callable[[], list[dict]],
+    victory_conn: Callable,
+) -> None:
+    @bp.route("/api/feeds")
+    @access
+    def api_feeds():
+        site = (request.args.get("site") or "").strip()
+        if not site:
+            return jsonify({"error": "site обязателен"}), 400
+        return jsonify(list_feeds_for_site(site, load_json("feeds_catalog.json")))
+
+    @bp.route("/api/audiences")
+    @access
+    def api_audiences():
+        return jsonify(load_audiences())
+
+    @bp.route("/api/ad_template_sites")
+    @access
+    def api_ad_template_sites():
+        """Типы сайтов с числом шаблонов — для выпадающего списка в форме."""
+        conn = victory_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT site_type, count(*) FROM public.direct_ad_templates "
+                "WHERE enabled GROUP BY site_type ORDER BY site_type"
+            )
+            return jsonify({"sites": [{"site_type": r[0], "n": r[1]} for r in cur.fetchall()]})
+        finally:
+            conn.close()
+
+    @bp.route("/api/ad_templates")
+    @access
+    def api_ad_templates():
+        """Заголовки/тексты по типу сайта: {site_type, titles:[...], texts:[...]}."""
+        st = (request.args.get("site_type") or "").strip()
+        if not st:
+            return jsonify({"error": "site_type обязателен"}), 400
+        conn = victory_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT kind, content FROM public.direct_ad_templates "
+                "WHERE enabled AND site_type=%s ORDER BY kind, id",
+                (st,),
+            )
+            titles, texts = [], []
+            for kind, content in cur.fetchall():
+                (titles if kind == "title" else texts).append(content)
+            return jsonify({"site_type": st, "titles": titles, "texts": texts})
+        finally:
+            conn.close()
+
+    @bp.route("/api/cities")
+    @access
+    def api_cities():
+        """Список городов direction='Авто' из local_gsheet_sites."""
+        conn = victory_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT DISTINCT city FROM public.local_gsheet_sites "
+                "WHERE direction='Авто' AND city IS NOT NULL AND city<>'' ORDER BY city"
+            )
+            return jsonify({"cities": [row[0] for row in cur.fetchall()]})
+        finally:
+            conn.close()

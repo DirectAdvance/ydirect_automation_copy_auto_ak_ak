@@ -655,6 +655,7 @@ SLEPOK_LABELS = {
     "scherbakova": "Слепок Щербакова",
     "kryuchkova": "Слепок Крючкова",
     "terehov": "Слепок Терехов",
+    "karavaev": "Слепок Караваев",
 }
 
 
@@ -734,7 +735,7 @@ def content_tree(force_refresh: bool = False) -> dict:
             tps.append({"tp": tp, "cts": cts, "assets": sum(x["assets"] for x in cts)})
         out.append({"segment": segment, "tps": tps, "assets": sum(t["assets"] for t in tps)})
     slepki = []
-    order = {"common": 0, "pavlov": 1, "scherbakova": 2, "kryuchkova": 3, "terehov": 4}
+    order = {"common": 0, "pavlov": 1, "scherbakova": 2, "kryuchkova": 3, "terehov": 4, "karavaev": 5}
     for slp in sorted(slepok_tree, key=lambda x: (order.get(x, 99), x)):
         segments = []
         for segment in sorted(slepok_tree[slp]):
@@ -816,7 +817,7 @@ def content_assets(segment: str, tp: str, ct: str, slepok: str = "") -> list[dic
     return rows
 
 SEGMENTS = ("Монобренд", "Мультибренд", "Квиз", "Мульти + БУ", "С пробегом")
-SLEPOK_KEYS = ("pavlov", "scherbakova", "kryuchkova", "terehov")
+SLEPOK_KEYS = ("pavlov", "scherbakova", "kryuchkova", "terehov", "karavaev")
 # БАГ-7: слепки директологов, у которых ЕСТЬ б/у-сайты («С пробегом», «Мульти+БУ»).
 # При создании РК для НЕ-б/у-сайта (Мультибренд/Монобренд/Квиз) картинки этих слепков
 # могут содержать б/у-авто — исключаем их через exclude_bu_slepoks=True.
@@ -1015,8 +1016,19 @@ def videos_for_ct(login: str, ct: str, limit: int = 2) -> list:
     model_name = feeds_ct_model().get(ct, "")
     if not model_name:
         return []
-    # Ключ в _videos_map: последнее слово названия модели, нижний регистр ('jolion')
-    model_key = model_name.strip().split()[-1].lower()
+    # Ключ в _videos_map: модель без марки и маркетингового хвоста
+    # ('Haval Jolion Новый' -> 'jolion'). Производные модели не подменяем:
+    # F7X и Dargo X должны иметь отдельные видео-ключи.
+    import unicodedata as _ud
+    tokens = [
+        _ud.normalize("NFKD", t).encode("ascii", "ignore").decode("ascii").lower()
+        if re.search(r"[A-Za-z]", t)
+        else "".join(ch for ch in _ud.normalize("NFKD", t).lower() if not _ud.combining(ch))
+        for t in model_name.strip().split()
+    ]
+    tail_noise = {"новый", "новыи", "новая", "новое", "novyi", "novy", "new"}
+    tokens = [t for t in tokens if t and t not in tail_noise]
+    model_key = tokens[-1] if tokens else ""
     sd = _load_index().get("slepki_data", {})
     for folder in sorted(sd):
         if folder.endswith(suffix):

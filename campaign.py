@@ -1164,7 +1164,14 @@ def fetch_cookie_glavpotok(login: str) -> str | None:
 
 def load_cookie_local(account: str) -> str:
     """Fallback: строка кук из .secret/cookies.json (может быть протухшей)."""
-    data = json.loads((_find_secret_dir() / "cookies.json").read_text(encoding="utf-8"))
+    secret_dir = _find_secret_dir()
+    paths = [
+        secret_dir / "cookies.json",
+        secret_dir / "yandex_direct" / "cookies.json",
+        secret_dir / "yandex_direct" / "cookies" / "cookies.json",
+    ]
+    cookie_path = next((p for p in paths if p.exists()), paths[0])
+    data = json.loads(cookie_path.read_text(encoding="utf-8"))
     cookie = data.get(account)
     if not cookie:
         raise KeyError(f"в cookies.json нет аккаунта {account!r}; есть: {list(data)}")
