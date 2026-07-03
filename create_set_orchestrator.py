@@ -75,8 +75,10 @@ def create_set_response(deps: dict):
     _slepok_content_get = deps['_slepok_content_get']
     _slepok_uses_shopping = deps['_slepok_uses_shopping']
     _templates_for = deps['_templates_for']
+    _auth_error_in_result = deps.get('_auth_error_in_result')
     _units_in_result = deps['_units_in_result']
     _v5_get = deps['_v5_get']
+    _job_new = deps.get('_job_new')              # немедленная постановка куки-джобы (может отсутствовать)
     body = request.json or {}
     from .create_set_input import normalize_create_set_input
     _input = normalize_create_set_input(
@@ -102,8 +104,8 @@ def create_set_response(deps: dict):
     # (оплата за конверсии): tp1/tp5 — только cpc-вариант пары; tp2/tp4 pay=cpa — пропускаем.
     no_cpa = _input["no_cpa"]
     # Галочка «загружать кампании по одному фиду»: вместо фан-аута по ВСЕМ фидам аккаунта —
-    # только ПЕРВЫЙ фид. Для tp1/tp5 режем список фидов ниже; для tp7 (раскрыт по фидам ещё
-    # в плане) — оставляем item'ы только первого встреченного feed_id.
+    # только /yandex.xml (fallback: первый доступный фид). Для tp1/tp5 режем список фидов ниже;
+    # для tp7 (раскрыт по фидам ещё в плане) — оставляем item'ы выбранного feed_id.
     single_feed = _input["single_feed"]
     # via_cookie: принудительный cookie-first режим для всего набора.
     # Если via_cookie=False, token-типы всё равно идут API-first и АВТОМАТИЧЕСКИ переключаются
@@ -208,6 +210,8 @@ def create_set_response(deps: dict):
         if not _pf["ok"]:
             return jsonify({"error": f"предполётная проверка кредов: {_pf['error']}"}), 502
         _st_token, _w_agency = _pf["token"], _pf["agency"]
+        if _pf.get("cookie_only"):
+            via_cookie = True   # нет токена (error 53) — весь набор через cookie-путь (без API-баллов)
         # UAC-клиент на куке ТОГО ЖЕ агентства (предполёт уже подтвердил, что кука жива).
         try:
             client = cmc.build_client(login, account=(_w_agency or None))
@@ -360,7 +364,20 @@ def create_set_response(deps: dict):
         for _pref_i in range(min(3, len(items))):
             _prefetch_content(_pref_i)
 
+        # Типы пунктов → tp-код (для safety-net гейта строгого соответствия слепку ниже).
+        _TYPE_TO_TP = {"tp1_rsy": "tp1", "search_test": "tp2", "rsya_gallery": "tp3",
+                       "search_dynamic": "tp4", "search_gallery": "tp5"}
         for _ci, it in enumerate(items):
+            # M3-гейт (Семён 03.07, скрин #92): без ИИ на M3 контент не сгенерить — вместо
+            # брака/массового deferred ПАУЗИМ набор (6×10 мин + 1 час, heartbeat внутри).
+            # Не дождались → останавливаемся; созданное цело, остаток доберёт повторный запуск.
+            _m3_gate = deps.get('_m3_gate_wait')
+            if callable(_m3_gate) and not _m3_gate(_job):
+                _add_job_err(_job, "ИИ на M3 недоступен (ждали 6×10мин + 1ч) — создание "
+                                   "остановлено; остаток набора доберёт повторный запуск")
+                results.append({"ok": False, "name": it.get("name") or "",
+                                "error": "ИИ на M3 недоступен — набор остановлен на этом пункте"})
+                break
             _prefetch_content(_ci + 1)
             _prefetch_content(_ci + 2)
             # Исчерпание суточного лимита баллов Директа (error 152): при ПЕРВОМ же маркере 152
@@ -372,7 +389,9 @@ def create_set_response(deps: dict):
             # для системной/фоновой докрутки: 152 = автоматический переход на куки.
             while _scan_i < len(results):
                 _r = results[_scan_i]; _scan_i += 1
-                if _units_in_result(_r):
+                if _units_in_result(_r) or (
+                    _auth_error_in_result and (not _r.get("ok")) and _auth_error_in_result(_r)
+                ):
                     _units_seen = True
                     if not _r.get("ok"):
                         _units_block = True
@@ -390,6 +409,15 @@ def create_set_response(deps: dict):
                 _job["done"] = _ci                       # по ФАКТУ каждой созданной кампании (fan-out даёт
                 _job_db_progress(_job)                   # N кампаний на 1 пункт), бампается ниже _bump_job().
             name = it.get("name") or ""
+            # Строгое соответствие слепку (ревью A4, баг porg-psm5h7q6): ПРЕВЬЮ гейтит план, но путь
+            # СОЗДАНИЯ берёт items из тела как есть (флоу «без предпросмотра», deferred/resume, повтор
+            # API) — дублируем гейт, иначе тип вне боевого профиля слепка просочился бы в набор.
+            _excl_tp = deps.get('_slepok_profile_excludes_tp')
+            _it_tp = _TYPE_TO_TP.get(it.get("type") or "")
+            if callable(_excl_tp) and _it_tp and _excl_tp(agent, eff_site, _it_tp):
+                print(f"[strict-slepok] {_it_tp} пропущен (нет в боевом профиле {agent}): {name}", flush=True)
+                _bump_item(_job)
+                continue
             # RESUME-SKIP: кампания пункта УЖЕ есть в Директе → не пересоздаём (и не тратим M3-генерацию).
             # Пропускаем БЫСТРО (heartbeat тикает в _bump_item → watchdog не считает джобу зависшей).
             # ⚠ tp1_rsy — МУЛЬТИ-ФИД fan-out ({name} — {feed1}, {name} — {feed2}): item-level prefix-skip
@@ -472,6 +500,7 @@ def create_set_response(deps: dict):
                     create_tp1_via_cookie=_create_tp1_via_cookie,
                     create_tp1_campaign=_create_tp1_campaign,
                     units_in_result=_units_in_result,
+                    auth_error_in_result=_auth_error_in_result,
                     apply_corrections=_apply_corrections,
                     job_db_progress=_job_db_progress,
                     add_job_err=_add_job_err,
@@ -662,6 +691,7 @@ def create_set_response(deps: dict):
         units_note = None
         deferred_id = None
         deferred_at = None
+        _auto_cookie_jid = None                          # id немедленной куки-джобы (возвращается в ответе)
         if _units_block:
             # Остаток = ИМЕННО пункты, чей результат нёс 152 и НЕ создан (по имени, с fan-out-префиксом).
             _remaining = items_for_result_names(items, _units_failed_names)
@@ -669,24 +699,43 @@ def create_set_response(deps: dict):
             _units_pending = _pend                       # для ответа units_pending
             _tail = (f"; не создано пунктов плана: {_pend}" if _pend else "")
             _rc = int(body.get("_resume_count") or 0)
-            if _remaining and _rc < _RESUME_MAX:
-                deferred_id = _deferred_save(login, (_w_agency or body.get("agency") or ""),
-                                             body, _remaining, body.get("_job_id"), resume_count=_rc)
-                if deferred_id:
-                    deferred_at = _next_units_reset_utc().isoformat()
-            if deferred_id:
-                units_note = (f"⛔ Суточный лимит баллов Яндекс.Директа исчерпан (error 152). "
-                              f"Создано кампаний: {created}{_tail}. Остаток ({len(_remaining)} пунктов) "
-                              f"поставлен на АВТО-ДОКРУТКУ после сброса баллов (полночь МСК) — "
-                              f"повторно кликать не нужно. Дублей не будет.")
-            elif _remaining and _rc >= _RESUME_MAX:
+            if _remaining:
+                # п.1: немедленно ставим куки-джобу — не ждём демона (~10 мин) и не блокируемся на
+                # _RESUME_MAX (cookie-путь не тратит баллов; дублей нет — RESUME-SKIP пропустит созданные).
+                if _job_new:
+                    try:
+                        _cb = dict(body)
+                        _cb.pop("_job_id", None)
+                        _cb["items"] = _remaining
+                        _cb["via_cookie"] = True
+                        _cb["_resume_count"] = _rc + 1
+                        _cb["_deferred_id"] = None       # новая цепочка; parent_did закрывается ниже
+                        _sess = {"logged_in": True, "is_admin": True, "_resume": True}
+                        _auto_cookie_jid = _job_new(len(_remaining), login, _cb, _sess)
+                    except Exception:  # noqa: BLE001
+                        _auto_cookie_jid = None
+                # Fallback: демон-deferred (если _job_new недоступен или упал).
+                # При _rc >= _RESUME_MAX сохраняем с resume_count=0 (сброс) — UI получит deferred_id
+                # для кнопки «куки сейчас»; демон не зациклится (resume_at=полночь, не now()).
+                if not _auto_cookie_jid:
+                    _def_rc = 0 if _rc >= _RESUME_MAX else _rc
+                    deferred_id = _deferred_save(
+                        login, (_w_agency or body.get("agency") or ""),
+                        body, _remaining, body.get("_job_id"), resume_count=_def_rc)
+                    if deferred_id:
+                        deferred_at = _next_units_reset_utc().isoformat()
+            if _auto_cookie_jid:
                 units_note = (f"⛔ Баллы Директа исчерпаны (error 152). Создано: {created}{_tail}. "
-                              f"Достигнут лимит авто-докруток ({_RESUME_MAX}) — остаток не докручен "
-                              f"автоматически. Запустите набор вручную после сброса баллов.")
-            else:
+                              f"Остаток ({_pend} пунктов) автоматически поставлен в очередь по куке "
+                              f"(джоба {_auto_cookie_jid}) — ничего делать не нужно. Дублей не будет.")
+            elif deferred_id:
                 units_note = (f"⛔ Суточный лимит баллов Яндекс.Директа исчерпан (error 152). "
-                              f"Создано кампаний: {created}{_tail}. Повторите запуск после сброса баллов "
-                              f"(полночь МСК) — уже созданные пропустятся.")
+                              f"Создано кампаний: {created}{_tail}. Остаток ({_pend} пунктов) "
+                              f"поставлен на докрутку по куке — повторно кликать не нужно. Дублей не будет.")
+            else:
+                _no_rem = ("нет несозданного остатка — всё создано или добито" if not _pend
+                           else f"не создано {_pend} пунктов; повторите после сброса баллов (полночь МСК)")
+                units_note = f"⛔ Баллы Директа исчерпаны (error 152). Создано: {created}. {_no_rem}."
         elif _units_switched and not units_note:
             # 152 случился в середине набора → остаток БЕСШОВНО создан по куке (без баллов).
             units_note = (f"Баллы Директа исчерпаны (error 152) во время набора — остаток автоматически "
@@ -717,6 +766,7 @@ def create_set_response(deps: dict):
             units_pending=_units_pending,
             deferred_id=deferred_id,
             deferred_at=deferred_at,
+            auto_cookie_job_id=_auto_cookie_jid,
             content_source=content_source,
             slepok_content_note=slepok_content_note,
             metrika_note=metrika_note,

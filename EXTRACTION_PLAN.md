@@ -5,11 +5,15 @@
 
 ---
 
-## Текущий срез — 2026-07-01
+## Текущий срез — 2026-07-02
 
 Рефакторинг монолита остановлен на безопасном срезе перед продолжением завтра:
 - route-слой `/direct/*` вынесен из `blueprint.py` в `routes_*.py`; в `blueprint.py` не осталось
   `@bp.route` и view-функций;
+- общий Direct и редактор контента разделены на два процесса: `direct.service`
+  (`127.0.0.1:5020`) обслуживает `/direct/automation` и API создания РК, а
+  `direct-content.service` (`127.0.0.1:5021`) обслуживает только
+  `/direct/automation/content` и `/direct/api/content-editor/*`;
 - `/direct/api/create_set` закреплён за endpoint `direct.api_create_set`, smoke в
   `tests/test_routes.py` защищает url_map от повторного попадания на helper;
 - безопасные зоны вынесены: account/rules/feed/minus/content routes, AI/promo routes,
@@ -18,7 +22,7 @@
   работают через явные deps-map без изменения внешнего API;
 - отдельная страница `/direct/automation/content` учтена: загрузка кампаний больше не запрашивает
   невалидные `TextCampaignFieldNames`, а `adgroups.get`/`ads.get` получают обязательный фильтр
-  `SelectionCriteria.CampaignIds`; responsive-объявления читаются через валидные поля
+  `SelectionCriteria.CampaignIds` батчами по 10 id; responsive-объявления читаются через валидные поля
   `ResponsiveAdFieldNames=["Titles","Texts","SitelinkSetId"]`; `sitelinks.get` вызывается только
   по фактическим `SitelinkSetId`; запись через OAuth API отключена, следующий шаг для рабочего
   редактора — cookie/Grid writer по `CONTENT_EDITOR_COOKIE_GRID.md`.
@@ -58,8 +62,8 @@ LRU-кэш, восстановление заданий из БД).
 
 | Связь | Сейчас | При выносе |
 |---|---|---|
-| Процесс/порт | в `app.py`, 5010 | свой `direct.service`, **127.0.0.1:5020** |
-| Роутинг | blueprint `/direct/*` | nginx: `location /direct/ → 127.0.0.1:5020` (proxy_pass БЕЗ слэша) |
+| Процесс/порт | в `app.py`, 5010 | `direct.service` **127.0.0.1:5020** + `direct-content.service` **127.0.0.1:5021** |
+| Роутинг | blueprint `/direct/*` | nginx: content location'ы → `5021`, общий `location /direct/` → `5020` (proxy_pass БЕЗ слэша) |
 | Авторизация | `auth.py` + Flask-session cookie | **тот же `FLASK_SECRET_KEY`** → SSO бесплатно, логин на главном |
 | Шаблоны/нав | `templates/direct/` + общий layout + `inject_nav_context` | перенести context-processor в `direct/main.py` или свой shell |
 | Реестр прав | `work:direct` в `_BUILTIN_SECTIONS` (`app.py`) | **остаётся там же**, не трогаем |
@@ -93,22 +97,36 @@ cookie главного сайта валиден в Директе; `user_servi
   без расхождения двух копий auth-кода.
 
 ### Фаза 3 — nginx + systemd (LXC 101) — ✅ готово
-- nginx: `location /direct/ { proxy_pass http://127.0.0.1:5020; proxy_set_header Cookie $http_cookie; }`
-- `/etc/systemd/system/direct.service`: `ExecStart=<venv>/python .../direct/main.py`, `Restart=always`
-  (env/user/venv — скопировать из `digest.service`).
-- Деплой: Mutagen синкает папку → `systemctl restart direct.service`. Главный сайт НЕ падает.
+- nginx:
+  - `location ^~ /direct/automation/content { proxy_pass http://127.0.0.1:5021; ... }`
+  - `location ^~ /direct/api/content-editor/ { proxy_pass http://127.0.0.1:5021; ... }`
+  - `location /direct/ { proxy_pass http://127.0.0.1:5020; proxy_set_header Cookie $http_cookie; }`
+- `/etc/systemd/system/direct.service`: `ExecStart=<venv>/python -m direct.main`,
+  `Restart=always`, `DIRECT_REGISTER_CONTENT_EDITOR=0`.
+- `/etc/systemd/system/direct-content.service`: `ExecStart=<venv>/python -m direct.content_main`,
+  `Restart=always`.
+- Деплой: Mutagen синкает папку → рестарт только нужного сервиса. Главный сайт и соседний
+  Direct-сервис НЕ падают.
 - Шаблоны добавлены:
   - `direct/deploy/direct.service`
+  - `direct/deploy/direct-content.service`
   - `direct/deploy/nginx-direct-location.conf`
-- На LXC101 установлен и включён `direct.service` (`127.0.0.1:5020`).
-- nginx переключён: `/direct/` идёт в `direct.service`, всё остальное — в `digest.service`.
+- На LXC101 установлены и включены `direct.service` (`127.0.0.1:5020`) и
+  `direct-content.service` (`127.0.0.1:5021`).
+- nginx переключён: `/direct/automation/content` и `/direct/api/content-editor/*` идут в
+  `direct-content.service`, остальной `/direct/` идёт в `direct.service`, всё остальное — в
+  `digest.service`.
 - Backup nginx: `/etc/nginx/sites-available/seoadvanced.ru.bak.20260630_211541`.
 
 ### Фаза 3.5 — параллельный прогон / smoke
 Выполнено без создания кампаний:
 - `5010/direct/automation → 404` после удаления Direct из main app;
 - `5020/direct/automation → 302 /login`;
+- `5021/direct/automation/content → 302 /login`;
+- `5021/direct/automation → 404`;
 - публичный `https://seoadvanced.ru/direct/automation → 302 /login`, запрос виден в `direct.service`.
+- публичный `https://seoadvanced.ru/direct/automation/content → 302 /login`, запрос виден в
+  `direct-content.service`.
 
 Осталось для полной бизнес-приёмки: авторизованный UI-smoke и безопасный dry-run/черновик на
 `porg-psm5h7q6`, когда это не конфликтует с текущей работой в аккаунте.

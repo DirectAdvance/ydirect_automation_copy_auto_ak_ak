@@ -7,6 +7,7 @@ actual number of ad groups and ads after the create response is saved.
 from __future__ import annotations
 
 import re
+import time
 from collections import defaultdict
 from typing import Any
 
@@ -45,24 +46,28 @@ class GridReadClient:
         if self.csrf:
             headers["x-csrf-token"] = self.csrf
         url = f"{GRID_URL}?operationName={op}&ulogin={self.login}"
-        r = self.sess.post(
-            url,
-            json={"operationName": op, "query": query, "variables": variables},
-            headers=headers,
-            timeout=40,
-        )
+        _payload = {"operationName": op, "query": query, "variables": variables}
+
+        def _do_post(h: dict) -> requests.Response:
+            _exc: Exception | None = None
+            for _try in range(3):
+                if _try:
+                    time.sleep(0.6 * _try)
+                try:
+                    return self.sess.post(url, json=_payload, headers=h, timeout=40)
+                except (requests.exceptions.ConnectionError,
+                        requests.exceptions.ChunkedEncodingError) as _te:
+                    _exc = _te
+            raise _exc  # type: ignore[misc]
+
+        r = _do_post(headers)
         m = re.search(r"_direct_csrf_token=([^;,\s]+)", r.headers.get("Set-Cookie", ""))
         token = r.cookies.get("_direct_csrf_token") or (m.group(1) if m else None)
         if token:
             self.csrf = token
         if r.status_code == 403 and self.csrf:
             headers["x-csrf-token"] = self.csrf
-            r = self.sess.post(
-                url,
-                json={"operationName": op, "query": query, "variables": variables},
-                headers=headers,
-                timeout=40,
-            )
+            r = _do_post(headers)
         try:
             data = r.json()
         except Exception as e:  # noqa: BLE001
@@ -96,10 +101,12 @@ class GridReadClient:
     # that raises leaves the corresponding value as ``None`` and records a note in
     # ``enrich_errors`` — it must never break the core adgroups/ads counters.
     def _enrich_campaign_settings(self, id_strings: list[str], counts: dict[int, dict[str, Any]]) -> None:
-        """Fill disabled_places / is_organic_search_enabled / promo_extension_id."""
+        """Fill disabled_places / is_organic_search_enabled.
+        NOTE: promoExtensionId убран — поле FieldUndefined в текущей Grid-схеме (2026-07-03).
+        promo_extension_id остаётся None; settings_read=True выставляется по другим полям."""
         q = ("query CampSettings($login:String!,$inp:GdCampaignsContainerInput!){"
              "client(searchBy:{login:$login}){campaigns(input:$inp){rowset{id "
-             "...on GdUnifiedCampaign{disabledPlaces isOrganicSearchEnabled promoExtensionId}}}}}")
+             "...on GdUnifiedCampaign{disabledPlaces isOrganicSearchEnabled}}}}}")
         inp = {
             "filter": {"campaignIdIn": id_strings},
             "statRequirements": {"preset": "LAST_30DAYS", "goalIds": [], "useCampaignGoalIds": True},
@@ -120,33 +127,13 @@ class GridReadClient:
             counts[cid]["disabled_places"] = list(dp) if isinstance(dp, list) else None
             org = row.get("isOrganicSearchEnabled")
             counts[cid]["is_organic_search_enabled"] = bool(org) if isinstance(org, bool) else None
-            promo = row.get("promoExtensionId")
-            counts[cid]["promo_extension_id"] = str(promo) if promo not in (None, "") else None
+            # promo_extension_id: поле promoExtensionId FieldUndefined в Grid → остаётся None
             counts[cid]["settings_read"] = True
 
     def _enrich_keyword_counts(self, id_strings: list[str], counts: dict[int, dict[str, Any]]) -> None:
-        """Fill keywords_count (sum of keyword phrases across the campaign's groups)."""
-        q = ("query Kw($login:String!,$inp:GdKeywordsContainerInput!){"
-             "client(searchBy:{login:$login}){keywords(input:$inp){rowset{id campaignId}}}}")
-        inp = {
-            "filter": {"campaignIdIn": id_strings},
-            "statRequirements": {"preset": "LAST_30DAYS", "goalIds": [], "useCampaignGoalIds": True},
-            "limitOffset": {"limit": 5000, "offset": 0},
-            "orderBy": [{"order": "ASC", "field": "ID"}],
-        }
-        data = self._post("Kw", q, {"login": self.login, "inp": inp})
-        rows = ((((data.get("data") or {}).get("client") or {})
-                 .get("keywords") or {}).get("rowset") or [])
-        kw_counts: dict[int, int] = defaultdict(int)
-        for row in rows:
-            try:
-                kw_counts[int(row.get("campaignId"))] += 1
-            except (TypeError, ValueError):
-                continue
-        for cid in counts:
-            if str(cid) in id_strings:
-                counts[cid]["keywords_count"] = int(kw_counts.get(cid, 0))
-                counts[cid]["keywords_read"] = True
+        """keywords_count вычисляется в _enrich_group_targeting (из groups_for_edit).
+        GdKeywordsContainerInput (UnknownType) недоступен в текущей Grid-схеме (2026-07-03).
+        Этот метод — no-op; оставлен чтобы не ломать позиции в enrichment-цикле."""
 
     def _enrich_group_targeting(self, id_strings: list[str], counts: dict[int, dict[str, Any]]) -> None:
         """Fill search_zero_kw_groups / wrong_autotarget_groups per SEARCH campaign (tp2/tp4/tp5).
@@ -163,6 +150,7 @@ class GridReadClient:
         rows = grid.groups_for_edit([int(s) for s in id_strings])
         zero_kw: dict[int, int] = defaultdict(int)
         wrong_at: dict[int, int] = defaultdict(int)
+        kw_total: dict[int, int] = defaultdict(int)   # для keywords_count
         seen_search: set[int] = set()
         for grp in rows:
             cid = grp.get("campaign_id")
@@ -173,7 +161,9 @@ class GridReadClient:
             if tp not in (2, 4, 5) or not grp.get("supported"):
                 continue
             seen_search.add(int(cid))
-            if int(grp.get("keyword_count") or 0) == 0:
+            grp_kw = int(grp.get("keyword_count") or 0)
+            kw_total[int(cid)] += grp_kw
+            if grp_kw == 0:
                 zero_kw[int(cid)] += 1
             rm = grp.get("relevance_match") or {}
             cats = {str(x).upper() for x in (rm.get("relevanceMatchCategories") or [])}
@@ -185,12 +175,17 @@ class GridReadClient:
                 counts[cid]["search_zero_kw_groups"] = int(zero_kw.get(cid, 0))
                 counts[cid]["wrong_autotarget_groups"] = int(wrong_at.get(cid, 0))
                 counts[cid]["groups_edit_read"] = True
+                # keywords_count заполняется здесь (GdKeywordsContainerInput FieldUndefined)
+                counts[cid]["keywords_count"] = int(kw_total.get(cid, 0))
+                counts[cid]["keywords_read"] = True
 
     def _enrich_ad_price(self, id_strings: list[str], counts: dict[int, dict[str, Any]]) -> None:
-        """Fill has_ad_price / ad_price_count for adaptive text ads with adPrice set."""
+        """Fill has_ad_price / ad_price_count for adaptive text ads with bannerPrice set.
+        NOTE: поле adPrice FieldUndefined в GdAdaptiveTextAd; используем bannerPrice (2026-07-03).
+        bannerPrice читается так же как в adaptive_ads_for_update (тот работает live)."""
         q = ("query AdPrice($login:String!,$inp:GdAdsContainerInput!){"
              "client(searchBy:{login:$login}){ads(input:$inp){rowset{id campaignId "
-             "...on GdAdaptiveTextAd{adPrice{price}}}}}}")
+             "...on GdAdaptiveTextAd{bannerPrice{price}}}}}}")
         inp = {
             "filter": {"campaignIdIn": id_strings},
             "statRequirements": {"preset": "LAST_30DAYS", "goalIds": [], "useCampaignGoalIds": True},
@@ -206,8 +201,8 @@ class GridReadClient:
                 cid = int(row.get("campaignId"))
             except (TypeError, ValueError):
                 continue
-            ap = row.get("adPrice") or {}
-            if isinstance(ap, dict) and ap.get("price") not in (None, "", 0, "0"):
+            bp = row.get("bannerPrice") or {}
+            if isinstance(bp, dict) and bp.get("price") not in (None, "", 0, "0", "0.00", "0.0"):
                 price_counts[cid] += 1
         for cid in counts:
             if str(cid) in id_strings:
@@ -253,6 +248,10 @@ class GridReadClient:
                 "has_ad_price": None, "ad_price_count": None, "ad_price_read": False,
                 "search_zero_kw_groups": None, "wrong_autotarget_groups": None,
                 "groups_edit_read": False,
+                # Adaptive images enrichment (NO_IMAGES_LIVE detect)
+                "adaptive_total": None, "no_images_ads": None, "adaptive_images_read": False,
+                # Shopping bodies enrichment (EMPTY_DEFAULT_TEXT_LIVE detect)
+                "shopping_no_bodies_ads": None, "shopping_bodies_read": False,
                 "enrich_errors": [],
             }
 
@@ -305,9 +304,11 @@ class GridReadClient:
             # one field never blocks the core counters or the other enrichments.
             for label, fn in (
                 ("settings", self._enrich_campaign_settings),
-                ("keywords", self._enrich_keyword_counts),
+                ("keywords", self._enrich_keyword_counts),   # no-op, data filled by group_targeting
                 ("ad_price", self._enrich_ad_price),
-                ("group_targeting", self._enrich_group_targeting),
+                ("group_targeting", self._enrich_group_targeting),   # also fills keywords_count
+                ("adaptive_images", self._enrich_adaptive_images),
+                ("shopping_bodies", self._enrich_shopping_bodies),
             ):
                 try:
                     fn(id_strings, counts)
@@ -316,3 +317,73 @@ class GridReadClient:
                     for cid in chunk:
                         counts[cid]["enrich_errors"].append(note)
         return counts
+
+    def _enrich_adaptive_images(self, id_strings: list[str], counts: dict[int, dict[str, Any]]) -> None:
+        """Fill no_images_ads / adaptive_total for tp1 adaptive text ads (NO_IMAGES_LIVE detect).
+        NOTE: creativeIds FieldUndefined в Grid ads-query (2026-07-03) — поле не читаем, NO_VIDEO_LIVE
+        не детектируется через Grid-read; creativeIds сохраняется только через _VIDEO_CREATIVE_CACHE."""
+        q = ("query AdaptiveImages($login:String!,$inp:GdAdsContainerInput!){"
+             "client(searchBy:{login:$login}){ads(input:$inp){rowset{id campaignId __typename "
+             "...on GdAdaptiveTextAd{images{imageHash}}}}}}")
+        inp = {
+            "filter": {"campaignIdIn": id_strings},
+            "statRequirements": {"preset": "LAST_30DAYS", "goalIds": [], "useCampaignGoalIds": True},
+            "limitOffset": {"limit": 5000, "offset": 0},
+            "orderBy": [{"order": "ASC", "field": "ID"}],
+        }
+        data = self._post("AdaptiveImages", q, {"login": self.login, "inp": inp})
+        rows = ((((data.get("data") or {}).get("client") or {})
+                 .get("ads") or {}).get("rowset") or [])
+        no_images: dict[int, int] = defaultdict(int)
+        total_adaptive: dict[int, int] = defaultdict(int)
+        for row in rows:
+            try:
+                cid = int(row.get("campaignId"))
+            except (TypeError, ValueError):
+                continue
+            # Различаем по __typename, НЕ по наличию images: Grid отдаёт images:null (не [])
+            # для ГОЛОГО адаптивного объявления (live 03.07.2026: 420/420 без картинок = null)
+            # — идиом «images is None → не адаптивное» пропускал ровно целевые объявления,
+            # поэтому NO_IMAGES_LIVE никогда не флагал полностью голые и добивка не запускалась.
+            if row.get("__typename") != "GdAdaptiveTextAd":
+                continue
+            total_adaptive[cid] += 1
+            hashes = [img.get("imageHash") for img in (row.get("images") or []) if img.get("imageHash")]
+            if not hashes:
+                no_images[cid] += 1
+        for cid in counts:
+            if str(cid) in id_strings:
+                counts[cid]["adaptive_total"] = int(total_adaptive.get(cid, 0))
+                counts[cid]["no_images_ads"] = int(no_images.get(cid, 0))
+                counts[cid]["adaptive_images_read"] = True
+
+    def _enrich_shopping_bodies(self, id_strings: list[str], counts: dict[int, dict[str, Any]]) -> None:
+        """Fill shopping_no_bodies_ads for ShoppingAd without bodies (EMPTY_DEFAULT_TEXT_LIVE detect).
+        Использует GdSmartAd-фрагмент (best-effort: если тип не тот — данные просто не придут)."""
+        q = ("query ShoppingBodies($login:String!,$inp:GdAdsContainerInput!){"
+             "client(searchBy:{login:$login}){ads(input:$inp){rowset{id campaignId "
+             "...on GdSmartAd{bodies}}}}}")
+        inp = {
+            "filter": {"campaignIdIn": id_strings},
+            "statRequirements": {"preset": "LAST_30DAYS", "goalIds": [], "useCampaignGoalIds": True},
+            "limitOffset": {"limit": 5000, "offset": 0},
+            "orderBy": [{"order": "ASC", "field": "ID"}],
+        }
+        data = self._post("ShoppingBodies", q, {"login": self.login, "inp": inp})
+        rows = ((((data.get("data") or {}).get("client") or {})
+                 .get("ads") or {}).get("rowset") or [])
+        no_bodies: dict[int, int] = defaultdict(int)
+        for row in rows:
+            try:
+                cid = int(row.get("campaignId"))
+            except (TypeError, ValueError):
+                continue
+            bodies = row.get("bodies")
+            if bodies is None:
+                continue   # not a GdSmartAd (fragment didn't match)
+            if not bodies or not any(str(b).strip() for b in bodies):
+                no_bodies[cid] += 1
+        for cid in counts:
+            if str(cid) in id_strings:
+                counts[cid]["shopping_no_bodies_ads"] = int(no_bodies.get(cid, 0))
+                counts[cid]["shopping_bodies_read"] = True

@@ -84,7 +84,9 @@ _TP67_RELEVANCE_CATEGORIES = [
 # /web-api/uac/campaign/{id}. Ровно эти 5 категорий (ВНИМАНИЕ: EXACT_MARK/COMPETITOR_MARK, НЕ
 # EXACT_V2_MARK/NARROW_MARK), keywords=[] и socdem на полный диапазон (age_18→age_inf, оба пола).
 _TP67_OPTIMAL_CATEGORIES = [
-    "ALTERNATIVE_MARK", "ACCESSORY_MARK", "COMPETITOR_MARK", "BROADER_MARK", "EXACT_MARK",
+    # COMPETITOR_MARK ОБЯЗАТЕЛЕН: его отсутствие = категория исключена → в UI группы чип
+    # «Запросы с упоминанием брендов конкурентов» в минус-словах (жалоба Семёна ×3, НЕ убирать!)
+    "ALTERNATIVE_MARK", "ACCESSORY_MARK", "BROADER_MARK", "COMPETITOR_MARK", "EXACT_MARK",
 ]
 
 
@@ -217,6 +219,40 @@ _CONTENT_CACHE: dict = {}        # (agent, site_type, city, ct, brand) → gener
 _COPY_JOBS: dict = {}
 _COPY_JOBS_LOCK = threading.Lock()
 _DIRECT_COPY_MOD = None
+
+
+# ── Роль процесса (Фаза 2: раздельные сервисы web/worker) ───────────────────────
+# DIRECT_ROLE управляет тем, кто держит очередь создания РК:
+#   'all'    (дефолт) — постановка in-memory + воркеры/демоны в одном процессе (как раньше,
+#                        полная обратная совместимость: код можно задеплоить БЕЗ включения split);
+#   'web'    — только Flask + постановка джоб в БД (status='queued', _web_posted=true).
+#              Воркеры/демоны/поллер НЕ стартуют. Статус/отмена/resume/feed — через БД.
+#   'worker' — worker_main.py: воркеры + все демоны + БД-поллер, забирающий web-posted джобы
+#              из БД в свою in-memory очередь. Именно этот процесс исполняет создание РК.
+def _direct_role() -> str:
+    r = (os.environ.get("DIRECT_ROLE") or "all").strip().lower()
+    return r if r in ("web", "worker", "all") else "all"
+
+
+# Drain: SIGTERM воркеру → перестать брать НОВЫЕ джобы, дать текущим доработать текущий item,
+# затем выйти (running-остаток в БД → _jobs_db_recover при следующем старте пометит interrupted).
+_CREATE_DRAIN = {"on": False}
+_WORKER_POLLER = {"started": False}
+_WORKER_POLL_SEC = 2             # период БД-поллинга web-posted джоб (только worker-роль)
+
+
+def _worker_request_drain() -> None:
+    """SIGTERM handler в worker_main: включить drain и разбудить всех ждущих воркеров."""
+    _CREATE_DRAIN["on"] = True
+    try:
+        with _CREATE_COND:
+            _CREATE_COND.notify_all()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _worker_is_draining() -> bool:
+    return bool(_CREATE_DRAIN.get("on"))
 
 
 def _job_agency(job: dict) -> str:
@@ -469,50 +505,51 @@ def _copy_walk_strings(obj, fn):
     return obj
 
 
-def _copy_replacement_forms(src: str, dst: str) -> list[tuple[str, str]]:
-    src = (src or "").strip()
-    dst = (dst or "").strip()
-    if not src or not dst or src.lower() == dst.lower():
-        return []
-    forms = [(src, dst), (src.lower(), dst.lower()), (src.upper(), dst.upper()), (src.title(), dst.title())]
-    out: list[tuple[str, str]] = []
-    seen = set()
-    for a, b in forms:
-        key = (a, b)
-        if a and key not in seen:
-            out.append((a, b))
-            seen.add(key)
-    return out
+def _copy_m3_decliner():
+    """Callable для copy_geo_morph: messages -> (text, err). temperature=0, короткий таймаут,
+    2 попытки (склонение — быстрая задача, долго ждать M3 в copy-job'е не нужно)."""
+    def _call(messages):
+        return _m3_complete(messages, max_tokens=220, temperature=0.0, tries=2, backoff=4.0, timeout=60)
+    return _call
 
 
-def _copy_geo_replacements(source_ctx: dict, target_city: str, target_region: str) -> list[tuple[str, str]]:
+def _copy_build_geo(source_ctx: dict, target_city: str, target_region: str, log=None):
+    """Строит морфологические пары гео-замены (все падежи) через M3 + метадату.
+
+    Возвращает (pairs, meta). pairs — list[(old, new)] по падежам, отсортировано по длине убыв.
+    meta — {m3_used, m3_failed, source_forms (для residual), pairs_count}. Фолбзк на именительный
+    (по границам слов) внутри copy_geo_morph, если M3 недоступен/невалиден — job не падает."""
+    from . import copy_geo_morph as cgm
     target_city = (target_city or "").strip()
     target_region = (target_region or "").strip()
-    replacements: list[tuple[str, str]] = []
-    replacements += _copy_replacement_forms(source_ctx.get("city") or "", target_city)
-    replacements += _copy_replacement_forms(source_ctx.get("region") or "", target_region or target_city)
-
-    # Частый сбой при копировании: источник вне local_gsheet_sites, но старое гео есть в названиях/текстах.
+    src_city = (source_ctx.get("city") or "").strip()
+    src_region = (source_ctx.get("region") or "").strip()
+    geo_map: list[tuple[str, str]] = []
+    if src_city:
+        geo_map.append((src_city, target_city or target_region))
+    if src_region:
+        geo_map.append((src_region, target_region or target_city))
+    # Частый случай: источник вне local_gsheet_sites, но в названиях/текстах реально фигурирует Краснодар.
     if "краснодар" not in f"{target_city} {target_region}".lower():
-        replacements += _copy_replacement_forms("Краснодарский край", target_region or target_city)
-        replacements += _copy_replacement_forms("Краснодарского края", target_region or target_city)
-        replacements += _copy_replacement_forms("Краснодар", target_city or target_region)
+        geo_map.append(("Краснодар", target_city or target_region))
+        geo_map.append(("Краснодарский край", target_region or target_city))
+    _log = log or (lambda _m: None)
+    # Пробуем M3 только если LLM жива (иначе paradigm_for отдаст закэшированное, а несозданное — фолбэк).
+    try:
+        m3 = _copy_m3_decliner() if _m3_llm_probe() else None
+    except Exception:  # noqa: BLE001
+        m3 = None
+    return cgm.build_geo_pairs(geo_map, m3_complete=m3, log=_log)
 
-    out: list[tuple[str, str]] = []
-    seen = set()
-    for a, b in sorted(replacements, key=lambda p: len(p[0]), reverse=True):
-        key = (a, b)
-        if a and b and key not in seen:
-            out.append((a, b))
-            seen.add(key)
-    return out
+
+def _copy_geo_replacements(source_ctx: dict, target_city: str, target_region: str, log=None) -> list[tuple[str, str]]:
+    pairs, _meta = _copy_build_geo(source_ctx, target_city, target_region, log=log)
+    return pairs
 
 
 def _copy_apply_geo_replacements(text: str | None, replacements: list[tuple[str, str]]) -> str:
-    out = str(text or "")
-    for old, new in replacements or []:
-        if old:
-            out = out.replace(old, new)
+    from . import copy_geo_morph as cgm
+    out, _n = cgm.apply_replacements(text, replacements or [])
     return out
 
 
@@ -605,6 +642,121 @@ def _copy_v501_ad_image_hashes(login: str, campaign_ids: set[int], agency_hint: 
     return out
 
 
+def _copy_image_remapper(source_login: str, source_agency: str, target_login: str,
+                         target_agency: str, all_source_hashes, maps: dict, workdir: Path,
+                         *, log=lambda m: None):
+    """Build ``fn(src_hashes) -> [target-valid image hashes]`` для ЕПК-ветки копировщика (по кукам).
+
+    Image-хэши в Яндекс.Директе привязаны к АККАУНТУ: source-хэш валиден в target только если такая
+    же картинка уже загружена в target (контент-хэш совпал). Иначе AddAdaptiveTextAds падает
+    ``BannerDefectIds.Gen.IMAGE_NOT_FOUND`` и роняет ВЕСЬ ad-add кампании (живой инцидент job
+    b344eafcdad8: src 712117605/712117626 → 2 битые оболочки).
+
+    Стратегия (п.12 «картинки 1:1», 0 v5-баллов):
+      • хэш уже есть в target (v501 ``adimages.get`` target) → используем как есть;
+      • иначе скачиваем оригинал источника (v501 ``adimages.get`` source → ``OriginalUrl``, публичный
+        avatars-URL) и ПЕРЕАПЛОАДИМ в target по кукам (``gf.GridClient.upload_image`` →
+        web-api/image/upload, 0 баллов) → target-хэш, кэшируем в ``maps['images']`` (src→tgt);
+      • картинку не удалось скачать/залить → ДРОПАЕМ этот хэш (лог), НЕ роняем ad-add
+        (объявление без 1 картинки лучше, чем падение всей кампании).
+    """
+    import requests as _rqs
+    maps.setdefault("images", {})
+    img_cache = maps["images"]  # src_hash -> tgt_hash (persist across all campaigns of the job)
+
+    # 1) существующие хэши target — их можно ставить как есть (1:1, без переаплоада).
+    target_hashes: set[str] = set()
+    try:
+        tgt_token, _ = _token_for_login(
+            target_login, target_agency or _resolve_agency_hint(target_login, ""), _direct_tokens())
+    except Exception:  # noqa: BLE001
+        tgt_token = None
+    if tgt_token:
+        data = _v501_svc("adimages", "get", tgt_token, target_login,
+                         {"SelectionCriteria": {}, "FieldNames": ["AdImageHash"]})
+        for im in ((data.get("result") or {}).get("AdImages") or []):
+            h = str(im.get("AdImageHash") or "").strip()
+            if h:
+                target_hashes.add(h)
+
+    # 2) OriginalUrl источника для хэшей, которых НЕТ в target (кандидаты на переаплоад).
+    need = [h for h in {str(x).strip() for x in (all_source_hashes or []) if str(x).strip()}
+            if h not in target_hashes]
+    src_url_by_hash: dict[str, str] = {}
+    if need:
+        try:
+            src_token, _ = _token_for_login(
+                source_login, source_agency or _resolve_agency_hint(source_login, ""), _direct_tokens())
+        except Exception:  # noqa: BLE001
+            src_token = None
+        if src_token:
+            for i in range(0, len(need), 100):
+                data = _v501_svc("adimages", "get", src_token, source_login,
+                                 {"SelectionCriteria": {"AdImageHashes": need[i:i + 100]},
+                                  "FieldNames": ["AdImageHash", "OriginalUrl"]})
+                for im in ((data.get("result") or {}).get("AdImages") or []):
+                    h = str(im.get("AdImageHash") or "").strip()
+                    u = str(im.get("OriginalUrl") or "").strip()
+                    if h and u:
+                        src_url_by_hash[h] = u
+        log(f"картинки: target уже имеет {len(target_hashes)} хэшей, к переаплоаду {len(need)} "
+            f"(получено URL источника: {len(src_url_by_hash)})")
+
+    cache_dir = Path(workdir) / "_image_cache"
+    tgt_grid_holder: dict = {}
+
+    def _tgt_grid():
+        if "cli" not in tgt_grid_holder:
+            tgt_grid_holder["cli"] = gf.GridClient(target_login)
+        return tgt_grid_holder["cli"]
+
+    def _remap(src_hashes):
+        out: list[str] = []
+        for h in [str(x).strip() for x in (src_hashes or []) if str(x).strip()]:
+            if h in target_hashes:                 # уже валиден в target — 1:1 без переаплоада
+                out.append(h)
+                continue
+            if h in img_cache:                     # уже переаплоадили ранее в этом job
+                out.append(img_cache[h])
+                continue
+            url = src_url_by_hash.get(h)
+            if not url:
+                log(f"картинка {h[:12]}…: нет OriginalUrl источника — дроп (ad-add не падает)")
+                continue
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            dst = cache_dir / f"{h}.img"
+            try:
+                if not (dst.exists() and dst.stat().st_size > 0):
+                    with _rqs.get(url, stream=True, timeout=60, verify=False) as r:
+                        if r.status_code != 200:
+                            log(f"картинка {h[:12]}…: скачивание HTTP {r.status_code} — дроп")
+                            continue
+                        with open(dst, "wb") as fh:
+                            for chunk in r.iter_content(chunk_size=1 << 16):
+                                if chunk:
+                                    fh.write(chunk)
+                if dst.stat().st_size <= 0:
+                    log(f"картинка {h[:12]}…: пустой файл — дроп")
+                    continue
+            except Exception as e:  # noqa: BLE001
+                log(f"картинка {h[:12]}…: скачивание не удалось ({str(e)[:120]}) — дроп")
+                continue
+            try:
+                tgt_hash = _tgt_grid().upload_image(str(dst))
+            except Exception as e:  # noqa: BLE001
+                log(f"картинка {h[:12]}…: переаплоад в target не удался ({str(e)[:120]}) — дроп")
+                tgt_hash = None
+            if tgt_hash:
+                img_cache[h] = tgt_hash
+                target_hashes.add(tgt_hash)
+                out.append(tgt_hash)
+            else:
+                log(f"картинка {h[:12]}…: upload_image вернул пусто — дроп")
+        return list(dict.fromkeys(out))
+
+    return _remap
+
+
 def _copy_scan_payload_terms(src_dir: Path, terms: list[str], *, limit: int = 8) -> list[str]:
     terms_l = [t.strip().lower() for t in terms if str(t or "").strip()]
     if not terms_l:
@@ -626,27 +778,22 @@ def _copy_scan_payload_terms(src_dir: Path, terms: list[str], *, limit: int = 8)
     return hits
 
 
-def _copy_rewrite_snapshot_context(src_dir: Path, source_ctx: dict, target_ctx: dict) -> dict:
-    """Replace source geo words in copied payloads before upload."""
+def _copy_rewrite_snapshot_context(src_dir: Path, source_ctx: dict, target_ctx: dict, log=None) -> dict:
+    """Replace source geo words in copied payloads before upload — морфологически (по падежам).
+
+    Пары строит _copy_build_geo (M3-парадигма 6 падежей для старого и нового города/области),
+    замена — copy_geo_morph.apply_replacements: ПО ГРАНИЦАМ СЛОВ + сохранение регистра.
+    Так «в Краснодаре»→«в Уфе», «Краснодара»→«Уфы», а не «Уфае/Уфаа». Residual — по ВСЕМ падежам."""
+    from . import copy_geo_morph as cgm
     target_city = (target_ctx.get("city") or "").strip()
     target_region = (target_ctx.get("region") or "").strip()
-    replacements = _copy_geo_replacements(source_ctx, target_city, target_region)
+    pairs, geo_meta = _copy_build_geo(source_ctx, target_city, target_region, log=log)
 
-    if not replacements:
-        return {"files": 0, "replacements": 0, "pairs": []}
+    if not pairs:
+        return {"files": 0, "replacements": 0, "pairs": [], "m3_used": False, "residual_geo": []}
 
     changed_files = 0
     changed_count = 0
-
-    def repl(s: str) -> str:
-        nonlocal changed_count
-        out = s
-        for a, b in replacements:
-            if a in out:
-                n = out.count(a)
-                out = out.replace(a, b)
-                changed_count += n
-        return out
 
     for name in _COPY_JSON_PAYLOADS:
         path = src_dir / name
@@ -654,14 +801,41 @@ def _copy_rewrite_snapshot_context(src_dir: Path, source_ctx: dict, target_ctx: 
             continue
         before = path.read_text(encoding="utf-8")
         data = json.loads(before)
-        data = _copy_walk_strings(data, repl)
+        cnt = {"n": 0}
+
+        def _repl(s, _c=cnt):
+            out, n = cgm.apply_replacements(s, pairs)
+            _c["n"] += n
+            return out
+
+        data = _copy_walk_strings(data, _repl)
         after = json.dumps(data, ensure_ascii=False, indent=1)
         if after != before:
             path.write_text(after, encoding="utf-8")
             changed_files += 1
-    forbidden = [a for a, _b in replacements if a.lower() not in f"{target_city} {target_region}".lower()]
-    residual = _copy_scan_payload_terms(src_dir, forbidden)
-    return {"files": changed_files, "replacements": changed_count, "pairs": replacements, "residual_geo": residual}
+        changed_count += cnt["n"]
+
+    # Residual (case-aware): любая падежная форма старого гео, кроме форм, входящих в новое гео.
+    paths_texts: list[tuple[str, str]] = []
+    for name in _COPY_JSON_PAYLOADS:
+        p = src_dir / name
+        if p.exists():
+            try:
+                paths_texts.append((name, p.read_text(encoding="utf-8")))
+            except Exception:  # noqa: BLE001
+                pass
+    residual = cgm.scan_residual(
+        paths_texts, geo_meta.get("source_forms") or [],
+        target_text=f"{target_city} {target_region}",
+    )
+    return {
+        "files": changed_files,
+        "replacements": changed_count,
+        "pairs": pairs,
+        "m3_used": bool(geo_meta.get("m3_used")),
+        "m3_failed": geo_meta.get("m3_failed") or [],
+        "residual_geo": residual,
+    }
 
 
 def _copy_target_href(href: str | None, source_domain: str, target_domain: str) -> str:
@@ -885,6 +1059,7 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
     visible in Grid when v5 units are depleted, preserving campaign/group names, keywords, text ads,
     and adding product Shopping/Listing ads where the source had them.
     """
+    from .copy_steps import _clean_group_brand as _csteps_clean_group_brand
     source_login = (body.get("source_login") or "").strip()
     target_login = (body.get("target_login") or "").strip()
     selected_ids = {int(x) for x in (body.get("campaign_ids") or []) if str(x).isdigit()}
@@ -894,7 +1069,20 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
     target_city = (body.get("target_city") or "").strip()
     target_region = (body.get("target_region") or "").strip()
     target_agency = body.get("agency") or _resolve_agency_hint(target_login, "")
-    target_feed_id = _copy_target_feed_id(target_login, target_agency or "", workdir, target_domain)
+    # ДОРАБОТКА 1: feed_map (пофидовая замена) в ЕПК-ветке. Раньше брался ОДИН авто-фид
+    # (_copy_target_feed_id, feed_map игнорировался). Теперь: если body.feed_map задан и валиден
+    # (те же проверки, что в _copy_run_job — целевой фид ПРИНАДЛЕЖИТ target-аккаунту), используем
+    # целевой фид ИЗ карты для shopping/listing. Общий кейс «все source-фиды → один target-фид» —
+    # берём этот единый target feed_id. feed_map пуст/невалиден → прежнее поведение.
+    feed_map_valid = _copy_grid_validate_feed_map(
+        target_login, target_agency or "", body, log=(lambda m: _copy_job_log(job_id, m)))
+    feed_map_targets = list(dict.fromkeys(int(v) for v in feed_map_valid.values()))
+    if feed_map_targets:
+        target_feed_id = feed_map_targets[0]
+        _copy_job_log(job_id, f"feed_map активен: целевые фиды {feed_map_targets}, "
+                              f"shopping/listing → {target_feed_id}")
+    else:
+        target_feed_id = _copy_target_feed_id(target_login, target_agency or "", workdir, target_domain)
 
     target_region = _copy_canonical_region_name(target_region)
     local_gid, local_geo_name = _copy_geo_id_for_target(target_city, target_region)
@@ -902,16 +1090,25 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
         raise RuntimeError(f"не найден GeoRegionId для целевого гео: city={target_city!r}, region={target_region!r}")
     region_ids = [int(local_gid)]
     source_ctx = _copy_ctx(source_login)
-    replacements = _copy_geo_replacements(source_ctx, target_city, target_region)
+    replacements = _copy_geo_replacements(
+        source_ctx, target_city, target_region, log=(lambda m: _copy_job_log(job_id, m))
+    )
     src_domain = (source_ctx.get("domain") or "").strip()
 
     _copy_job_log(job_id, f"grid-cookie snapshot источника {source_login}: {len(selected_ids)} кампаний")
-    snap = _copy_grid_read_selected(source_login, selected_ids)
-    source_image_hashes = _copy_v501_ad_image_hashes(
-        source_login,
-        selected_ids,
-        body.get("source_agency") or body.get("sourceAgency") or target_agency or "",
-    )
+    try:
+        snap = _copy_grid_read_selected(source_login, selected_ids)
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"grid snapshot не получен ({source_login}): {str(e)[:220]}") from e
+    try:
+        source_image_hashes = _copy_v501_ad_image_hashes(
+            source_login,
+            selected_ids,
+            body.get("source_agency") or body.get("sourceAgency") or target_agency or "",
+        )
+    except Exception as e:  # noqa: BLE001 — v501 image-хэши best-effort: картинки доберём из grid-ads
+        _copy_job_log(job_id, f"v501 image-хэши источника не получены ({str(e)[:180]}) — продолжаю без них")
+        source_image_hashes = {}
     campaigns = [c for c in (snap.get("campaigns") or []) if str(c.get("__typename")) == "GdUnifiedCampaign"]
     if len(campaigns) != len(selected_ids):
         raise RuntimeError(f"grid snapshot неполный: выбрано {len(selected_ids)}, прочитано {len(campaigns)} Unified")
@@ -950,9 +1147,31 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
             listing_groups.add(gid)
 
     results = []
-    maps = {"campaigns": {}, "adgroups": {}, "ads": {}, "feeds": {}, "callouts": {}}
+    maps = {"campaigns": {}, "adgroups": {}, "ads": {}, "feeds": {}, "callouts": {},
+            "images": {}, "promotions": {}}
+    # feed_map: заносим ВСЕ выбранные target-фиды в maps["feeds"] (step_prices читает их значения).
+    for _sid, _tid in (feed_map_valid or {}).items():
+        maps["feeds"][str(_sid)] = int(_tid)
     if target_feed_id:
         maps["feeds"]["target"] = int(target_feed_id)
+    # ФИКС IMAGE_NOT_FOUND: image-хэши источника account-scoped → в target валидны только если
+    # такая же картинка уже там. Ремаппер: as-is если хэш есть в target, иначе скачать оригинал
+    # источника (OriginalUrl) и переаплоадить в target по кукам (0 баллов); недоступную — дропнуть.
+    _all_src_hashes: set[str] = set()
+    for _hs in (source_image_hashes or {}).values():
+        _all_src_hashes.update(_hs or [])
+    for _ad in (snap.get("ads") or []):
+        _all_src_hashes.update(_copy_grid_ad_image_hashes(_ad))
+    _remap_images = _copy_image_remapper(
+        source_login, body.get("source_agency") or body.get("sourceAgency") or "",
+        target_login, target_agency or "", _all_src_hashes, maps, workdir,
+        log=(lambda m: _copy_job_log(job_id, m)))
+    # Синтетический snapshot для copy_steps (в ЕПК-ветке НЕТ v5 phase_pull): campaigns.json (network
+    # для step_disabled_places), adgroups.json/ads.json (бренд группы для step_prices).
+    src_dir = workdir / "source"
+    snap_campaigns_json: list[dict] = []
+    snap_adgroups_json: list[dict] = []
+    snap_ads_json: list[dict] = []
 
     for idx, camp in enumerate(campaigns, start=1):
         old_cid = int(camp["id"])
@@ -966,9 +1185,14 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
 
         group_specs = []
         src_group_ids = []
+        group_vendor_by_gid: dict[int, str] = {}   # old_gid → vendor (марка из имени группы) для shopping
         for grp in src_groups:
             gid = int(grp.get("adgroup_id") or 0)
             src_group_ids.append(gid)
+            # Бренд/марка из ИМЕНИ ГРУППЫ источника (не хардкод «Haval»): для vendor товарки и adPrice.
+            g_brand = _csteps_clean_group_brand(str(grp.get("adgroup_name") or ""))
+            g_vendor = (g_brand.split()[0] if g_brand else "") or "Haval"
+            group_vendor_by_gid[gid] = g_vendor
             text_ads = [a for a in ads_by_group.get(gid, []) if str(a.get("__typename") or "") in ("GdTextAd", "GdAdaptiveTextAd")]
             titles: list[str] = []
             bodies: list[str] = []
@@ -992,70 +1216,123 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
                 "minus": list(grp.get("minus_keywords") or []),
                 "titles": titles,
                 "texts": bodies,
-                "image_hashes": list(dict.fromkeys(h for h in image_hashes if h))[:5],
+                "image_hashes": _remap_images(list(dict.fromkeys(h for h in image_hashes if h))[:5]),
                 "href": href,
-                "brand": "Haval",
+                "brand": g_brand or "Haval",
             })
 
-        rep = gc.create_full(
-            target_login,
-            campaign_spec=_copy_grid_campaign_spec(new_name, counter_id, goal_id),
-            groups=group_specs,
-            region_ids=region_ids,
-            href=base_href,
-            goal_id=goal_id,
-            autotargeting=True,
-        )
-        new_cid = rep.get("campaign_id")
-        if not new_cid or rep.get("errors"):
-            results.append({"ok": False, "source_id": old_cid, "name": new_name, "error": "; ".join(rep.get("errors") or ["не создана"])})
-            _copy_job_log(job_id, f"grid-cookie {old_name}: ошибка {results[-1]['error'][:220]}")
+        try:
+            rep = gc.create_full(
+                target_login,
+                campaign_spec=_copy_grid_campaign_spec(new_name, counter_id, goal_id),
+                groups=group_specs,
+                region_ids=region_ids,
+                href=base_href,
+                goal_id=goal_id,
+                autotargeting=True,
+            )
+            new_cid = rep.get("campaign_id")
+            if not new_cid or rep.get("errors"):
+                results.append({"ok": False, "source_id": old_cid, "name": new_name, "error": "; ".join(rep.get("errors") or ["не создана"])})
+                _copy_job_log(job_id, f"grid-cookie {old_name}: ошибка {results[-1]['error'][:220]}")
+                continue
+            maps["campaigns"][str(old_cid)] = int(new_cid)
+            for old_gid, new_gid in zip(src_group_ids, rep.get("adgroup_ids") or []):
+                if new_gid:
+                    maps["adgroups"][str(old_gid)] = int(new_gid)
+
+            # maps["ads"]: сорсовые текст/адаптив-объявления группы → ЕДИНОЕ комбинированное объявление,
+            # которое create_full создал для этой группы (rep["ad_ids"] выровнен 1:1 с group_specs/src_groups).
+            # Нужно для step_prices (adPrice на созданные адаптивы) и step_videos (перенос видео 1:1).
+            new_ad_ids = rep.get("ad_ids") or []
+            for gi, old_gid in enumerate(src_group_ids):
+                new_ad_id = new_ad_ids[gi] if gi < len(new_ad_ids) else None
+                if not new_ad_id:
+                    continue
+                for ad in ads_by_group.get(old_gid, []):
+                    if str(ad.get("__typename") or "") in ("GdTextAd", "GdAdaptiveTextAd"):
+                        src_ad_id = str(ad.get("id") or "")
+                        if src_ad_id.isdigit():
+                            maps["ads"][src_ad_id] = int(new_ad_id)
+                            snap_ads_json.append({"Id": int(src_ad_id), "AdGroupId": int(old_gid),
+                                                  "CampaignId": int(old_cid)})
+            # Синтетический snapshot: network кампании (по тому же spec, что и create_full) + имена групп.
+            spec_net = bool(_copy_grid_campaign_spec(new_name, counter_id, goal_id).get("network"))
+            snap_campaigns_json.append({
+                "Id": int(old_cid), "Name": new_name,
+                "UnifiedAdCampaign": {"BiddingStrategy": {"Network": {
+                    "BiddingStrategyType": ("AVERAGE_CPA" if spec_net else "SERVING_OFF")}}}})
+            for grp in src_groups:
+                gid = int(grp.get("adgroup_id") or 0)
+                if gid > 0:
+                    snap_adgroups_json.append({"Id": gid, "CampaignId": int(old_cid),
+                                               "Name": str(grp.get("adgroup_name") or "группа")})
+
+            shopping_added = 0
+            listing_added = 0
+            if target_feed_id:
+                shop_items = []
+                for old_gid in src_group_ids:
+                    new_gid = maps["adgroups"].get(str(old_gid))
+                    if new_gid and old_gid in shopping_groups:
+                        shop_items.append({"adgroup_id": int(new_gid), "feed_id": int(target_feed_id),
+                                           "vendor": group_vendor_by_gid.get(old_gid) or "Haval"})
+                if shop_items:
+                    grid = gf.GridClient(target_login)
+                    shop_ids = [int(x) for x in (grid.add_shopping_ads(shop_items) or []) if x]
+                    shopping_added = len(shop_ids)
+                    if shop_ids and any(g in listing_groups for g in src_group_ids):
+                        listing_rows = grid.add_listing_ads_by_shopping_ads(shop_ids) or []
+                        listing_added = len([x for x in listing_rows if (x.get("id") if isinstance(x, dict) else x)])
+
+            results.append({
+                "ok": True,
+                "source_id": old_cid,
+                "id": int(new_cid),
+                "campaign_id": int(new_cid),
+                "name": new_name,
+                "result": {
+                    "build": {
+                        "groups": int(rep.get("groups") or 0),
+                        "ads": int(rep.get("ads") or 0),
+                        "shopping_ads": shopping_added,
+                        "listing_ads": listing_added,
+                    }
+                },
+            })
+            _copy_job_upsert(job_id, progress=min(95, 10 + int(idx * 80 / max(1, len(campaigns)))))
+            _copy_job_log(job_id, f"grid-cookie copied: {new_name} → {new_cid} ({idx}/{len(campaigns)})")
+        except Exception as e:  # noqa: BLE001 — транспортный/прочий сбой не убивает весь job
+            results.append({"ok": False, "source_id": old_cid, "name": new_name, "error": str(e)[:220]})
+            _copy_job_log(job_id, f"grid-cookie {old_name}: исключение {str(e)[:200]}")
             continue
-        maps["campaigns"][str(old_cid)] = int(new_cid)
-        for old_gid, new_gid in zip(src_group_ids, rep.get("adgroup_ids") or []):
-            if new_gid:
-                maps["adgroups"][str(old_gid)] = int(new_gid)
-
-        shopping_added = 0
-        listing_added = 0
-        if target_feed_id:
-            shop_items = []
-            for old_gid in src_group_ids:
-                new_gid = maps["adgroups"].get(str(old_gid))
-                if new_gid and old_gid in shopping_groups:
-                    shop_items.append({"adgroup_id": int(new_gid), "feed_id": int(target_feed_id), "vendor": "Haval"})
-            if shop_items:
-                grid = gf.GridClient(target_login)
-                shop_ids = [int(x) for x in (grid.add_shopping_ads(shop_items) or []) if x]
-                shopping_added = len(shop_ids)
-                if shop_ids and any(g in listing_groups for g in src_group_ids):
-                    listing_rows = grid.add_listing_ads_by_shopping_ads(shop_ids) or []
-                    listing_added = len([x for x in listing_rows if (x.get("id") if isinstance(x, dict) else x)])
-
-        results.append({
-            "ok": True,
-            "source_id": old_cid,
-            "id": int(new_cid),
-            "campaign_id": int(new_cid),
-            "name": new_name,
-            "result": {
-                "build": {
-                    "groups": int(rep.get("groups") or 0),
-                    "ads": int(rep.get("ads") or 0),
-                    "shopping_ads": shopping_added,
-                    "listing_ads": listing_added,
-                }
-            },
-        })
-        _copy_job_upsert(job_id, progress=min(95, 10 + int(idx * 80 / max(1, len(campaigns)))))
-        _copy_job_log(job_id, f"grid-cookie copied: {new_name} → {new_cid} ({idx}/{len(campaigns)})")
 
     _copy_write_json(workdir / "id_maps.json", maps)
+
+    # ДОРАБОТКА 2: copy_steps-постобработка для ЕПК-ветки (те же под-сервисы, что v5-путь).
+    # Пишем синтетический snapshot (source-dir) и прогоняем применимые шаги cookie/Grid (0 v5-баллов).
+    cookie_post = {"skipped": ["postprocess (нет созданных кампаний)"], "errors": []}
+    if maps["campaigns"]:
+        try:
+            src_dir.mkdir(parents=True, exist_ok=True)
+            _copy_write_json(src_dir / "campaigns.json", snap_campaigns_json)
+            _copy_write_json(src_dir / "adgroups.json", snap_adgroups_json)
+            _copy_write_json(src_dir / "ads.json", snap_ads_json)
+            cookie_post = _copy_grid_unified_steps(
+                job_id, body, target_login, target_agency or "", src_domain,
+                replacements, maps, src_dir, workdir)
+        except Exception as e:  # noqa: BLE001 — постобработка не валит уже созданные кампании
+            cookie_post = {"errors": [f"grid unified postprocess: {str(e)[:220]}"]}
+            _copy_job_log(job_id, f"grid-cookie postprocess: ошибка {str(e)[:200]}")
+        for _err in (cookie_post.get("errors") or [])[:8]:
+            _copy_job_log(job_id, f"grid-cookie postprocess warning: {_err}")
+
     created_ids = [int(r["id"]) for r in results if r.get("ok") and r.get("id")]
     verify = {"status": "ok" if len(created_ids) == len(selected_ids) else "warning",
               "created": len(created_ids), "expected": len(selected_ids)}
     errors = [r for r in results if not r.get("ok")]
     return {
+        "cookie_post": cookie_post,
         "source_login": source_login,
         "target_login": target_login,
         "selected": len(selected_ids),
@@ -1070,6 +1347,179 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
         "workdir": str(workdir),
         "uses_direct_units": False,
     }
+
+
+def _copy_grid_validate_feed_map(target_login: str, target_agency: str, body: dict,
+                                 *, log=lambda m: None) -> dict:
+    """Разобрать и провалидировать body.feed_map для ЕПК-ветки (та же логика, что _copy_run_job).
+
+    Возвращает {src_feed_id: tgt_feed_id} только с ЦЕЛЕВЫМИ фидами, ПРИНАДЛЕЖАЩИМИ target-аккаунту.
+    Grid недоступен/пустой список фидов → доверяем вводу без валидации (как в _copy_run_job).
+    feed_map пуст/битый → {}."""
+    raw: dict[str, int] = {}
+    fm = body.get("feed_map")
+    if not isinstance(fm, dict):
+        return {}
+    for k, v in fm.items():
+        if str(k).strip().isdigit() and str(v).strip().isdigit() and int(v) > 0:
+            raw[str(int(k))] = int(v)
+    if not raw:
+        return {}
+    try:
+        tgt_ids = {int(f.get("id")) for f in _grid_feeds(target_login, target_agency or _resolve_agency_hint(target_login, ""))
+                   if str(f.get("id") or "").strip().isdigit()}
+    except Exception:  # noqa: BLE001
+        tgt_ids = set()
+    if not tgt_ids:
+        log("feed_map: фиды target недоступны (grid пуст/ошибка) — feed_map применён без валидации")
+        return raw
+    valid: dict[str, int] = {}
+    for sid, tid in raw.items():
+        if tid in tgt_ids:
+            valid[sid] = tid
+        else:
+            log(f"feed_map: целевой фид {tid} не принадлежит {target_login} — пропуск (source {sid})")
+    return valid
+
+
+def _copy_grid_bridge_callouts(source_grid, target_grid, src_dir: Path, maps: dict,
+                               *, log=lambda m: None) -> None:
+    """Перенести уточнения источника на target ПО ТЕКСТУ (Grid, 0 баллов) и заполнить
+    maps['callouts'] = {src_callout_id: tgt_callout_id}.
+
+    Связь campaign→callout_ids даёт campaign_callouts.json (pull_source_campaign_assets), а тексты —
+    source_grid.get_callouts() ({текст: id}, инвертируем в {id: текст}). Затем target_grid.add_callouts
+    создаёт (с дедупом) те же тексты на target. Без source/target grid или без исходных id — no-op."""
+    if source_grid is None or target_grid is None:
+        return
+    links = _copy_read_json(src_dir / "campaign_callouts.json")
+    links = links if isinstance(links, dict) else {}
+    wanted_ids = {str(x) for co_ids in links.values() for x in (co_ids or []) if str(x).strip()}
+    if not wanted_ids:
+        return
+    src_text_by_id: dict[str, str] = {}
+    try:
+        for text, cid in (source_grid.get_callouts() or {}).items():
+            src_text_by_id[str(cid)] = text
+    except Exception as e:  # noqa: BLE001
+        log(f"уточнения: чтение текстов источника не удалось ({str(e)[:150]})")
+        return
+    texts = list(dict.fromkeys(
+        src_text_by_id[i] for i in wanted_ids if i in src_text_by_id and str(src_text_by_id[i]).strip()))
+    if not texts:
+        return
+    try:
+        tgt_map = target_grid.add_callouts(texts) or {}   # {текст: tgt_id}
+    except Exception as e:  # noqa: BLE001
+        log(f"уточнения: создание на target не удалось ({str(e)[:150]})")
+        return
+    maps.setdefault("callouts", {})
+    for src_id in wanted_ids:
+        text = src_text_by_id.get(src_id)
+        if text and tgt_map.get(text):
+            maps["callouts"][str(src_id)] = int(tgt_map[text])
+    log(f"уточнения перенесены на target: {len(maps['callouts'])} id (из {len(wanted_ids)} исходных)")
+
+
+def _copy_grid_unified_steps(job_id: str, body: dict, target_login: str, target_agency: str,
+                             src_domain: str, replacements, maps: dict,
+                             src_dir: Path, workdir: Path) -> dict:
+    """copy_steps-постобработка ЕПК-ветки (cookie/Grid, НОЛЬ v5-баллов).
+
+    Применяет к комбинированным кампаниям, созданным create_full, те же под-сервисы, что и
+    v5-snapshot путь (_copy_cookie_postprocess):
+      • step_age_bidmods    (п.14) — возраст −100% (<18/18–24) через Grid set_campaign_age_bidmods;
+      • step_disabled_places(п.13) — наш минус-список площадок на РСЯ (network из синт. campaigns.json);
+      • step_attach_callouts(п.11) — уточнения по исходной связи (text-bridge источник→target);
+      • step_attach_promos  (п.10) — формально (нет source-promo-def reader → безопасный no-op);
+      • step_prices         (п.8)  — новые цены из ФИДА target-аккаунта на комбинаторные объявления;
+      • step_videos         (п.12) — видео 1:1 по куке (resolver originalUrl из Grid-интроспекции).
+
+    СОЗНАТЕЛЬНО НЕ вызываем (иначе двойная работа — см. ДОРАБОТКА 3):
+      • step_keywords — create_full УЖЕ залил ключи по Grid (0 баллов); повтор = дубли фраз;
+      • step_adaptive_creatives — create_full УЖЕ собрал комбинированное объявление 1:1
+        (заголовки/тексты/картинки источника + гео-склонения применены в _copy_apply_geo_replacements);
+        картинки ремапятся ДО create_full (_copy_image_remapper: as-is или переаплоад в target по
+        кукам, недоступные дропаются) — повторная запись здесь избыточна.
+    """
+    from . import copy_steps as csteps
+    rep: dict = {"skipped": ["keywords (create_full уже залил)",
+                             "adaptive_creatives (create_full собрал 1:1)"], "errors": []}
+    source_login = (body.get("source_login") or "").strip()
+    try:
+        tgt_uac = cmc.build_client(target_login, account=(target_agency or None))
+        tgt_cookie = tgt_uac.sess.headers.get("Cookie") or ""
+        grid = gf.GridClient(target_login, cookie=tgt_cookie)
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"target cookie init: {str(e)[:200]}")
+        return rep
+    source_grid = None
+    if source_login:
+        try:
+            _src_ag = _resolve_agency_hint(source_login, "")
+            _src_uac = cmc.build_client(source_login, account=(_src_ag or None))
+            source_grid = gf.GridClient(source_login, cookie=(_src_uac.sess.headers.get("Cookie") or ""))
+        except Exception as e:  # noqa: BLE001
+            rep["errors"].append(f"source cookie init: {str(e)[:180]}")
+    try:
+        _tgt_token, _ = _token_for_login(
+            target_login, target_agency or _resolve_agency_hint(target_login, ""), _direct_tokens())
+    except Exception:  # noqa: BLE001
+        _tgt_token = ""
+
+    # Исходные связи campaign→callouts/promo (Grid источника) → src_dir/campaign_callouts.json + promos.
+    src_camp_ids = [int(x) for x in (maps.get("campaigns") or {}).keys() if str(x).isdigit()]
+    try:
+        csteps.pull_source_campaign_assets(
+            source_grid, src_camp_ids, src_dir, log=(lambda m: _copy_job_log(job_id, m)))
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"pull source assets: {str(e)[:180]}")
+    # Уточнения: тексты source-callout id → создать на target → maps['callouts'].
+    try:
+        _copy_grid_bridge_callouts(
+            source_grid, grid, src_dir, maps, log=(lambda m: _copy_job_log(job_id, m)))
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"callouts bridge: {str(e)[:180]}")
+
+    ctx = csteps.CopyCtx(
+        target_login=target_login, target_agency=target_agency or "",
+        src_dir=src_dir, workdir=workdir, body=body, maps=maps,
+        grid=grid, target_token=_tgt_token or "",
+        log=(lambda m: _copy_job_log(job_id, m)),
+        v5_call=_v5_call, enabled_minus_places=_enabled_minus_places,
+        feed_offer_prices=_grid_feed_offer_prices, account_offer_prices=_account_offer_prices,
+        group_ad_price=_group_ad_price, set_ad_prices=_grid_set_ad_prices,
+    )
+    ctx.source_login = source_login
+    ctx.source_grid = source_grid
+    ctx.geo_pairs = replacements or []
+    ctx.update_adaptive_ads = _grid_update_adaptive_ads
+    ctx.video_upload_client = tgt_uac
+    ctx.video_file_resolver = _copy_make_video_resolver(job_id, source_grid, maps, workdir)
+    try:
+        from .promo import PromoClient
+        ctx.promo_client = PromoClient(tgt_uac, target_login)
+    except Exception:  # noqa: BLE001
+        ctx.promo_client = None
+
+    for name, fn in (
+        ("age_bidmods", lambda: csteps.step_age_bidmods(ctx)),
+        ("disabled_places", lambda: csteps.step_disabled_places(ctx)),
+        ("attach_callouts", lambda: csteps.step_attach_callouts(ctx, per_campaign_cap=_CALLOUT_PER_CAMPAIGN_CAP)),
+        # step_attach_promos: source-promo-def reader отсутствует → created_promo_ids=[] → безопасный no-op.
+        ("attach_promos", lambda: csteps.step_attach_promos(ctx, [])),
+        ("prices", lambda: csteps.step_prices(ctx)),
+        ("videos", lambda: csteps.step_videos(ctx)),
+    ):
+        try:
+            r = fn()
+            rep[name] = r
+            if isinstance(r, dict):
+                rep["errors"] += r.get("errors") or []
+        except Exception as e:  # noqa: BLE001
+            rep["errors"].append(f"{name}: {str(e)[:200]}")
+    _copy_write_json(workdir / "id_maps.json", maps)
+    return rep
 
 
 def _copy_is_uac_grid_row(row: dict) -> bool:
@@ -1173,7 +1623,8 @@ def _copy_uac_filter_list(value) -> list[dict]:
 def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str,
                         selected_grid_rows: list[dict], body: dict, *,
                         target_href: str, region_ids: list[int], counter_id: int,
-                        goal_id: int, target_feed_id: int | None) -> dict:
+                        goal_id: int, target_feed_id: int | None,
+                        feed_map: dict | None = None) -> dict:
     """Recreate selected UAC/tp6/tp7 campaigns from source detail into target account."""
     rep = {"created": 0, "results": [], "errors": [], "uses_direct_units": False}
     rows = [r for r in selected_grid_rows if _copy_is_uac_grid_row(r)]
@@ -1218,8 +1669,18 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
                 titles = ["Автомобили в наличии", "Выгода на авто", "Официальный дилер"]
             if not texts:
                 texts = ["Подберите автомобиль с выгодой. Оставьте заявку на сайте."]
-            is_product = name.lower().startswith("tp7_") or bool(_copy_uac_value(d, "feed_id", "listings_feed_id"))
-            feed_id = int(target_feed_id or 0) if is_product else None
+            src_feed_raw = _copy_uac_value(d, "feed_id", "listings_feed_id")
+            is_product = name.lower().startswith("tp7_") or bool(src_feed_raw)
+            # Пофидовая замена: если исходный фид кампании есть в feed_map — берём целевой из карты,
+            # иначе фолбэк на общий target_feed_id (прежнее поведение).
+            eff_target_feed = target_feed_id
+            try:
+                _sf = str(int(src_feed_raw)) if src_feed_raw not in (None, "") else ""
+            except (TypeError, ValueError):
+                _sf = ""
+            if feed_map and _sf and _sf in feed_map:
+                eff_target_feed = feed_map[_sf]
+            feed_id = int(eff_target_feed or 0) if is_product else None
             spec = cmc.MasterCampaignSpec(
                 href=target_href,
                 titles=titles[:5],
@@ -1296,6 +1757,70 @@ def _copy_target_feed_id(target_login: str, target_agency: str, workdir: Path,
     return None
 
 
+def _copy_make_video_resolver(job_id: str, source_grid, maps: dict, workdir: Path):
+    """ФАЗА 3c п.12: resolver mp4 исходного видео по Grid-интроспекции (originalUrl).
+
+    Один prefetch по куки ИСТОЧНИКА (source_grid.video_creative_urls на src camp/ad из maps) →
+    {src_creative_id: originalUrl}. Затем на каждый вызов (meta.creative_id) скачивает mp4 в
+    workdir/_video_cache/<cid>.mp4 (кэш — один и тот же ролик у нескольких объявлений качаем раз) и
+    отдаёт путь; None — если URL нет или скачать не удалось (step_videos тогда честно репортит).
+
+    Скачиваемость доказана live 2026-07-03: originalUrl отдаёт HTTP 200 video/mp4 без авторизации.
+    Приоритет URL: originalUrl (исходник 1:1) → livePreviewUrl (рендер-превью) как запасной."""
+    src_camp_ids = [int(x) for x in (maps.get("campaigns") or {}).keys() if str(x).isdigit()]
+    src_ad_ids = [int(x) for x in (maps.get("ads") or {}).keys() if str(x).isdigit()]
+    url_map: dict[str, dict] = {}
+    if source_grid is not None and src_ad_ids:
+        try:
+            url_map = source_grid.video_creative_urls(src_camp_ids, src_ad_ids) or {}
+            if url_map:
+                _copy_job_log(job_id, f"видео: Grid-интроспекция дала {len(url_map)} скачиваемых mp4-URL (originalUrl)")
+        except Exception as e:  # noqa: BLE001
+            _copy_job_log(job_id, f"видео: чтение URL источника не удалось ({str(e)[:150]})")
+            url_map = {}
+    if not url_map:
+        return None
+    cache_dir = Path(workdir) / "_video_cache"
+
+    def _resolver(meta: dict):
+        cid = str((meta or {}).get("creative_id") or "").strip()
+        info = url_map.get(cid) or {}
+        url = info.get("original_url") or info.get("live_preview_url") or ""
+        if not cid or not url:
+            return None
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        dst = cache_dir / f"{cid}.mp4"
+        if dst.exists() and dst.stat().st_size > 0:
+            return str(dst)
+        import requests as _rqs
+        try:
+            with _rqs.get(url, stream=True, timeout=90, verify=False) as r:
+                if r.status_code != 200:
+                    _copy_job_log(job_id, f"видео {cid}: originalUrl HTTP {r.status_code} — пропуск")
+                    return None
+                ct = (r.headers.get("Content-Type") or "").lower()
+                if "video" not in ct and "octet-stream" not in ct and "mp4" not in ct:
+                    _copy_job_log(job_id, f"видео {cid}: неожиданный content-type {ct!r} — пропуск")
+                    return None
+                with open(dst, "wb") as fh:
+                    for chunk in r.iter_content(chunk_size=1 << 16):
+                        if chunk:
+                            fh.write(chunk)
+        except Exception as e:  # noqa: BLE001
+            _copy_job_log(job_id, f"видео {cid}: скачивание не удалось ({str(e)[:120]})")
+            try:
+                if dst.exists():
+                    dst.unlink()
+            except OSError:
+                pass
+            return None
+        if dst.stat().st_size <= 0:
+            return None
+        return str(dst)
+
+    return _resolver
+
+
 def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                              src_dir: Path, workdir: Path, body: dict) -> dict:
     """Cookie/Grid fallback after direct_copy upload: callouts, ShoppingAd, ListingAd, verification, repair."""
@@ -1328,6 +1853,49 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
         rep["errors"].append(f"cookie init: {str(e)[:220]}")
         return rep
 
+    # ФАЗА 1 под-сервисы (copy_steps): единый контекст для шагов П.10/П.11/П.13/П.14.
+    from . import copy_steps as csteps
+    try:
+        _tgt_token, _ = _token_for_login(
+            target_login, target_agency or _resolve_agency_hint(target_login, ""), _direct_tokens())
+    except Exception:  # noqa: BLE001
+        _tgt_token = ""
+    cstep_ctx = csteps.CopyCtx(
+        target_login=target_login, target_agency=target_agency or "",
+        src_dir=src_dir, workdir=workdir, body=body, maps=maps,
+        grid=grid, target_token=_tgt_token or "",
+        log=(lambda m: _copy_job_log(job_id, m)),
+        v5_call=_v5_call, enabled_minus_places=_enabled_minus_places,
+        # П.8: прайс-хелперы (create_set_feeds через blueprint-обёртки — configure() внутри).
+        feed_offer_prices=_grid_feed_offer_prices, account_offer_prices=_account_offer_prices,
+        group_ad_price=_group_ad_price, set_ad_prices=_grid_set_ad_prices,
+    )
+
+    # ФАЗА 3b (п.4 адаптивы / п.12 видео): source-Grid (куки источника, чтение состава), гео-пары
+    # job'а, RMW-апдейтер адаптивов (сохраняет target href/adPrice/видео), видео-аплоуд по куки.
+    cstep_ctx.update_adaptive_ads = _grid_update_adaptive_ads
+    cstep_ctx.video_upload_client = client          # UacClient target: upload_video_creative по куки
+    cstep_ctx.video_file_resolver = None            # заполним ниже, если source_grid поднялся (см. п.12)
+    try:
+        _src_login = (body.get("source_login") or "").strip()
+        cstep_ctx.source_login = _src_login
+        if _src_login:
+            _src_ag = _resolve_agency_hint(_src_login, "")
+            _src_cli2 = cmc.build_client(_src_login, account=(_src_ag or None))
+            cstep_ctx.source_grid = gf.GridClient(_src_login, cookie=(_src_cli2.sess.headers.get("Cookie") or ""))
+            _src_ctx = _copy_ctx(_src_login)
+            cstep_ctx.geo_pairs = _copy_geo_replacements(
+                _src_ctx, body.get("target_city") or "", body.get("target_region") or "",
+                log=(lambda m: _copy_job_log(job_id, m)))
+            # ФАЗА 3c п.12: скачиваемый URL исходного видео найден Grid-интроспекцией —
+            # GdVideoAdditionCreative.originalUrl = прямой mp4 (storage.mds.yandex.net, HTTP 200
+            # video/mp4 без авторизации, проверено live 2026-07-03). Строим resolver: creative_id
+            # источника → скачать mp4 → отдать в step_videos (аплоуд по куки + RMW-привязка).
+            cstep_ctx.video_file_resolver = _copy_make_video_resolver(
+                job_id, cstep_ctx.source_grid, maps, workdir)
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"adaptive/video ctx init: {str(e)[:180]}")
+
     # 1) Уточнения: если v5 adextensions.add не создал часть ids, добираем через Grid и
     # прикрепляем на campaign-level, чтобы объявления получили наследуемые callouts.
     callouts = _copy_read_json(src_dir / "callouts.json")
@@ -1344,12 +1912,13 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                 txt = str(((c.get("Callout") or {}).get("CalloutText")) or "").strip()
                 if src_id and txt and callout_map.get(txt):
                     maps["callouts"][src_id] = int(callout_map[txt])
-            co_ids = list(dict.fromkeys(int(x) for x in maps["callouts"].values() if str(x).isdigit()))
-            camp_ids = [int(x) for x in maps["campaigns"].values() if str(x).isdigit()]
-            if co_ids and camp_ids:
-                updated = grid.set_campaign_callouts(camp_ids, co_ids[:_CALLOUT_PER_CAMPAIGN_CAP])
-                rep["callouts_attached_campaigns"] = len(updated or camp_ids)
             rep["callouts_created_or_found"] = len(callout_map)
+            # П.11: вешаем на КАЖДУЮ кампанию только её ремапленные callout-id (по исходной связи),
+            # а не общий union. Фолбэк на union — внутри шага, если source-связь недоступна.
+            co_report = csteps.step_attach_callouts(cstep_ctx, per_campaign_cap=_CALLOUT_PER_CAMPAIGN_CAP)
+            rep["callouts_attached_campaigns"] = co_report.get("attached_campaigns") or 0
+            rep["callouts_per_campaign"] = co_report
+            rep["errors"] += co_report.get("errors") or []
         except Exception as e:  # noqa: BLE001
             rep["errors"].append(f"callouts grid: {str(e)[:220]}")
 
@@ -1388,53 +1957,28 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                 elif perr:
                     rep["errors"].append(f"promo {src_id}: {perr[:180]}")
             rep["promos_created"] = len(created_promo_ids)
-            unique_promos = list(dict.fromkeys(created_promo_ids))
-            camp_ids = [int(x) for x in maps["campaigns"].values() if str(x).isdigit()]
-            if len(unique_promos) == 1 and camp_ids:
-                attach = pc.attach(unique_promos[0], camp_ids)
-                errors = (((attach.get("data") or {}).get("updateCampaignsPromoExtension") or {})
-                          .get("validationResult") or {}).get("errors") or attach.get("errors")
-                if errors:
-                    rep["errors"].append("promo attach: " + json.dumps(errors, ensure_ascii=False)[:180])
-                else:
-                    rep["promos_attached_campaigns"] = len(camp_ids)
+            # П.10: привязка промо по исходной связи campaign→promo (работает и при 2+ промо).
+            # Фолбэк на прежнее единичное поведение — внутри шага.
+            cstep_ctx.promo_client = pc
+            promo_report = csteps.step_attach_promos(cstep_ctx, created_promo_ids)
+            rep["promos_attached_campaigns"] = promo_report.get("attached_campaigns") or 0
+            rep["promos_per_campaign"] = promo_report
+            rep["errors"] += promo_report.get("errors") or []
         except Exception as e:  # noqa: BLE001
             rep["errors"].append(f"promos grid: {str(e)[:220]}")
 
-    # 1b) Keywords fallback по куки. Если v5 keywords.add упёрся в 152, direct_copy оставляет
-    # фразы отсутствующими в keywords_done.json. Добираем их через Grid addKeywords.
-    keywords = _copy_read_json(src_dir / "keywords.json")
-    done_kw_path = workdir / "keywords_done.json"
-    done_kw = set(_copy_read_json(done_kw_path)) if done_kw_path.exists() else set()
-    kw_items = []
-    kw_keys = []
-    for k in keywords:
-        key = f"{k.get('AdGroupId')}|{k.get('Keyword')}"
-        if key in done_kw:
-            continue
-        gid = maps["adgroups"].get(str(k.get("AdGroupId") or ""))
-        phrase = str(k.get("Keyword") or "").strip()
-        if not gid or not phrase or phrase.startswith("---"):
-            continue
-        row = {"adgroup_id": int(gid), "keyword": phrase}
-        bid = k.get("Bid")
-        if bid is not None:
-            try:
-                row["price"] = float(bid) / 1_000_000
-            except (TypeError, ValueError):
-                pass
-        kw_items.append(row)
-        kw_keys.append(key)
-    if kw_items:
-        try:
-            added = grid.add_keywords(kw_items)
-            added_count = len(added or [])
-            for key in kw_keys[:added_count]:
-                done_kw.add(key)
-            _copy_write_json(done_kw_path, sorted(done_kw))
-            rep["keywords_added"] = added_count
-        except Exception as e:  # noqa: BLE001
-            rep["errors"].append(f"keywords grid: {str(e)[:220]}")
+    # 1b) КЛЮЧЕВЫЕ СЛОВА Grid-FIRST (ФАЗА 3c п.2). phase_upload теперь skip_keywords=True → v5 ключи
+    # не жёг (152). step_keywords добавляет ВСЕ фразы через Grid (0 баллов), v5 — только фолбэк
+    # (UserParam-фразы + не прошедшие Grid). group-remap/ставки/UserParam/done-учёт — внутри шага.
+    try:
+        kw_rep = csteps.step_keywords(cstep_ctx)
+        rep["keywords"] = kw_rep
+        rep["keywords_added"] = int(kw_rep.get("via_grid") or 0) + int(kw_rep.get("via_v5") or 0)
+        if int(kw_rep.get("via_v5") or 0) > 0:
+            rep["uses_direct_units"] = True     # v5-фолбэк (UserParam/Grid-fail) тратит баллы
+        rep["errors"] += kw_rep.get("errors") or []
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"keywords grid-first: {str(e)[:220]}")
 
     # 2) ShoppingAd fallback по куки. direct_copy пытается v501 ads.add; если баллов не хватило
     # или v501 отклонил, source ShoppingAd останется без maps['ads'][src_id].
@@ -1485,6 +2029,45 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
             rep["errors"].append(f"shopping/listing grid: {str(e)[:220]}")
 
     _copy_write_json(maps_path, maps)
+
+    # П.14: стандартные возрастные корректировки −100% (<18, 18–24) через v5.
+    try:
+        rep["age_bidmods"] = csteps.step_age_bidmods(cstep_ctx)
+        rep["errors"] += rep["age_bidmods"].get("errors") or []
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"age bidmods: {str(e)[:200]}")
+    # П.13: наш стандартный disabledPlaces на скопированные РСЯ-кампании (Grid).
+    try:
+        rep["disabled_places"] = csteps.step_disabled_places(cstep_ctx)
+        rep["errors"] += rep["disabled_places"].get("errors") or []
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"disabled places: {str(e)[:200]}")
+    # П.4 (ФАЗА 3b): адаптивные креативы 1:1 по куки (Grid) — заголовки/тексты/картинки источника,
+    # гео в тексте с падежами; БЕЗ исходного CreativeId и БЕЗ v5-баллов. ДО step_prices, чтобы
+    # adPrice лёг на уже приведённый 1:1 контент (RMW step_prices его сохранит).
+    try:
+        rep["adaptive_creatives"] = csteps.step_adaptive_creatives(cstep_ctx)
+        rep["errors"] += rep["adaptive_creatives"].get("errors") or []
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"adaptive creatives: {str(e)[:200]}")
+
+    # П.8: НОВЫЕ РЕАЛЬНЫЕ цены из ФИДА target-аккаунта на созданные адаптивные объявления (Grid adPrice).
+    try:
+        rep["prices"] = csteps.step_prices(cstep_ctx)
+        rep["errors"] += rep["prices"].get("errors") or []
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"prices: {str(e)[:200]}")
+
+    # П.12 (ФАЗА 3b/3c): видео 1:1 по куки — ПОСЛЕ prices (attach через RMW сохраняет контент/цену,
+    # а step_prices через _grid_set_ad_prices слал creativeIds=[] → до него видео стерлось бы).
+    # ФАЗА 3c: video_file_resolver теперь заполнен (originalUrl из Grid-интроспекции) → видео
+    # реально переносится (скачать mp4 → аплоуд по куки → RMW-привязка). Нет URL/скачивания —
+    # честный report-only (внутри step_videos).
+    try:
+        rep["videos"] = csteps.step_videos(cstep_ctx)
+        rep["errors"] += rep["videos"].get("errors") or []
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"videos: {str(e)[:200]}")
 
     # 3) Grid-first live verification + safe auto-repair.
     results = _copy_build_results(src_dir, workdir) + list(body.get("_copy_uac_results") or [])
@@ -1581,6 +2164,45 @@ def _copy_apply_metrika(login: str, token: str, src_dir: Path, workdir: Path,
     return {"updated": updated, "warned": warned}
 
 
+def _copy_preseed_feed_maps(workdir: Path, feed_map: dict) -> None:
+    """Предзаписать id_maps.json с пофидовым маппингом ДО phase_upload. direct_copy.phase_upload
+    делает `maps = jload(id_maps.json) if exists` и для фида, уже присутствующего в maps['feeds'],
+    пропускает создание (continue) → подставит наш целевой FeedId в группы/ShoppingAd/ListingAd.
+    Пишем ПОЛНЫЙ скелет ключей — иначе phase_upload обратится к maps['shared_sets'] и упадёт KeyError."""
+    maps_path = workdir / "id_maps.json"
+    maps = _copy_read_json(maps_path) if maps_path.exists() else {}
+    for key in ("shared_sets", "vcards", "images", "sitelinks", "callouts",
+                "campaigns", "adgroups", "ads", "promotions", "feeds"):
+        maps.setdefault(key, {})
+    for sid, tid in (feed_map or {}).items():
+        maps["feeds"][str(sid)] = int(tid)
+    _copy_write_json(maps_path, maps)
+
+
+def _copy_feeds_preview(source_login: str, target_login: str, selected_ids: set[int]) -> dict:
+    """Данные для секции «Замена фидов» в UI копирования: фиды ИСХОДНОГО аккаунта (что заменяем)
+    и фиды ЦЕЛЕВОГО (на что; только существующие). Grid-строки кампаний не несут feed-рефов до
+    полного pull, поэтому отдаём все фиды источника — пользователь маппит нужные, остальные идут
+    прежним путём (авто-пересоздание URL-фида). selected_ids пока не фильтрует — задел на будущее."""
+    def _feeds_for(login: str) -> list[dict]:
+        agency = _resolve_agency_hint(login, "")
+        rows = _grid_feeds(login, agency) or []
+        out = []
+        for f in rows:
+            fid = f.get("id")
+            if not str(fid or "").strip().isdigit():
+                continue
+            listings = f.get("listings") or []
+            out.append({
+                "id": int(fid),
+                "name": (f.get("name") or "").strip() or f"feed {fid}",
+                "listings": len(listings) if isinstance(listings, list) else 0,
+            })
+        out.sort(key=lambda r: r["name"].lower())
+        return out
+    return {"source_feeds": _feeds_for(source_login), "target_feeds": _feeds_for(target_login)}
+
+
 def _copy_run_job(job_id: str, body: dict) -> None:
     source_login = (body.get("source_login") or "").strip()
     target_login = (body.get("target_login") or "").strip()
@@ -1591,6 +2213,16 @@ def _copy_run_job(job_id: str, body: dict) -> None:
     target_city = (body.get("target_city") or "").strip()
     target_region = (body.get("target_region") or "").strip()
     target_feed_url = (body.get("target_feed_url") or _COPY_DEFAULT_FEED_PATH).strip()
+    # Пофидовая замена (source_feed_id → target_feed_id, только существующие фиды target-аккаунта).
+    # Пусто → поведение как раньше (единый target_feed_url / авто-пересоздание URL-фидов).
+    feed_map_raw: dict[str, int] = {}
+    _fm = body.get("feed_map")
+    if not isinstance(_fm, dict):
+        _fm = {}
+    for _k, _v in _fm.items():
+        if str(_k).strip().isdigit() and str(_v).strip().isdigit() and int(_v) > 0:
+            feed_map_raw[str(int(_k))] = int(_v)
+    use_feed_map = bool(feed_map_raw)
     try:
         tmp_root = Path(tempfile.gettempdir())
         tmp_root.mkdir(parents=True, exist_ok=True)
@@ -1629,6 +2261,20 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         meta = _copy_filter_snapshot(src_dir, selected_ids)
         _copy_job_upsert(job_id, progress=28, total=int(meta.get("campaigns") or len(selected_ids)))
         _copy_job_log(job_id, f"snapshot отфильтрован: {meta.get('campaigns')} кампаний")
+        # ФАЗА 1 (П.11/П.10): зафиксировать исходную связь campaign→callouts/promo с ИСТОЧНИКА (Grid).
+        # Best-effort: недоступность Grid не валит копирование — постпроцесс откатится на union/единичное.
+        try:
+            from . import copy_steps as _csteps
+            _src_camp_ids = [int(c["Id"]) for c in _copy_read_json(src_dir / "campaigns.json")
+                             if str(c.get("Id") or "").isdigit()]
+            _src_cli = cmc.build_client(source_login, account=(source_agency or None))
+            _src_grid = gf.GridClient(source_login, cookie=(_src_cli.sess.headers.get("Cookie") or ""))
+            _pa = _csteps.pull_source_campaign_assets(
+                _src_grid, _src_camp_ids, src_dir, log=(lambda m: _copy_job_log(job_id, m)))
+            if _pa.get("errors"):
+                _copy_job_log(job_id, f"pull source assets warnings: {'; '.join(_pa['errors'][:3])[:220]}")
+        except Exception as e:  # noqa: BLE001
+            _copy_job_log(job_id, f"pull source assets: пропуск ({str(e)[:180]})")
         expected_snapshot = max(0, len(selected_ids) - len(selected_uac_rows))
         if int(meta.get("campaigns") or 0) != expected_snapshot:
             raise RuntimeError(
@@ -1638,7 +2284,8 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         target_feed_abs = dc.build_url_feed_url(target_domain, target_feed_url) if target_feed_url else ""
         audit = _copy_snapshot_preflight(
             src_dir,
-            target_feed_url=target_feed_abs,
+            # feed_map покрывает фиды пофидово → сентинел удовлетворяет проверку «целевой фид задан».
+            target_feed_url=(target_feed_abs or ("__feed_map__" if use_feed_map else "")),
             target_city=target_city,
             target_region=target_region,
         )
@@ -1654,8 +2301,16 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         target_ctx = _copy_ctx(target_login)
         target_ctx["city"] = target_city or target_ctx.get("city") or ""
         target_ctx["region"] = target_region or target_ctx.get("region") or ""
-        rewrite_meta = _copy_rewrite_snapshot_context(src_dir, source_ctx, target_ctx)
+        rewrite_meta = _copy_rewrite_snapshot_context(
+            src_dir, source_ctx, target_ctx, log=(lambda m: _copy_job_log(job_id, m))
+        )
         _copy_job_upsert(job_id, context_rewrite=rewrite_meta)
+        if rewrite_meta.get("m3_used"):
+            _copy_job_log(job_id, "гео-склонения: M3 парадигма падежей применена")
+        else:
+            _copy_job_log(job_id, "гео-склонения: M3 недоступен, замена только по границам слов (именительный)")
+        if rewrite_meta.get("m3_failed"):
+            _copy_job_log(job_id, f"гео-склонения: фолбэк для {', '.join(rewrite_meta['m3_failed'][:4])}")
         if rewrite_meta.get("replacements"):
             _copy_job_log(job_id, f"гео в snapshot заменено: {rewrite_meta['replacements']} в {rewrite_meta['files']} файлах")
         if rewrite_meta.get("residual_geo"):
@@ -1684,13 +2339,41 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             if not tgt_region_id:
                 raise RuntimeError(f"не найден GeoRegionId для целевого гео: city={target_city!r}, region={target_region!r}")
         body["_copy_source_domain"] = src_domain
-        _copy_job_upsert(job_id, progress=42)
-        _copy_job_log(job_id, f"upload в {target_login} (домен={target_domain or '—'}, geo={target_city or target_region or '—'} #{tgt_region_id or '—'} {geo_source}, feed={target_feed_abs or '—'})")
+        # Пофидовая замена: валидируем целевые фиды по аккаунту (только СВОИ фиды) и предзаписываем
+        # id_maps.json — phase_upload загрузит его и подставит целевые фиды вместо единого forced-фида.
+        feed_map_valid: dict[str, int] = {}
+        if use_feed_map:
+            _tgt_feed_ids_ok = True
+            try:
+                _tgt_feed_ids = {
+                    int(f.get("id")) for f in _grid_feeds(target_login, target_token_agency or _resolve_agency_hint(target_login, ""))
+                    if str(f.get("id") or "").strip().isdigit()
+                }
+            except Exception:  # noqa: BLE001
+                _tgt_feed_ids = set()
+                _tgt_feed_ids_ok = False
+            if not _tgt_feed_ids_ok or not _tgt_feed_ids:
+                # Grid недоступен или вернул пустой список — не можем проверить, доверяем вводу
+                feed_map_valid = dict(feed_map_raw)
+                _copy_job_log(job_id, "feed_map: не удалось получить фиды target (grid недоступен или список пуст) — feed_map применён без валидации")
+            else:
+                for _sid, _tid in feed_map_raw.items():
+                    if _tid in _tgt_feed_ids:
+                        feed_map_valid[_sid] = _tid
+                    else:
+                        _copy_job_log(job_id, f"feed_map: целевой фид {_tid} не принадлежит {target_login} — пропуск (source {_sid})")
+            use_feed_map = bool(feed_map_valid)
+            if use_feed_map:
+                _copy_preseed_feed_maps(workdir, feed_map_valid)
+                _copy_job_log(job_id, f"пофидовая замена активна: {feed_map_valid}")
+        _copy_job_upsert(job_id, progress=42, feed_map=feed_map_valid)
+        _copy_job_log(job_id, f"upload в {target_login} (домен={target_domain or '—'}, geo={target_city or target_region or '—'} #{tgt_region_id or '—'} {geo_source}, feed={'по карте' if use_feed_map else (target_feed_abs or '—')})")
         dc.phase_upload(
             src_dir, workdir, tgt_auth, source_login, target_login,
             src_domain, target_domain, tgt_region_id,
-            force_feed_url=target_feed_abs,
-            force_feed_name=target_feed_abs.rsplit("/", 1)[-1] if target_feed_abs else None,
+            force_feed_url=("" if use_feed_map else target_feed_abs),
+            force_feed_name=(None if use_feed_map else (target_feed_abs.rsplit("/", 1)[-1] if target_feed_abs else None)),
+            skip_keywords=True,   # ФАЗА 3c п.2: ключи — Grid-first в постпроцессе (0 v5-баллов)
         )
         _copy_job_upsert(job_id, progress=82)
         token, _ag = target_token, target_token_agency
@@ -1708,7 +2391,7 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             uac_copy = _copy_uac_campaigns(
                 source_login, target_login, target_agency or "", selected_uac_rows, body,
                 target_href=target_href, region_ids=region_id_list, counter_id=counter_id,
-                goal_id=goal_id, target_feed_id=target_feed_id,
+                goal_id=goal_id, target_feed_id=target_feed_id, feed_map=feed_map_valid,
             )
             body["_copy_uac_results"] = uac_copy.get("results") or []
             if uac_copy.get("errors"):
@@ -1806,6 +2489,7 @@ def _jobs_db_init() -> None:
                     result     jsonb,
                     body       jsonb,
                     agency     text,
+                    control    text,
                     created_at timestamptz DEFAULT now(),
                     updated_at timestamptz DEFAULT now()
                 )""")
@@ -1813,6 +2497,8 @@ def _jobs_db_init() -> None:
             cur.execute("ALTER TABLE public.direct_automation_jobs ADD COLUMN IF NOT EXISTS body jsonb")
             cur.execute("ALTER TABLE public.direct_automation_jobs ADD COLUMN IF NOT EXISTS agency text")
             cur.execute("ALTER TABLE public.direct_automation_jobs ADD COLUMN IF NOT EXISTS errors_log jsonb")
+            # control: команда web→worker (сейчас используется 'cancel' для running-джоб; worker её NULL-ит)
+            cur.execute("ALTER TABLE public.direct_automation_jobs ADD COLUMN IF NOT EXISTS control text")
             conn.commit()
         finally:
             conn.close()
@@ -1890,6 +2576,145 @@ def _job_db_get(jid: str) -> dict | None:
         return None
 
 
+# ── web-роль: общение с worker'ом через БД (без in-memory очереди) ──────────────
+def _job_db_active_by_login(login: str) -> str | None:
+    """job_id активной (не завершённой) джобы этого логина в БД — дедуп на web-роли."""
+    lg = (login or "").strip()
+    if not lg:
+        return None
+    try:
+        conn = _victory_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT job_id FROM public.direct_automation_jobs "
+                        "WHERE login=%s AND status NOT IN ('done','error','cancelled','interrupted') "
+                        "ORDER BY updated_at DESC LIMIT 1", (lg,))
+            row = cur.fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _job_db_set_status(jid: str, status: str, error: str | None = None) -> None:
+    """Прямая смена статуса джобы в БД (web-роль: отмена queued/awaiting, resolve feed)."""
+    try:
+        conn = _victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            cur.execute("UPDATE public.direct_automation_jobs "
+                        "SET status=%s, error=COALESCE(%s,error), updated_at=now() WHERE job_id=%s",
+                        (status, (error[:500] if error else None), jid))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _job_control_set(jid: str, control: str) -> None:
+    """Записать команду web→worker в колонку control (worker применит и обнулит)."""
+    try:
+        conn = _victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            cur.execute("UPDATE public.direct_automation_jobs SET control=%s, updated_at=now() "
+                        "WHERE job_id=%s", (control, jid))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _job_db_web_await_feed(jid: str, deadline: float) -> None:
+    """web-роль: перевести свежую queued web-джобу в ожидание решения по фиду (дедлайн в body)."""
+    try:
+        conn = _victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE public.direct_automation_jobs "
+                "SET status='awaiting_feed_decision', "
+                "    body = jsonb_set(COALESCE(body,'{}'::jsonb), '{_feed_deadline}', to_jsonb(%s::double precision)), "
+                "    updated_at=now() "
+                "WHERE job_id=%s AND status='queued'", (float(deadline), jid))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _job_db_web_resolve_feed(jid: str, decision: str) -> None:
+    """web-роль: ответ пользователя по фиду. run_without_feed → _skip_feed_types, затем status='queued'
+    (worker подхватит клеймом). _feed_deadline очищаем."""
+    try:
+        conn = _victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            if decision == "run_without_feed":
+                cur.execute(
+                    "UPDATE public.direct_automation_jobs "
+                    "SET status='queued', "
+                    "    body = jsonb_set(body - '_feed_deadline', '{_skip_feed_types}', "
+                    "                     '[\"product\",\"master\"]'::jsonb), "
+                    "    updated_at=now() "
+                    "WHERE job_id=%s AND status='awaiting_feed_decision'", (jid,))
+            else:  # run_all
+                cur.execute(
+                    "UPDATE public.direct_automation_jobs "
+                    "SET status='queued', body = (body - '_feed_deadline' - '_skip_feed_types'), "
+                    "    updated_at=now() "
+                    "WHERE job_id=%s AND status='awaiting_feed_decision'", (jid,))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _job_db_list_recent(active_only: bool = False) -> list[dict]:
+    """web-роль: живая очередь из БД (аналог in-memory _CREATE_JOBS для обзора)."""
+    import psycopg2.extras
+    try:
+        conn = _victory_conn()
+        try:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            if active_only:
+                cur.execute("SELECT * FROM public.direct_automation_jobs "
+                            "WHERE status NOT IN ('done','error','cancelled','interrupted') "
+                            "ORDER BY created_at DESC LIMIT 50")
+            else:
+                cur.execute("SELECT * FROM public.direct_automation_jobs "
+                            "ORDER BY updated_at DESC LIMIT 50")
+            return list(cur.fetchall() or [])
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _job_db_ahead(jid: str) -> int:
+    """web-роль: сколько активных джоб «впереди» (created_at раньше). Приблизительно, для UI."""
+    try:
+        conn = _victory_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT count(*) FROM public.direct_automation_jobs a "
+                "JOIN public.direct_automation_jobs b ON b.job_id=%s "
+                "WHERE a.status IN ('queued','claimed','running','awaiting_feed_decision') "
+                "  AND a.created_at < b.created_at", (jid,))
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _job_db_progress(job: dict) -> None:
     """Лёгкий троттлинг-флеш прогресса в БД (не чаще ~4 c на джобу)."""
     jid = job.get("_id")
@@ -1952,13 +2777,28 @@ def _jobs_db_recover() -> None:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             # ЛОГИНЫ прерванных джоб — для авто-очистки их пустышек (кампания создана, рестарт убил
             # процесс до наполнения групп → 0 групп). Берём ДО UPDATE, пока статус ещё running/queued.
+            # kind='copy_campaigns' исключаем: эти джобы принадлежат отдельному процессу
+            # direct-copy.service — их recover/sweep не наш (иначе затрём чужой статус и снесём
+            # свежесозданные черновики копирования). См. _ensure_copy_worker/_copy_jobs_recover.
             cur.execute("SELECT DISTINCT login FROM public.direct_automation_jobs "
                         "WHERE status IN ('queued','running') AND login IS NOT NULL "
+                        "  AND coalesce(kind,'') <> 'copy_campaigns' "
                         "  AND updated_at > now() - interval '6 hours'")
             _interrupted_logins = [r["login"] for r in cur.fetchall() if r.get("login")]
-            # битые running/queued → interrupted (single UPDATE)
+            # битые running/queued → interrupted (single UPDATE).
+            # ВАЖНО: web-posted queued-джобы (_web_posted=true) НЕ трогаем — их ещё не начинал
+            # исполнять ни один воркер, они ждут клейма поллером. Пометив их interrupted, мы бы
+            # потеряли постановку сразу после рестарта воркера. Гасим только «свои» in-memory queued
+            # (их в БД пишет _job_new всех ролей кроме web) и любые running.
             cur.execute("UPDATE public.direct_automation_jobs SET status='interrupted', updated_at=now() "
-                        "WHERE status IN ('queued','running')")
+                        "WHERE (status='running' "
+                        "       OR (status='queued' AND coalesce(body->>'_web_posted','') <> 'true')) "
+                        "  AND coalesce(kind,'') <> 'copy_campaigns'")
+            # 'claimed' — web-posted джоба, которую поллер забрал из БД, но воркер упал ДО того, как
+            # завёл её в in-memory очередь (окно миллисекунды). body ещё содержит items+session →
+            # безопасно вернуть в 'queued' для повторного клейма (дубля нет: set_plan пропустит созданное).
+            cur.execute("UPDATE public.direct_automation_jobs SET status='queued', updated_at=now() "
+                        "WHERE status='claimed'")
             # CRASH-SAFETY ОСТАТКОВ: 'resumed'-остаток (докрутка по куке поставлена в очередь), который
             # завис дольше N часов без финала — джоба умерла при рестарте, остаток осиротел. Возвращаем
             # в waiting+resume_at=now(), чтобы демон подхватил его ПО КУКЕ. Дубля нет: set_plan пропустит
@@ -2082,8 +2922,36 @@ def _create_watchdog_tick() -> None:
                 _CREATE_ACTIVE_AGENCIES[agency] = active
             else:
                 _CREATE_ACTIVE_AGENCIES.pop(agency, None)
-        if timed_out:
+        # Проверка awaiting_feed_decision: дедлайн истёк — запускаем без фида
+        _expired_feed_awaiting = False
+        for jid, job in list(_CREATE_JOBS.items()):
+            if job.get("status") != "awaiting_feed_decision":
+                continue
+            _dl = float(job.get("feed_deadline") or 0)
+            if not _dl or now <= _dl:
+                continue
+            _body = job.get("body") or {}
+            _body["_skip_feed_types"] = ["product", "master"]
+            job["status"] = "queued"
+            _CREATE_QUEUE.append(jid)
+            _expired_feed_awaiting = True
+        if timed_out or _expired_feed_awaiting:
             _CREATE_COND.notify_all()
+    if timed_out:
+        # Диагностика зависаний (2026-07-02): watchdog убивает джобу, но БЕЗ стека виновника
+        # причину не найти (jobs 9126bf12fb3a/ac6d98864aa4 — «тишина 24 мин»). Дампим стеки ВСЕХ
+        # тредов в /tmp — файл переживает джобу, py-spy пост-фактум уже бесполезен (тред вернулся в пул).
+        try:
+            import faulthandler
+            _tr_path = f"/tmp/direct_stall_{int(now)}.trace"
+            with open(_tr_path, "w") as _fh:
+                _fh.write(f"watchdog kill: {[j for j, _ in timed_out]} at {time.ctime(now)}\n\n")
+                faulthandler.dump_traceback(file=_fh, all_threads=True)
+            import logging as _lg
+            _lg.getLogger("direct.watchdog").warning(
+                "watchdog kill %s — стеки тредов: %s", [j for j, _ in timed_out], _tr_path)
+        except Exception:  # noqa: BLE001
+            pass
     for jid, snap in timed_out:
         _job_db_save(jid, snap, full=True)
     _jobs_db_mark_stale_running(_CREATE_RUNNING_TIMEOUT)
@@ -2119,6 +2987,7 @@ _DEFERRED_STALE_HOURS = 3                             # 'resumed'-остаток
 _DELAYED_REPAIR_DAEMON = {"started": False}
 _DELAYED_REPAIR_POLL = 60
 _DELAYED_CONTENT_REPAIR_DELAY_SECONDS = 180
+_DELAYED_FULL_REPAIR_MAX_ITERATIONS = 2   # верифай→исполнить-всё→ре-верифай; защита от ping-pong
 
 
 def _next_units_reset_utc():
@@ -2316,6 +3185,27 @@ def _record_delayed_content_repair(parent_job_id: str, row: dict) -> None:
             _job_touch(mem)
 
 
+def _record_auto_repair_full(parent_job_id: str, payload: dict) -> None:
+    """Write the top-level ``auto_repair_full`` summary into the parent job result (mem + DB).
+
+    UI (_renderJobVerification) reads this key to show «✅ авто-добивка: исполнено X действий».
+    """
+    job = _job_db_get(parent_job_id) or {}
+    if not job:
+        return
+    result = rgate.dict_from_jsonish(job.get("result"))
+    if not isinstance(result, dict):
+        result = {}
+    result["auto_repair_full"] = payload
+    job["result"] = result
+    _job_db_save(parent_job_id, job, full=True)
+    with _CREATE_JOBS_LOCK:
+        mem = _CREATE_JOBS.get(parent_job_id)
+        if mem is not None and isinstance(mem.get("result"), dict):
+            mem["result"]["auto_repair_full"] = payload
+            _job_touch(mem)
+
+
 def _schedule_delayed_content_repair_after_done(parent_job_id: str, job_snapshot: dict) -> dict | None:
     req = rauto.delayed_content_repair_request(parent_job_id, job_snapshot)
     if not req:
@@ -2341,9 +3231,21 @@ def _schedule_delayed_content_repair_after_done(parent_job_id: str, job_snapshot
 
 
 def _run_delayed_content_repair(row: dict) -> None:
+    """Delayed FULL in-place repair cycle after a create job is done.
+
+    Runs OFF the worker thread (in the delayed-repair daemon) on a job whose status is already
+    ``done`` and ``finished_at`` is set → the watchdog (_create_watchdog_tick) only touches
+    ``running`` jobs, so no heartbeat bump is needed here.
+
+    Cycle: fresh Grid-first live verification (Grid has caught up after the delay) → execute ALL
+    executable in-place actions (content/promo/callouts/rename) via the SAME executors as the
+    manual «План добивки» button (rauto.execute_all_in_place) → re-verify. Up to
+    _DELAYED_FULL_REPAIR_MAX_ITERATIONS iterations; stop early if nothing progresses (anti
+    ping-pong). Recreate/UAC-replace stays with _auto_queue_recreate_after_done.
+    """
     did = (row.get("id") or "").strip()
     parent_job_id = (row.get("parent_job_id") or "").strip()
-    _delayed_repair_set_status(did, "running", "повторная Grid-first проверка перед content repair")
+    _delayed_repair_set_status(did, "running", "повторная Grid-first проверка перед авто-добивкой")
     job, result, ctx, err = _create_set_job_context(parent_job_id)
     if err:
         out = {"ok": False, "error": err[0].get("error"), "uses_direct_units": False}
@@ -2356,42 +3258,101 @@ def _run_delayed_content_repair(row: dict) -> None:
         _delayed_repair_set_status(did, "error", out["error"], out)
         _record_delayed_content_repair(parent_job_id, {"id": did, "status": "error", **out})
         return
-    try:
-        live_report = _create_set_live_verification(
-            login,
-            ctx.get("results") or [],
-            agency=ctx.get("agency") or row.get("agency") or "",
-            use_v5=False,
+    agency = ctx.get("agency") or row.get("agency") or ""
+    results_tree = ctx.get("results") or []
+    body = ctx.get("body") or {}
+    deps = _repair_deps()
+
+    def _live_plan() -> tuple[dict, dict, int]:
+        lv = _create_set_live_verification(login, results_tree, agency=agency, use_v5=False)
+        pl = (lv or {}).get("repair_plan") or {}
+        summ = rgate.summarize_repair_gate(body, results_tree, pl)
+        cnt = (
+            int(summ.get("in_place_content_repairs") or 0)
+            + (1 if summ.get("promo_campaigns") else 0)
+            + (1 if summ.get("callout_campaigns") else 0)
+            + int(summ.get("rename_campaigns") or 0)
         )
-        plan = (live_report or {}).get("repair_plan") or {}
-        content_repairs, unsupported = rgate.executable_content_repairs(ctx.get("body") or {}, plan)
-        if not content_repairs:
-            out = {
-                "ok": True,
-                "skipped": True,
-                "reason": "content_repair_not_confirmed_after_delay",
-                "live_verification": live_report,
-                "uses_direct_units": False,
-            }
-            _delayed_repair_set_status(did, "skipped", out["reason"], out)
-            _record_delayed_content_repair(parent_job_id, {"id": did, "status": "skipped", **out})
-            return
-        out, status = rex.execute_content_repair(login, ctx, content_repairs, _repair_deps())
-        _attach_post_repair_verification(out, login, ctx)
-        out.update({
-            "delayed_repair_id": did,
-            "parent_job_id": parent_job_id,
-            "repair_plan": plan,
-            "executed_actions": [{k: v for k, v in a.items() if k != "item"} for a in content_repairs][:40],
-            "unsupported_actions": unsupported[:40],
-        })
-        final_status = "done" if 200 <= int(status) < 300 and out.get("ok") else "error"
-        _delayed_repair_set_status(did, final_status, f"content repair status={status}", out)
-        _record_delayed_content_repair(parent_job_id, {"id": did, "status": final_status, **out})
+        return lv, pl, cnt
+
+    all_executed: list[dict] = []
+    all_failed: list[dict] = []
+    all_outputs: list[dict] = []
+    units_gated: list[dict] = []
+    iterations = 0
+    last_live: dict = {}
+    remaining = 0
+    try:
+        for _ in range(_DELAYED_FULL_REPAIR_MAX_ITERATIONS):
+            live_report, plan, inplace_cnt = _live_plan()
+            last_live = live_report
+            if inplace_cnt <= 0:
+                remaining = 0
+                break
+            iterations += 1
+            # post_verify не передаём: цикл сам делает свежую live-сверку через _live_plan()
+            # перед следующим проходом и в конце — иначе был бы лишний Grid-запрос на итерацию.
+            res = rauto.execute_all_in_place(login, ctx, plan, deps)
+            all_executed.extend(res.get("executed_actions") or [])
+            all_failed.extend(res.get("failed_actions") or [])
+            all_outputs.extend(res.get("results") or [])
+            units_gated.extend(res.get("units_gated") or [])
+            if not (res.get("executed") or 0):
+                # ничего не исполнилось за проход → повторная попытка бессмысленна (anti ping-pong)
+                last_live, _fp, remaining = _live_plan()
+                break
+        else:
+            # исчерпали лимит итераций → финальная сверка остатка
+            last_live, _fp, remaining = _live_plan()
     except Exception as e:  # noqa: BLE001
-        out = {"ok": False, "error": str(e)[:240], "uses_direct_units": False}
+        out = {"ok": False, "error": str(e)[:240], "uses_direct_units": False,
+               "auto_repair_full": {"executed": all_executed[:40], "failed": all_failed[:20],
+                                    "iterations": iterations, "remaining_actions": remaining}}
         _delayed_repair_set_status(did, "error", out["error"], out)
         _record_delayed_content_repair(parent_job_id, {"id": did, "status": "error", **out})
+        _record_auto_repair_full(parent_job_id, out["auto_repair_full"])
+        return
+
+    # Declarative spec-audit (keyword-shift/images-forbidden/plan⊆slepok) + auto-fix of
+    # KEYWORDS_WRONG_GROUP. Runs after the standard in-place actions; failures never break the
+    # delayed-repair cycle (best-effort, no Direct create units).
+    spec_audit: dict = {}
+    try:
+        spec_audit = _run_spec_audit_and_fix(login, ctx)
+    except Exception as e:  # noqa: BLE001
+        spec_audit = {"error": str(e)[:220]}
+
+    afr = {
+        "executed": all_executed[:40],
+        "failed": all_failed[:20],
+        "iterations": iterations,
+        "remaining_actions": int(remaining),
+        "units_gated": units_gated[:10],
+        "results": all_outputs[:20],
+        "spec_audit": spec_audit,
+    }
+    ok = (not all_failed) and int(remaining) == 0
+    if not all_executed and not all_failed:
+        final_status = "skipped" if int(remaining) == 0 else "partial"
+    elif ok:
+        final_status = "done"
+    else:
+        final_status = "partial"
+    out = {
+        "ok": ok,
+        "auto_repair_full": afr,
+        "delayed_repair_id": did,
+        "parent_job_id": parent_job_id,
+        "live_verification": last_live,
+        "uses_direct_units": False,
+    }
+    _delayed_repair_set_status(
+        did, final_status,
+        f"авто-добивка: исполнено {len(all_executed)}, остаток {remaining}, итераций {iterations}",
+        out,
+    )
+    _record_delayed_content_repair(parent_job_id, {"id": did, "status": final_status, **out})
+    _record_auto_repair_full(parent_job_id, afr)
 
 
 def _delayed_repair_daemon_loop(app) -> None:
@@ -2540,6 +3501,44 @@ def _ensure_resume_daemon(app) -> None:
     threading.Thread(target=_resume_daemon_loop, args=(app,), daemon=True).start()
 
 
+def _job_kind(body: dict | None) -> str:
+    b = body or {}
+    if b.get("_kind") == "delete_drafts":
+        return "delete_drafts"
+    if b.get("_kind") == "copy_campaigns":
+        return "copy_campaigns"
+    if b.get("content_source") == "slepok_library":
+        return "slepok"
+    return "set"
+
+
+def _job_new_web(total: int, login: str, body: dict, saved_session: dict,
+                 dedup_login: bool) -> str:
+    """web-роль: постановка джобы ТОЛЬКО в БД (status='queued', _web_posted=true, session в body).
+    Воркер-процесс заберёт её клеймом из БД. In-memory очередь web-процесса не используется."""
+    if dedup_login:
+        existing = _job_db_active_by_login(login)
+        if existing:
+            if body is not None:
+                body["_job_id"] = existing
+            return existing
+    jid = uuid.uuid4().hex[:12]
+    if body is not None:
+        body["_job_id"] = jid
+        body["_web_posted"] = True                       # маркер: поллер воркера забирает только такие
+        body["_session_snapshot"] = dict(saved_session or {})   # нужен для test_request_context в воркере
+    job = {"status": "queued", "login": login, "done": 0,
+           "total": int(total), "created": 0, "failed": 0,
+           "set_done": 0, "set_total": int(total),
+           "result": None, "error": None, "cancel": False,
+           "kind": _job_kind(body), "publish": bool((body or {}).get("launch")),
+           "stream_content": bool((body or {}).get("stream_content")),
+           "step": None, "_id": jid, "body": body,
+           "session": None, "agency": (body or {}).get("agency")}
+    _job_db_save(jid, job)                                # INSERT: пишет body (с session+маркерами)+agency
+    return jid
+
+
 def _job_new(total: int, login: str, body: dict, saved_session: dict,
              dedup_login: bool = False) -> str:
     """Регистрирует джобу в статусе 'queued' и ставит её в глобальную очередь.
@@ -2548,7 +3547,11 @@ def _job_new(total: int, login: str, body: dict, saved_session: dict,
     НЕзавершённая джоба (queued/running), второй джоб НЕ создаём, а возвращаем существующий job_id.
     Проверка+вставка под ОДНИМ _CREATE_JOBS_LOCK → закрывает гонку двух сабмитов подряд (TOCTOU:
     раньше эндпоинт сканировал и ОТПУСКАЛ лок до _job_new, два запроса успевали вставить обе копии).
-    Внутренние постановки (докрутка/resume/delete_drafts) идут с dedup_login=False (намеренные)."""
+    Внутренние постановки (докрутка/resume/delete_drafts) идут с dedup_login=False (намеренные).
+
+    web-роль: НЕ трогаем in-memory очередь — джоба уходит только в БД (её заберёт worker-процесс)."""
+    if _direct_role() == "web":
+        return _job_new_web(total, login, body, saved_session, dedup_login)
     jid = uuid.uuid4().hex[:12]
     with _CREATE_JOBS_LOCK:
         if dedup_login:
@@ -2569,9 +3572,7 @@ def _job_new(total: int, login: str, body: dict, saved_session: dict,
                "total": int(total), "created": 0, "failed": 0,
                "set_done": 0, "set_total": int(total),
                "result": None, "error": None, "cancel": False,
-               "kind": ("delete_drafts" if (body or {}).get("_kind") == "delete_drafts"
-                        else "copy_campaigns" if (body or {}).get("_kind") == "copy_campaigns"
-                        else "slepok" if (body or {}).get("content_source") == "slepok_library" else "set"),
+               "kind": _job_kind(body),
                "publish": bool((body or {}).get("launch")),
                "stream_content": _is_stream,   # stream=True → фаза generating перед creating
                "step": None,                   # текущая фаза: None/generating/creating (только при stream)
@@ -2606,6 +3607,8 @@ def _claim_next_job():
     Возвращает (jid, job, body, saved) и увеличивает счётчик агентства. Снятые отмены — пропускает."""
     with _CREATE_COND:
         while True:
+            if _CREATE_DRAIN.get("on"):
+                return None                               # drain: воркер завершает работу (worker_main SIGTERM)
             pick = None
             for i, q_jid in enumerate(_CREATE_QUEUE):
                 q_job = _CREATE_JOBS.get(q_jid)
@@ -2636,7 +3639,10 @@ def _create_worker_loop(app):
     """Worker пула создания: параллелит аккаунты, но держит лимит на агентство.
     После УСПЕШНОГО полного аккаунта — пауза _CREATE_POOL_PAUSE сек."""
     while True:
-        jid, job, body, saved = _claim_next_job()
+        claimed = _claim_next_job()
+        if claimed is None:                               # drain (SIGTERM воркеру): завершаем тред
+            return
+        jid, job, body, saved = claimed
         agency = _job_agency(job)
         final_status = "error"
         try:
@@ -2712,6 +3718,12 @@ def _create_worker_loop(app):
                             j = _CREATE_JOBS.get(jid)
                             if j is not None and isinstance(j.get("result"), dict):
                                 j["result"]["auto_queued_repair"] = auto_queued
+                                _lv = j["result"].get("live_verification")
+                                if isinstance(_lv, dict):
+                                    _rp = _lv.get("repair_plan")
+                                    if isinstance(_rp, dict):
+                                        _rp["status"] = "resolved"
+                                        _rp["resolved_by"] = auto_queued.get("job_id", "")
                                 _job_touch(j)
                                 _job_final = dict(j)
                                 post_done_changed = True
@@ -2749,12 +3761,18 @@ def _create_workers_count() -> int:
 
 def _ensure_create_worker(app):
     """Лениво поднимает ПУЛ воркеров (при первом async-запросе):
-    инициализирует таблицу персистентности и поднимает недавние джобы из БД (для просмотра)."""
+    инициализирует таблицу персистентности и поднимает недавние джобы из БД (для просмотра).
+
+    web-роль: воркеры/демоны/recover НЕ стартуем (их держит worker-процесс). Делаем только
+    _jobs_db_init — чтобы таблица и колонка control существовали для постановки/статуса/команд.
+    recover в web-роли ЗАПРЕЩЁН: он бы пометил web-posted queued-джобы interrupted и убил очередь."""
     with _CREATE_JOBS_LOCK:
         if _CREATE_WORKER["started"]:
             return
         _CREATE_WORKER["started"] = True
     _jobs_db_init()
+    if _direct_role() == "web":
+        return                                            # web: только схема БД, никаких фоновых тредов
     _jobs_db_recover()
     _ensure_create_watchdog()
     _create_watchdog_tick()
@@ -2763,6 +3781,202 @@ def _ensure_create_worker(app):
         threading.Thread(target=_create_worker_loop, args=(app,), daemon=True).start()
     _ensure_resume_daemon(app)                            # демон авто-докрутки остатка после сброса баллов
     _ensure_delayed_repair_daemon(app)                    # guarded content repair после Grid lag
+
+
+def _copy_jobs_recover() -> None:
+    """Старт copy-сервиса (direct-copy.service): осиротевшие copy-джобы (running/queued) → interrupted.
+    Трогает ТОЛЬКО kind='copy_campaigns' — очередь создания РК в direct.service не задета.
+    Авто-докрутку не делаем: повторный «Копировать» сам пропустит уже созданное (суффикс _vNN)."""
+    try:
+        conn = _victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            cur.execute("UPDATE public.direct_automation_jobs SET status='interrupted', updated_at=now() "
+                        "WHERE kind='copy_campaigns' AND status IN ('running','queued')")
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _ensure_copy_worker(app):
+    """Воркер-пул отдельного copy-сервиса (direct-copy.service). Владеет ТОЛЬКО copy_campaigns
+    в собственной in-memory очереди этого процесса.
+
+    Умышленно НЕ поднимает create-set инфраструктуру: НЕТ _jobs_db_recover (деструктивен для
+    общей таблицы), НЕТ startup-sweep пустых черновиков, НЕТ resume/delayed-repair демонов и НЕТ
+    web-posted поллера. Поэтому рестарт этого сервиса НИКОГДА не трогает очередь создания РК, а
+    рестарт direct.service не трогает копирование (его recover исключает kind='copy_campaigns')."""
+    with _CREATE_JOBS_LOCK:
+        if _CREATE_WORKER["started"]:
+            return
+        _CREATE_WORKER["started"] = True
+    _jobs_db_init()                                       # схема таблицы (mirror прогресса копирования)
+    _copy_jobs_recover()                                  # crash-cleanup ТОЛЬКО своих copy-джоб
+    _ensure_create_watchdog()                             # heartbeat зависших джоб (по in-memory этого процесса)
+    _create_watchdog_tick()
+    workers = int(_CREATE_WORKERS or _create_workers_count())
+    for _ in range(workers):                              # параллельно по разным агентствам
+        threading.Thread(target=_create_worker_loop, args=(app,), daemon=True).start()
+
+
+# ── worker-роль: БД-поллер (забирает web-posted джобы из БД в in-memory очередь) ──
+def _worker_claim_web_jobs() -> list:
+    """Атомарно клеймит web-posted queued-джобы: queued→claimed RETURNING (защита от двойного клейма)."""
+    import psycopg2.extras
+    try:
+        conn = _victory_conn_rw()
+        try:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(
+                "UPDATE public.direct_automation_jobs SET status='claimed', updated_at=now() "
+                "WHERE job_id IN ("
+                "    SELECT job_id FROM public.direct_automation_jobs "
+                "     WHERE status='queued' AND coalesce(body->>'_web_posted','')='true' "
+                "     ORDER BY created_at LIMIT 10 FOR UPDATE SKIP LOCKED) "
+                "RETURNING job_id, login, total, body")
+            rows = cur.fetchall() or []
+            conn.commit()
+            return rows
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _worker_adopt_job(app, row) -> None:
+    """Завести заклеймленную web-джобу в in-memory очередь воркера (status back → 'queued')."""
+    jid = row["job_id"]
+    with _CREATE_JOBS_LOCK:
+        if jid in _CREATE_JOBS:
+            return                                        # уже адаптирована (перестраховка)
+    body = row.get("body") or {}
+    if isinstance(body, str):
+        try:
+            body = json.loads(body)
+        except Exception:  # noqa: BLE001
+            _job_db_set_status(jid, "error", "битый body web-джобы"); return
+    login = row.get("login") or ""
+    items = body.get("items") or []
+    total = int(row.get("total") or len(items))
+    saved_session = body.get("_session_snapshot") or {"logged_in": True, "is_admin": True}
+    body["_job_id"] = jid
+    with _CREATE_JOBS_LOCK:
+        job = {"status": "queued", "login": login, "done": 0,
+               "total": total, "created": 0, "failed": 0,
+               "set_done": 0, "set_total": total,
+               "result": None, "error": None, "cancel": False,
+               "kind": _job_kind(body), "publish": bool(body.get("launch")),
+               "stream_content": bool(body.get("stream_content")),
+               "step": None, "_id": jid, "body": body, "session": saved_session,
+               "agency": body.get("agency"), "_heartbeat": time.time()}
+        _CREATE_JOBS[jid] = job
+        _CREATE_QUEUE.append(jid)
+        _CREATE_COND.notify()
+    _job_db_save(jid, job)                                # claimed → queued (running проставит воркер)
+    try:
+        _prefetch_start(login, body)                     # Фаза 1: греем кэши процесса-ИСПОЛНИТЕЛЯ
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _worker_expire_awaiting_feed() -> None:
+    """web-роль поставила ожидание решения по фиду; дедлайн истёк → запускаем без фида (worker-время)."""
+    try:
+        conn = _victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE public.direct_automation_jobs "
+                "SET status='queued', "
+                "    body = jsonb_set(body - '_feed_deadline', '{_skip_feed_types}', "
+                "                     '[\"product\",\"master\"]'::jsonb), "
+                "    updated_at=now() "
+                "WHERE status='awaiting_feed_decision' "
+                "  AND coalesce((body->>'_feed_deadline')::double precision, 0) > 0 "
+                "  AND (body->>'_feed_deadline')::double precision < extract(epoch from now())")
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _worker_apply_controls() -> None:
+    """Применить команды web→worker из колонки control (сейчас: 'cancel' running-джобы) и обнулить её."""
+    import psycopg2.extras
+    rows = []
+    try:
+        conn = _victory_conn_rw()
+        try:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("SELECT job_id, control FROM public.direct_automation_jobs WHERE control IS NOT NULL")
+            rows = cur.fetchall() or []
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return
+    for r in rows:
+        jid = r["job_id"]
+        ctrl = (r.get("control") or "").strip()
+        if ctrl == "cancel":
+            with _CREATE_COND:
+                j = _CREATE_JOBS.get(jid)
+                if j is not None:
+                    j["cancel"] = True                    # стоп после текущей кампании item'а
+                    if j.get("status") == "queued" and jid in _CREATE_QUEUE:
+                        _CREATE_QUEUE.remove(jid)
+                        j["status"] = "cancelled"; j["finished_at"] = time.time()
+                _CREATE_COND.notify_all()
+        # feed-решения web-роль применяет напрямую (status flip в БД), поэтому здесь только 'cancel'.
+        try:
+            conn = _victory_conn_rw()
+            try:
+                cur = conn.cursor()
+                cur.execute("UPDATE public.direct_automation_jobs SET control=NULL WHERE job_id=%s", (jid,))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _worker_poll_once(app) -> None:
+    _worker_expire_awaiting_feed()
+    for row in _worker_claim_web_jobs():
+        try:
+            _worker_adopt_job(app, row)
+        except Exception:  # noqa: BLE001
+            pass
+    _worker_apply_controls()
+
+
+def _worker_poll_loop(app) -> None:
+    while not _CREATE_DRAIN.get("on"):
+        try:
+            _worker_poll_once(app)
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(_WORKER_POLL_SEC)
+
+
+def _ensure_worker_poller(app) -> None:
+    """Стартует БД-поллер web-posted джоб. Только worker-роль (в 'all' постановка идёт in-memory,
+    web-posted джоб нет; в 'web' воркеров нет)."""
+    if _direct_role() != "worker":
+        return
+    with _CREATE_JOBS_LOCK:
+        if _WORKER_POLLER["started"]:
+            return
+        _WORKER_POLLER["started"] = True
+    threading.Thread(target=_worker_poll_loop, args=(app,), daemon=True).start()
+
+
+def _worker_bootstrap(app) -> None:
+    """Точка входа worker_main: поднять пул воркеров, все демоны и БД-поллер."""
+    _ensure_create_worker(app)                            # jobs_db_init + recover + watchdog + воркеры + демоны
+    _ensure_worker_poller(app)                            # + поллер web-posted джоб из БД
 
 
 def _busy_response(reason: str, wait: int):
@@ -2975,6 +4189,59 @@ def _enabled_minus_places() -> list[str]:
         return out
     except Exception:  # noqa: BLE001 — недоступность БД не валит создание
         return []
+
+
+_MINUS_MARKS_ENSURED = False                             # DDL гоняем 1 раз на процесс
+_MINUS_MARKS_CACHE: dict = {"ts": 0.0, "val": []}        # TTL-кэш для create-loop'ов (много вызовов подряд)
+_MINUS_MARKS_TTL = 30.0                                   # сек
+
+
+def _minus_marks_ensure(cur) -> None:
+    global _MINUS_MARKS_ENSURED
+    if _MINUS_MARKS_ENSURED:
+        return
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS public.direct_global_minus_marks ("
+        "mark text PRIMARY KEY, enabled boolean NOT NULL DEFAULT false, "
+        "updated_at timestamptz NOT NULL DEFAULT now())"
+    )
+    _MINUS_MARKS_ENSURED = True
+
+
+def _global_minus_marks() -> list[dict]:
+    """Все сохранённые минус-марки фида: [{mark, enabled}] (по алфавиту). Только СОХРАНЁННЫЕ строки."""
+    import psycopg2.extras
+    conn = _victory_conn_rw()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        _minus_marks_ensure(cur)
+        conn.commit()
+        cur.execute("SELECT mark, enabled FROM public.direct_global_minus_marks ORDER BY mark")
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _enabled_minus_marks() -> list[str]:
+    """Включённые минус-марки (значение как сохранено, дедуп). [] при сбое/пустом. TTL-кэш 30с —
+    вызывается в циклах по товарным группам при создании (иначе N обращений к БД на набор)."""
+    now = time.time()
+    if now - _MINUS_MARKS_CACHE["ts"] < _MINUS_MARKS_TTL:
+        return list(_MINUS_MARKS_CACHE["val"])
+    try:
+        out: list[str] = []
+        seen: set[str] = set()
+        for r in _global_minus_marks():
+            if not r.get("enabled"):
+                continue
+            m = str(r.get("mark") or "").strip()
+            if m and m.lower() not in seen:
+                seen.add(m.lower())
+                out.append(m)
+        _MINUS_MARKS_CACHE.update({"ts": now, "val": list(out)})
+        return out
+    except Exception:  # noqa: BLE001 — недоступность БД не валит создание
+        return list(_MINUS_MARKS_CACHE["val"])
 
 
 def _content_rules_ensure(cur) -> None:
@@ -3317,6 +4584,9 @@ register_settings_routes(
     global_minus_places=_global_minus_places,
     minus_places_ensure=_minus_places_ensure,
     place_host=_place_host,
+    global_minus_marks=_global_minus_marks,
+    minus_marks_ensure=_minus_marks_ensure,
+    known_brand_canons=lambda: sorted(_known_brand_canons()),
     victory_conn=_victory_conn,
     victory_conn_rw=_victory_conn_rw,
 )
@@ -3474,14 +4744,18 @@ _V5 = "https://api.direct.yandex.com/json/v5/"
 _V501 = "https://api.direct.yandex.com/json/v501/"
 
 
-def _v5_get(svc: str, token: str, login: str, fieldnames: list[str], criteria=None) -> dict:
-    """Официальный OAuth API v5 GET одного сервиса. Возвращает распарсенный JSON."""
+def _v5_get(svc: str, token: str, login: str, fieldnames: list[str], criteria=None,
+            extra: dict | None = None) -> dict:
+    """Официальный OAuth API v5 GET одного сервиса. Возвращает распарсенный JSON.
+    extra — дополнительные type-specific params (напр. {"UrlFeedFieldNames": ["Url"]})."""
     import requests as _rqs
     h = {"Authorization": "Bearer " + token, "Client-Login": login,
          "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8"}
     params: dict = {"FieldNames": fieldnames}
     if criteria is not None:
         params["SelectionCriteria"] = criteria
+    if extra:
+        params.update(extra)
     try:
         return _rqs.post(_V5 + svc, headers=h, json={"method": "get", "params": params}, timeout=30).json()
     except Exception as e:  # noqa: BLE001
@@ -3740,6 +5014,18 @@ def _preflight_creds(login: str, agency_hint: str, need_cookie: bool) -> dict:
                 "error": "нет агентских токенов (loader.load_yandex_direct вернул пусто)"}
     token, agency = _token_for_login(login, agency_hint, tokens)
     if not token:
+        # Нет рабочего токена (error 53 / аккаунт porg-* без агентского OAuth) — пробуем
+        # cookie-only-путь: Grid/UAC создаёт РК и ставит цены без API-баллов (token="" в builders).
+        # Fallback только при need_cookie=True; token-only типы (search_test/dynamic) — без fallback.
+        if need_cookie:
+            try:
+                _fb_cookie = cmc.pick_working_cookie(login)
+            except Exception:  # noqa: BLE001
+                _fb_cookie = None
+            if _fb_cookie:
+                cmc.remember_working_cookie(login, _fb_cookie)
+                return {"ok": True, "token": "", "agency": None, "cookie": _fb_cookie,
+                        "cookie_only": True, "error": None}
         return {"ok": False, "token": None, "agency": None, "cookie": None,
                 "error": (f"ни один агентский токен не открывает аккаунт {login} — проверьте "
                           f"доступ агентства к клиенту и актуальность OAuth-токенов")}
@@ -3954,18 +5240,151 @@ _M3_STATUS_CACHE: dict = {"at": 0.0, "data": None}
 _M3_STATUS_TTL = 300                                      # кэш статуса M3 ~5 мин (polling 20 мин не дёргает чаще)
 
 
+def _m3_llm_probe(timeout: float = 3.0) -> bool:
+    """Быстрый health LLM: GET /v1/models на первый 14B-эндпоинт (тот же, что _m3_complete).
+    True = mlx-сервер отвечает. ОТДЕЛЬНО от контент-индекса: sshfs-мост может жить, а LLM лежать
+    (инцидент 2026-07-02: туннель 22022 пережил reboot Mac, а туннели 18082-18086 — нет, и бейдж
+    молча зеленел, хотя генерация РК падала)."""
+    import requests as _rqs
+    try:
+        r = _rqs.get(f"{_M3_LLM_URLS_14B[0]}/v1/models", timeout=timeout)
+        return r.status_code == 200
+    except Exception:  # noqa: BLE001
+        return False
+
+
+# Расписание паузы создания при недоступном ИИ (решение Семёна 03.07, скрин #92):
+# 6 проверок по 10 минут, затем ещё одна через 1 час → всё ещё лежит → останавливаем набор.
+_M3_GATE_WAITS = [600] * 6 + [3600]
+
+
+def _m3_gate_wait(job: dict | None = None) -> bool:
+    """Гейт создания РК: без ИИ контент не сгенерить — item'ы уходили бы в брак/деферред
+    десятками (лайв 03.07 18:44: туннель LLM умер, 7 пунктов Павлова отложено).
+    С 03.07 провайдера два: M3 лёг, но OpenRouter жив → НЕ паузим (двусторонний фолбэк
+    _llm_pair_for переключит генерацию сам). Пауза по _M3_GATE_WAITS — только когда
+    недоступны ОБА. True = генерация возможна; False = не дождались / джобу отменили."""
+    if _m3_llm_probe():
+        return True
+    if _openrouter_probe():
+        print("[m3-gate] M3 недоступен, OpenRouter жив → контент пойдёт через "
+              "DeepSeek V4 Flash (платно)", flush=True)
+        return True
+    for _gi, _gw in enumerate(_M3_GATE_WAITS, 1):
+        print(f"[m3-gate] ИИ на M3 недоступен — пауза {_gw // 60} мин "
+              f"(проверка {_gi}/{len(_M3_GATE_WAITS)})", flush=True)
+        if job is not None:
+            job["note"] = f"пауза: ИИ на M3 недоступен, ждём (проверка {_gi}/{len(_M3_GATE_WAITS)})"
+        _t_end = time.time() + _gw
+        while time.time() < _t_end:
+            time.sleep(30)
+            try:
+                _touch_running_jobs_heartbeat()
+            except Exception:  # noqa: BLE001
+                pass
+            if job is not None and job.get("cancel"):
+                return False
+        if _m3_llm_probe() or _openrouter_probe():
+            print(f"[m3-gate] генерация снова доступна (проверка {_gi}) — продолжаем создание", flush=True)
+            if job is not None:
+                job.pop("note", None)
+            return True
+    print("[m3-gate] ни M3, ни OpenRouter не восстановились (6×10мин + 1ч) — набор остановлен", flush=True)
+    return False
+
+
+_COOKIES_STATUS_CACHE: dict = {"at": 0.0, "data": None}
+_COOKIES_STATUS_TTL = 300.0
+
+
+def _cookies_status_response():
+    """Health агентских кук главпотока для бейджа в сайдбаре (под M3). {ok, alive, total, detail}.
+    Probe = UacClient.link_info по куке каждого агентства (локальная → главпоток), как в
+    pick_working_cookie. Кэш 5 мин; ?force=1 — обход кэша (кнопка «⟳ Обновить»)."""
+    now = time.time()
+    _force = str(request.args.get("force") or "") in ("1", "true")
+    cached = _COOKIES_STATUS_CACHE.get("data")
+    if not _force and cached and (now - float(_COOKIES_STATUS_CACHE.get("at") or 0)) < _COOKIES_STATUS_TTL:
+        out = dict(cached)
+        out["cached"] = True
+        return jsonify(out)
+    # Probe агентской куки требует КЛИЕНТСКИЙ ulogin: до 3 клиентов на агентство из
+    # local_gsheet_sites — ОДИН клиент давал ложные ✗, когда попадался отвязанный
+    # (victoryagency14/porg-23yivon2, факт 2026-07-03). Если клиентов нет (y-direct-victory) —
+    # probe «на само себя»: ответ 403 «Нет прав» (code 54) = сессия АВТОРИЗОВАНА → кука живая
+    # (протухшая даёт редирект в Паспорт/401, а не «Нет прав»).
+    probe_logins: dict = {}
+    try:
+        conn = _victory_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT agency_account, login_key FROM public.local_gsheet_sites "
+                        "WHERE coalesce(agency_account,'') NOT IN ('','None') "
+                        "AND coalesce(login_key,'')<>''")
+            for a, l in cur.fetchall():
+                lst = probe_logins.setdefault(a, [])
+                if l not in lst and len(lst) < 3:
+                    lst.append(l)
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        probe_logins = {}
+    parts, alive = [], 0
+    accounts = tuple(getattr(cmc, "DEFAULT_COOKIE_ACCOUNTS", ()) or ())
+    for acc in accounts:
+        acc_ok, src = False, ""
+        ulogins = probe_logins.get(acc) or [acc]
+        for label, getter in (("локальная", cmc.load_cookie_local),
+                              ("главпоток", cmc.fetch_cookie_glavpotok)):
+            try:
+                cookie = getter(acc)
+            except Exception:  # noqa: BLE001
+                cookie = None
+            if not cookie:
+                continue
+            for ulogin in ulogins:
+                try:
+                    cmc.UacClient(cookie, ulogin).link_info("https://ya.ru")
+                    acc_ok = True
+                    break
+                except Exception as pe:  # noqa: BLE001
+                    if "Нет прав" in str(pe) or '"code":54' in str(pe) or '"code": 54' in str(pe):
+                        acc_ok = True   # авторизована, просто нет прав на этот ulogin
+                        break
+                    continue            # кука не подошла этому клиенту → следующий
+            if acc_ok:
+                src = label
+                break
+        alive += 1 if acc_ok else 0
+        parts.append(f"{acc}: {'✓ ' + src if acc_ok else '✗ протухла'}")
+    dead = [p.split(":")[0] for p in parts if "✗" in p]
+    data = {"ok": alive > 0, "alive": alive, "total": len(accounts), "dead": dead,
+            "detail": " · ".join(parts), "checked_at": time.strftime("%H:%M")}
+    _COOKIES_STATUS_CACHE["at"] = now
+    _COOKIES_STATUS_CACHE["data"] = dict(data)
+    data["cached"] = False
+    return jsonify(data)
+
+
 def _m3_status_response():
     """Лёгкий health M3 для ПОСТОЯННОГО индикатора в сайдбаре. {ok, detail, checked_at}. Кэш ~5 мин.
-    Единый источник правды (тот же `_m3_content_status`, что питает зелёный баннер «Контент с M3»)."""
+    ok = контент-индекс (sshfs) И LLM-эндпоинт живы — для генерации РК нужны ОБА (см. _m3_llm_probe).
+    ?force=1 — обход кэша (кнопка «⟳ Обновить» на бейдже: без него клик возвращал старый статус)."""
     now = time.time()
+    _force = str(request.args.get("force") or "") in ("1", "true")
     cached = _M3_STATUS_CACHE.get("data")
-    if cached and (now - float(_M3_STATUS_CACHE.get("at") or 0)) < _M3_STATUS_TTL:
+    if not _force and cached and (now - float(_M3_STATUS_CACHE.get("at") or 0)) < _M3_STATUS_TTL:
         out = dict(cached)
         out["cached"] = True
         return jsonify(out)
     st = _m3_content_status(timeout=6.0)
+    content_ok = bool(st.get("ok"))
+    llm_ok = _m3_llm_probe()
+    detail = st.get("detail") or ""
+    if content_ok and not llm_ok:
+        detail = "⚠ LLM недоступна (mlx 8082 молчит) — генерация РК не пойдёт · " + detail
     from datetime import datetime
-    out = {"ok": bool(st.get("ok")), "detail": (st.get("detail") or ""),
+    out = {"ok": content_ok and llm_ok, "detail": detail,
            "checked_at": datetime.now().strftime("%H:%M"), "cached": False}
     _M3_STATUS_CACHE["at"] = now
     _M3_STATUS_CACHE["data"] = {k: out[k] for k in ("ok", "detail", "checked_at")}
@@ -4123,6 +5542,24 @@ def _slepok_tp_modes(slepok: str, site_type: str, tp: str, segment: str) -> list
     return [m for m in ("КС", "Автотаргет") if m in modes]
 
 
+def _slepok_profile_excludes_tp(slepok: str, site_type: str, tp: str) -> bool:
+    """True, если у слепка ЕСТЬ боевой профиль для site_type, но данного tp в нём НЕТ.
+
+    Смысл — «строгое соответствие набору слепка» (баг porg-psm5h7q6: просочился tp4).
+    Профиль (targeting_profile.json) — слепок РЕАЛЬНЫХ боевых аккаунтов; если он есть, он
+    АВТОРИТЕТЕН по составу типов. Структура (slepki_structure.json) может содержать tp для
+    ДОНОРСКИХ целей (напр. scherbakova держит tp4 как донор «Моделей» для др. слепков,
+    _SEGMENT_DONORS), но сам слепок его не ведёт → строить его в СВОЁМ аккаунте нельзя.
+    Слепка/типа сайта нет в профиле → False (профиль не авторитетен, поведение как раньше —
+    не ломаем слепки без профиля, напр. Терехов).
+    """
+    skey = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
+    st = _targeting_profile().get(skey, {}).get(site_type)
+    if not st:
+        return False
+    return tp not in st
+
+
 def _donor_tp4_models_map() -> dict:
     """{slepok_key: [site_type,...]} — где у слепка НЕТ своих tp4-«Моделей», но донор их покрывает.
     UI по этой карте показывает донорский чекбокс «Модели» для tp4 (напр. Терехов)."""
@@ -4221,6 +5658,7 @@ register_pack_routes(
     m3_content_status=_m3_content_status,
     m3_status_response=_m3_status_response,
     pack_preview_response=_pack_preview_response,
+    cookies_status_response=_cookies_status_response,
 )
 
 
@@ -4454,7 +5892,10 @@ def _campaigns_response():
         elif grid_err:
             out["error"] = f"{v5_err} (кука тоже не отдала список: {grid_err[:140]})"
         else:
-            out["error"] = v5_err
+            # Grid отработал БЕЗ ошибки и отдал 0 кампаний → аккаунт реально пуст (напр. после
+            # «Удалить черновики»). Красная «Недостаточно баллов» тут вводила в заблуждение
+            # (скрин Семёна 03.07 #84) — это не ошибка чтения, а честная пустота.
+            out["note"] = f"кампаний в аккаунте нет (проверено по куке/Grid); v5 недоступен: {v5_err}"
     return jsonify(out)
 
 
@@ -5003,6 +6444,7 @@ def _create_set_plan_deps() -> dict:
         "_ct_segment": _ct_segment,
         "_direct_tokens": _direct_tokens,
         "_filter_allowed_feed_rows": _filter_allowed_feed_rows,
+        "_first_url_feed": _first_url_feed,   # обёртка с configure() — НЕ импортировать из csf напрямую
         "_gc_ct": _gc_ct,
         "_grid_feeds": _grid_feeds,
         "_grid_list_campaigns": _grid_list_campaigns,
@@ -5010,6 +6452,7 @@ def _create_set_plan_deps() -> dict:
         "_json": _json,
         "_segment_donor": _segment_donor,
         "_slepok_interest_for_struct": _slepok_interest_for_struct,
+        "_slepok_profile_excludes_tp": _slepok_profile_excludes_tp,
         "_slepok_struct_groups": _slepok_struct_groups,
         "_slepok_tp_modes": _slepok_tp_modes,
         "_token_for_login": _token_for_login,
@@ -5052,20 +6495,21 @@ register_account_routes(
     exclude_directologs=_EXCLUDE_DIRECTOLOGS,
 )
 
-# Редактор контента (массовая коррекция AI-текстов) — изолированная страница
-# /direct/automation/content + API /direct/api/content-editor/*. Доступ: как у остального
-# Direct (work/work:direct), плюс отдельные ключи direct:content/direct на будущее; админ проходит.
-register_content_editor_routes(
-    bp,
-    _service_required_any("work", "work:direct", "direct:content", "direct"),
-    victory_conn=_victory_conn,
-    token_for_login=_token_for_login,
-    direct_tokens=_direct_tokens,
-    v5_call=_v5_call,
-    v501_svc=_v501_svc,
-    default_status=DEFAULT_STATUS,
-    exclude_directologs=_EXCLUDE_DIRECTOLOGS,
-)
+# Редактор контента может работать отдельным процессом direct-content.service.
+# В direct.service его выключаем через DIRECT_REGISTER_CONTENT_EDITOR=0, чтобы
+# /direct/automation и /direct/automation/content перезапускались независимо.
+if os.environ.get("DIRECT_REGISTER_CONTENT_EDITOR", "1") != "0":
+    register_content_editor_routes(
+        bp,
+        _service_required_any("work", "work:direct", "direct:content", "direct"),
+        victory_conn=_victory_conn,
+        token_for_login=_token_for_login,
+        direct_tokens=_direct_tokens,
+        v5_call=_v5_call,
+        v501_svc=_v501_svc,
+        default_status=DEFAULT_STATUS,
+        exclude_directologs=_EXCLUDE_DIRECTOLOGS,
+    )
 
 
 # Бренд-нейтральные заголовки-филлеры (≤56 симв.) — добор до 5 слотов Мастера, когда у слепка
@@ -5110,16 +6554,16 @@ _GENERIC_TEXT_FILLERS = [
     "Трейд-ин выше рынка. Оценим авто за 30 минут и зачтём в счёт нового кредита.",       # [76] трейд-ин
 ]
 _TP67_MIN_TEXT_LEN = 70
-_GENERIC_SITELINK_FILLERS = [
+_GENERIC_SITELINK_FILLERS = [  # все заголовки ≥ 22 симв (fix 1c, 2026-07-02)
     {"title": "Автокредит от 9 000 ₽/мес", "description": "Подберем условия от банков-партнеров онлайн сегодня"},
-    {"title": "Первый взнос 0 ₽", "description": "Оформим кредит без первоначального взноса онлайн"},
-    {"title": "Трейд-ин выше рынка", "description": "Оценим ваш автомобиль и зачтем в покупку онлайн"},
+    {"title": "Первый взнос 0 ₽ онлайн", "description": "Оформим кредит без первоначального взноса онлайн"},
+    {"title": "Оценка авто на трейд-ин", "description": "Оценим ваш автомобиль и зачтем в покупку онлайн"},
     {"title": "КАСКО на 1 год бесплатно", "description": "Условия действуют при покупке автомобиля в кредит"},
-    {"title": "Одобрение за 30 минут", "description": "Отправьте заявку и получите решение банка сегодня"},
-    {"title": "Выгода при покупке", "description": "Зафиксируем персональные условия покупки автомобиля"},
-    {"title": "Господдержка 2025", "description": "Проверим доступные программы покупки автомобиля"},
-    {"title": "Тест-драйв 2025", "description": "Выберите удобное время для знакомства с автомобилем"},
-    {"title": "Авто в наличии", "description": "Подберем автомобиль под ваш бюджет онлайн сегодня"},
+    {"title": "Одобрение за 30 мин онлайн", "description": "Отправьте заявку и получите решение банка сегодня"},
+    {"title": "Выгода до 30% при покупке", "description": "Зафиксируем персональные условия покупки автомобиля"},
+    {"title": "Господдержка на авто 2025", "description": "Проверим доступные программы покупки автомобиля"},
+    {"title": "Тест-драйв без предоплаты", "description": "Выберите удобное время для знакомства с автомобилем"},
+    {"title": "Авто в наличии сегодня", "description": "Подберем автомобиль под ваш бюджет онлайн сегодня"},
 ]
 
 
@@ -5158,25 +6602,64 @@ def _num(val, default):
         return default
 
 
-register_copy_routes(
-    bp,
-    _direct_access,
-    api_campaigns_func=_campaigns_response,
-    account_prefill_func=_account_prefill_response,
-    metrika_goals_for=_metrika_goals_for,
-    parse_number=_num,
-    copy_default_feed_path=_COPY_DEFAULT_FEED_PATH,
-    counter_foreign_owner=_counter_foreign_owner,
-    resolve_agency_hint=_resolve_agency_hint,
-    ensure_create_worker=_ensure_create_worker,
-    job_new=_job_new,
-    copy_job_upsert=_copy_job_upsert,
-    create_jobs_ahead=_create_jobs_ahead,
-    create_jobs=_CREATE_JOBS,
-    create_jobs_lock=_CREATE_JOBS_LOCK,
-    copy_jobs=_COPY_JOBS,
-    copy_jobs_lock=_COPY_JOBS_LOCK,
-)
+def _wire_copy_routes(target_bp, *, ensure_worker):
+    """Единая проводка copy-роутов — вызывается и основным процессом (bp), и отдельным
+    copy_main.py (свой fresh bp). ensure_worker разный: _ensure_create_worker в общем
+    процессе, _ensure_copy_worker в direct-copy.service (изолированная copy-очередь)."""
+    register_copy_routes(
+        target_bp,
+        _direct_access,
+        api_campaigns_func=_campaigns_response,
+        account_prefill_func=_account_prefill_response,
+        metrika_goals_for=_metrika_goals_for,
+        parse_number=_num,
+        copy_default_feed_path=_COPY_DEFAULT_FEED_PATH,
+        counter_foreign_owner=_counter_foreign_owner,
+        resolve_agency_hint=_resolve_agency_hint,
+        ensure_create_worker=ensure_worker,
+        job_new=_job_new,
+        copy_job_upsert=_copy_job_upsert,
+        create_jobs_ahead=_create_jobs_ahead,
+        create_jobs=_CREATE_JOBS,
+        create_jobs_lock=_CREATE_JOBS_LOCK,
+        copy_jobs=_COPY_JOBS,
+        copy_jobs_lock=_COPY_JOBS_LOCK,
+        feeds_preview_func=_copy_feeds_preview,
+    )
+
+
+# Копирование кампаний может работать отдельным процессом direct-copy.service со своей
+# in-memory очередью. В direct.service его выключаем через DIRECT_REGISTER_COPY=0, чтобы
+# /direct/automation и /direct/automation/copy перезапускались независимо (рестарт одного
+# не роняет очередь другого). Дефолт (флаг не задан) = '1' — копирование в основном
+# процессе (обратная совместимость single-process-режима).
+if os.environ.get("DIRECT_REGISTER_COPY", "1") != "0":
+    _wire_copy_routes(bp, ensure_worker=_ensure_create_worker)
+
+
+def _prefetch_start(login, body, *, is_cancelled=lambda: False):
+    """Прогрев queued-джобы в фоне (Фаза 1). Конфигурируем модуль лениво (все
+    инъектируемые хелперы — _account_offer_prices и т.п. — определены ниже по
+    файлу, резолвятся в момент вызова, а не определения)."""
+    try:
+        from . import ai_agents as _A
+        from . import create_set_prefetch as _pf
+        from . import campaign as _cmc
+        _pf.configure({
+            "account_ctx": _account_ctx,
+            "cached_campaign_content": _cached_campaign_content,
+            "content_cache_key": _content_cache_key,
+            "content_cache": _CONTENT_CACHE,
+            "content_cache_lock": _CONTENT_CACHE_LOCK,
+            "brand_ct_from_coder": _brand_ct_from_coder,
+            "account_offer_prices": _account_offer_prices,
+            "get_agent": _A.get_agent,
+            "pick_working_cookie": _cmc.pick_working_cookie,
+            "videos_pool_for_ct": kp.videos_pool_for_ct,
+        })
+        _pf.start_prefetch(login, body, is_cancelled=is_cancelled)
+    except Exception:  # noqa: BLE001 — прогрев не смеет ломать постановку джобы
+        pass
 
 
 register_job_routes(
@@ -5198,9 +6681,20 @@ register_job_routes(
     delete_drafts_core=_delete_drafts_core,
     create_jobs=_CREATE_JOBS,
     create_jobs_lock=_CREATE_JOBS_LOCK,
+    create_cond=_CREATE_COND,
     create_queue=_CREATE_QUEUE,
     job_terminal=_JOB_TERMINAL,
     job_db_last=_JOB_DB_LAST,
+    start_prefetch=_prefetch_start,
+    role_is_web=lambda: _direct_role() == "web",
+    job_db_get=_job_db_get,
+    job_db_ahead=_job_db_ahead,
+    job_db_set_status=_job_db_set_status,
+    job_control_set=_job_control_set,
+    job_db_web_await_feed=_job_db_web_await_feed,
+    job_db_web_resolve_feed=_job_db_web_resolve_feed,
+    job_db_active_by_login=_job_db_active_by_login,
+    job_db_list_recent=_job_db_list_recent,
 )
 
 
@@ -5297,6 +6791,7 @@ def _create_set_feeds_deps() -> dict:
         "_catalog_feed_keys": _catalog_feed_keys,
         "_coder_name_real_brand": _coder_name_real_brand,
         "_ct_segment_map": _ct_segment_map,
+        "_enabled_minus_marks": _enabled_minus_marks,
         "_feed_row_allowed": _feed_row_allowed,
         "_filter_allowed_feed_rows": _filter_allowed_feed_rows,
         "_gc_ct": _gc_ct,
@@ -5356,6 +6851,7 @@ def _grid_ad_price_payload(*args, **kwargs):
     return _create_set_feeds_module()._grid_ad_price_payload(*args, **kwargs)
 
 def _cached_upload_image(*args, **kwargs):
+    _touch_running_jobs_heartbeat()   # аплоад картинки = прогресс (сотни на кампанию — анти-watchdog)
     return _create_set_feeds_module()._cached_upload_image(*args, **kwargs)
 
 def _homepage_url(*args, **kwargs):
@@ -5816,6 +7312,9 @@ def _build_tp2_adgroups(*args, **kwargs):
 def _struct_cts(*args, **kwargs):
     return _create_set_text_builder_module()._struct_cts(*args, **kwargs)
 
+def _struct_has_tp(*args, **kwargs):
+    return _create_set_text_builder_module()._struct_has_tp(*args, **kwargs)
+
 def _tp2_struct_cts(*args, **kwargs):
     return _create_set_text_builder_module()._tp2_struct_cts(*args, **kwargs)
 
@@ -5866,6 +7365,8 @@ def _create_set_tp1_builder_deps() -> dict:
         "_cached_upload_image": _cached_upload_image,
         "_chunks": _chunks,
         "_coherent_payments": _coherent_payments,
+        "_ensure_callout_exts": _ensure_callout_exts,   # ревью 03.07 #4: имени не было в deps → callouts-блок tp1 молча падал NameError
+        "_touch_running_jobs_heartbeat": _touch_running_jobs_heartbeat,
         "_creative_images_for_ct": _creative_images_for_ct,
         "_ct_segment": _ct_segment,
         "_enabled_minus_places": _enabled_minus_places,
@@ -6105,6 +7606,8 @@ def _slepok_sitelinks_for(slepok: str, site_type: str) -> list[dict]:
 def _norm_sitelinks_for_v501(sitelinks: list, href: str = "") -> list[dict]:
     """Нормализовать быстрые ссылки из M3/item/БД в формат sitelinks.add.
     Href у всех ссылок ведёт на главную аккаунта: /sl1.. давали 404."""
+    from . import ai_agents as A
+    _title_min = A.SITELINK_TITLE_TARGET_MIN            # единый порог (=22), не magic number
     base = (href or "").rstrip("/")
     out, seen = [], set()
     for s in list(sitelinks or []) + list(_GENERIC_SITELINK_FILLERS):
@@ -6112,7 +7615,7 @@ def _norm_sitelinks_for_v501(sitelinks: list, href: str = "") -> list[dict]:
             continue
         title = _trim_to_word(_sanitize_content(s.get("Title") or s.get("title") or "", 30), 30).strip()
         desc = _trim_to_word(_sanitize_content(s.get("Description") or s.get("description") or "", 60), 60).strip()
-        if not title:
+        if not title or len(title) < _title_min:  # fix 1c: last-resort gate (SITELINK_TITLE_TARGET_MIN)
             continue
         if _bad_ad_sitelink(title, desc):
             continue
@@ -7250,7 +8753,7 @@ def _has_number(text: str) -> bool:
 # Sorted longest-first: при добивке до 48+ сначала пробуем самые длинные хвосты (плотнее заполняем).
 _TITLE_TAILS = ("одобрение за 5 минут", "трейд-ин выше рынка", "без первого взноса",
                 "подарки от салона", "одобрение онлайн", "КАСКО в подарок",
-                "успей по акции", "авто в наличии", "господдержка")
+                "авто в наличии", "выгода до 45%", "господдержка")
 
 _BAD_AD_TITLE_RE = re.compile(
     r"(?i)(авито|автосалон/салон|/(?!\s*мес)|низкая\s+ставка|"
@@ -7519,10 +9022,10 @@ def _brand_title_set(brand: str, city: str) -> list:
         f"Купить {brand}{loc}. КАСКО на 1 год бесплатно",       # начало: «Купить»
         f"{brand}{loc}. Платеж от 9 000 ₽/мес",                 # начало: марка (1-е из 2 допустимых; #23)
         f"Новый {brand}{loc}. Одобрение за 30 минут",           # начало: «Новый» (#23)
-        f"Трейд-ин {brand}{loc}. Оценка авто за 30 минут",      # начало: «Трейд-ин» (#23)
+        f"{brand} в трейд-ин{loc}. Оценка авто за 30 минут",     # бренд-подлежащее (#23)
         f"Авто {brand}{loc}. Выгода до 45% при покупке",        # начало: «Авто» (#23)
         f"{brand}{loc}. Кредит от 15 банков онлайн",             # начало: марка (2-е из 2 допустимых; #23)
-        f"Госпрограмма {brand}{loc}. Кредит 2026",              # начало: «Госпрограмма» (#23)
+        f"{brand} по госпрограмме{loc}. Господдержка 2026",      # бренд-подлежащее (#23)
     ]
     out: list = []
     for t in cand:
@@ -7611,6 +9114,10 @@ def _rsya_titles(brand: str, city: str, site_type: str, ai_title2: str = "",
         )
         if not s:
             continue
+        # TITLE_TARGET_MIN gate (= 48): _fill_title может не добить до 48 когда ни один хвост
+        # не вмещается (короткий бренд + город). Фильтруем — brand_fillers ниже компенсируют.
+        if len(s) < 48:
+            continue
         # БАГ 2: дедупликация по смысловому ключу (схлопывает числа: 57%==35%==скидка_до_#%)
         nk = _variant_norm_key(s)
         if nk and nk in seen_keys:
@@ -7675,7 +9182,7 @@ def _rsya_titles(brand: str, city: str, site_type: str, ai_title2: str = "",
             s = _normalize_numeric_suffixes_bp(
                 _fill_title(_replace_sep_hyphen(_replace_emdash(_strip_credit_rate(str(cand)))), 45, 56)
             )
-            if s and _has_own_brand_final(s) and not _bad_ad_title(s) and not _has_stamp(s):
+            if s and len(s) >= 48 and _has_own_brand_final(s) and not _bad_ad_title(s) and not _has_stamp(s):
                 seed = s
                 break
 
@@ -7688,7 +9195,7 @@ def _rsya_titles(brand: str, city: str, site_type: str, ai_title2: str = "",
             s = _normalize_numeric_suffixes_bp(
                 _fill_title(_replace_sep_hyphen(_replace_emdash(_strip_credit_rate(str(cand)))), 45, 56)
             )
-            if (not s or _bad_ad_title(s) or _is_bad_start(s) or not _has_own_brand_final(s)):
+            if (not s or len(s) < 48 or _bad_ad_title(s) or _is_bad_start(s) or not _has_own_brand_final(s)):
                 continue
             nk = _variant_norm_key(s)
             if nk and nk in seen_keys:
@@ -7813,6 +9320,7 @@ def _create_set_feed_builder_deps() -> dict:
         "_account_offer_prices": _account_offer_prices,
         "_add_job_err": _add_job_err,
         "_add_listing_ads_v501": _add_listing_ads_v501,
+        "_enabled_minus_places": _enabled_minus_places,   # ревью 03.07 #7/#8: NameError в tp3 (v5 падал целиком, куки — без финализации)
         "_ai_common_sitelinks": _ai_common_sitelinks,
         "_allowed_feed_keys": _allowed_feed_keys,
         "_apply_corrections": _apply_corrections,
@@ -7943,6 +9451,12 @@ def _units_in_result(r) -> bool:
     return units_in_result(r)
 
 
+def _auth_error_in_result(r) -> bool:
+    """53 (auth error) в результате пункта — переключаем на cookie-путь как при 152."""
+    from .create_set_units import auth_error_in_result
+    return auth_error_in_result(r)
+
+
 def _master_product_deps() -> dict:
     names = [
         "_BU_RE", "_GENERIC_AT_TITLES", "_GENERIC_SITELINK_FILLERS", "_GENERIC_TEXT_FILLERS",
@@ -7991,12 +9505,13 @@ def _create_set_orchestrator_deps() -> dict:
         "_create_tp1_campaign", "_create_tp1_via_cookie", "_create_tp3_campaign", "_create_tp5_campaign",
         "_dedup_callouts", "_deferred_save", "_deferred_set_status", "_first_url_feed",
         "_get_or_create_minus_set", "_goal_vse_formy", "_grid_list_campaigns", "_ints", "_job_db_progress",
+        "_job_new", "_m3_gate_wait", "_slepok_profile_excludes_tp",
         "_lines", "_load_corrections", "_metrika_goals_for", "_next_units_reset_utc", "_normalize_callout_text",
         "_num", "_preflight_creds", "_promo_content_lines", "_promo_usable_for_content",
         "_pull_begin", "_pull_end", "_repair_deps", "_resolve_region", "_rotated_content_window",
         "_rule_sets", "_run_master_product_item", "_selected_slepok_key", "_slepok_content_get",
         "_slepok_uses_shopping", "_templates_for",
-        "_units_in_result", "_v5_get",
+        "_auth_error_in_result", "_units_in_result", "_v5_get",
     ]
     g = globals()
     return {name: g[name] for name in names}
@@ -8044,10 +9559,16 @@ def _create_set_repairing_deps() -> dict:
         "_valid_pack_brand_name": _valid_pack_brand_name,
         "_vendor_value": _vendor_value,
         "gc": gc,
+        "kp": kp,
         "rauto": rauto,
         "rex": rex,
         "rgate": rgate,
         "vsvc": vsvc,
+        # Repair image/price/text callbacks (добавлены 2026-07-03 для in-place repair executors)
+        "_cached_upload_image": _cached_upload_image,
+        "_creative_images_for_ct": _creative_images_for_ct,
+        "_grid_update_adaptive_ads": _grid_update_adaptive_ads,
+        "_grid_set_ad_prices": _grid_set_ad_prices,
     }
 
 
@@ -8098,6 +9619,121 @@ def _queue_recreate_repair_job(*args, **kwargs):
 
 def _auto_queue_recreate_after_done(*args, **kwargs):
     return _create_set_repairing_module()._auto_queue_recreate_after_done(*args, **kwargs)
+
+
+def _spec_audit_deps() -> dict:
+    """IO-хелперы для campaign_spec_audit (spec-аудит live-кампаний vs декларативная спека)."""
+    return {
+        "_account_ctx": _account_ctx,
+        "_ct_segment": _ct_segment,
+        "_ag_part1_map": _ag_part1_map,
+        "_valid_pack_brand_name": _valid_pack_brand_name,
+        "_filter_group_keywords": _filter_group_keywords,
+        "_account_offer_prices": _account_offer_prices,
+        "_direct_tokens": _direct_tokens,
+        "_token_for_login": _token_for_login,
+        "_enabled_minus_marks": _enabled_minus_marks,
+        "_grid_list_campaigns": _grid_list_campaigns,
+        "_is_tool_campaign": _is_tool_campaign,
+        "_struct_cts": _struct_cts,
+        "_struct_has_tp": _struct_has_tp,
+        "_SLEPOK_KEY": _SLEPOK_KEY,
+        "_repair_deps": _repair_deps,
+        "_tp1_video_ads": _tp1_video_ads,   # deferred-video: добивка видео после создания
+        "kp": kp,
+    }
+
+
+def _configure_spec_audit():
+    """Configure and return the campaign_spec_audit module (deps injection)."""
+    from . import campaign_spec_audit as csa
+    csa.configure(_spec_audit_deps())
+    return csa
+
+
+def _run_spec_audit_and_fix(login: str, ctx: dict) -> dict:
+    """Run the declarative spec-audit for one account and auto-fix KEYWORDS_WRONG_GROUP in-place.
+
+    Called from the delayed-repair cycle after the standard in-place actions. Returns a compact
+    report {issues_by_code, fixed} — fixes go through repair_executor (no Direct create units).
+    """
+    csa = _configure_spec_audit()
+    body = (ctx or {}).get("body") or {}
+    job_result = {"body": body, "agency": ctx.get("agency") or ""}
+    report = csa.audit_account_jobs(login, job_result)
+    out = {
+        "campaigns": report.get("campaigns"),
+        "per_tp": report.get("per_tp"),
+        "issues_by_code": report.get("counts") or {},
+    }
+    wrong = [it for it in (report.get("issues") or []) if it.get("code") == "KEYWORDS_WRONG_GROUP"]
+    if wrong:
+        fix = csa.fix_keywords_wrong_group(login, ctx, wrong)
+        out["keywords_wrong_group_fix"] = {
+            "ok": fix.get("ok"), "fixed_adgroups": fix.get("fixed_adgroups"),
+            "deleted_keywords": fix.get("deleted_keywords"), "error": fix.get("error"),
+        }
+    short = [it for it in (report.get("issues") or []) if it.get("code") == "SHORT_TITLES"]
+    if short:
+        fix_st = csa.fix_short_titles(login, ctx, short)
+        out["short_titles_fix"] = {
+            "ok": fix_st.get("ok"), "campaigns_fixed": fix_st.get("campaigns_fixed"),
+            "titles_extended": fix_st.get("titles_extended"),
+            "errors": (fix_st.get("errors") or [])[:5],
+        }
+    btn = [it for it in (report.get("issues") or []) if it.get("code") == "BUTTON_MISSING"]
+    if btn:
+        fix_btn = csa.fix_button_missing(login, ctx, btn)
+        out["button_missing_fix"] = {
+            "ok": fix_btn.get("ok"), "campaigns_fixed": fix_btn.get("campaigns_fixed"),
+            "errors": (fix_btn.get("errors") or [])[:5],
+        }
+    ff = [it for it in (report.get("issues") or []) if it.get("code") == "FEED_FILTER_MISSING_UAC"]
+    if ff:
+        fix_ff = csa.fix_feed_filters_uac(login, ctx, ff)
+        out["feed_filters_uac_fix"] = {
+            "ok": fix_ff.get("ok"), "campaigns_fixed": fix_ff.get("campaigns_fixed"),
+            "errors": (fix_ff.get("errors") or [])[:5],
+        }
+    vm = [it for it in (report.get("issues") or []) if it.get("code") == "VIDEO_MISSING"]
+    if vm:
+        fix_vm = csa.fix_video_missing(login, ctx, vm)
+        out["video_missing_fix"] = {
+            "ok": fix_vm.get("ok"), "campaigns_fixed": fix_vm.get("campaigns_fixed"),
+            "campaigns": fix_vm.get("campaigns"),
+            "errors": (fix_vm.get("errors") or [])[:5],
+        }
+    nl = [it for it in (report.get("issues") or []) if it.get("code") == "NO_LISTING"]
+    if nl:
+        fix_nl = csa.fix_no_listing(login, ctx, nl)
+        out["no_listing_fix"] = {
+            "ok": fix_nl.get("ok"), "campaigns_fixed": fix_nl.get("campaigns_fixed"),
+            "campaigns": fix_nl.get("campaigns"),
+            "errors": (fix_nl.get("errors") or [])[:5],
+        }
+    im = [it for it in (report.get("issues") or []) if it.get("code") == "IMAGE_MISSING"]
+    if im:
+        fix_im = csa.fix_image_missing(login, ctx, im)
+        out["image_missing_fix"] = {
+            "ok": fix_im.get("ok"), "campaigns_fixed": fix_im.get("campaigns_fixed"),
+            "errors": (fix_im.get("errors") or [])[:5],
+        }
+    ffg = [it for it in (report.get("issues") or []) if it.get("code") == "FEED_FILTER_MISSING_GRID"]
+    if ffg:
+        fix_ffg = csa.fix_feed_filters_grid(login, ctx, ffg)
+        out["feed_filters_grid_fix"] = {
+            "ok": fix_ffg.get("ok"), "campaigns_fixed": fix_ffg.get("campaigns_fixed"),
+            "campaigns": fix_ffg.get("campaigns"),
+            "errors": (fix_ffg.get("errors") or [])[:5],
+        }
+    pw = [it for it in (report.get("issues") or []) if it.get("code") == "PLACEMENTS_WRONG"]
+    if pw:
+        fix_pw = csa.fix_placements_wrong(login, ctx, pw)
+        out["placements_wrong_fix"] = {
+            "ok": fix_pw.get("ok"), "campaigns_fixed": fix_pw.get("campaigns_fixed"),
+            "errors": (fix_pw.get("errors") or [])[:5],
+        }
+    return out
 
 
 def _lines(val) -> list[str]:
@@ -8175,16 +9811,22 @@ register_create_set_routes(
 # ── Локальная ИИ на M3 (mlx_lm.server, OpenAI-совместимый API) ──────────────────
 # URL берём из окружения, чтобы менять схему подключения (прямой Tailscale-IP M3
 # либо локальный SSH-туннель на LXC101) без правки кода. По умолчанию — туннель.
-_M3_LLM_URL = os.environ.get("M3_LLM_URL", "http://127.0.0.1:8082").rstrip("/")
+# С 03.07 (решение Семёна): на M3 ОДНА модель — 72B на 8086 (speculative decoding с драфтом
+# 1.5B). Связка 4×14B выключена и удалена: RAM-конкуренция душила 72B и роняла mlx
+# (RemoteDisconnected). Все три константы указывают на один сервер; имена сохранены
+# (десятки использований), env-переопределение работает как раньше.
+_M3_LLM_URL = os.environ.get("M3_LLM_URL", "http://127.0.0.1:8086").rstrip("/")
 _M3_LLM_TIMEOUT = float(os.environ.get("M3_LLM_TIMEOUT", "480"))   # 72B медленнее 14B (под nginx 500с)
-# Fan-out: 4×14B генераторы на отдельных портах + 1×72B валидатор.
-# Env M3_LLM_URLS_14B — comma-sep URLs; иначе дефолт 8082–8085 (те же, что туннель).
 _M3_LLM_URLS_14B: list = [
     s.strip().rstrip("/") for s in os.environ.get("M3_LLM_URLS_14B", "").split(",") if s.strip()
-] or [f"http://127.0.0.1:{p}" for p in (8082, 8083, 8084, 8085)]
+] or ["http://127.0.0.1:8086"]
 _M3_LLM_URL_72B: str = os.environ.get("M3_LLM_URL_72B", "http://127.0.0.1:8086").rstrip("/")
-_M3_LLM_TIMEOUT_14B = float(os.environ.get("M3_LLM_TIMEOUT_14B", "120"))  # 14B быстрее
-_M3_LLM_REPAIR_TIMEOUT = float(os.environ.get("M3_LLM_REPAIR_TIMEOUT", "35"))
+# Таймауты откалиброваны под ОДНУ 72B (~6.5 ток/с, 03.07): 3 сегмента бьют в один mlx и
+# СЕРИАЛИЗУЮТСЯ — таймаут третьего тикает включая очередь двух чужих генераций (~2×90с).
+_M3_LLM_TIMEOUT_14B = float(os.environ.get("M3_LLM_TIMEOUT_14B", "360"))
+# repair 35с был под 14B: 72B генерит 240-440 токенов за 40-70с — 35с не хватало НИКОГДА
+# (до 12 мёртвых вызовов на пункт, ревью 03.07).
+_M3_LLM_REPAIR_TIMEOUT = float(os.environ.get("M3_LLM_REPAIR_TIMEOUT", "120"))
 
 
 # ── ИИ-агенты «слепки директологов»: генерация/публикация промоакций ────────────
@@ -8221,6 +9863,23 @@ def _has_error_leak(text: str) -> bool:
     return any(mk.lower() in low for mk in _M3_LEAK_MARKERS)
 
 
+def _touch_running_jobs_heartbeat() -> None:
+    """LLM-запрос = прогресс: бампаем _heartbeat всех running-джоб.
+
+    Root cause watchdog-киллов 2026-07-02 (jobs 9126bf12fb3a/ac6d98864aa4/c8c444a166d4):
+    _M3_LLM_TIMEOUT=480с × несколько запросов на item — при перегруженном M3 (sshfs-выкачка
+    видео душила Мак) генерация ПЕРВОГО item шла >15 мин, item-heartbeat не тикал → watchdog
+    убивал ЖИВУЮ джобу. Теперь каждый M3-вызов (включая ретраи) отмечает активность."""
+    try:
+        now = time.time()
+        with _CREATE_JOBS_LOCK:
+            for _j in _CREATE_JOBS.values():
+                if _j.get("status") == "running":
+                    _j["_heartbeat"] = now
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _m3_complete(messages: list, max_tokens: int = 400, temperature: float = 0.8,
                  top_p: float | None = None, repetition_penalty: float | None = None,
                  tries: int = 3, backoff: float = 5.0, timeout: float | None = None) -> tuple[str | None, str | None]:
@@ -8242,6 +9901,7 @@ def _m3_complete(messages: list, max_tokens: int = 400, temperature: float = 0.8
     n = max(1, tries)
     for attempt in range(n):
         last = (attempt == n - 1)
+        _touch_running_jobs_heartbeat()   # LLM-вызов = прогресс (анти-watchdog при медленном M3)
         try:
             r = _rqs.post(f"{_M3_LLM_URL}/v1/chat/completions", json=payload, timeout=_to)
         except Exception as e:  # noqa: BLE001
@@ -8291,6 +9951,7 @@ def _m3_complete_url(url: str, messages: list, max_tokens: int = 400, temperatur
     n = max(1, tries)
     for attempt in range(n):
         last = (attempt == n - 1)
+        _touch_running_jobs_heartbeat()   # LLM-вызов = прогресс (анти-watchdog при медленном M3)
         try:
             r = _rqs.post(f"{url}/v1/chat/completions", json=payload, timeout=_to)
         except Exception as e:  # noqa: BLE001
@@ -8339,6 +10000,155 @@ def _m3_complete_parallel(tasks: list) -> list:
             idx, res = f.result()
             results[idx] = res
     return results
+
+
+# ── OpenRouter — платная генерация (попап создания) + двусторонний фолбэк (Семён 03.07) ──
+# A/B 03.07 (пункт Павлова, боевой пайплайн): качество DeepSeek V4 Flash ≈ M3-14B, сырьё чище
+# (вдвое меньше брака в фильтрах), цена ≈ $0.2 за набор ~25 кампаний.
+# «Падение одного — переключение на другого»: композиция фолбэка в _llm_pair_for, сами
+# _or_/_m3_-функции ЧИСТЫЕ (без взаимных вызовов — иначе рекурсия).
+_OPENROUTER_LLM_MODEL = os.environ.get("OPENROUTER_LLM_MODEL", "deepseek/deepseek-v4-flash")
+_OPENROUTER_KEY_CACHE: dict = {}
+
+
+def _openrouter_api_key() -> str:
+    """OPENROUTER_API_KEY через .secret/loader.load_openrouter (кэш процесса).
+    ⚠ НЕ load_secrets() — легаси-сводный dict этот ключ не отдаёт (грабли 03.07)."""
+    if "key" in _OPENROUTER_KEY_CACHE:
+        return _OPENROUTER_KEY_CACHE["key"]
+    key = ""
+    try:
+        import pathlib
+        import sys as _sys
+        for parent in pathlib.Path(__file__).resolve().parents:
+            cand = parent / ".secret" / "loader.py"
+            if cand.exists():
+                if str(cand.parent) not in _sys.path:
+                    _sys.path.insert(0, str(cand.parent))
+                from loader import load_openrouter  # type: ignore
+                key = str((load_openrouter() or {}).get("api_key") or "")
+                break
+    except Exception as _ke:  # noqa: BLE001
+        # НЕ кэшируем пустоту: транзиентный сбой чтения .secret не должен отключать
+        # платный контур до рестарта (ревью 03.07). Ошибку показываем, не глотаем.
+        print(f"[llm-or] ключ не прочитан (повторим при следующем вызове): {str(_ke)[:120]}", flush=True)
+        return ""
+    if key:
+        _OPENROUTER_KEY_CACHE["key"] = key
+    return key
+
+
+def _openrouter_probe(timeout: float = 5.0) -> bool:
+    """Жив ли платный контур: ключ есть И авторизованный эндпоинт отвечает.
+    Используется M3-гейтом: M3 лёг, OpenRouter жив → НЕ паузим, фолбэк переключит сам."""
+    key = _openrouter_api_key()
+    if not key:
+        return False
+    import requests as _rqs
+    try:
+        r = _rqs.get("https://openrouter.ai/api/v1/key",
+                     headers={"Authorization": f"Bearer {key}"}, timeout=timeout)
+        if r.status_code != 200:
+            return False
+        # 200 = ключ валиден, но НЕ платёжеспособность: при исчерпанном лимите completions
+        # отвечает 402 → гейт пропустил бы набор в массовый брак (ревью 03.07). Проверяем остаток.
+        d = (r.json() or {}).get("data") or {}
+        lim, usage = d.get("limit"), d.get("usage")
+        if lim is not None and usage is not None and float(usage) >= float(lim):
+            print("[llm-or] лимит OpenRouter исчерпан (usage>=limit) — контур считаем недоступным",
+                  flush=True)
+            return False
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _or_complete_url(url: str, messages: list, max_tokens: int = 400, temperature: float = 0.8,
+                     top_p: float | None = None, repetition_penalty: float | None = None,
+                     tries: int = 2, backoff: float = 2.0, timeout: float | None = None) -> tuple:
+    """OpenRouter-двойник _m3_complete_url (DI-совместимая сигнатура; url M3 игнорируется).
+    ЧИСТЫЙ: (None, err) при сбое — фолбэк на M3 добавляет _llm_pair_for, не эта функция."""
+    import time as _time
+    import requests as _rqs
+    key = _openrouter_api_key()
+    if not key:
+        return None, "OPENROUTER_API_KEY пуст (.secret/.env)"
+    payload = {"model": _OPENROUTER_LLM_MODEL, "messages": messages,
+               "max_tokens": int(max_tokens), "temperature": float(temperature)}
+    if top_p is not None:
+        payload["top_p"] = float(top_p)
+    last_err = "OpenRouter: нет ответа"
+    n = max(1, tries)
+    for attempt in range(n):
+        last = (attempt == n - 1)
+        _touch_running_jobs_heartbeat()   # LLM-вызов = прогресс (анти-watchdog)
+        try:
+            r = _rqs.post("https://openrouter.ai/api/v1/chat/completions", json=payload,
+                          headers={"Authorization": f"Bearer {key}"}, timeout=timeout or 120)
+        except Exception as e:  # noqa: BLE001
+            last_err = f"OpenRouter недоступен: {str(e)[:120]}"
+            if not last:
+                _time.sleep(backoff)
+            continue
+        if r.status_code != 200:
+            last_err = f"OpenRouter HTTP {r.status_code}: {r.text[:160]}"
+            if not last:
+                _time.sleep(backoff)
+            continue
+        try:
+            content = r.json()["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError, ValueError):
+            last_err = "OpenRouter: пустой ответ"
+            if not last:
+                _time.sleep(backoff)
+            continue
+        if (content or "").strip():
+            return content, None
+        last_err = "OpenRouter: пустой content"
+        if not last:
+            _time.sleep(backoff)
+    return None, last_err
+
+
+def _llm_pair_for(provider: str) -> tuple:
+    """(complete_url, complete_parallel) для провайдера из попапа с ДВУСТОРОННИМ фолбэком:
+    m3 → при сбое OpenRouter; openrouter → при сбое M3. Переключение видно в журнале
+    ([llm-fallback]) — «падение одного — переключение на другого» (Семён 03.07)."""
+    provider = (provider or "").strip().lower()
+    if provider == "openrouter":
+        primary, secondary, tag = _or_complete_url, _m3_complete_url, "OpenRouter→M3"
+    else:
+        primary, secondary, tag = _m3_complete_url, _or_complete_url, "M3→OpenRouter"
+
+    def _url(url, messages, **kw):
+        text, err = primary(url, messages, **kw)
+        if text:
+            return text, err
+        err = err or "primary вернул пустой content"   # диагноз переключения всегда именуем
+        text2, err2 = secondary(url, messages, **kw)
+        if text2:
+            print(f"[llm-fallback] {tag}: {str(err)[:120]}", flush=True)
+            return text2, err2
+        return None, f"{err}; fallback({tag}): {err2}"
+
+    def _par(tasks: list) -> list:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _call(idx_task):
+            idx, (u, msgs, kw) = idx_task
+            return idx, _url(u, msgs, **(kw or {}))
+
+        if not tasks:
+            return []
+        results = [None] * len(tasks)
+        with ThreadPoolExecutor(max_workers=min(4, len(tasks))) as ex:
+            futs = [ex.submit(_call, (i, t)) for i, t in enumerate(tasks)]
+            for f in as_completed(futs):
+                idx, res = f.result()
+                results[idx] = res
+        return results
+
+    return _url, _par
 
 
 _MONTHS_RU = ["", "января", "февраля", "марта", "апреля", "мая", "июня",
@@ -9260,6 +11070,9 @@ def _gen_campaign_content(login: str, agent: dict, agent_key: str, item: dict,
     → {ok, agent, login, item, brand, content:{titles,texts,sitelinks,title2?}, warnings, fallback}
       | {ok:False, error}."""
     from .create_content import run_gen_campaign_content
+    # Провайдер из попапа создания (body.llm_provider → item.llm_provider): пара функций
+    # с двусторонним фолбэком — «падение одного — переключение на другого» (Семён 03.07).
+    _llm_url, _llm_par = _llm_pair_for(str((item or {}).get("llm_provider") or ""))
     return run_gen_campaign_content(
         login=login, agent=agent, agent_key=agent_key, item=item,
         avoid=avoid, ctx_override=ctx_override, fast_mode=fast_mode,
@@ -9267,7 +11080,7 @@ def _gen_campaign_content(login: str, agent: dict, agent_key: str, item: dict,
         _brand_from_coder=_brand_from_coder, _display_brand=_display_brand,
         _extract_text_candidates=_extract_text_candidates,
         _extract_title_candidates=_extract_title_candidates,
-        _m3_complete_parallel=_m3_complete_parallel, _m3_complete_url=_m3_complete_url,
+        _m3_complete_parallel=_llm_par, _m3_complete_url=_llm_url,
         _promo_ctx=_promo_ctx, _promo_extract_json=_promo_extract_json,
         _slepok_content_get=_slepok_content_get, _title2_blocklist=_title2_blocklist,
         _variant_norm_key=_variant_norm_key,

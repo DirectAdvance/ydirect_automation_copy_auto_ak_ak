@@ -204,31 +204,72 @@ def _set_plan_response():
         warnings.append("нет агентского токена — проверка дублей имён недоступна")
 
     feeds = []
+    _sf_fallback_id = 0                # фолбэк-фид для feed_alert (виден и когда product не выбран)
+    _sf_fallback_name = ""             # имя реального фолбэка для кнопки в модалке
     if any(str(v).startswith("product") for v in variants):
         # tp7 (Товарка) размножается по фидам — но ТОЛЬКО по тем, что разрешены в «Глобальных
         # правилах» (тот же allow-list, что и tp1/tp5: _filter_allowed_feed_rows). Раньше фильтра
         # тут не было → tp7 плодил кампанию на КАЖДЫЙ фид аккаунта (вкл. неотмеченные). Фильтруем
         # СЫРЫЕ строки (у них есть name/Name → совпадает с feed_key глобальных правил), затем мапим.
         if token:
-            jf = _v5_get("feeds", token, login, ["Id", "Name", "SourceType"])
+            jf = _v5_get("feeds", token, login, ["Id", "Name", "SourceType", "Url"])
             _raw = [f for f in (jf.get("result") or {}).get("Feeds", []) if f.get("SourceType") == "URL"]
-            feeds = [{"id": f["Id"], "name": f.get("Name")} for f in _filter_allowed_feed_rows(_raw)]
+            feeds = [{"id": f["Id"], "name": f.get("Name"), "url": f.get("Url") or ""} for f in _filter_allowed_feed_rows(_raw)]
         if not feeds:
             # v5 пусто (часто 152 — нет баллов): фиды есть, но v5-чтение стоит баллов → читаем
             # список по КУКЕ через Grid (без баллов), иначе товарные не спланируются на исчерпанном аккаунте.
             try:
                 _raw = _filter_allowed_feed_rows(_grid_feeds(login, row.get("agency_account") or ""))
-                feeds = [{"id": int(f["id"]), "name": f.get("name")} for f in _raw if f.get("id")]
+                feeds = [{"id": int(f["id"]), "name": f.get("name"), "url": f.get("url") or ""} for f in _raw if f.get("id")]
             except Exception:  # noqa: BLE001
                 feeds = []
         if not feeds:
             warnings.append("у аккаунта нет РАЗРЕШЁННЫХ фидов в «Глобальных правилах» — товарные не создадутся")
-        # Галочка «по одному фиду» (single_feed): план тоже строим по ПЕРВОМУ фиду, чтобы
+        # Галочка «по одному фиду» (single_feed): план тоже строим по /yandex.xml, чтобы
         # предпросмотр/счётчик совпадали с реальным созданием (иначе превью показывало все фиды,
         # а создавался один → выглядело как «галочка не работает»).
-        if bool(body.get("single_feed")) and len(feeds) > 1:
-            feeds = feeds[:1]
-            warnings.append("«по одному фиду»: план и создание — только первый фид")
+        # len(feeds) >= 1 (не >1): единственный ЧУЖОЙ фид (credit-page и т.п.) тоже должен
+        # проходить strict-проверку /yandex.xml — иначе галочка «по одному фиду» игнорировалась.
+        if bool(body.get("single_feed")) and len(feeds) >= 1:
+            from .create_set_input import (SINGLE_FEED_KEY, FALLBACK_SINGLE_FEED_KEY,
+                                           feed_row_matches_single_feed, prefer_single_feed_rows)
+            # ⚠️ НЕ импортировать _first_url_feed из create_set_feeds напрямую: тот модуль требует
+            # configure() (инъекции _filter_allowed_feed_rows и др.) → NameError на свежем процессе.
+            # Берём инжектированную blueprint-обёртку (сама вызывает configure) из наших deps.
+            # Резолвим /yandex.xml через API+Grid (как tp1): _first_url_feed видит полные Grid-объекты
+            # с URL-полями, тогда как feeds здесь уже усечены до {id, name} → prefer_single_feed_rows
+            # не находит совпадения по имени и молча берёт первый фид (credit-page-01-a.xml и т.п.).
+            _sf_id = _first_url_feed(token, login, row.get("agency_account") or "", strict=True)
+            if not _sf_id:
+                # /yandex.xml нет → ищем фолбэк-фид (кнопка «Продолжить с другим фидом»)
+                _sf_fallback_id = _first_url_feed(token, login, row.get("agency_account") or "",
+                                                  strict=True, url_key=FALLBACK_SINGLE_FEED_KEY)
+                if not _sf_fallback_id and feeds:
+                    # канонического фолбэка тоже нет → предлагаем ПЕРВЫЙ разрешённый фид аккаунта
+                    # (правило Семёна 03.07 #86: выбор второго фида должен быть всегда, когда
+                    # в аккаунте есть хоть один фид — иначе кнопка пропадала из модалки)
+                    _sf_fallback_id = int(feeds[0].get("id") or 0)
+                if _sf_fallback_id:
+                    _sf_fallback_name = next((str(f.get("name") or "") for f in feeds
+                                              if int(f.get("id") or 0) == _sf_fallback_id), "")
+                if _sf_fallback_id and bool(body.get("single_feed_fallback")):
+                    _sf_id = _sf_fallback_id                   # пользователь подтвердил фолбэк
+                    _sf_fallback_id = 0
+                    warnings.append(f"«по одному фиду»: /{SINGLE_FEED_KEY} нет — по решению пользователя "
+                                    f"используется фолбэк-фид {FALLBACK_SINGLE_FEED_KEY}")
+            if _sf_id:
+                _sf_list = [f for f in feeds if int(f.get("id") or 0) == _sf_id]
+                if _sf_list:
+                    feeds = _sf_list
+                    if not body.get("single_feed_fallback"):
+                        warnings.append(f"«по одному фиду»: план и создание — только /{SINGLE_FEED_KEY}")
+                else:
+                    feeds = prefer_single_feed_rows(feeds)
+                    warnings.append(f"«по одному фиду»: целевой фид не в allow-list (id={_sf_id}), взят первый доступный")
+            else:
+                # strict-поиск не нашёл /yandex.xml ни через API, ни через Grid
+                warnings.append(f"⚠️ /{SINGLE_FEED_KEY} не найден в аккаунте — товарные кампании (tp7) не будут созданы")
+                feeds = []  # убрать product из плана (_emit_struct выдаёт кампании только по feeds)
 
     used: set = set()
 
@@ -262,6 +303,9 @@ def _set_plan_response():
                 # Сегмент позиции структуры определяем по первому ct её группового кодера (gc).
                 # cpc+cpa-пара строится внутри движка (_create_tp1_campaign).
                 tp1_items = _tp1_plan_names(agent, site_type, r_code)
+                if not tp1_items:
+                    warnings.append("tp1 (РСЯ): нет в структуре слепка — пропущен")
+                    continue
                 segs_present = []
                 for pos in tp1_items:
                     seg = _ct_segment(pos.get("gc", ""))
@@ -305,8 +349,16 @@ def _set_plan_response():
             # tp4 «Поиск + Динамика» — поисковые ТЕКСТ-кампании (движок tp2), но item-level по
             # маркам/темам (LIVE Кудерко porg-mgrauofh: TEXT_CAMPAIGN, Search=AVERAGE_CPA, Network=OFF).
             if str(v) == "search_dynamic":
+                # Строгое соответствие слепку: если боевой профиль слепка НЕ ведёт tp4 —
+                # не строим, даже если tp4 есть в структуре (structure держит его как донор).
+                if _slepok_profile_excludes_tp(agent, site_type, "tp4"):
+                    warnings.append("tp4 (Поиск+Динамика): нет в боевом профиле слепка — пропущен (строгое соответствие)")
+                    continue
                 # Сегменты «Марки»/«Модели» (как боевые), бренды/модели — ГРУППЫ внутри.
                 tp4_items = _tp_plan_names(agent, site_type, "tp4")
+                if not tp4_items:
+                    warnings.append("tp4 (Поиск+Динамика): нет в структуре слепка — пропущен")
+                    continue
                 segs4 = []
                 for pos in tp4_items:
                     seg = _ct_segment(pos.get("gc", ""))
@@ -332,6 +384,9 @@ def _set_plan_response():
                                      "tp4_segment": seg, "tp4_label": label})
                 continue
             if str(v) == "rsya_gallery":
+                if _slepok_profile_excludes_tp(agent, site_type, "tp3"):
+                    warnings.append("tp3 (ТГ РСЯ): нет в боевом профиле слепка — пропущен (строгое соответствие)")
+                    continue
                 tp3_items = _tp_plan_names(agent, site_type, "tp3")
                 if not tp3_items:
                     warnings.append("tp3 пропущен: в выбранном слепке нет tp3 для этого типа сайта")
@@ -352,7 +407,13 @@ def _set_plan_response():
             # tp2 «Поиск» — сегментные ТЕКСТ-кампании (как боевые: Марки/Модели × {КС, Автотаргет},
             # бренды/модели — ГРУППЫ внутри). Режимы — по профилю слепка (гейт: ровно что есть, не лишнее).
             if str(v) == "search_test":
+                if _slepok_profile_excludes_tp(agent, site_type, "tp2"):
+                    warnings.append("tp2 (Поиск): нет в боевом профиле слепка — пропущен (строгое соответствие)")
+                    continue
                 tp2_items = _tp_plan_names(agent, site_type, "tp2")
+                if not tp2_items:
+                    warnings.append("tp2 (Поиск): нет в структуре слепка — пропущен")
+                    continue
                 segs2 = []
                 for pos in tp2_items:
                     seg = _ct_segment(pos.get("gc", ""))
@@ -382,7 +443,13 @@ def _set_plan_response():
             # по профилю слепка (как боевые; бренды/модели — ГРУППЫ внутри). Имя — cpc-канон;
             # движок _create_tp5_campaign сам делает пару cpc+cpa и FAN-OUT по фидам, поэтому pay=None.
             if str(v) == "search_gallery":
+                if _slepok_profile_excludes_tp(agent, site_type, "tp5"):
+                    warnings.append("tp5 (Поиск+Динамика+ТГ): нет в боевом профиле слепка — пропущен (строгое соответствие)")
+                    continue
                 tp5_items = _tp_plan_names(agent, site_type, "tp5")
+                if not tp5_items:
+                    warnings.append("tp5 (Поиск+Динамика+ТГ): нет в структуре слепка — пропущен")
+                    continue
                 segs5 = []
                 for pos in tp5_items:
                     seg = _ct_segment(pos.get("gc", ""))
@@ -430,8 +497,11 @@ def _set_plan_response():
     def _emit_struct(tp_code: str, is_master: bool):
         tp_num = 6 if is_master else 7
         groups = _slepok_struct_groups(agent, site_type, tp_code)
-        if not groups:                                   # нет структуры → одна кампания без разреза (фолбэк)
-            groups = [{"name": None, "sq": "site", "is_auto": True}]
+        if not groups:
+            # НЕТ tp6/tp7 в структуре слепка → НЕ создавать (правило Семёна 2026-07-03:
+            # у Щербаковой нет tp6, а фолбэк «одна кампания без разреза» создавал их).
+            warnings.append(f"{tp_code}: в структуре слепка «{agent}»/{site_type} нет — пропущен")
+            return
         # Фильтр по выбранным позициям кампаний (tp6/tp7 — это кампании, НЕ группы).
         sel_pos = _sel_labels(tp_num) or _sel_groups(tp_num)
         if sel_pos is not None:
@@ -453,13 +523,17 @@ def _set_plan_response():
             cat_ct = (_ct_for_name(cat_base) or _ct_for_name(cat) or _gc_ct(g.get("code") or "") or "ct0000")
             # FAN-OUT (CODER.md): tp7 (Товарка) фидовый → каждый фид своя кампания, имя += фид.
             # tp6 (Мастер кампаний) — без фида (одна запись).
-            feed_list = ([(None, None)] if is_master
-                         else [((f or {}).get("id"), (f or {}).get("name")) for f in (feeds or [None])])
-            for f_id, f_name in feed_list:
+            feed_list = ([(None, None, None)] if is_master
+                         else [((f or {}).get("id"), (f or {}).get("name"), (f or {}).get("url") or "")
+                               for f in feeds])
+            for f_id, f_name, f_url in feed_list:
                 for pay in pays:
                     base_nm = _build_name(is_master, is_auto_name, pay, r_code, oblast, g["sq"], cat, ct=cat_ct)
-                    if f_name and not _is_site_domain_name(f_name, row.get("domain") or ""):
-                        base_nm = f"{base_nm} — {f_name}"
+                    # Bug D fix: используем URL фида (без https://) вместо короткого имени из кабинета.
+                    import re as _re_plan
+                    _f_lbl = (_re_plan.sub(r'^https?://', '', f_url) if f_url else f_name)
+                    if _f_lbl and not _is_site_domain_name(f_name, row.get("domain") or ""):
+                        base_nm = f"{base_nm} — {_f_lbl}"
                     payload_sig = (
                         "master" if is_master else "product",
                         tp_code,
@@ -489,7 +563,21 @@ def _set_plan_response():
         _emit_struct("tp6", True)
     if want_product:
         _emit_struct("tp7", False)
+    _fal_needed = len(feeds) == 0 and (want_product or want_master)
+    from .create_set_input import FALLBACK_SINGLE_FEED_KEY as _FB_KEY
     return jsonify({"login": login, "site_type": site_type, "r_code": r_code, "oblast": oblast,
                     "feeds": len(feeds), "count": len(plan),
                     "resolved_cpa": cpa, "resolved_budget": budget,   # бюджет/CPA из правил (для read-only + создания)
-                    "renamed": sum(1 for p in plan if p["renamed"]), "plan": plan, "warnings": warnings})
+                    "renamed": sum(1 for p in plan if p["renamed"]), "plan": plan, "warnings": warnings,
+                    "feed_alert": {
+                        "needed": _fal_needed,
+                        "missing": ["yandex.xml"] if _fal_needed else [],
+                        "will_skip_types": (["product"] if want_product else []) + (["master"] if want_master else []) if _fal_needed else [],
+                        # найден фолбэк-фид → фронт показывает кнопку «Продолжить с другим фидом»
+                        # (повторный set_plan с single_feed_fallback=true строит план на нём).
+                        # Имя — реального фолбэка (не всегда канонический _FB_KEY: при его
+                        # отсутствии предлагается первый разрешённый фид аккаунта).
+                        "fallback_feed": ({"id": _sf_fallback_id,
+                                           "name": (_sf_fallback_name or _FB_KEY)}
+                                          if (_fal_needed and _sf_fallback_id) else None),
+                    }})

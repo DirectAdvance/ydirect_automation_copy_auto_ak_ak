@@ -26,7 +26,9 @@ import subprocess
 import math
 import shutil
 
-PACK_MOUNT = "/opt/neuro_kontent"
+# NEURO_PACK_MOUNT: переключение на ЛОКАЛЬНУЮ копию пака (перенесённую с M3 ночным
+# sync-ом, scripts/sync_content_m3.py). Дефолт — sshfs-монт (обратная совместимость).
+PACK_MOUNT = os.environ.get("NEURO_PACK_MOUNT", "/opt/neuro_kontent")
 PACK_ROOT = os.path.join(PACK_MOUNT, "kontent_oktyabr")
 FEEDS_DIR = os.path.join(PACK_ROOT, "_image_store", "feeds")
 
@@ -248,6 +250,27 @@ if os.path.isdir(manual_root):
                 out["external_assets"].setdefault(key, []).append({
                     "remote": os.path.join(cur, fn),
                     "kind": kind,
+                })
+# Видео per-ct: /Users/Shared/agency/Video/<ctNNNN>/<ctNNNN_NN>.mp4 — общий пул роликов,
+# нарезанных по коду модели (ct = coder-ct, как фид-картинки). Индексируем так же, как Manual:
+# ключ external_assets "Video|video|<ct>", kind video_external. Загрузка в РК — по ct.
+video_root = os.path.join(os.path.dirname(os.path.dirname(root)), "Video")
+if os.path.isdir(video_root):
+    for ct in sorted(os.listdir(video_root)):
+        ctp = os.path.join(video_root, ct)
+        ctl = ct.lower()
+        if not re.fullmatch(r"ct\d{4}", ctl) or not os.path.isdir(ctp):
+            continue
+        key = "Video|video|" + ctl
+        out["external_folders"].setdefault(key, True)
+        for cur, dirs, files in os.walk(ctp):
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in {"__pycache__", ".git"}]
+            for fn in sorted(files):
+                if not fn.lower().endswith(vid_ext):
+                    continue
+                out["external_assets"].setdefault(key, []).append({
+                    "remote": os.path.join(cur, fn),
+                    "kind": "video_external",
                 })
 print(json.dumps(out, ensure_ascii=False))
 '''
@@ -1004,42 +1027,90 @@ def videos_for_ct(login: str, ct: str, limit: int = 2) -> list:
     Пример: ct0119 → 'Haval Jolion' → ключ 'jolion' → ['Jolion.mp4', 'Jolion_1.mp4'] →
     /opt/neuro_kontent/kontent_oktyabr/_slepki_data/haval_ufa_si7rw3ua/videos/Jolion.mp4
 
-    Фолбэк: пусто (caller должен вернуться к videos_for_login).
-    Лимит Директа — 2 видео на мастер."""
+    Фолбэк (2026-07-02): если у слепка нет ролика для модели — берём видео из общего per-ct
+    пула M3 ``/Users/Shared/agency/Video/<ct>/`` через ``videos_pool_for_ct`` (так же, как
+    картинки из Manual). Лимит Директа — 2 видео на мастер."""
     ct = _norm_ct(ct)
     if not ct or ct == GENERAL_CT:
         return []
     suffix = (login or "").rsplit("-", 1)[-1].strip()
-    if not suffix:
+    model_name = feeds_ct_model().get(ct, "")           # ct0119 → 'Haval Jolion'
+    if suffix and model_name:
+        # Ключ в _videos_map: модель без марки и маркетингового хвоста
+        # ('Haval Jolion Новый' -> 'jolion'). Производные модели не подменяем:
+        # F7X и Dargo X должны иметь отдельные видео-ключи.
+        import unicodedata as _ud
+        tokens = [
+            _ud.normalize("NFKD", t).encode("ascii", "ignore").decode("ascii").lower()
+            if re.search(r"[A-Za-z]", t)
+            else "".join(ch for ch in _ud.normalize("NFKD", t).lower() if not _ud.combining(ch))
+            for t in model_name.strip().split()
+        ]
+        tail_noise = {"новый", "новыи", "новая", "новое", "novyi", "novy", "new"}
+        tokens = [t for t in tokens if t and t not in tail_noise]
+        model_key = tokens[-1] if tokens else ""
+        sd = _load_index().get("slepki_data", {})
+        for folder in sorted(sd):
+            if folder.endswith(suffix):
+                vmap = sd[folder].get("videos_map") or {}
+                filenames = vmap.get(model_key, [])
+                if filenames:
+                    rels = [posixpath.join(M3_PACK_ROOT, "_slepki_data", folder, "videos", fn)
+                            for fn in filenames[:limit]]
+                    got = _fetch_many(rels)
+                    slepki = [got[r] for r in rels if got.get(r)]
+                    if slepki:
+                        return slepki
+                break                                   # слепок найден, но ролика нет → пул по ct
+    return videos_pool_for_ct(ct, limit)
+
+
+def videos_pool_for_ct(ct: str, limit: int = 2) -> list:
+    """Видео из общего per-ct пула M3 ``/Users/Shared/agency/Video/<ct>/`` (индекс
+    external_assets, ключ ``Video|video|<ct>``, kind ``video_external``).
+
+    Account-agnostic: ролики нарезаны по коду модели (ct = coder-ct, как фид-картинки),
+    подходят любому аккаунту с этой моделью. Возвращает ЛОКАЛЬНЫЕ пути (точечный fetch с M3).
+    Лимит Директа — 2 видео на мастер."""
+    ct = _norm_ct(ct)
+    if not ct or ct == GENERAL_CT:
         return []
-    # Имя модели из фид-индекса (ct0119 → 'Haval Jolion')
-    model_name = feeds_ct_model().get(ct, "")
-    if not model_name:
-        return []
-    # Ключ в _videos_map: модель без марки и маркетингового хвоста
-    # ('Haval Jolion Новый' -> 'jolion'). Производные модели не подменяем:
-    # F7X и Dargo X должны иметь отдельные видео-ключи.
-    import unicodedata as _ud
-    tokens = [
-        _ud.normalize("NFKD", t).encode("ascii", "ignore").decode("ascii").lower()
-        if re.search(r"[A-Za-z]", t)
-        else "".join(ch for ch in _ud.normalize("NFKD", t).lower() if not _ud.combining(ch))
-        for t in model_name.strip().split()
-    ]
-    tail_noise = {"новый", "новыи", "новая", "новое", "novyi", "novy", "new"}
-    tokens = [t for t in tokens if t and t not in tail_noise]
-    model_key = tokens[-1] if tokens else ""
-    sd = _load_index().get("slepki_data", {})
-    for folder in sorted(sd):
-        if folder.endswith(suffix):
-            vmap = sd[folder].get("videos_map") or {}
-            filenames = vmap.get(model_key, [])
-            if not filenames:
-                return []                               # модели нет в карте → фолбэк на login
-            rels = [posixpath.join(M3_PACK_ROOT, "_slepki_data", folder, "videos", fn)
-                    for fn in filenames[:limit]]
-            got = _fetch_many(rels)
-            return [got[r] for r in rels if got.get(r)]
+    _lim = max(1, int(limit or 2))
+    ext_assets = (_load_index().get("external_assets") or {})
+    rows = ext_assets.get("Video|video|" + ct, []) or []
+    rels = [str(r.get("remote") or "").strip() for r in rows
+            if str(r.get("kind") or "") == "video_external"]
+    rels = [r for r in rels if r][:_lim]
+    if rels:
+        got = _fetch_many(rels)
+        result = [got[r] for r in rels if got.get(r)]
+        if result:
+            return result
+    # Brand-fallback: точного ct нет в пуле Video/ (брендовый ct без своей папки, напр. ct0111
+    # Haval). Берём ролики из модельных ct того же бренда (feeds_ct_model: ct→'Brand Model').
+    ct_models = feeds_ct_model()
+    my_model = ct_models.get(ct, "")
+    brand_word = (my_model.strip().split()[0] if my_model else "").lower()
+    if brand_word:
+        brand_rels: list = []
+        for key, rows2 in ext_assets.items():
+            if not key.startswith("Video|video|ct"):
+                continue
+            other_ct = key.rsplit("|", 1)[-1]
+            if other_ct == ct:
+                continue
+            other_model = ct_models.get(other_ct, "")
+            if not other_model or other_model.strip().split()[0].lower() != brand_word:
+                continue
+            brand_rels.extend(
+                str(r.get("remote") or "").strip()
+                for r in rows2
+                if str(r.get("kind") or "") == "video_external"
+            )
+        brand_rels = [r for r in brand_rels if r][:_lim]
+        if brand_rels:
+            got2 = _fetch_many(brand_rels)
+            return [got2[r] for r in brand_rels if got2.get(r)]
     return []
 
 

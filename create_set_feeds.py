@@ -19,31 +19,75 @@ def configure(deps: dict) -> None:
     globals().update(deps)
 
 
-def _first_url_feed(token: str, login: str, agency: str = "") -> int:
-    """Первый XML-фид аккаунта (SourceType=URL) → id, или 0. Нужен для товарных объявлений tp1/tp5.
+def _first_url_feed(token: str, login: str, agency: str = "", strict: bool = False,
+                    url_key: str = "") -> int:
+    """/yandex.xml XML-фид аккаунта (SourceType=URL) → id, или первый fallback, или 0.
+    Нужен для товарных объявлений tp1/tp5.
     При пустом v5 (часто 152 — нет баллов) фолбэк на список фидов по КУКЕ (Grid, без баллов).
-    Пропускает фиды в ERROR-состоянии (cmc._dead_feed_ids — пополняется при FEED_NOT_EXIST retry)."""
+    Пропускает фиды в ERROR-состоянии (cmc._dead_feed_ids — пополняется при FEED_NOT_EXIST retry).
+    strict=True: если целевой фид не найден ни в v5, ни в Grid — возвращает 0 (не берёт первый
+    попавшийся фид). Используется для single_feed/tp7, чтобы не создавать кампанию с чужим фидом.
+    url_key: искать фид по этому ключу вместо /yandex.xml (фолбэк-фид из feed_alert)."""
+    from .create_set_input import feed_row_matches_key, prefer_single_feed_rows
+    from .create_set_input import SINGLE_FEED_KEY as _SF_KEY
+    _match_key = (url_key or _SF_KEY).strip()
+
+    def feed_row_matches_single_feed(row):
+        return feed_row_matches_key(row, _match_key)
     if token:
         try:
             jf = _v5_get("feeds", token, login, ["Id", "Name", "SourceType"])
             allowed = _allowed_feed_keys()
             if not allowed:
                 return 0
+            rows = []
             for f in (jf.get("result") or {}).get("Feeds", []):
-                if f.get("SourceType") == "URL":
-                    try:
-                        fid = int(f["Id"])
-                    except (TypeError, ValueError):
-                        continue
-                    if fid in cmc._dead_feed_ids:
-                        continue
-                    if not _feed_row_allowed(f, allowed):
-                        continue
-                    return fid
+                if f.get("SourceType") != "URL":
+                    continue
+                try:
+                    fid = int(f["Id"])
+                except (TypeError, ValueError):
+                    continue
+                if fid in cmc._dead_feed_ids:
+                    continue
+                if not _feed_row_allowed(f, allowed):
+                    continue
+                rows.append(f)
+            if rows:
+                if strict:
+                    for f in rows:
+                        if feed_row_matches_single_feed(f):
+                            try:
+                                return int(f["Id"])
+                            except (TypeError, ValueError, KeyError):
+                                continue
+                    # strict-мисс по v5 — НЕ приговор: v5-строки без Url (FieldNames не включают
+                    # UrlFeed) матчатся только по имени кабинета. Проваливаемся в Grid-ветку ниже —
+                    # там реальные url-поля (ревью 03.07 #1: «/yandex.xml не найден» при живом фиде).
+                    pass
+                else:
+                    for f in prefer_single_feed_rows(rows):
+                        try:
+                            return int(f["Id"])
+                        except (TypeError, ValueError, KeyError):
+                            continue
         except Exception:  # noqa: BLE001
             pass
     if agency:                                            # v5 пусто/152 → по куке
-        for f in _filter_allowed_feed_rows(_grid_feeds(login, agency)):
+        grid_rows = _filter_allowed_feed_rows(_grid_feeds(login, agency))
+        if strict:
+            for f in grid_rows:
+                if not feed_row_matches_single_feed(f):
+                    continue
+                try:
+                    fid = int(f["id"])
+                except (TypeError, ValueError, KeyError):
+                    continue
+                if fid in cmc._dead_feed_ids:
+                    continue
+                return fid
+            return 0  # strict: /yandex.xml не найден в Grid-фидах — не брать fallback
+        for f in prefer_single_feed_rows(grid_rows):
             try:
                 fid = int(f["id"])
             except (TypeError, ValueError, KeyError):
@@ -91,7 +135,7 @@ def _catalog_feed(token: str, login: str, prefer_id: int = 0, agency: str = "") 
 
 # ── Модельные коллекции фидов (для фильтра товарных по модели — «только Lada Granta») ──────────
 _FEEDS_QUERY = ("query Feeds($login:String!){client(searchBy:{login:$login}){"
-                "feeds{rowset{id name listings{id name}}}}}")
+                "feeds{rowset{id name url listings{id name}}}}}")
 
 
 def _grid_feeds(login: str, agency: str) -> list:
@@ -155,7 +199,8 @@ _FEED_OFFERS_Q = ("query FeedOffersPreview($feedId:Long!$filterConditions:[GdSma
                   "feedId:$feedId filterConditions:$filterConditions filterMobileAppOffers:$filterMobileAppOffers "
                   "bannerId:$bannerId campaignId:$campaignId){previews{price{current old} text{name} targetUrl}}}")
 _UPD_ADAPTIVE_Q = ("mutation UpdateAdaptiveTextAds($updateInput:GdUpdateAdaptiveTextAdsInput!){"
-                   "updateAdaptiveTextAds(input:$updateInput){updatedAds{id}validationResult{errors{code path params}}}}")
+                   "updateAdaptiveTextAds(input:$updateInput){updatedAds{id}validationResult{"
+                   "errors{code path params}warnings{code path params}}}}")  # warnings added fix 2
 
 
 def _offer_price_keys(name: str) -> set:
@@ -335,9 +380,10 @@ def _group_ad_price(prices: dict, brand: str, seg: str = "") -> tuple:
         pr = prices.get(b.split()[0], prices.get(b, (0, 0)))     # МИН цена марки (ключ-бренд)
     else:                                                        # Модели
         pr = _ad_price_for_brand(prices, brand)
-    # Фолбэк (#3 review): брендовая группа без своего оффера в фиде → «от {мин цена фида}», а не пустая
-    # цена (иначе тумблер «Цена» выключен). Пустая карта → _min_offer_price даёт (0,0) — цену не выдумываем.
-    return pr if pr and pr[0] else _min_offer_price(prices)
+    # Правило Семёна (2026-07-02): марки/модели НЕТ в фиде → цена ПУСТАЯ (тумблер выключен),
+    # НЕ подставлять минимальную цену фида — «Tank от 789 900 ₽» вводит в заблуждение.
+    # Фолбэк _min_offer_price остаётся только для Общее/аудиторных групп (выше, без марки).
+    return pr if pr and pr[0] else (0, 0)
 
 
 def _safe_old_price(current: int, old: int = 0) -> int:
@@ -371,6 +417,36 @@ def _grid_ad_price_payload(current: int, old: int = 0) -> dict | None:
             "prefix": "FROM", "currency": "RUB"}
 
 
+def _norm_read_ad_price(raw: dict | None) -> dict | None:
+    """Нормализовать bannerPrice из Grid-чтения к формату Grid-мутации.
+
+    Grid READ возвращает: {"price": "2040546.00", "priceOld": null, "prefix": "FROM", "currency": "RUB"}
+    Grid MUTATION ожидает: {"price": "2040546", "priceOld": "2285412", "prefix": "FROM", "currency": "RUB"}
+
+    Десятичная строка в price (от READ) → Grid МОЛЧА сбрасывает bannerPrice при UpdateAdaptiveTextAds.
+    Проверено live на кампании 712104527, ad 1914498802671820819 (2026-07-03).
+    """
+    if not isinstance(raw, dict):
+        return None
+    try:
+        cur = int(float(raw.get("price") or 0))
+    except (TypeError, ValueError):
+        return None
+    if cur <= 0:
+        return None
+    try:
+        old_raw = int(float(raw.get("priceOld") or 0))
+    except (TypeError, ValueError):
+        old_raw = 0
+    old_i = _safe_old_price(cur, old_raw)
+    return {
+        "price": str(cur),
+        "priceOld": str(old_i) if old_i else "",
+        "prefix": str(raw.get("prefix") or "FROM"),
+        "currency": str(raw.get("currency") or "RUB"),
+    }
+
+
 # ── Персистентный (на время жизни процесса) кеш imageHash для Grid-аплоадов ──────────────
 # imageHash в Яндексе живёт в библиотеке ЛОГИНА и валиден для всех его кампаний → каждую
 # уникальную картинку достаточно залить ОДИН раз на аккаунт. Без этого кеша cookie/Grid-путь
@@ -380,6 +456,42 @@ def _grid_ad_price_payload(current: int, old: int = 0) -> dict | None:
 _GRID_IMG_HASH_CACHE: dict[tuple[str, str], str] = {}
 _GRID_IMG_HASH_LOCK = threading.Lock()
 _GRID_IMG_CACHE_STATS = {"hit": 0, "miss": 0}
+# Негативный кэш: после _IMG_FAIL_LIMIT неудач файл не пробуем _IMG_FAIL_TTL секунд — иначе
+# упавший аплоад молча повторялся на КАЖДОЙ группе каждой кампании (лайв 03.07: 20+ мин
+# впустую на джобу). TTL, а не «до конца процесса»: добивка IMAGE_MISSING работает в ТОМ ЖЕ
+# процессе воркера — вечный blacklist не дал бы ей дозалить после восстановления Яндекса.
+_GRID_IMG_FAIL_COUNT: dict[tuple[str, str], tuple[int, float]] = {}   # key → (fails, last_ts)
+# Лимит 3, не 2: check→upload→increment разнесены по секциям лока (upload сознательно вне),
+# create-воркер и delayed-repair daemon могут упасть на одном key одновременно — при лимите 2
+# один транзиентный сбой Яндекса сжигал бы весь бюджет за раунд (ревью 03.07, TOCTOU).
+_IMG_FAIL_LIMIT = 3
+_IMG_FAIL_TTL = 900.0                                                 # 15 мин
+
+
+def _reset_img_fail_cache(login: str, paths: list | None = None) -> int:
+    """Снять blacklist неудачных аплоадов: точечно по paths (realpath-нормализация как в кэше)
+    или по всему логину. Зовёт images_repair перед повторной заливкой — добивка обязана
+    попробовать заново. paths ОБЯЗАТЕЛЕН из repair-цикла по кампаниям: сброс всего логина
+    на каждую кампанию ре-армил бы файлы, только что заблэклищенные create-воркером (ревью 03.07)."""
+    if paths is not None:
+        want = set()
+        for p in paths:
+            if not p:
+                continue
+            try:
+                want.add(os.path.realpath(p))
+            except Exception:  # noqa: BLE001
+                want.add(p)
+        with _GRID_IMG_HASH_LOCK:
+            keys = [k for k in _GRID_IMG_FAIL_COUNT if k[0] == login and k[1] in want]
+            for k in keys:
+                _GRID_IMG_FAIL_COUNT.pop(k, None)
+        return len(keys)
+    with _GRID_IMG_HASH_LOCK:
+        keys = [k for k in _GRID_IMG_FAIL_COUNT if k[0] == login]
+        for k in keys:
+            _GRID_IMG_FAIL_COUNT.pop(k, None)
+    return len(keys)
 
 
 def _cached_upload_image(gc_img, login: str, path: str):
@@ -392,24 +504,37 @@ def _cached_upload_image(gc_img, login: str, path: str):
         key = (login, os.path.realpath(path))
     except Exception:  # noqa: BLE001
         key = (login, path)
+    _hit_print = None
     with _GRID_IMG_HASH_LOCK:
         _h = _GRID_IMG_HASH_CACHE.get(key)
         if _h:
             _GRID_IMG_CACHE_STATS["hit"] += 1
             _hit_n = _GRID_IMG_CACHE_STATS["hit"]
-            # HIT частый — печатаем каждый 25-й (журнал не засоряем, но видно что кеш живой)
+            # HIT частый — печатаем каждый 25-й (журнал не засоряем, но видно что кеш живой).
+            # Сам print — ВНЕ лока: блокирующий write в забитый pipe держал бы общий лок кэша.
             if _hit_n % 25 == 0:
-                try:
-                    print(f"[img-cache] HIT total={_hit_n} miss={_GRID_IMG_CACHE_STATS['miss']} "
-                          f"{login} {os.path.basename(path)}", flush=True)
-                except Exception:  # noqa: BLE001
-                    pass
-            return _h
+                _hit_print = (f"[img-cache] HIT total={_hit_n} "
+                              f"miss={_GRID_IMG_CACHE_STATS['miss']} "
+                              f"{login} {os.path.basename(path)}")
+        else:
+            _fails, _last_ts = _GRID_IMG_FAIL_COUNT.get(key, (0, 0.0))
+            if _fails >= _IMG_FAIL_LIMIT:
+                if time.time() - _last_ts < _IMG_FAIL_TTL:
+                    return None                        # blacklisted — причина уже в журнале
+                _GRID_IMG_FAIL_COUNT.pop(key, None)    # TTL истёк — даём новую попытку
+    if _h:
+        if _hit_print:
+            try:
+                print(_hit_print, flush=True)
+            except Exception:  # noqa: BLE001
+                pass
+        return _h
     # miss — грузим ВНЕ лока (медленный сетевой вызов не должен блокировать другие воркеры)
     _h = gc_img.upload_image(path)
     if _h:
         with _GRID_IMG_HASH_LOCK:
             _GRID_IMG_HASH_CACHE[key] = _h
+            _GRID_IMG_FAIL_COUNT.pop(key, None)
             _GRID_IMG_CACHE_STATS["miss"] += 1
             _miss_n = _GRID_IMG_CACHE_STATS["miss"]
         # MISS = реальный аплоад в Яндекс (теперь РЕДКИЙ, 1 раз на картинку аккаунта) — печатаем всегда
@@ -418,6 +543,17 @@ def _cached_upload_image(gc_img, login: str, path: str):
                   f"{login} {os.path.basename(path)}", flush=True)
         except Exception:  # noqa: BLE001
             pass
+    else:
+        with _GRID_IMG_HASH_LOCK:
+            _fails, _ = _GRID_IMG_FAIL_COUNT.get(key, (0, 0.0))
+            _GRID_IMG_FAIL_COUNT[key] = (_fails + 1, time.time())
+            _blk = _fails + 1 == _IMG_FAIL_LIMIT
+        if _blk:
+            try:
+                print(f"[img-cache] BLACKLIST на {int(_IMG_FAIL_TTL // 60)} мин после "
+                      f"{_IMG_FAIL_LIMIT} неудач: {login} {os.path.basename(path)}", flush=True)
+            except Exception:  # noqa: BLE001
+                pass
     return _h
 
 
@@ -467,32 +603,94 @@ def _grid_set_ad_prices(login: str, items: list) -> int:
         if r.status_code == 403:
             r = gc._post("UpdateAdaptiveTextAds", _UPD_ADAPTIVE_Q, v)
         j = r.json()
-        return len(((j.get("data") or {}).get("updateAdaptiveTextAds") or {}).get("updatedAds") or [])
+        _mut = (j.get("data") or {}).get("updateAdaptiveTextAds") or {}
+        _vr = _mut.get("validationResult") or {}
+        if _vr.get("warnings"):  # fix 2: log adPrice warnings для диагностики field-name проблемы
+            import logging as _lg
+            _lg.getLogger("direct.feeds").warning(
+                "adPrice UpdateAdaptiveTextAds warns login=%s: %s", login, str(_vr["warnings"])[:400])
+        return len(_mut.get("updatedAds") or [])
     except Exception:  # noqa: BLE001
         return 0
 
 
-def _grid_update_adaptive_ads(login: str, items: list[dict]) -> int:
+def _grid_update_adaptive_ads(login: str, items: list[dict],
+                               campaign_ids: list[int] | None = None) -> int:
     """Обновить комбинаторные объявления через Grid UpdateAdaptiveTextAds.
-    items: [{id, href, titles, bodies, image_hashes?, adPrice?}, ...]
-    image_hashes опциональны: если не переданы, существующие картинки не трогаем."""
+    items: [{id, href, titles, bodies, image_hashes?, creative_ids?, adPrice?}, ...]
+    campaign_ids: если передан — выполняем read-modify-write: читаем текущее состояние объявлений
+    и для полей отсутствующих/пустых в item берём значение из Grid. Это предотвращает затирание
+    imageHashes/adPrice/creativeIds полем full-replace при частичном обновлении (напр. видео-attach).
+    При сбое чтения — fall-safe: отправляем как раньше (не ломаем создание кампании)."""
+    # RMW: читаем текущее состояние если знаем campaign_ids
+    current_map: dict[int, dict] = {}
+    if campaign_ids:
+        try:
+            ad_ids = [int(it["id"]) for it in (items or []) if it.get("id")]
+            cids = [int(c) for c in (campaign_ids or []) if c]
+            if cids and ad_ids:
+                current_map = gf.GridClient(login).adaptive_ads_for_update(cids, ad_ids)
+        except Exception:  # noqa: BLE001 — fall-safe: при сбое чтения шлём как есть
+            current_map = {}
+
     upd = []
+    skipped_bare = 0
     for it in (items or []):
         if not it.get("id"):
             continue
+        aid = int(it["id"])
+        cur = current_map.get(aid) or {}
+        # GUARD (ревью 03.07 #3/#19): «голый» item (без своих titles/href — фиксеры кнопки/заголовков
+        # шлют только id) при НЕудавшемся RMW-чтении дал бы ПУСТОЙ full-replace → затирание живого
+        # объявления. Такие item'ы пропускаем: фикс не применится (повторит следующий цикл), но
+        # контент цел. Старые вызовы с полным payload проходят как раньше (fall-safe).
+        if not cur and not (it.get("titles") and it.get("href")):
+            skipped_bare += 1
+            continue
+        # Full-replace: поля отсутствующие/пустые в item берём из текущего состояния (RMW).
+        href = it.get("href") or cur.get("href") or ""
+        titles = it.get("titles") or cur.get("titles") or []
+        bodies = it.get("bodies") or cur.get("bodies") or []
+        # imageHashes: берём из item если явно передан и не пуст; иначе из current (не стираем).
+        # dict.fromkeys — дубль хэшей валит объявление MUST_NOT_CONTAIN_DUPLICATED_ELEMENTS при
+        # updatedAds:[null] (лайв 03.07: пул ct с одинаковыми файлами → один hash → «ok» без эффекта).
+        if "image_hashes" in it and it.get("image_hashes"):
+            image_hashes = list(dict.fromkeys(it["image_hashes"]))
+        elif "image_hashes" in it and it.get("image_hashes") is not None and not cur:
+            # явная пустая передача без current-данных — оставляем пустым как раньше
+            image_hashes = []
+        else:
+            image_hashes = list(dict.fromkeys(cur.get("imageHashes") or []))
+        # Видео: явные creative_ids вызывающего кода, иначе — из RMW-чтения (typedCreatives,
+        # VIDEO_ADDITION; читаемо — подтверждено live 03.07.2026). Раньше поле было нечитаемо
+        # (FieldUndefined на creativeIds) и частичный апдейт стирал видео.
+        creative_ids = ([str(c) for c in (it.get("creative_ids") or []) if c]
+                        or [str(c) for c in (cur.get("creativeIds") or []) if c])
+        # _norm_read_ad_price: raw bannerPrice из adaptive_ads_for_update имеет decimal-строки
+        # ("2040546.00") — Grid молча сбрасывает цену если передать их обратно в UpdateAdaptiveTextAds.
+        ad_price = it.get("adPrice") or _norm_read_ad_price(cur.get("adPrice"))
+
         item = {
-            "href": it.get("href") or "",
+            "href": href,
             "hrefParams": "",
-            "titles": it.get("titles") or [],
-            "bodies": it.get("bodies") or [],
-            "creativeIds": [],
+            "titles": titles,
+            "bodies": bodies,
+            "imageHashes": image_hashes,
+            "creativeIds": creative_ids,
             "id": str(it["id"]),
         }
-        if "image_hashes" in it and it.get("image_hashes") is not None:
-            item["imageHashes"] = list(it.get("image_hashes") or [])
-        if it.get("adPrice"):
-            item["adPrice"] = it["adPrice"]
-        upd.append(item)   # КНОПКА — отдельным апдейтом ПОСЛЕ (изоляция, code-review #4)
+        if ad_price:
+            item["adPrice"] = ad_price
+        # Ревью 03.07 #17: СУЩЕСТВУЮЩУЮ кнопку проносим в основной payload (full-replace её стирал,
+        # а повторная установка _apply_combo_button — best-effort). НОВУЮ кнопку по-прежнему ставит
+        # отдельный апдейт ПОСЛЕ (изоляция отказов, code-review #4).
+        _btn = it.get("button") or (cur.get("button") if isinstance(cur.get("button"), dict) else None)
+        if _btn and _btn.get("action") and _btn.get("href"):
+            item["button"] = {"action": _btn["action"], "href": _btn["href"]}
+        upd.append(item)   # КНОПКА (новая) — отдельным апдейтом ПОСЛЕ (изоляция, code-review #4)
+    if skipped_bare:
+        print(f"[rmw-guard] {skipped_bare} голых item'ов пропущено (RMW-чтение не дало current) "
+              f"login={login}", flush=True)
     if not upd:
         return 0
     try:
@@ -503,7 +701,14 @@ def _grid_update_adaptive_ads(login: str, items: list[dict]) -> int:
         if r.status_code == 403:
             r = gc._post("UpdateAdaptiveTextAds", _UPD_ADAPTIVE_Q, v)
         j = r.json()
-        n = len(((j.get("data") or {}).get("updateAdaptiveTextAds") or {}).get("updatedAds") or [])
+        res = ((j.get("data") or {}).get("updateAdaptiveTextAds") or {})
+        # updatedAds содержит null для КАЖДОГО отвергнутого валидацией item'а — считать len()
+        # значило «ok» без эффекта (лайв 03.07: 15×null при MUST_NOT_CONTAIN_DUPLICATED_ELEMENTS).
+        n = len([x for x in (res.get("updatedAds") or []) if x])
+        _val_errs = ((res.get("validationResult") or {}) or {}).get("errors") or []
+        if _val_errs:
+            print(f"[rmw-update] validationResult: {len(_val_errs)} ошибок, применено {n}/{len(upd)}: "
+                  f"{json.dumps(_val_errs[:3], ensure_ascii=False)[:300]} login={login}", flush=True)
         _apply_combo_button(gc, upd)   # кнопка ОТДЕЛЬНО: её отказ (напр. чистый Поиск) не роняет картинки/цену
         return n
     except Exception:  # noqa: BLE001
@@ -952,7 +1157,100 @@ def _feed_models_from_collections(collections: list[dict]) -> dict:
     return out
 
 
-def _tp7_product_feed_filters(brand_model: str, ct: str) -> list[dict]:
+def _minus_marks_enabled() -> list[str]:
+    """Включённые глобальные минус-марки (через инъекцию blueprint._enabled_minus_marks).
+    Fail-safe: пустой список, если configure ещё не отработал или БД недоступна."""
+    fn = globals().get("_enabled_minus_marks")
+    if not callable(fn):
+        return []
+    try:
+        return [str(m).strip() for m in (fn() or []) if str(m).strip()]
+    except Exception:  # noqa: BLE001 — минус-марки best-effort, не валят создание
+        return []
+
+
+def _minus_marks_grid_conditions(brand_field: str = "vendor") -> list[dict]:
+    """Grid feedFilter-условия «Марка НЕ содержит <марка>» для КАЖДОЙ включённой минус-марки.
+    brand_field: разрешённое имя поля для этого фида ('vendor', 'mark_id', и т.п.) — берётся из
+    _resolve_feed_field(login, feed_id, 'brand'). Default 'vendor' для обратной совместимости.
+    Одно условие на марку, AND → offer исключается если марка совпала с любой.
+    Добавляется К brand/model-conditions товарки, НЕ заменяет их."""
+    return [{"field": brand_field, "operator": "NOT_CONTAINS_ALL",
+             "stringValue": json.dumps([m], ensure_ascii=False)} for m in _minus_marks_enabled()]
+
+
+def _minus_marks_uac_conditions(brand_field: str = "vendor") -> list[dict]:
+    """UAC feed_filters-условия (формат с value, не stringValue) для минус-марок tp7:
+    «Производитель НЕ содержит <марка>». Добавляется К conditions товарного фильтра мастера.
+    brand_field: разрешённое имя поля для фида ('vendor', 'mark_id', и т.п.) — берётся из
+    _resolve_feed_field(login, feed_id, 'brand'). Default 'vendor' для обратной совместимости."""
+    return [{"field": brand_field, "operator": "NOT_CONTAINS",
+             "value": json.dumps([m], ensure_ascii=False)} for m in _minus_marks_enabled()]
+
+
+# ── Динамическое разрешение полей фида (Bug A/B fix 2026-07-02) ──────────────────
+# Разные форматы фида используют разные имена полей в Grid feedFilter:
+#   YANDEX_MARKET (YML): vendor, model, categoryId, name, description
+#   AUTO_RU (yandex.xml авто): mark_id, folder_id, year, body_type, name, description
+#   Target: brand, model, name, description
+# Проверяем fieldsForUseAs из Grid Feeds-запроса (кэш 10 мин per (login, feed_id)).
+
+_BRAND_FIELD_SYNONYMS: tuple = ("vendor", "mark_id", "brand", "make")
+_MODEL_FIELD_SYNONYMS: tuple = ("model", "folder_id", "modification")
+_FEED_FIELDS_CACHE: dict = {}   # (login, feed_id) → (frozenset[str], ts)
+_FEED_FIELDS_TTL = 600          # 10 мин
+
+_FEED_FIELDS_QUERY = ("query FeedsFields($login:String!$lo:GdLimitOffsetInput$f:GdFeedsFilterInput)"
+                      "{reqId:getReqId client(searchBy:{login:$login}){feeds(limitOffset:$lo filter:$f)"
+                      "{rowset{fieldsForUseAs}}}}")
+
+
+def _feed_filter_fields(login: str, feed_id: int) -> frozenset:
+    """Доступные имена полей feedFilter для фида через Grid fieldsForUseAs (кэш 10 мин).
+    AUTO_RU → {mark_id, folder_id, ...}; YANDEX_MARKET → {vendor, model, ...}.
+    При сбое запроса возвращает frozenset() — caller делает фолбэк на первый синоним."""
+    key = (str(login), int(feed_id))
+    cached = _FEED_FIELDS_CACHE.get(key)
+    if cached:
+        flds, ts = cached
+        if time.time() - ts < _FEED_FIELDS_TTL:
+            return flds
+    flds: frozenset = frozenset()
+    try:
+        _gf = globals().get("gf")
+        if _gf is None:
+            from . import grid_finalize as _gf  # noqa: F811
+        _gcl = _gf.GridClient(login)
+        _gcl._bootstrap_csrf()   # CSRF обязателен; без него первый _post → 403 → пустой rowset
+        _r = _gcl._post("FeedsFields", _FEED_FIELDS_QUERY,
+                        {"login": login, "lo": {"limit": 1, "offset": 0},
+                         "f": {"searchBy": str(feed_id)}})
+        _rows = ((((_r.json().get("data") or {}).get("client") or {}).get("feeds") or {})
+                 .get("rowset") or [])
+        flds = frozenset((_rows[0] if _rows else {}).get("fieldsForUseAs") or [])
+    except Exception:  # noqa: BLE001 — best-effort, фолбэк на primary синоним
+        pass
+    _FEED_FIELDS_CACHE[key] = (flds, time.time())
+    return flds
+
+
+def _resolve_feed_field(login: str, feed_id: int, semantic: str) -> str | None:
+    """Разрешает имя поля feedFilter для семантики ('brand' или 'model') по fieldsForUseAs фида.
+    Возвращает первый подходящий синоним или None (фолбэк: без поля → только collectionId или предупреждение).
+    При пустом fieldsForUseAs (сбой запроса) возвращает первый синоним (vendor/model) — UNKNOWN_FIELD retry
+    в add_shopping_ads/set_default_text отработает как страховка."""
+    synonyms = _BRAND_FIELD_SYNONYMS if semantic == "brand" else _MODEL_FIELD_SYNONYMS
+    available = _feed_filter_fields(login, int(feed_id))
+    if not available:                  # probe failed → assume primary, let UNKNOWN_FIELD retry handle
+        return synonyms[0]
+    for s in synonyms:
+        if s in available:
+            return s
+    return None                        # ни один синоним не в fieldsForUseAs → no field-filter + warning
+
+
+def _tp7_product_feed_filters(brand_model: str, ct: str,
+                              *, login: str = "", feed_id: int = 0) -> list[dict]:
     """UAC feed_filters для товарной части tp7.
 
     Для product-объявлений у мастера фильтр задаётся отдельно от listings_feed_filters.
@@ -960,19 +1258,32 @@ def _tp7_product_feed_filters(brand_model: str, ct: str) -> list[dict]:
       - полное имя из ct/ag_part1;
       - хвост без бренда (например, 'Tiggo 8 Pro Max');
     чтобы товарка не шла по всему фиду.
+    login + feed_id: если переданы — резолвим реальные имена полей через _resolve_feed_field
+    (AUTO_RU: mark_id/folder_id вместо vendor/model). Без них — фолбэк на vendor/model.
     """
+    # Резолвим brand/model поля для UAC-условий по фиду (Bug A: AUTO_RU = mark_id/folder_id).
+    if login and feed_id:
+        _bf = _resolve_feed_field(login, int(feed_id), "brand") or "vendor"
+        _mf = _resolve_feed_field(login, int(feed_id), "model") or "model"
+    else:
+        _bf, _mf = "vendor", "model"
+    # Глобальные минус-марки применяются ДАЖЕ к товарке по всему фиду (ct0000/общий ст) —
+    # это и есть «во всех кампаниях с фидами не показывать эти марки».
+    minus = _minus_marks_uac_conditions(brand_field=_bf)
     base = (brand_model or "").strip()
-    if not base or not ct or ct in ("ct0000", "ct0111"):
+    real_brand = bool(base) and bool(ct) and ct not in ("ct0000", "ct0111") and _coder_name_real_brand(base)
+    conditions: list[dict] = []
+    if real_brand:
+        parts = [p for p in re.split(r"\s+", base) if p]
+        variants: list[str] = []
+        for cand in (base, " ".join(parts[1:]) if len(parts) > 1 else ""):
+            cand = re.sub(r"\s+", " ", str(cand or "").strip())
+            if cand and len(cand) >= 3 and cand not in variants:
+                variants.append(cand)
+        if variants:
+            conditions.append({"field": _mf, "operator": "CONTAINS",
+                               "value": json.dumps(variants, ensure_ascii=False)})
+    conditions.extend(minus)                 # минус-марки К бренд-условию (AND) или самостоятельно
+    if not conditions:
         return []
-    if not _coder_name_real_brand(base):   # общий ст (Авито/Дром/тема) — НЕ марка → фильтр по модели НЕ строим
-        return []
-    parts = [p for p in re.split(r"\s+", base) if p]
-    variants: list[str] = []
-    for cand in (base, " ".join(parts[1:]) if len(parts) > 1 else ""):
-        cand = re.sub(r"\s+", " ", str(cand or "").strip())
-        if cand and len(cand) >= 3 and cand not in variants:
-            variants.append(cand)
-    if not variants:
-        return []
-    return [{"conditions": [{"field": "model", "operator": "CONTAINS",
-                             "value": json.dumps(variants, ensure_ascii=False)}]}]
+    return [{"conditions": conditions}]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time as _time
 from typing import Callable
 
 from flask import current_app, jsonify, request, session
@@ -27,10 +28,37 @@ def register_job_routes(
     delete_drafts_core: Callable,
     create_jobs: dict,
     create_jobs_lock,
+    create_cond,
     create_queue: list,
     job_terminal: tuple,
     job_db_last: dict,
+    start_prefetch: Callable | None = None,
+    role_is_web: Callable[[], bool] = lambda: False,
+    job_db_get: Callable | None = None,
+    job_db_ahead: Callable | None = None,
+    job_db_set_status: Callable | None = None,
+    job_control_set: Callable | None = None,
+    job_db_web_await_feed: Callable | None = None,
+    job_db_web_resolve_feed: Callable | None = None,
+    job_db_active_by_login: Callable | None = None,
+    job_db_list_recent: Callable | None = None,
 ) -> None:
+    def _launch_prefetch(job_id: str, login: str, body: dict) -> None:
+        """Фаза 1: греем queued-джобу в фоне. is_cancelled смотрит статус в
+        _CREATE_JOBS (НЕ через Flask-объекты) — прогрев прекращается, как только
+        джоба ушла из queued (running/cancelled/interrupted/terminal)."""
+        if start_prefetch is None:
+            return
+
+        def _is_cancelled(_jid=job_id):
+            with create_jobs_lock:
+                jj = create_jobs.get(_jid)
+                return (jj is None) or jj.get("status") != "queued" or bool(jj.get("cancel"))
+        try:
+            start_prefetch(login, body, is_cancelled=_is_cancelled)
+        except Exception:  # noqa: BLE001 — прогрев не смеет ломать постановку джобы
+            pass
+
     @bp.route("/api/create_set_async", methods=["POST"])
     @access
     def api_create_set_async():
@@ -40,6 +68,13 @@ def register_job_routes(
         login = (body.get("login") or "").strip()
         if not items:
             return jsonify({"error": "items обязательны"}), 400
+        # Провайдер генерации из попапа (m3 | openrouter) — в КАЖДЫЙ item: генерация читает
+        # item.llm_provider, а докрутки/деферреды наследуют body как есть (Семён 03.07).
+        _llmp = str(body.get("llm_provider") or "").strip().lower()
+        if _llmp in ("m3", "openrouter"):
+            for _it in items:
+                if isinstance(_it, dict):
+                    _it.setdefault("llm_provider", _llmp)
 
         _cid_pf = parse_number(body.get("counter_id"), 0)
         if not _cid_pf:
@@ -57,6 +92,29 @@ def register_job_routes(
             body["agency"] = resolved_ag
         app = current_app._get_current_object()
         ensure_create_worker(app)
+
+        # web-роль: постановка ТОЛЬКО в БД (status='queued', _web_posted=true). In-memory очередь
+        # web-процесса пуста; исполняет worker-процесс. Прогрев (Фаза 1) — в воркере, здесь НЕ зовём.
+        if role_is_web():
+            pre_existing = job_db_active_by_login(login) if job_db_active_by_login else None
+            saved_session = dict(session)
+            job_id = job_new(len(items), login, body, saved_session, dedup_login=True)
+            deduped = bool(pre_existing and pre_existing == job_id)
+            resp = {"job_id": job_id, "total": len(items), "login": login,
+                    "ahead": job_db_ahead(job_id) if job_db_ahead else 0}
+            if deduped:
+                resp["existing"] = True
+                resp["note"] = "для аккаунта уже есть активная задача; дубль не создан"
+                return jsonify(resp)
+            _fa = body.get("feed_alert") or {}
+            if _fa.get("needed") and not body.get("feed_confirmed") and job_db_web_await_feed:
+                _dl = _time.time() + 300
+                job_db_web_await_feed(job_id, _dl)
+                resp["awaiting_feed_decision"] = True
+                resp["feed_deadline"] = _dl
+                resp["seconds_left"] = 300
+            return jsonify(resp)
+
         with create_jobs_lock:
             for _jid, _j in create_jobs.items():
                 if _j.get("status") not in job_terminal and (_j.get("login") or "").strip() == login:
@@ -72,12 +130,31 @@ def register_job_routes(
         job_id = job_new(len(items), login, body, saved_session, dedup_login=True)
         body["_job_id"] = job_id
         deduped = job_id in existing_ids
+        # Feed alert: если нет фида и пользователь не подтвердил — ставим ожидание (5 мин)
+        _feed_deadline = None
+        _feed_alert = body.get("feed_alert") or {}
+        if _feed_alert.get("needed") and not body.get("feed_confirmed") and not deduped:
+            with create_jobs_lock:
+                _j = create_jobs.get(job_id)
+                if _j is not None and _j.get("status") == "queued":
+                    _j["status"] = "awaiting_feed_decision"
+                    _j["feed_deadline"] = _time.time() + 300
+                    _feed_deadline = _j["feed_deadline"]
+                    if job_id in create_queue:
+                        create_queue.remove(job_id)
+        # Фаза 1: новая queued-джоба (не дубль, не ждёт решения по фиду) → фоновый прогрев.
+        if not deduped and _feed_deadline is None:
+            _launch_prefetch(job_id, login, body)
         with create_jobs_lock:
             ahead = create_jobs_ahead(job_id)
         resp = {"job_id": job_id, "total": len(items), "login": login, "ahead": ahead}
         if deduped:
             resp["existing"] = True
             resp["note"] = "для аккаунта уже есть активная задача; дубль не создан"
+        if _feed_deadline is not None:
+            resp["awaiting_feed_decision"] = True
+            resp["feed_deadline"] = _feed_deadline
+            resp["seconds_left"] = 300
         return jsonify(resp)
 
     @bp.route("/api/create_set_status", methods=["GET"])
@@ -85,6 +162,33 @@ def register_job_routes(
     def api_create_set_status():
         """Прогресс/результат async-джобы create_set."""
         jid = (request.args.get("job_id") or "").strip()
+        # web-роль: читаем прогресс из БД (in-memory очереди у web-процесса нет; воркер флешит
+        # прогресс в БД троттлингом ≤4 c через _job_db_progress).
+        if role_is_web():
+            row = (job_db_get(jid) if job_db_get else None)
+            if not row:
+                return jsonify({"error": "job не найдена (возможно, устарела)"}), 404
+            body_row = row.get("body") or {}
+            _status = row.get("status")
+            _total = int(row.get("total") or 0)
+            _fd = None
+            if _status == "awaiting_feed_decision":
+                try:
+                    _fd = float(body_row.get("_feed_deadline")) if body_row.get("_feed_deadline") else None
+                except (TypeError, ValueError):
+                    _fd = None
+            _res = row.get("result") if _status in job_terminal else None
+            _el = (row.get("result") or {}).get("elapsed_seconds") if isinstance(row.get("result"), dict) else None
+            return jsonify({"status": _status, "login": row.get("login") or "",
+                            "agency": row.get("agency") or "",
+                            "done": int(row.get("done") or 0), "total": _total,
+                            "created": int(row.get("created") or 0), "failed": int(row.get("failed") or 0),
+                            "set_done": int(row.get("done") or 0), "set_total": _total,
+                            "ahead": job_db_ahead(jid) if (job_db_ahead and _status == "queued") else 0,
+                            "error": row.get("error"), "elapsed": _el,
+                            "step": None, "stream_content": bool(body_row.get("stream_content")),
+                            "result": _res, "feed_deadline": _fd,
+                            "seconds_left": max(0, int(_fd - _time.time())) if _fd else None})
         ensure_create_worker(current_app._get_current_object())
         create_watchdog_tick()
         with create_jobs_lock:
@@ -92,6 +196,7 @@ def register_job_routes(
             if not j:
                 return jsonify({"error": "job не найдена (возможно, устарела)"}), 404
             ahead = create_jobs_ahead(jid) if j["status"] == "queued" else 0
+            _fd = j.get("feed_deadline")
             return jsonify({"status": j["status"], "login": j.get("login", ""),
                             "agency": job_agency(j), "done": j["done"], "total": j["total"],
                             "created": j["created"], "failed": j["failed"],
@@ -99,13 +204,95 @@ def register_job_routes(
                             "ahead": ahead, "error": j["error"], "elapsed": j.get("elapsed"),
                             "step": j.get("step"),
                             "stream_content": bool(j.get("stream_content")),
-                            "result": j["result"] if j["status"] in job_terminal else None})
+                            "result": j["result"] if j["status"] in job_terminal else None,
+                            "feed_deadline": _fd,
+                            "seconds_left": max(0, int(_fd - _time.time())) if _fd else None})
+
+    @bp.route("/api/create_set_feed_decision", methods=["POST"])
+    @access
+    def api_create_set_feed_decision():
+        """Ответ пользователя на предупреждение об отсутствующем фиде.
+
+        body: {"job_id": "...", "decision": "run_all" | "run_without_feed" | "cancel"}
+          run_all         — запустить как есть (фид может появиться позже)
+          run_without_feed — пропустить фид-зависимые типы (_skip_feed_types)
+          cancel          — отменить джобу
+        """
+        data = request.json or {}
+        jid = (data.get("job_id") or "").strip()
+        decision = (data.get("decision") or "").strip()
+        if not jid:
+            return jsonify({"error": "job_id обязателен"}), 400
+        if decision not in ("run_all", "run_without_feed", "cancel"):
+            return jsonify({"error": "decision: run_all | run_without_feed | cancel"}), 400
+        # web-роль: решение по фиду применяем прямо в БД (status flip → queued; worker заклеймит).
+        if role_is_web():
+            row = (job_db_get(jid) if job_db_get else None)
+            if not row:
+                return jsonify({"error": "job не найдена"}), 404
+            if row.get("status") != "awaiting_feed_decision":
+                return jsonify({"error": f"job не в статусе ожидания (статус: {row.get('status')})"}), 400
+            if decision == "cancel":
+                job_db_set_status(jid, "cancelled", "отменено пользователем (нет фида)")
+                new_status = "cancelled"
+            else:
+                job_db_web_resolve_feed(jid, decision)
+                new_status = "queued"
+            return jsonify({"ok": True, "job_id": jid, "status": new_status})
+        with create_cond:
+            j = create_jobs.get(jid)
+            if not j:
+                return jsonify({"error": "job не найдена"}), 404
+            if j.get("status") != "awaiting_feed_decision":
+                return jsonify({"error": f"job не в статусе ожидания (статус: {j.get('status')})"}), 400
+            if decision == "cancel":
+                j["status"] = "cancelled"
+                j["error"] = "отменено пользователем (нет фида)"
+                j["finished_at"] = _time.time()
+            else:
+                _body = j.get("body") or {}
+                if decision == "run_without_feed":
+                    _body["_skip_feed_types"] = ["product", "master"]
+                else:  # run_all
+                    _body.pop("_skip_feed_types", None)
+                j["status"] = "queued"
+                create_queue.append(jid)
+                create_cond.notify_all()
+            snap = dict(j)
+        job_db_save(jid, snap, full=True)
+        # Джоба стала queued после решения по фиду → прогрев (Фаза 1).
+        if snap.get("status") == "queued":
+            _launch_prefetch(jid, snap.get("login") or "", snap.get("body") or {})
+        return jsonify({"ok": True, "job_id": jid, "status": snap["status"]})
 
     @bp.route("/api/create_jobs", methods=["GET"])
     @access
     def api_create_jobs():
         """Живая очередь создания РК — серверный источник правды."""
         active_only = request.args.get("active") in ("1", "true")
+        # web-роль: очередь читаем из БД (in-memory у web-процесса нет).
+        if role_is_web():
+            rows = (job_db_list_recent(active_only) if job_db_list_recent else [])
+            out = []
+            for r in rows:
+                st = r.get("status")
+                if active_only and st in job_terminal:
+                    continue
+                _body = r.get("body") or {}
+                _total = int(r.get("total") or 0)
+                out.append({"job_id": r.get("job_id"), "status": st, "login": r.get("login") or "",
+                            "agency": r.get("agency") or "",
+                            "done": int(r.get("done") or 0), "total": _total,
+                            "created": int(r.get("created") or 0), "failed": int(r.get("failed") or 0),
+                            "set_done": int(r.get("done") or 0), "set_total": _total,
+                            "kind": r.get("kind") or "set", "publish": bool(r.get("publish")),
+                            "ahead": job_db_ahead(r.get("job_id")) if (job_db_ahead and st == "queued") else 0,
+                            "error": r.get("error"), "elapsed": None,
+                            "step": None, "stream_content": bool(_body.get("stream_content")),
+                            "result": r.get("result") if st in job_terminal else None})
+            order = {"running": 0, "queued": 1}
+            out.sort(key=lambda x: order.get(x["status"], 2))
+            return jsonify({"jobs": out})
         ensure_create_worker(current_app._get_current_object())
         create_watchdog_tick()
         jobs_purge_old()
@@ -134,6 +321,22 @@ def register_job_routes(
     def api_create_set_cancel():
         """Отмена джобы создания или удаление завершённой карточки из очереди."""
         jid = ((request.json or {}).get("job_id") or "").strip()
+        # web-роль: команда идёт в БД. queued/claimed/awaiting → сразу cancelled; running → control='cancel'
+        # (worker остановит после текущей кампании); terminal → удаление карточки.
+        if role_is_web():
+            row = (job_db_get(jid) if job_db_get else None)
+            if not row:
+                return jsonify({"error": "job не найдена"}), 404
+            st = row.get("status")
+            if st in job_terminal:
+                job_db_last.pop(jid, None)
+                job_db_delete(jid)
+                return jsonify({"ok": True, "status": st, "removed": True, "note": "убрана из очереди"})
+            if st in ("queued", "claimed", "awaiting_feed_decision"):
+                job_db_set_status(jid, "cancelled", "отменено пользователем")
+                return jsonify({"ok": True, "status": "cancelled"})
+            job_control_set(jid, "cancel")               # running → остановка после текущей кампании
+            return jsonify({"ok": True, "status": st, "note": "остановка после текущей кампании"})
         with create_jobs_lock:
             j = create_jobs.get(jid)
             if not j:
@@ -156,15 +359,25 @@ def register_job_routes(
     def api_job_resume(job_id: str):
         """Возобновление джобы, прерванной рестартом сервиса."""
         jid = job_id.strip()
-        with create_jobs_lock:
-            j = create_jobs.get(jid)
-            if not j:
+        if role_is_web():
+            row = (job_db_get(jid) if job_db_get else None)
+            if not row:
                 return jsonify({"error": "job не найдена (возможно, уже убрана)"}), 404
-            if j.get("status") != "interrupted":
-                return jsonify({"error": f"job не прервана (статус: {j.get('status')})"}), 400
-            body = j.get("body")
-            login = j.get("login") or ""
-            done_idx = int(j.get("done") or 0)
+            if row.get("status") != "interrupted":
+                return jsonify({"error": f"job не прервана (статус: {row.get('status')})"}), 400
+            body = row.get("body")
+            login = row.get("login") or ""
+            done_idx = int(row.get("done") or 0)
+        else:
+            with create_jobs_lock:
+                j = create_jobs.get(jid)
+                if not j:
+                    return jsonify({"error": "job не найдена (возможно, уже убрана)"}), 404
+                if j.get("status") != "interrupted":
+                    return jsonify({"error": f"job не прервана (статус: {j.get('status')})"}), 400
+                body = j.get("body")
+                login = j.get("login") or ""
+                done_idx = int(j.get("done") or 0)
         if not body:
             return jsonify({"error": "body джобы не сохранён — невозможно возобновить автоматически. "
                                      "Запустите создание вручную через форму."}), 422
@@ -189,8 +402,11 @@ def register_job_routes(
                     force.append(partial_name)
                 new_body["_repair_force_names"] = force
         new_job_id = job_new(len(new_body["items"]), login, new_body, saved_session)
-        with create_jobs_lock:
-            ahead = create_jobs_ahead(new_job_id)
+        if role_is_web():
+            ahead = job_db_ahead(new_job_id) if job_db_ahead else 0
+        else:
+            with create_jobs_lock:
+                ahead = create_jobs_ahead(new_job_id)
         return jsonify({"ok": True, "new_job_id": new_job_id,
                         "total": len(new_body["items"]), "login": login, "ahead": ahead})
 

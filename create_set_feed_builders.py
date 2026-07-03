@@ -131,7 +131,10 @@ def _create_text_via_cookie(
             if _ad_ids:
                 try:
                     _upd_items = []
+                    # ad_ids 1:1 с groups (None = объявление не создано) — ревью 03.07 #5/#21
                     for _aid, _grp in zip(_ad_ids, groups):
+                        if not _aid:
+                            continue
                         # tp2/tp4 — ПОИСК: картинки НЕ грузим (их там быть не должно, решение Семёна).
                         # Обновляем только цену (adPrice показывается и на Поиске) + кнопку (отд. апдейтом).
                         _upd = {"id": _aid, "href": _grp.get("href") or href,
@@ -145,7 +148,8 @@ def _create_text_via_cookie(
                         if _ad_price:
                             _upd["adPrice"] = _ad_price
                         _upd_items.append(_upd)
-                    _repaired = _grid_update_adaptive_ads(login, _upd_items)
+                    _repaired = _grid_update_adaptive_ads(login, _upd_items,
+                                                           campaign_ids=[cid] if cid else None)
                     if _fin is None or not isinstance(_fin, dict):
                         _fin = {}
                     _fin["ads_repaired"] = _repaired
@@ -157,6 +161,7 @@ def _create_text_via_cookie(
         return {"ok": ok, "name": name, "campaign_id": cid, "launched": False, "via": "cookie",
                 "search_finalized": _fin,
                 "build": {"groups": rep.get("groups"), "ads": rep.get("ads"),
+                          "keywords": rep.get("keywords", 0),
                           "errors": rep.get("errors", [])[:5]},
                 "url": (f"https://direct.yandex.ru/dna/campaign/{cid}?ulogin={login}" if cid else ""),
                 "error": ("; ".join(rep.get("errors") or [])[:240] if not ok else None)}
@@ -172,6 +177,7 @@ def _create_shopping_via_cookie(
     callout_texts: list | None = None, feed_name: str = "",
     callout_ids: list | None = None,
     ct: str = "ct0000", r_code: str = "",
+    single_feed: bool = False,
 ) -> dict:
     """tp3 (Товарная галерея РСЯ) / tp5 (Поиск + Товарная галерея) ПО КУКЕ (без баллов) — после
     согласия через попап (152). Кампания (gallery+organic) + группа (автотаргет) + товарное
@@ -183,8 +189,13 @@ def _create_shopping_via_cookie(
     feed_name = (feed_name or "").strip()
     if not fid:
         try:
-            _rows = _filter_allowed_feed_rows(_grid_feeds(login, agency))
-            _first = next((f for f in _rows if f.get("id")), None)
+            _rows = [f for f in _filter_allowed_feed_rows(_grid_feeds(login, agency)) if f.get("id")]
+            # single_feed → предпочесть /yandex.xml (как API-путь tp5/tp3), НЕ первый попавшийся
+            # фид: баг porg-psm5h7q6 — при feed_id=0 cookie-путь брал zabronirovat вместо yandex.
+            if single_feed and _rows:
+                from .create_set_input import prefer_single_feed_rows
+                _rows = prefer_single_feed_rows(_rows)
+            _first = _rows[0] if _rows else None
             fid = int(_first["id"]) if _first else 0
             feed_name = feed_name or ((_first or {}).get("name") or "")
         except Exception:  # noqa: BLE001
@@ -256,6 +267,7 @@ def _create_shopping_via_cookie(
                     # tp3 — РСЯ-канал: _finalize_rsya (network-only, placementTypes=[] хардкодом
                     # внутри — параметра placement_types у него НЕТ, передавать его = TypeError → ловилось
                     # except'ом и tp3-куки оставалась БЕЗ финализации (callouts/sitelinks/промо/корр.)).
+                    _mp_disabled = _enabled_minus_places()   # #21 минус-площадки РСЯ (tp3 куки-путь)
                     _finalize_rsya(
                         login, cid, name=name, goal_id=goal_id or 0, cpa_rub=cpa_rub, weekly_rub=wkl,
                         counter_ids=[counter_id] if counter_id else [],
@@ -263,7 +275,8 @@ def _create_shopping_via_cookie(
                         callout_ids=_sh_assets.get("callout_ids"),
                         sitelink_set_id=_sh_slset,
                         promo_id=(_sh_assets["promos"][0] if _sh_assets.get("promos") else None),
-                        minus_set_ids=None, bid_modifiers=_bm_fin)
+                        minus_set_ids=None, bid_modifiers=_bm_fin,
+                        disabled_places=_mp_disabled)
                 else:
                     # tp5 «Поиск + Товарная галерея»: места показа SEARCH_PAGE + ADV_GALLERY (HAR20),
                     # platforms по умолчанию = PLATFORMS_SEARCH (gallery=True — товарная галерея НА поиске).
@@ -307,12 +320,17 @@ def _tp5_account_data(token: str, login: str, slepok: str, site_type: str, agenc
     prefer_callout_texts — ВЫБРАННЫЕ пользователем уточнения (из попапа набора): создаём/находим их
     ID и вешаем именно их (inheritableCallouts кампании). Пусто → берём уточнения аккаунта (как было)."""
     cl = cmc.DirectV501Client(token, login)
-    jf = _v5_get("feeds", token, login, ["Id", "Name", "SourceType"])
+    # Bug D (доводка, ревью 03.07 #2): URL фида в v5 живёт в UrlFeed.Url — верхнеуровневого Url
+    # у Feed НЕТ, без UrlFeedFieldNames кортеж всегда получал '' и имена кампаний брали короткое
+    # имя кабинета, а single_feed не мог матчиться по url.
+    jf = _v5_get("feeds", token, login, ["Id", "Name", "SourceType"],
+                 extra={"UrlFeedFieldNames": ["Url"]})
     allowed = _allowed_feed_keys()
-    feeds = [(f["Id"], f.get("Name") or "") for f in (jf.get("result") or {}).get("Feeds", [])
+    feeds = [(f["Id"], f.get("Name") or "", ((f.get("UrlFeed") or {}).get("Url") or ""))
+             for f in (jf.get("result") or {}).get("Feeds", [])
              if f.get("SourceType") == "URL" and allowed and _feed_row_allowed(f, allowed)]
     if not feeds and agency:                              # v5 пусто/152 → фиды по куке (без баллов)
-        feeds = [(int(f["id"]), f.get("name") or "") for f in _filter_allowed_feed_rows(_grid_feeds(login, agency)) if f.get("id")]
+        feeds = [(int(f["id"]), f.get("name") or "", f.get("url") or "") for f in _filter_allowed_feed_rows(_grid_feeds(login, agency)) if f.get("id")]
     jp = _v5_get("promotions", token, login, ["Id"])
     promos = [p["Id"] for p in (jp.get("result") or {}).get("Promotions", [])]
     jm = _v5_get("negativekeywordsharedsets", token, login, ["Id", "Name"])
@@ -417,9 +435,12 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
     # Защита от пустышек: кампания создана, но сборка не дошла (нет групп) → удаляем недоделанную.
     if tp5_build.get("error") or tp5_build.get("skipped") or not tp5_build.get("adgroups"):
         _delete_partial_campaign(token, login, cid)
-        return {"ok": False, "name": name, "feed": feed_name, "campaign_id": cid, "partial_deleted": True,
-                "error": "tp5 не дозаполнена: " + str(
-                    tp5_build.get("error") or tp5_build.get("skipped") or "группы не созданы")[:200]}
+        _fail = {"ok": False, "name": name, "feed": feed_name, "campaign_id": cid, "partial_deleted": True,
+                 "error": "tp5 не дозаполнена: " + str(
+                     tp5_build.get("error") or tp5_build.get("skipped") or "группы не созданы")[:200]}
+        if tp5_build.get("defer"):
+            _fail["defer"] = True   # пустой пак M3 (временный сбой) → докрутка, не permanent-fail
+        return _fail
 
     # ── 3. Текст по умолчанию для ShoppingAd ────────────────────────────────────
     _default_text = data.get("default_text") or "Официальный дилер. Тест-драйв и выгодные условия по кредиту. Авто в наличии."
@@ -429,33 +450,28 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
         return {"ok": False, "name": name, "feed": feed_name, "campaign_id": cid, "partial_deleted": True,
                 "error": "tp5 не дозаполнена: фидовая кампания создана без ShoppingAd"}
     if _shop_ids and feed_id:
+        _gcl = gf.GridClient(login, cookie=grid_cookie)
+        # Текст и листинги в РАЗДЕЛЬНЫХ try (как tp1, «G review»): падение текста (Яндекс 500)
+        # раньше выкидывало из общего try и листинги вообще не создавались → «без ListingAd».
         try:
-            _gcl = gf.GridClient(login, cookie=grid_cookie)
             _gcl.set_default_text(
                 _shop_ids, feed_id, _default_text,
                 filters_by_ad_id=(tp5_build.get("shopping_filters") or {}),
             )
             tp5_build["shopping_text_set"] = len(_shop_ids)
-            try:
-                _la = _add_listing_ads_v501(token, login, tp5_build.get("listing_build_items") or [])
-                tp5_build["listing_ads"] = len(_la)
-            except Exception as _le:  # noqa: BLE001
-                _msg = str(_le)[:160]
-                if "Недостаточно баллов" in _msg or "152" in _msg:
-                    try:
-                        _la = _gcl.add_listing_ads_by_shopping_ads(_shop_ids)
-                        tp5_build["listing_ads"] = len(_la)
-                        tp5_build.setdefault("warnings", []).append("listing-v501: 152 -> fallback grid")
-                    except Exception as _lge:  # noqa: BLE001
-                        tp5_build.setdefault("warnings", []).append(f"listing-grid: {str(_lge)[:160]}")
-                else:
-                    tp5_build.setdefault("warnings", []).append(f"listing-v501: {_msg}")
         except Exception as _e:  # noqa: BLE001
             tp5_build.setdefault("warnings", []).append(f"shopping text: {str(_e)[:120]}")
-    if feed_id and not int(tp5_build.get("listing_ads") or 0):
-        _delete_partial_campaign(token, login, cid)
-        return {"ok": False, "name": name, "feed": feed_name, "campaign_id": cid, "partial_deleted": True,
-                "error": "tp5 не дозаполнена: фидовая кампания создана без ListingAd"}
+        # Листинги — общий Grid-путь tp1/tp5 (by-shopping, без баллов, + name-фильтры).
+        # v501-путь удалён: listing_build_items несут name_value (HAR36), а не collection_ids —
+        # v501 молча возвращал [] и кампания удалялась («создана без ListingAd», ❌5 03.07.2026).
+        # Хелпер самодостаточен (только аргументы) — прямой импорт из configure-модуля безопасен.
+        from .create_set_tp1_builders import _grid_add_listings_with_name_filters
+        _grid_add_listings_with_name_filters(_gcl, _shop_ids, tp5_build, feed_id, _default_text)
+    if feed_id and _shop_ids and not int(tp5_build.get("listing_ads") or 0):
+        # НЕ удаляем кампанию (принцип «дозаполнять, не удалять»): TextAd+ShoppingAd уже есть,
+        # листинги добьются ретраем; причина — в warnings item'а (раньше терялась при удалении).
+        tp5_build.setdefault("warnings", []).append(
+            "листинги каталога: 0 ListingAd (by-shopping) — кампания оставлена, добить ретраем")
 
     # ── 4. Grid-докрутка: места показа (gallery + search), ассеты кампании, минус, инварианты ──
     _assets = _resolve_campaign_assets(
@@ -511,21 +527,25 @@ def _create_tp5_campaign(token: str, login: str, base_name: str, counter_id: int
     """Боевая tp5 (комбинированная, эталон Щербаковой 2026-06-22): TEXT_CAMPAIGN поиск-only
     + бренд-группы из пака M3 (TextAd + ListingAd + ShoppingAd), кодер ct010_ag011.
     FAN-OUT: мультиплицируется по ВСЕМ URL-фидам аккаунта — каждый фид своя пара cpc+cpa.
-    single_feed=True → только ПЕРВЫЙ фид (галочка «по одному фиду»).
+    single_feed=True → только /yandex.xml (fallback: первый фид).
     agency — для _account_model_feeds (collectionId по модели из listings фида).
     base_name — канон cpc: 'tp5_cpc_site — Поиск + Динамика + Товарная галерея'."""
     data = _tp5_account_data(token, login, slepok, site_type, agency)
     if not data["feeds"]:
         return {"ok": False, "name": base_name, "error": "нет URL-фидов на аккаунте для tp5"}
     if single_feed:
-        data["feeds"] = data["feeds"][:1]                # «по одному фиду» — только первый
+        from .create_set_input import prefer_single_feed_variants
+        data["feeds"] = prefer_single_feed_variants(data["feeds"])
     # Модельные коллекции фидов (listings 'model_N') — для FeedFilterConditions по модели.
     mf_list = _account_model_feeds(login, agency) if agency else []
     results = []
-    for feed_id, feed_name in data["feeds"]:                  # FAN-OUT: каждый фид → своя пара
+    for feed_id, feed_name, feed_url in data["feeds"]:        # FAN-OUT: каждый фид → своя пара
         if job and job.get("cancel"):                        # отмена: стоп ПЕРЕД следующим фидом
             break
-        nm_cpc = (f"{base_name} — {feed_name}" if not _is_site_domain_name(feed_name, href)
+        # Bug D fix: используем URL фида (без https://) вместо короткого имени из кабинета.
+        import re as _re_fn
+        _f_label = (_re_fn.sub(r'^https?://', '', feed_url) if feed_url else feed_name)
+        nm_cpc = (f"{base_name} — {_f_label}" if not _is_site_domain_name(feed_name, href)
                   else base_name)
         nm_cpa = nm_cpc.replace("tp5_cpc_site", "tp5_cpa_site", 1)
         fm_entry = next((f for f in mf_list if int(f["id"]) == int(feed_id)), None)
@@ -598,6 +618,7 @@ def _create_tp3_single(data: dict, token: str, login: str, name: str, mode: str,
             slset = None
     warn = None
     # РСЯ-докрутка: уточнения/промо/ссылки уровня кампании, чистый РСЯ (как tp1)
+    _mp_disabled = _enabled_minus_places()               # #21 минус-площадки РСЯ (tp3 v5-путь)
     try:
         _finalize_rsya(
             login, cid, name=name, goal_id=goal_id, cpa_rub=cpa_rub,
@@ -605,7 +626,8 @@ def _create_tp3_single(data: dict, token: str, login: str, name: str, mode: str,
             counter_ids=[counter_id] if counter_id else [], pay_for_conversion=pay_for_conv,
             callout_ids=data["callout_ids"], sitelink_set_id=slset,
             promo_id=(data["promos"][0] if data["promos"] else None),
-            minus_set_ids=[data["minus_set"]] if data["minus_set"] else None)
+            minus_set_ids=[data["minus_set"]] if data["minus_set"] else None,
+            disabled_places=_mp_disabled)
     except Exception as e:  # noqa: BLE001
         warn = f"РСЯ-докрутка упала: {str(e)[:140]}"
     # текст по умолчанию на товарном объявлении (как в tp5)
@@ -635,19 +657,23 @@ def _create_tp3_campaign(token: str, login: str, base_name: str, counter_id: int
                          single_feed: bool = False, agency: str = "") -> dict:
     """Боевая tp3 «Товарная галерея» (ЕПК, РСЯ, товарная по фиду) — ПАРА cpc+cpa.
     FAN-OUT (CODER.md): мультиплицируется по ВСЕМ URL-фидам аккаунта — каждый фид своя пара,
-    имя несёт название фида. single_feed=True → только ПЕРВЫЙ фид. job — live-счётчик."""
+    имя несёт название фида. single_feed=True → только /yandex.xml (fallback: первый фид). job — live-счётчик."""
     data = _tp5_account_data(token, login, slepok, site_type, agency)
     if not data["feeds"]:
         return {"ok": False, "name": base_name, "error": "нет URL-фидов на аккаунте для tp3"}
     if single_feed:
-        data["feeds"] = data["feeds"][:1]                # «по одному фиду» — только первый
+        from .create_set_input import prefer_single_feed_variants
+        data["feeds"] = prefer_single_feed_variants(data["feeds"])
     # ct009 = «Товарное/Фид» (CODER.md ag_part5): ShoppingAd+ListingAd по фиду.
     group_name = f"ct0000_aon_n000_{r_code}_ct009_ag001_g00 — Товарная галерея"
     results = []
-    for feed_id, feed_name in data["feeds"]:                  # FAN-OUT: каждый фид → своя пара
+    for feed_id, feed_name, feed_url in data["feeds"]:        # FAN-OUT: каждый фид → своя пара
         if job and job.get("cancel"):                        # отмена: стоп ПЕРЕД следующим фидом
             break
-        nm_cpc = (f"{base_name} — {feed_name}" if not _is_site_domain_name(feed_name, href)
+        # Bug D fix: используем URL фида (без https://) вместо короткого имени из кабинета.
+        import re as _re_fn3
+        _f_label3 = (_re_fn3.sub(r'^https?://', '', feed_url) if feed_url else feed_name)
+        nm_cpc = (f"{base_name} — {_f_label3}" if not _is_site_domain_name(feed_name, href)
                   else base_name)
         nm_cpa = nm_cpc.replace("tp3_cpc_site", "tp3_cpa_site", 1)
         _t3 = ([(nm_cpc, "network_cpa", False)] if no_cpa

@@ -1130,6 +1130,44 @@ function uiAlert(message, opts){ opts=opts||{}; return _daModal({message:String(
 // Перекрываем нативный alert() стилизованной модалкой (все 37 вызовов — без правки мест)
 window.alert = function(message){ uiAlert(String(message)); };
 
+// ── Модалка предупреждения об отсутствии фида (feed_alert) ──
+// showFeedAlertModal(alertData) → Promise<'no_tp7'|'confirmed'|'cancel'>
+// Таймер 5:00 → 0:00; по истечению авто-выбирает «Создать без tp7».
+function showFeedAlertModal(alertData){
+  return new Promise(resolve=>{
+    let done=false, timerInterval=null;
+    function close(val){ if(done) return; done=true; clearInterval(timerInterval); bd.remove(); resolve(val); }
+    const bd=document.createElement('div'); bd.className='da-modal-backdrop';
+    const m=document.createElement('div'); m.className='da-modal'; m.style.maxWidth='520px';
+    m.setAttribute('role','dialog'); m.setAttribute('aria-modal','true');
+    const body=document.createElement('div'); body.className='da-modal-body';
+    const t=document.createElement('div'); t.className='da-modal-title';
+    t.textContent='⚠️ Фид /yandex.xml не найден'; body.appendChild(t);
+    const msg=document.createElement('div'); msg.style.marginBottom='12px';
+    msg.textContent='Товарные кампании (tp7) не смогут быть созданы. Через 5 минут будут автоматически запущены кампании без фида.';
+    body.appendChild(msg);
+    const timerEl=document.createElement('div');
+    timerEl.style.cssText='font-size:13px;color:var(--text-muted);margin-bottom:4px';
+    timerEl.textContent='Автозапуск без tp7 через: 5:00'; body.appendChild(timerEl);
+    const act=document.createElement('div'); act.className='da-modal-actions'; act.style.flexWrap='wrap'; act.style.gap='8px';
+    const btnCancel=document.createElement('button'); btnCancel.className='da-btn ghost'; btnCancel.textContent='Отмена';
+    btnCancel.onclick=()=>close('cancel'); act.appendChild(btnCancel);
+    const btnConfirm=document.createElement('button'); btnConfirm.className='da-btn'; btnConfirm.textContent='Создать всё равно';
+    btnConfirm.onclick=()=>close('confirmed'); act.appendChild(btnConfirm);
+    const btnNoTp7=document.createElement('button'); btnNoTp7.className='da-btn primary'; btnNoTp7.textContent='Создать без tp7';
+    btnNoTp7.onclick=()=>close('no_tp7'); act.appendChild(btnNoTp7);
+    m.appendChild(body); m.appendChild(act); bd.appendChild(m); document.body.appendChild(bd);
+    let secsLeft=5*60;
+    timerInterval=setInterval(()=>{
+      secsLeft--;
+      if(secsLeft<=0){ clearInterval(timerInterval); close('no_tp7'); return; }
+      const mm=Math.floor(secsLeft/60), ss=secsLeft%60;
+      timerEl.textContent='Автозапуск без tp7 через: '+mm+':'+(ss<10?'0':'')+ss;
+    },1000);
+    setTimeout(()=>{ try{ btnNoTp7.focus(); }catch(_){} },30);
+  });
+}
+
 // ── Tabs ──
 const TAB_NAMES = {accounts:'Обзор', stats:'Статистика по аккаунтам', create:'Создание РК', copy:'Копирование кампаний', ai:'Помощь', rules:'Глобальные правила', content:'Контент', gencontent:'Обучение ИИ', slepki:'Структура слепков'};
 // Своё описание-подзаголовок под H1 на каждой вкладке
@@ -2376,6 +2414,17 @@ async function createSet(skipGenAll){
     const r=await fetch('/direct/api/set_plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({login,variants,site_type,city,agent:(document.getElementById('ac-agent')||{}).value||'',tp_sq:tpSqMap(),selected_pos:selectedPositions(),single_feed:_singleFeed()})});
     const j=await r.json();
     if(j.error){ ctrl.innerHTML='<span class="err">'+esc(j.error)+'</span>'; return; }
+    if(j.feed_alert && j.feed_alert.needed){
+      const dec=await showFeedAlertModal(j.feed_alert);
+      window._FEED_CONFIRMED=false;
+      if(dec==='cancel'){ ctrl.style.display='none'; ctrl.innerHTML=''; return; }
+      if(dec==='no_tp7'){
+        j.plan=(j.plan||[]).filter(p=>p.type!=='product');
+        j.count=(j.plan||[]).length;
+        try{ await fetch('/direct/api/create_set_feed_decision',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision:'run_without_feed',login})}); }catch(_){}
+      }
+      if(dec==='confirmed'){ window._FEED_CONFIRMED=true; }
+    }
     PLAN=j.plan||[];
     window.RESOLVED_CPA=(j.resolved_cpa!=null)?j.resolved_cpa:2000;   // CPA из правил — уйдёт в создание
     if(j.resolved_budget!=null) _showRuleInfo(j.resolved_budget,j.resolved_cpa,j.site_type||site_type);
@@ -2410,7 +2459,7 @@ function _clearPlanFromSet(){
 // Сброс плана/сгенерированного контента «Автосоздания» — при СМЕНЕ аккаунта (старые «будет создано N /
 // сгенерировано K» относятся к прошлому логину → стереть, чтобы не опубликовать чужой набор).
 function _resetAutoPlan(){
-  PLAN=[];
+  PLAN=[]; window._FEED_CONFIRMED=false;
   try{ stopGen(); }catch(e){}
   try{ _clearPlanFromSet(); }catch(e){}
   const ctrl=document.getElementById('ac-controls'); if(ctrl){ ctrl.style.display='none'; ctrl.innerHTML=''; }
@@ -2812,6 +2861,7 @@ async function createAndPublish(){
   await createDrafts(true, /*streamContent=*/true);   // 2) публикация (launch=true), генерация на бэке поитемно
 }
 async function createDrafts(publish, streamContent){
+  const _feedConfirmed=!!(window._FEED_CONFIRMED); window._FEED_CONFIRMED=false;
   const sel=[...document.querySelectorAll('.plan-cb:checked')].map(c=>{
     const i=+c.dataset.i, it=Object.assign({},PLAN[i]), cc=acCollect(i);
     if(cc){ it.titles=cc.titles; it.texts=cc.texts; it.sitelinks=cc.sitelinks; }
@@ -2858,6 +2908,7 @@ async function createDrafts(publish, streamContent){
     single_feed:_singleFeed(),             // галочка «по одному фиду» вкл → только первый фид
     stream_content:!!streamContent,        // публикация без предпросмотра → генерим контent поитемно на бэке
     via_cookie:_viaCookie,                 // баллов мало → сразу по кукам (без баллов), без попапа
+    feed_confirmed:_feedConfirmed,        // пользователь подтвердил создание несмотря на отсутствие фида
     callouts:collectCalloutsPayload() };   // уточнения слепка — общие для всех кампаний набора
   if(_viaCookie){ setTopMsg('ℹ️ Баллов мало — набор создаётся <b>по кукам</b> (без баллов, главпоток).', true); }
   // АСИНХРОННО + ОЧЕРЕДЬ: набор может быть большим (сотни кампаний + fan-out по фидам) → создание в фоне,
@@ -3256,10 +3307,21 @@ async function createDraftsFromSlepok(){
   ctrl.style.display='block'; ctrl.innerHTML='<span style="color:var(--text-muted);font-size:13px">Считаю план набора…</span>';
   // 1) Строим план (тот же set_plan — дедупликация имён, проверка дублей в аккаунте)
   let planData;
+  let _slepokFeedConfirmed=false;
   try{
     const r=await fetch('/direct/api/set_plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({login,variants,site_type,city,agent:(document.getElementById('ac-agent')||{}).value||'',tp_sq:tpSqMap(),selected_pos:selectedPositions(),single_feed:_singleFeed()})});
     const j=await r.json();
     if(j.error){ ctrl.innerHTML='<span class="err">'+esc(j.error)+'</span>'; return; }
+    if(j.feed_alert && j.feed_alert.needed){
+      const dec=await showFeedAlertModal(j.feed_alert);
+      if(dec==='cancel'){ ctrl.style.display='none'; ctrl.innerHTML=''; return; }
+      if(dec==='no_tp7'){
+        j.plan=(j.plan||[]).filter(p=>p.type!=='product');
+        j.count=(j.plan||[]).length;
+        try{ await fetch('/direct/api/create_set_feed_decision',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision:'run_without_feed',login})}); }catch(_){}
+      }
+      _slepokFeedConfirmed=(dec==='confirmed');
+    }
     PLAN=j.plan||[];
     planData=j;
     if(j.resolved_cpa!=null) window.RESOLVED_CPA=j.resolved_cpa;
@@ -3294,6 +3356,7 @@ async function createDraftsFromSlepok(){
     content_source:'slepok_library',
     no_cpa:_noCpa(),                        // галочка «под стиль сайта» снята → без CPA-кампаний
     single_feed:_singleFeed(),             // галочка «по одному фиду» вкл → только первый фид
+    feed_confirmed:_slepokFeedConfirmed,  // пользователь подтвердил создание несмотря на отсутствие фида
     callouts:collectCalloutsPayload() };
   // АСИНХРОННО + ОЧЕРЕДЬ (как createSet): фон, своя шкала по аккаунту, можно запускать другие.
   try{

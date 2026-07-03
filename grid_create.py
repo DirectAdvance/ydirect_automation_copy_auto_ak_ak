@@ -46,6 +46,14 @@ _ADD_SHOPPING_ADS_Q = (   # товарное объявление (Товарн�
     "mutation AddShoppingAds($input:GdAddShoppingAdsInput!){reqId:getReqId "
     "addShoppingAds(input:$input){addedAds{id}validationResult{errors{code params path}"
     "warnings{code params path}}}}")
+_ADD_KEYWORDS_Q = (       # заливка ключевых фраз через Grid (без баллов API)
+    "mutation AddKeywords($input:GdAddKeywordsInput!){"
+    "addKeywords(input:$input){addedItems{adGroupId keywordId}"
+    "validationResult{errors{code params path}warnings{code params path}}}}")
+_ADGROUP_NAMES_Q = (      # read-back name→id (фикс позиционного сдвига, см. _read_adgroup_name_to_id)
+    "query AdGroupNames($login:String!,$inp:GdAdGroupsContainerInput!){"
+    "client(searchBy:{login:$login}){"
+    "adGroups(input:$inp){rowset{id name}}}}")
 
 
 class GridCreateError(RuntimeError):
@@ -90,6 +98,9 @@ class GridCreateClient:
         if self.csrf:
             headers["x-csrf-token"] = self.csrf
         url = f"{GRID_URL}?operationName={op}&ulogin={self.login}"
+        # БЕЗ транспортного ретрая: AddCampaigns/AddGroups/AddAds — НЕ идемпотентны. Обрыв ответа
+        # после commit + ретрай = ДУБЛЬ кампании/группы/объявления. Единичный обрыв ловит
+        # per-iteration try/except в _copy_grid_unified_campaigns (кампания падает чисто, ре-ран добьёт).
         r = self.sess.post(url, json={"operationName": op, "query": query, "variables": variables},
                            headers=headers, timeout=self.timeout)
         m = re.search(r"_direct_csrf_token=([^;,\s]+)", r.headers.get("Set-Cookie", ""))
@@ -177,6 +188,93 @@ class GridCreateClient:
             except (TypeError, ValueError, KeyError):
                 out.append(None)
         return out
+
+    def add_keywords(self, items: list[dict]) -> list[dict]:
+        """AddKeywords через Grid (без баллов). items: [{adGroupId, keyword}]. → addedItems.
+
+        ЕДИНСТВЕННЫЙ источник ключей: build_adgroup передаёт keywords=[], а фразы льются этой
+        мутацией. Раньше keywords дублировались в спеке группы — Grid создавал их ДВАЖДЫ для
+        групп <~140 ключей (крупные AddUnifiedAdGroups keywords игнорирует, отсюда была иллюзия
+        «молча игнорирует»). addKeywords работает для ЕПК и любого объёма (проверено live).
+        Пропускает ---autotargeting спецключ (он живёт в relevanceMatch, не в keywords).
+        """
+        clean = [
+            {"adGroupId": str(it.get("adGroupId") or ""), "keyword": str(it.get("keyword") or "")}
+            for it in (items or [])
+            if str(it.get("keyword") or "").strip() and not str(it.get("keyword") or "").startswith("---")
+               and str(it.get("adGroupId") or "").strip()
+        ]
+        if not clean:
+            return []
+        if len(clean) > 1000:
+            out: list[dict] = []
+            for i in range(0, len(clean), 1000):
+                out.extend(self.add_keywords(clean[i:i + 1000]))
+                time.sleep(0.1)
+            return out
+        j = self._mutate("AddKeywords", _ADD_KEYWORDS_Q, {"input": {"addItems": clean}})
+        res = (j.get("data") or {}).get("addKeywords") or {}
+        return res.get("addedItems") or []
+
+    def _read_ads_agid_map(self, campaign_id: int) -> dict[str, int]:
+        """Read-back adGroupId→adId для кампании после add_ads.
+
+        Нужен когда Grid возвращает addedAds КОРОЧЕ входного списка: упавшие объявления
+        пропускаются в ответе без null-заглушки (тот же класс сдвига, что X35↔X40 у групп,
+        ревью 03.07 #5/#21) — картинки/цены/видео группы N уезжали на объявление группы N+1.
+        → dict{adGroupId(str): adId(int)} или {} при ошибке (best-effort; у комбинаторных
+        tp1/tp2 — одно объявление на группу)."""
+        q = ("query AdsAgid($login:String!,$inp:GdAdsContainerInput!){"
+             "client(searchBy:{login:$login}){ads(input:$inp){rowset{id adGroupId}}}}")
+        try:
+            j = self._mutate("AdsAgid", q, {
+                "login": self.login,
+                "inp": {"filter": {"campaignIdIn": [str(campaign_id)]},
+                        "statRequirements": {"preset": "LAST_30DAYS", "goalIds": [],
+                                             "useCampaignGoalIds": True},
+                        "limitOffset": {"limit": 10000, "offset": 0},
+                        "orderBy": [{"order": "ASC", "field": "ID"}]},
+            })
+            rows = (((j.get("data") or {}).get("client") or {}).get("ads") or {}).get("rowset") or []
+            out: dict[str, int] = {}
+            for row in rows:
+                agid = str(row.get("adGroupId") or "")
+                try:
+                    aid = int(row.get("id") or 0)
+                except (TypeError, ValueError):
+                    aid = 0
+                if agid and aid and agid not in out:   # первое объявление группы (комбинаторное)
+                    out[agid] = aid
+            return out
+        except Exception:  # noqa: BLE001
+            return {}
+
+    def _read_adgroup_name_to_id(self, campaign_id: int) -> dict[str, int]:
+        """Read-back name→adGroupId для кампании после add_adgroups.
+
+        Нужен когда Grid возвращает addedAdGroupItems КОРОЧЕ входного списка: упавшие группы
+        просто пропускаются в ответе (без null-заглушки), и zip(use_groups, ag_ids) смещает
+        маппинг — ключи группы N попадают в adGroupId группы N+1. Читаем актуальный name→id и
+        перестраиваем список строго по именам. → dict{name: id} или {} при ошибке (best-effort)."""
+        try:
+            j = self._mutate("AdGroupNames", _ADGROUP_NAMES_Q, {
+                "login": self.login,
+                "inp": {"filter": {"campaignIdIn": [str(campaign_id)]},
+                        "limitOffset": {"limit": 10000, "offset": 0}},
+            })
+            rows = (((j.get("data") or {}).get("client") or {}).get("adGroups") or {}).get("rowset") or []
+            out: dict[str, int] = {}
+            for row in rows:
+                name = str(row.get("name") or "")
+                try:
+                    gid = int(row.get("id") or 0)
+                except (TypeError, ValueError):
+                    gid = 0
+                if name and gid:
+                    out[name] = gid
+            return out
+        except Exception:  # noqa: BLE001
+            return {}
 
     def add_ads(self, items: list[dict], *, save_draft: bool = True) -> list[int | None]:
         """AddAdaptiveTextAds → список id объявлений (в порядке items; None для упавших)."""
@@ -433,8 +531,8 @@ def create_full(login: str, *, campaign_spec: dict, groups: list, region_ids: li
               href, brand}]. price_map + brand_price_fn(price_map, brand) → (current, old) для adPrice.
     → {campaign_id, groups: N, ads: N, prices_set: N, errors: [...]}.
     """
-    rep = {"campaign_id": None, "groups": 0, "ads": 0, "ad_ids": [], "adgroup_ids": [],
-           "prices_set": 0, "errors": []}
+    rep = {"campaign_id": None, "groups": 0, "ads": 0, "keywords": 0, "ad_ids": [],
+           "adgroup_ids": [], "prices_set": 0, "errors": []}
     cl = GridCreateClient(login)
     cl._bootstrap_csrf()
     try:
@@ -455,11 +553,15 @@ def create_full(login: str, *, campaign_spec: dict, groups: list, region_ids: li
     # Группы пачкой (AddUnifiedAdGroups принимает список) — adGroupId выровнен по порядку.
     search_only = bool(campaign_spec.get("search")) and not bool(campaign_spec.get("network"))
     at_profile = "search_tp2" if search_only else ""
+    # Группы БЕЗ ключей в поле AddUnifiedAdGroups. Раньше keywords передавались и сюда, и в
+    # отдельный AddKeywords ниже — Grid СОЗДАВАЛ их ДВАЖДЫ для групп <~140 ключей (точные
+    # дубли фраз, каждая со своим keywordId). Единственный источник ключей — AddKeywords ниже
+    # (проверен на всех объёмах, вкл. крупные группы, где AddUnifiedAdGroups keywords игнорирует).
     g_items = [build_adgroup(campaign_id=cid, name=g.get("name") or "группа",
-                             region_ids=region_ids, keywords=(g.get("keywords") or [])[:cap],
+                             region_ids=region_ids, keywords=[],
                              minus_keywords=g.get("minus") or [], goal_id=goal_id,
                              autotargeting=autotargeting,
-                             autotargeting_profile=at_profile) for g, cap in zip(use_groups, kw_caps)]
+                             autotargeting_profile=at_profile) for g in use_groups]
     try:
         ag_ids = cl.add_adgroups(g_items)
     except GridCreateError as e:
@@ -467,6 +569,32 @@ def create_full(login: str, *, campaign_spec: dict, groups: list, region_ids: li
         return rep
     rep["groups"] = sum(1 for x in ag_ids if x)
     rep["adgroup_ids"] = [int(x) if x else None for x in ag_ids]
+
+    # Защита от позиционного сдвига: Grid пропускает упавшие группы в addedAdGroupItems
+    # (не возвращает null-заглушку) → ag_ids короче use_groups → zip смещает маппинг.
+    # При несовпадении длин делаем read-back name→id и выравниваем строго по имени группы.
+    if len(ag_ids) != len(use_groups):
+        _name_to_id = cl._read_adgroup_name_to_id(cid)
+        if _name_to_id:
+            ag_ids = [_name_to_id.get(g.get("name") or "") for g in use_groups]
+        else:
+            ag_ids = list(ag_ids) + [None] * (len(use_groups) - len(ag_ids))
+            rep["errors"].append("позиционный сдвиг: read-back недоступен, ключи могут быть смещены")
+        rep["adgroup_ids"] = [int(x) if x else None for x in ag_ids]
+
+    # Ключи ЕДИНСТВЕННЫМ путём — отдельным AddKeywords (в build_adgroup keywords=[], иначе дубли).
+    _kw_items = []
+    for g, agid, cap in zip(use_groups, ag_ids, kw_caps):
+        if not agid:
+            continue
+        for k in (g.get("keywords") or [])[:cap]:
+            if str(k).strip() and not str(k).startswith("---"):
+                _kw_items.append({"adGroupId": str(agid), "keyword": str(k)})
+    if _kw_items:
+        try:
+            rep["keywords"] = len(cl.add_keywords(_kw_items))
+        except Exception:  # noqa: BLE001 — best-effort; группы/объявления уже созданы
+            pass
 
     # Объявления пачкой + adPrice по бренду группы.
     ad_items, ad_brand = [], []
@@ -498,10 +626,30 @@ def create_full(login: str, *, campaign_spec: dict, groups: list, region_ids: li
     try:
         a_ids = cl.add_ads(ad_items)
         rep["ads"] = sum(1 for x in a_ids if x)
-        rep["ad_ids"] = [x for x in a_ids if x]  # id созданных объявлений (для post-update картинок)
+        # КОНТРАКТ (ревью 03.07 #5/#21): ad_ids СТРОГО 1:1 с ag_ids/группами, None для групп
+        # без agid и упавших объявлений. Компакт-список смещал zip(ad_ids, groups) у потребителей
+        # (картинки/цены/видео чужой группе — класс X35↔X40). При расхождении длин ответа Grid —
+        # read-back adGroupId→adId.
+        rep["ad_ids"] = _aligned_ad_ids(cl, cid, ad_items, a_ids, ag_ids)
     except GridCreateError as e:
         rep["errors"].append(f"объявления(куки): {str(e)[:200]}")
     return rep
+
+
+def _aligned_ad_ids(cl, campaign_id: int, ad_items: list, a_ids: list, ag_ids: list) -> list:
+    """ad_ids СТРОГО 1:1 с ag_ids (None для пропусков) — общий гард сдвига create_full /
+    add_text_content_to_existing (ревью 03.07 #5/#21, класс X35↔X40).
+
+    add_ads должен отдавать позиционный список, но Grid пропускает упавшие объявления в
+    addedAds без null-заглушек → при len-расхождении восстанавливаем соответствие
+    read-back'ом adGroupId→adId; иначе матчим по adGroupId отправленных items."""
+    sent = [str(it.get("adGroupId") or "") for it in (ad_items or [])]
+    ids = list(a_ids or [])
+    if len(ids) != len(sent):
+        ag2ad = cl._read_ads_agid_map(int(campaign_id or 0))
+        ids = [ag2ad.get(s) for s in sent]
+    by_agid = {s: i for s, i in zip(sent, ids) if s and i}
+    return [by_agid.get(str(a)) if a else None for a in (ag_ids or [])]
 
 
 def add_text_content_to_existing(login: str, *, campaign_id: int, groups: list,
@@ -513,8 +661,8 @@ def add_text_content_to_existing(login: str, *, campaign_id: int, groups: list,
     Используется repair-gate для пустых tp2/tp4 черновиков: кампанию не пересоздаём и не тратим
     Direct API units, только добиваем missing content.
     """
-    rep = {"campaign_id": int(campaign_id or 0), "groups": 0, "ads": 0, "ad_ids": [],
-           "adgroup_ids": [], "prices_set": 0, "errors": []}
+    rep = {"campaign_id": int(campaign_id or 0), "groups": 0, "ads": 0, "keywords": 0,
+           "ad_ids": [], "adgroup_ids": [], "prices_set": 0, "errors": []}
     cid = rep["campaign_id"]
     if not cid:
         rep["errors"].append("content-repair: нет campaign_id")
@@ -532,11 +680,13 @@ def add_text_content_to_existing(login: str, *, campaign_id: int, groups: list,
     # Консервативный kw_cap: не знаем сколько ключей уже в кампании → аллоцируем только по
     # добавляемым группам (worst-case). Это та же формула что в create_full.
     kw_caps = _alloc_kw_caps(use_groups)
+    # keywords=[] в группе: единственный источник ключей — AddKeywords ниже (иначе Grid создаёт
+    # дубли для групп <~140 ключей — то же, что чинилось в create_full).
     g_items = [build_adgroup(campaign_id=cid, name=g.get("name") or "группа",
-                             region_ids=region_ids, keywords=(g.get("keywords") or [])[:cap],
+                             region_ids=region_ids, keywords=[],
                              minus_keywords=g.get("minus") or [], goal_id=goal_id,
                              autotargeting=autotargeting,
-                             autotargeting_profile=at_profile) for g, cap in zip(use_groups, kw_caps)]
+                             autotargeting_profile=at_profile) for g in use_groups]
     try:
         ag_ids = cl.add_adgroups(g_items)
     except GridCreateError as e:
@@ -544,6 +694,30 @@ def add_text_content_to_existing(login: str, *, campaign_id: int, groups: list,
         return rep
     rep["groups"] = sum(1 for x in ag_ids if x)
     rep["adgroup_ids"] = [int(x) if x else None for x in ag_ids]
+
+    # Защита от позиционного сдвига (идентично create_full).
+    if len(ag_ids) != len(use_groups):
+        _name_to_id = cl._read_adgroup_name_to_id(cid)
+        if _name_to_id:
+            ag_ids = [_name_to_id.get(g.get("name") or "") for g in use_groups]
+        else:
+            ag_ids = list(ag_ids) + [None] * (len(use_groups) - len(ag_ids))
+            rep["errors"].append("позиционный сдвиг: read-back недоступен, ключи могут быть смещены")
+        rep["adgroup_ids"] = [int(x) if x else None for x in ag_ids]
+
+    # Ключи ЕДИНСТВЕННЫМ путём — отдельным AddKeywords (в build_adgroup keywords=[], иначе дубли).
+    _kw_items_tc = []
+    for g, agid, cap in zip(use_groups, ag_ids, kw_caps):
+        if not agid:
+            continue
+        for k in (g.get("keywords") or [])[:cap]:
+            if str(k).strip() and not str(k).startswith("---"):
+                _kw_items_tc.append({"adGroupId": str(agid), "keyword": str(k)})
+    if _kw_items_tc:
+        try:
+            rep["keywords"] = len(cl.add_keywords(_kw_items_tc))
+        except Exception:  # noqa: BLE001 — best-effort; группы уже созданы
+            pass
 
     ad_items = []
     for g, agid in zip(use_groups, ag_ids):
@@ -567,7 +741,8 @@ def add_text_content_to_existing(login: str, *, campaign_id: int, groups: list,
     try:
         a_ids = cl.add_ads(ad_items)
         rep["ads"] = sum(1 for x in a_ids if x)
-        rep["ad_ids"] = [x for x in a_ids if x]
+        # тот же выровненный контракт 1:1, что в create_full (ревью 03.07 #5/#21)
+        rep["ad_ids"] = _aligned_ad_ids(cl, cid, ad_items, a_ids, ag_ids)
     except GridCreateError as e:
         rep["errors"].append(f"объявления(куки): {str(e)[:200]}")
     return rep
@@ -662,6 +837,14 @@ def add_shopping_content_to_existing(login: str, *, campaign_id: int, groups: li
                     import json
                     conds.append({"field": "collectionId", "operator": "EQUALS_ANY",
                                   "stringValue": json.dumps([str(src["collection_id"])], ensure_ascii=False)})
+                try:                                     # глобальные минус-марки (фид): производитель НЕ содержит
+                    from . import create_set_feeds as _csf
+                    # per-feed поле бренда: yandex.xml = mark_id, YML = vendor — дефолт 'vendor'
+                    # на AUTO_RU-фиде давал UNKNOWN_FIELD и фильтр не вставал (ревью 03.07)
+                    _bf = _csf._resolve_feed_field(login, fid, "brand") or "vendor"
+                    conds.extend(_csf._minus_marks_grid_conditions(brand_field=_bf))
+                except Exception:  # noqa: BLE001
+                    pass
                 if conds:
                     filters_by_ad_id[int(sid)] = {"tab": "CONDITION", "conditions": conds}
             grid.set_default_text(shop_ids, fid, text, filters_by_ad_id=filters_by_ad_id)

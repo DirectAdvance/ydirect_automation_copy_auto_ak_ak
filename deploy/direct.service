@@ -8,12 +8,26 @@ Type=simple
 WorkingDirectory=/opt/scripts/home/seoadvanced
 Environment=DIRECT_HOST=127.0.0.1
 Environment=DIRECT_PORT=5020
+Environment=DIRECT_REGISTER_CONTENT_EDITOR=0
+# Копирование кампаний вынесено в direct-copy.service (своя очередь). Выключаем его здесь,
+# чтобы рестарт этого сервиса не трогал очередь копирования, и наоборот. Убрать (или '1'),
+# чтобы вернуть копирование в основной процесс (single-process режим).
+Environment=DIRECT_REGISTER_COPY=0
+# Phase 2 (split web/worker): to hand campaign creation over to direct-worker.service,
+# UNCOMMENT the line below and (re)start direct-worker.service FIRST, then restart this one.
+# With DIRECT_ROLE=web this process serves the UI only: it POSTS jobs to the Victory DB
+# (status='queued', _web_posted=true) and reads status/queue from the DB — it does NOT run
+# the worker pool or daemons, so deploying/restarting the UI no longer kills in-flight jobs.
+# Leave it commented (default DIRECT_ROLE=all) to keep the current single-process behaviour.
+# Environment=DIRECT_ROLE=web
 ExecStart=/root/venv/bin/python3 -m direct.main
 Restart=always
 RestartSec=5
 
-# Direct queue and throttling are intentionally single-process in memory.
-# Do not run this app with multiple workers or Werkzeug reloader.
+# In DIRECT_ROLE=all (default) the Direct queue and throttling are intentionally
+# single-process in memory. Do not run this app with multiple workers or the Werkzeug
+# reloader. In the split setup (DIRECT_ROLE=web here + direct-worker.service) the queue
+# lives in the worker process; this one only talks to it through the Victory DB.
 
 [Install]
 WantedBy=multi-user.target

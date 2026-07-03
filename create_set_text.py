@@ -67,12 +67,21 @@ def run_create_set_text(*, it: dict[str, Any], name: str, tp_code: str,
                     st_token, login, res["campaign_id"], slepok, site_type, tp_code)
                 res["minus_campaign_note"] = f"campaign-direct: {_cd}" if _cd else "campaign-direct OK"
             elif _mm == "shared_set":
-                _msid = get_or_create_minus_set(st_token, login, slepok, site_type, tp_code)
-                if _msid:
-                    _mse = attach_minus_set_to_text_campaign(st_token, login, res["campaign_id"], _msid)
-                    res["minus_set_id"] = _msid
-                    res["minus_set_note"] = (f"shared-set {_msid} привязка упала: {_mse}"
-                                             if _mse else f"shared-set {_msid} OK")
+                # Grid-путь (libraryMinusKeywordsIds) уже выполнен внутри _create_text_via_cookie
+                # через _finalize_search_via_grid. v5 NegativeKeywordSharedSetIds отклоняется
+                # для ЕПК-кампаний («неизвестный параметр») — пропускаем если Grid уже сработал.
+                _grid_minus = ((res.get("search_finalized") or {}).get("minus_set_grid") or [])
+                if _grid_minus:
+                    res["minus_set_id"] = _grid_minus[0]
+                    res["minus_set_note"] = f"shared-set {_grid_minus[0]} OK (Grid)"
+                elif st_token:
+                    # Grid не нашёл набор по имени → пробуем v5 как fallback
+                    _msid = get_or_create_minus_set(st_token, login, slepok, site_type, tp_code)
+                    if _msid:
+                        _mse = attach_minus_set_to_text_campaign(st_token, login, res["campaign_id"], _msid)
+                        res["minus_set_id"] = _msid
+                        res["minus_set_note"] = (f"shared-set {_msid} привязка упала: {_mse}"
+                                                 if _mse else f"shared-set {_msid} OK")
         except Exception as _me:  # noqa: BLE001 — минусовка best-effort, кампанию не валим
             res.setdefault("warnings", []).append(f"campaign/shared минусы упали: {str(_me)[:120]}")
     results.append(res)

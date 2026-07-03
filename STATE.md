@@ -2,7 +2,723 @@
 
 > Читать ПЕРВЫМ в начале каждой сессии. Обновлять ПОСЛЕДНИМ перед выходом.
 
-## Последняя сессия: 2026-07-02 11:00 — фикс NameError api_create_set + создание `carsklad-126.site`
+> 🗺 **Карта пакета — `direct/ARCHITECTURE.md`**: слои, инвентарь модулей, граф
+> импортов, план разбиения `blueprint.py`. Смотреть ПЕРЕД правкой незнакомого места
+> и для impact-анализа («что сломается, если тронуть X»). Правила «когда смотреть» —
+> в шапке того файла.
+
+## Сессия: 2026-07-04 (ночь) — 4 бага porg-psm5h7q6 + перенос контента + карта архитектуры
+
+**ЗАДЕПЛОЕНО (LXC101, воркер простаивал; все 5 direct-сервисов active, web 5020→302):**
+
+- **Баг 1 «строгое соответствие слепку» (tp4 просочился).** Новый `_slepok_profile_excludes_tp`
+  (blueprint.py ~5545): если у слепка ЕСТЬ боевой профиль для site_type, но tp в нём НЕТ →
+  НЕ строить (структура держит tp4 как ДОНОР, профиль авторитетен для своего аккаунта).
+  Гейт в ПРЕВЬЮ (create_set_plan: tp2/tp3/tp4/tp5) + safety-net в СОЗДАНИИ (create_set_orchestrator,
+  ревью A4 — путь «без предпросмотра»/deferred/resume брал items из тела мимо плана). Верно на
+  живых данных: scherbakova/Мультибренд profile=[tp1,2,5,7,8] → tp4 отсекается, tp2/tp5 нет.
+- **Баг 2 «не тот фид».** tp5/tp3 cookie-путь при feed_id=0 брал первый allowed-фид (zabronirovat)
+  вместо yandex.xml. Проброс `single_feed` в cookie_kwargs (create_set_gallery) + в
+  `_create_shopping_via_cookie` (create_set_feed_builders) → `prefer_single_feed_rows`. ⚠ доверить
+  проверку следующему живому прогону (матч по name Grid-строки).
+- **Баг 4 «картинки <5».** repair-cap `[:4]→[:5]` (create_set_repairing). ⚠ КОНТЕНТ-ПРОБЕЛ: у model-ct
+  scherbakova в пуле M3 только 4 уник. картинки → нужен 5-й уникальный файл (домен слепок-мастера).
+- **Баг 3 «нет видео» — КОНТЕНТ, не код.** `videos_for_login(porg-psm5h7q6)=0`, per-ct пул M3 пуст;
+  neg-кэш уже корректен. Наполнить видеопул на M3 + заменить 2 битых mp4 (76999070…, 16f27d01…).
+- **Перенос контента M3→LXC101** (задача 1): `scripts/sync_content_m3.py` (rsync-мирро + сжатие
+  видео ffmpeg ≤9.9МБ / картинки q80+EXIF / PNG lossless, идемпотентность, disk-check, prune).
+  Cron `0 3 * * *` (Екб) активен. Диск LXC101 +50ГБ (118Г, free 74). `kontent_pack.PACK_MOUNT`
+  теперь через env `NEURO_PACK_MOUNT` (дефолт не тронут). ⚠ ТУННЕЛЬ M3=0.4МБ/с → первая заливка
+  34ГБ ≈ СУТКИ (идёт в фоне, /var/log/neuro_content_sync.log). **ОСТАЛОСЬ: после сборки
+  /opt/neuro_content_local — выставить NEURO_PACK_MOUNT в direct*.service и рестарт (флип на локаль).**
+- **Шкала прогресса** (index.html): создание 0..90%, финализация 90→95%, 100% по факту done.
+- **Задача 2 (монолит blueprint.py 11179):** карта+план разбиения в ARCHITECTURE.md (8 кластеров
+  LOW→HIGH, инвариант wiring-hub, DI/re-export). ФИЗ. ПЕРЕНОС ДЕФЕРНУТ на сессию при Семёне (нужен
+  живой create-set smoke). Начинать с llm_providers (3 DI-колбэка: heartbeat/error_leak).
+
+## Сессия: 2026-07-04 — ре-ран копира Haval (устранение 1626 дублей ключей)
+
+ЗАДАЧА: пересоздать начисто 23 «Копия2 Haval» (porg-mjyh6hjv → porg-si7rw3ua) после фикса
+двойного залива ключей (build_adgroup keywords=[], ключи только через AddKeywords).
+- ШАГ1 гардрейл: GridClient._read_unified падал (Внутр.ошибка на strategyLearningStatus) → ушёл на
+  лёгкий GridReadClient-запрос rowset{id name}. 23/23 прочитаны, ВСЕ содержат «Копия2» → удалил
+  через grid_create.GridCreateClient.delete_campaigns (по куке): deleted=23, errors=0.
+- ШАГ2 ре-ран ШТАТНО: POST /direct/api/copy_start на работающий direct-copy.service (127.0.0.1:5022),
+  сессию админа форжил FLASK_SECRET_KEY (SecureCookieSessionInterface). Программный import НЕ годится:
+  copy-воркер живёт в in-memory очереди СВОЕГО процесса (DIRECT_REGISTER_COPY=0, без DB-поллера) —
+  подхватывает только джобы, поставленные внутри этого же процесса через /api/copy_start.
+  Новый job_id=24a3652c40c1, agency victoryagency14 (resolve_agency_hint сам подобрал).
+- РЕЗУЛЬТАТ: status=done, created=23, failed=0 (~6 мин). Верификация ключей (source vs target,
+  дубли внутри групп): tp5 712166889 601==601 dup0 · tp1 712166913 193==193 dup0 · tp2 712167294
+  601==601 dup0. ДУБЛИ УШЛИ, фикс подтверждён живьём. Врем.скрипты удалены (лок+сервер).
+
+## Сессия: 2026-07-03 (ночь) — попап LLM-провайдера + M3 → одна 72B
+
+**ЗАДЕПЛОЕНО (воркер+web, джоб не было).**
+- **Попап при создании набора**: «ИИ на M3 (бесплатно, дефолт)» / «DeepSeek V4 Flash · OpenRouter
+  (~$0.2/набор)» → body.llm_provider → в каждый item (routes_jobs). Двусторонний фолбэк
+  `_llm_pair_for` (blueprint ~9985): падение одного → переключение на другого ([llm-fallback] в журнале).
+  Гейт: пауза 6×10мин+1ч теперь ТОЛЬКО когда мертвы ОБА (probe OpenRouter учитывает usage>=limit).
+  Ключ — `.secret/loader.load_openrouter()` (⚠ НЕ load_secrets — не отдаёт).
+- **M3 = одна 72B на 8086** (Qwen2.5-72B-4bit + draft 1.5B, ~6.5 ток/с): 4×14B погашены,
+  модель 14B удалена (−7.7ГБ). Все _M3_LLM_* константы → 8086. Таймауты перекалиброваны:
+  сегменты 360с (очередь одного mlx!), repair 35→120с, fast_mode прогрев 12→90с.
+- A/B (боевой пайплайн, пункт Павлова): DeepSeek ≈ M3 по качеству, сырьё чище ×2; время равное (~3.5 мин).
+- **Ревью-бэклог 72B-эры (важно!)**: fan-out 3 сегментов сериализуется в очередь одного mlx
+  (риск каскада таймаутов — следить); 72B-«патч» = повторный вопрос той же модели; прогрев
+  конкурирует с боевыми; _ai_group_content/_ai_common_sitelinks/_ai_sitelinks/морф-гео/сид —
+  ВНЕ пары фолбэка (чистый M3); _content_cache_key без провайдера (кэш смешивает m3/openrouter);
+  мёртвая копия direct/index.html (правки попадают не туда — удалить!); вынести LLM-блок в
+  llm_providers.py (blueprint 11k+ строк). M3 Ultra = 512GB RAM — кандидат Qwen3-235B-A22B
+  (~130ГБ, ~25 ток/с) вместо 72B, если скорость не устроит.
+- **След. этап (утверждён)**: перенос контента (34ГБ: kontent_oktyabr 24G + corpus 10G) с M3
+  на Proxmox, крон 3:00 Екб, видео сжимать до ≤10МБ; на LXC101 свободно 27ГБ — нужен диск/сжатие.
+
+## Сессия: 2026-07-03 (поздний вечер) — M3-гейт + дубль-хэши картинок
+
+- **M3-гейт** (скрин #92): ИИ недоступен → пауза создания 6×10мин + 1ч → стоп (`_m3_gate_wait`,
+  вызов перед каждым item в оркестраторе; heartbeat в паузе). Боевое срабатывание 20:06→20:16 ок.
+- **Дубль-хэши валили добивку картинок**: пул ct содержит одинаковые файлы → один imageHash →
+  дубль в imageHashes → `MUST_NOT_CONTAIN_DUPLICATED_ELEMENTS` при `updatedAds:[null]`, а код
+  считал len(updatedAds) успехом («ok» без эффекта). Фикс: dict.fromkeys в
+  `_grid_update_adaptive_ads` (+честный подсчёт non-null + лог validationResult) и дедуп в
+  `_campaign_images_repair`.
+- Итог дня по обоим аккаунтам (porg-psm5h7q6, porg-ozge4ntu): остаток ТОЛЬКО `VIDEO_MISSING:2`
+  = 2 брак-ролика (76999070/16f27d01 — HTTP 400 validation, заменить файлы на M3).
+
+## 2026-07-03 (вечер-2) — code-review копира: возраст на Grid (0 баллов) + безопасность ретрая (done)
+
+ЗАДАЧА: применить фиксы code-review копировщика, вывести возраст −100% на Grid (0 v5-баллов). Только copy-путь.
+- **A (ВОЗРАСТ 0 баллов):** Grid `percent` demographic — МУЛЬТИПЛИКАТОР 0..1300 (min=0), НЕ знаковая
+  дельта. Раньше слали `percent:-100` → Grid `INVALID_PERCENT_SHOULD_BE_POSITIVE` → v5-фолбэк (баллы).
+  Фикс: `grid_finalize.py:773` конверсия `mult = max(0,min(1300,100+int(pct)))` (−100→0, +30→130).
+  Caller `copy_steps.py` `_AGE_TARGETS_GRID={-100}` (конвенция «дельта») не тронут. Ложные комменты
+  (grid_finalize ~718, copy_steps ~181/174) исправлены на «percent — мультипликатор, −100%==0».
+- **B (безопасность ретрая):** транспортный ретрай ConnectionError/ChunkedEncoding СНЯТ с
+  `grid_create.py::GridCreateClient._post` и `grid_finalize.py::GridClient._post` (Add* НЕ идемпотентны
+  → ретрай = ДУБЛЬ). ОСТАВЛЕН только в `grid_read.py::GridReadClient._post` (чтения идемпотентны).
+- **C:** `_copy_v501_ad_image_hashes` (blueprint ~1102) обёрнут в try/except → пустой результат, не роняет job.
+- **D:** `vendor` в shop_items (blueprint ~1279) больше не хардкод «Haval» — марка из имени группы
+  источника (`_clean_group_brand`→первое слово, фолбэк Haval); `group_specs["brand"]` тоже реальный бренд.
+- Мелочь: `set_campaign_age_bidmods` после 5xx-ретрая `r.json()` в try/except (non-JSON → GridFinalizeError).
+
+ВЕРИФ: py_compile лок+сервер OK; pyflakes только pre-existing `ad_brand` (grid_create:594). Юнит-смоук
+(LXC101): age conv −100→0/+30→130/clamp OK; retry — grid_read 3 попытки, grid_create/finalize 1 (no retry).
+Деплой: restart ТОЛЬКО direct-copy.service (PID 1041331 active); worker MainPID 1037580 ДО==ПОСЛЕ.
+Smoke: import copy_main OK, /direct/automation/copy → 302. ЖИВОЙ VERIFY age (porg-si7rw3ua 712137672,
+идемпотентность снята монкипатчем чтобы форсить Grid-мутацию): Grid ПРИНЯЛ percent:0 БЕЗ
+INVALID_PERCENT_SHOULD_BE_POSITIVE, read-back `(_0_17,0)(_18_24,0)` enabled=True, БЕЗ v5-фолбэка.
+NB: все 23 «Копия2» уже имели percent:0 (прошлый v5-прогон) — «чистой» камп без возраста не было.
+Осталось: реальный полный прогон копирования не гонял (по заданию). Рекомендую /code-review 4 файла.
+
+## 2026-07-03 — ФИКС IMAGE_NOT_FOUND в ЕПК-ветке копировщика + добивание porg-si7rw3ua (done)
+
+СИМПТОМ: ЕПК-ветка `_copy_grid_unified_campaigns` слала в create_full SOURCE image-хэши без
+переаплоада → на аккаунтах, где картинки нет, `BannerDefectIds.Gen.IMAGE_NOT_FOUND` роняло ВЕСЬ
+ad-add кампании (job b344eafcdad8: src 712117605/712117626 → 2 пустые оболочки).
+КОРЕНЬ: image-хэши account-scoped — валидны в target только если та же картинка уже загружена.
+
+ФИКС (blueprint.py, 0 v5-баллов):
+- НОВОЕ `_copy_image_remapper(...)` (~646) → closure `fn(src_hashes)->[target-valid hashes]`:
+  target-хэши читает v501 `adimages.get` (as-is если есть); отсутствующие качает по source
+  `OriginalUrl` (v501 adimages.get source) и ПЕРЕАПЛОАДИТ в target по кукам
+  `gf.GridClient.upload_image` (web-api/image/upload) → target-хэш в `maps['images']`; недоступную
+  картинку ДРОПАЕТ (лог), НЕ роняет ad-add.
+- Вызов: строится после maps (~1042, собирает все src-хэши из source_image_hashes+grid ads),
+  применяется в group_specs `"image_hashes": _remap_images(...)` (~1094). Коммент ~1304 обновлён.
+- grid_finalize.py `set_campaign_age_bidmods` (~778): 1 ретрай на HTTP 5xx Grid (для age-500).
+
+ВЕРИФ КОДА: py_compile лок+сервер OK, pyflakes no undefined. Юнит-смоук ремаппера (mock) на LXC101:
+as-is / переаплоад+кэш / дроп-без-URL / mixed — все 4 True. Деплой: restart ТОЛЬКО
+direct-copy.service (PID 1030481, active), worker MainPID 1024711 ДО==ПОСЛЕ (не тронут).
+Smoke: import copy_main OK, /direct/automation/copy → 302 (порт 5022).
+
+ДОБИВАНИЕ (live, порядок как в задаче):
+- A: 2 пустые оболочки 712135233/712135324 (Копия2 DRAFT, 0 ads) удалены Grid delete (0 баллов),
+  read-back пуст.
+- B: ре-ран 2 упавших `_copy_run_job` job_id=73265d7fd2e7 (feed_map: 15 src-фидов→3490453) → done,
+  created 2/2. Новые id: 712137672 (src 712117605, tp1), 712137697 (src 712117626, tp5), по 3 ads.
+  Лог ремаппера: «target уже имеет 155 хэшей, к переаплоаду 4 (URL источника: 4)» — 4 отсутствующих
+  докачаны+переаплоадены (upload_image вернул те же контент-хэши → теперь зарегистрированы в target),
+  дропов нет, IMAGE_NOT_FOUND нет.
+- C: финальный read-back — ровно 23 «Копия2 » DRAFT в porg-si7rw3ua, у ВСЕХ есть объявления,
+  EMPTY_SHELLS=[] (0 пустых оболочек).
+
+НЮАНС (не в scope, pre-existing): age-bidmods −100% на 2 камп ушёл в v5-фолбэк, но НЕ из-за 500 —
+Grid вернул валидацию `INVALID_PERCENT_SHOULD_BE_POSITIVE` (200, не 5xx). Мой 5xx-ретрай стоит и
+корректен для 500-кейса; отдельный вопрос «Grid не принимает −100% percent» — потратил чуть units
+на 2 камп, тема для отдельной задачи. Рекомендую /code-review (5 правок blueprint+grid_finalize).
+
+## Сессия: 2026-07-03 (финал) — фикс сетевых обрывов при копировании ЕПК
+
+**Сделано + ЗАДЕПЛОЕНО (рестарт ТОЛЬКО direct-copy.service; worker MainPID 1024711→1024711 без изменений; copy PID → 1028292, active).**
+Три фикса против job f439ca1a425a (ConnectionError убивал весь job):
+- **#1** `blueprint.py` ~1084: тело итерации (`create_full`+`add_shopping_ads`+`add_listing_ads`) обёрнуто в `try/except Exception`: падение одной кампании → `results.append(ok=False)` + continue; остальные создаются; `created` = число успешных.
+- **#2** `grid_create.py`/`grid_finalize.py`/`grid_read.py` `_post`: транспортные ретраи (ConnectionError/ChunkedEncodingError): 3 попытки, backoff 0.6с/1.2с; application-ретраи (JSON errors) не затронуты.
+- **#3** `blueprint.py` ~983: `_copy_grid_read_selected` обёрнут в try/except → RuntimeError с внятным сообщением.
+- Проверено: py_compile 4 файла (лок+сервер) OK; 8 юнит-смоуков (паттерн #1 и #2, backoff, бизнес-ошибки, exhaust) — все PASS; /direct/automation/copy → 302; import copy_main OK. ⚠️ Реальный прогон НЕ запускался — делает Семён после очистки дублей.
+
+## Сессия: 2026-07-03 (ночь) — ЕПК-ветка копировщика: feed_map + copy_steps
+
+**Сделано + ЗАДЕПЛОЕНО (рестарт ТОЛЬКО direct-copy.service; worker MainPID 1024711→1024711 без изменений; copy PID 1019868→1024907, active).**
+Закрыт пробел: когда ВСЕ выбранные кампании — UNIFIED (ЕПК), `_copy_run_job` уходил в
+`_copy_grid_unified_campaigns` (grid-куки create_full) и возвращался БЕЗ postprocess → feed_map и
+copy_steps не применялись. Теперь применяются (0 v5-баллов):
+- **feed_map** (`blueprint.py` ~956 + новый `_copy_grid_validate_feed_map` ~1206): если body.feed_map
+  задан+валиден (та же проверка «фид принадлежит target», что в _copy_run_job), shopping/listing берут
+  target-фид ИЗ карты (общий кейс все→один); все target-фиды заносятся в maps["feeds"]. Пусто → прежний
+  `_copy_target_feed_id`.
+- **copy_steps** (новый `_copy_grid_unified_steps` ~1290): в цикле заполняется maps["ads"]
+  (сорс-объявления группы → единое комбинированное create_full ad, rep["ad_ids"] 1:1 с группами) +
+  пишется синтетический snapshot (campaigns.json network/adgroups.json/ads.json — v5 pull'а тут нет).
+  Прогоняются: step_age_bidmods, step_disabled_places, step_attach_callouts (text-bridge source→target
+  через get_callouts), step_attach_promos (формально, no-op), step_prices, step_videos.
+- **Сознательно НЕ вызваны** (двойная работа): step_keywords (create_full уже залил ключи Grid),
+  step_adaptive_creatives (create_full уже собрал 1:1 контент+гео; images в ЕПК-ветке не ремапятся).
+  step_attach_promos безопасно no-op'ит — нет source-promo-definition reader.
+- Проверено: py_compile+pyflakes (0 undefined) лок+сервер; юнит-смоук CopyCtx на фикстуре maps
+  (все шаги no-op-safe при grid=None) + feed_map-логика (owned/dropped/empty/grid-down) PASS;
+  /direct/automation/copy → 302, import copy_main OK, grep: ветка вызывает 6 шагов, НЕ вызывает
+  keywords/adaptive. Реальный прогон копирования НЕ запускался (по заданию).
+
+## Сессия: 2026-07-03 (поздний вечер) — code-review фиксы копировщика (6 находок)
+
+**Сделано + ЗАДЕПЛОЕНО (рестарт ТОЛЬКО direct-copy.service; worker MainPID 1018804→1018804 без изменений; copy PID 1018165→1019868).**
+Все 6 находок code-review перед live-тестом:
+- **#1** `copy_steps.py` ~740: v5-фолбэк ключей — поэлементный zip(keys_b, AddResults); done_kw/via_v5 только для items с Id; без Id → failed+1 + per-item лог; tail guard если AddResults короче батча.
+- **#2** `grid_finalize.py` ~688: `set_campaign_disabled_places` MERGE вместо перезаписи — existing + new без дублей, сохранив порядок.
+- **#3** `blueprint.py` ~1956: feed_map валидация — различаем «grid недоступен» (empty _tgt_feed_ids) → применяем feed_map_raw без валидации + предупреждение; vs «фид не принадлежит» → пропуск как раньше.
+- **#4** `copy_geo_morph.py` ~87: `_extract_json` через `json.JSONDecoder().raw_decode` — первый валидный JSON из ответа M3 (не жадный regex), жадный фолбэк оставлен.
+- **#5** `copy_steps.py` ~592: НЕ правил. `group_ad_price` возвращает `(0, 0)` как sentinel «нет цены» (не `None`), `if not cur:` корректен по бизнес-логике. Правка `if cur is None:` сломала бы фильтр.
+- **#8** `blueprint.py` ~1830: `feed_map` парсинг — `isinstance(_fm, dict)` guard перед `.items()` (AttributeError если не dict).
+- Проверено: py_compile (4 файла локально + сервер /root/venv), юнит-смоуки #1 (partial AddResults, tail) и #4 (2 JSON в ответе, json-fence, None, nested) — все PASS, /direct/automation/copy → 302, import copy_main OK.
+- ⚠️ Реальный прогон копирования НЕ запускался (по заданию). Верификация live — direct_verifier.
+
+## Сессия: 2026-07-03 (вечер) — добивки: картинки/минус-фильтры/места показа + null-баг Grid
+
+**Сделано + ЗАДЕПЛОЕНО (воркер+web рестарт 18:1x, оба логина прогнаны --fix до чистоты).**
+- **Корневой баг «добивка картинок никогда не работала»**: Grid отдаёт `images: null` (НЕ `[]`)
+  для голого адаптивного объявления (live 420/420) — идиом «images is None → не адаптивное»
+  пропускал ровно целевые. Починено по `__typename` в grid_read (NO_IMAGES_LIVE),
+  create_set_repairing (images_repair), campaign_spec_audit (новый детект IMAGE_MISSING+fix).
+- upload_image: FAIL-лог вместо молчания, CSRF 1 раз/клиент + 403-ребутстрап; негативный кэш
+  аплоадов (3 фейла → 15 мин, `_reset_img_fail_cache(login, paths)` точечный из репейра).
+- **FEED_FILTER_MISSING_GRID** (скрин #91): детект+фикс минус-марок на ShoppingAd/ListingAd
+  (`set_product_feed_filters`; листинги — ТОЛЬКО по полю `name`, бренд-поле = UNAVAILABLE_FIELD;
+  shopping — per-feed `_resolve_feed_field`). Live: Кемерово 6/6 кампаний, остаток 0.
+- **PLACEMENTS_WRONG** (скрин #90): детект+фикс мест показа tp5 (узкий UpdateCampaigns,
+  `set_campaign_placement_types`); network=True (РСЯ) — report-only. 712120488 оказался эталонным
+  (finalize доехал) — скрин застал кампанию до докрутки.
+- Создание: минус-марки в `grid_create` теперь с per-feed полем бренда (был UNKNOWN_FIELD на AUTO_RU).
+- Остаток: 2 брак-видео (HTTP 400 validation на 76999070/16f27d01 — файлы), бэклог ревью:
+  imageHashes:[] full-replace при пустом RMW (пинг-понг), tp3 вне аудита, видео-кэш пустого списка
+  навсегда, NO_KEYWORDS recreate мёртв (repair_attempts никто не пишет), GdSmartAd bodies детектор мёртв.
+
+## Сессия: 2026-07-03 (17:20) — копировщик ФАЗА 3a п.6: морфо-гео-замена по падежам через M3
+
+**Сделано + ЗАДЕПЛОЕНО (рестарт ТОЛЬКО direct-copy.service; изоляция ДОКАЗАНА чисто: worker MainPID
+1015510 → 1015510 без изменений при copy-only рестарте, copy PID 1015559→1015649).**
+Гео-замена при копировании кампаний теперь МОРФОЛОГИЧЕСКИ корректна: «в Краснодаре»→«в Уфе»,
+«Краснодара»→«Уфы», а не прежний брак «Уфае/Уфаа».
+- Новый изолированный модуль `copy_geo_morph.py` (без импорта blueprint → без циклов; M3-клиент
+  инъектируется как callable messages->(text,err)): `paradigm_for` (6 падежей через M3, temperature=0,
+  строгий JSON, кэш память+диск `/opt/neuro_kontent_index/geo_morph_cache.json`), `build_geo_pairs`
+  (пары old[case]→new[case], сорт по длине убыв.), `apply_replacements` (regex `\b` + сохранение
+  регистра UPPER/Capitalize/lower), `scan_residual` (остатки ЛЮБОГО падежа, исключая формы нового гео).
+- `blueprint.py`: `_copy_m3_decliner` (~508), `_copy_build_geo` (~516, probe M3 → фолбэк если LLM молчит),
+  `_copy_geo_replacements`/`_copy_apply_geo_replacements` теперь через morph (оба copy-пути — token-rewrite
+  ~665 и cookie-Grid UAC ~941 — используют один контур). `_copy_rewrite_snapshot_context` (~665):
+  замена по падежам + case-aware residual. Call-site ~1800 логирует m3_used/фолбэк/replacements.
+  Удалён старый `_copy_replacement_forms` (4-регистра именительного). `_copy_scan_payload_terms` осиротел
+  (не удалял — безвреден).
+- Проверено: py_compile локально+сервер /root/venv, pyflakes чисто. Юнит-смоук (mock M3): «в Краснодаре»
+  →«в Уфе», «Краснодара»→«Уфы», «краснодар купить»→«уфа купить», «КРАСНОДАР»→«УФА», «Уфимский район»
+  НЕ тронут, residual пуст. **Живой M3 на сервере (8082 HTTP 200)**: реальная парадигма Краснодар→Уфа
+  корректна. Фолбэк (M3=None): только именительный по границам слов — «Краснодаре»/«Краснодара» НЕ
+  трогаются (безопасно, без «Уфаа»). Disk-кэш пишется в дефолтный путь (проверено, probe убран).
+- ⚠️ Ограничение фолбэка (M3 down): residual покрывает ТОЛЬКО именительный (др. падежи неизвестны без
+  M3) → в редком случае «M3 недоступен» может остаться «в Краснодаре» в тексте, но НИКОГДА не «Уфаа».
+  Живьём на аккаунтах end-to-end копирование НЕ гонял (по заданию не запускать).
+
+## Сессия: 2026-07-03 (16:50) — копировщик ФАЗА 1: 5 доработок как под-сервисы (copy_steps.py)
+
+**Сделано + ЗАДЕПЛОЕНО (рестарт ТОЛЬКО direct-copy.service; изоляция ДОКАЗАНА: worker MainPID
+1008488 → 1008488 без изменений, copy PID 1010737 → 1013532):**
+Новый модуль `copy_steps.py` — набор идемпотентных функций-шагов с единым контекстом `CopyCtx`
+(не импортирует blueprint → без циклов; хелперы log/v5_call/enabled_minus_places инъектятся).
+- **П.7** (`direct_copy.py` ~1245, +const `DISPLAY_URL_PATH_MAX=20` ~120): после гео-подстановки
+  DisplayUrlPath длиннее 20 символов (в символах, не байтах) → `ta.pop` (поле пустое, ads.add не падает).
+- **П.14** `step_age_bidmods` (v5 bidmodifiers.add): на каждую созданную кампанию −100% на
+  AGE_0_17 (<18) и AGE_18_24 (<25), BidModifier=0. Идемпотентно (bidmodifiers.get, не дублирует).
+- **П.13** `step_disabled_places` (Grid): стандартный `_enabled_minus_places()` на кампании с сетью
+  (`source_has_network`: Network.BiddingStrategyType≠SERVING_OFF); поиск-only не трогаем. Новый Grid-
+  метод `grid_finalize.set_campaign_disabled_places` (зеркало set_campaign_sitelink_set).
+- **П.11** `step_attach_callouts`: на КАЖДУЮ кампанию только её ремапленные callout-id по исходной
+  связи (`campaign_callouts.json`), не blind union. Фолбэк на union — внутри шага.
+- **П.10** `step_attach_promos`: привязка промо по исходной связи (`campaign_promos.json`), работает
+  и при 2+ промо; фолбэк на прежнее единичное. Pull связи — `pull_source_campaign_assets`
+  (Grid источника `_read_unified_campaign_update_payloads` → inheritableCallouts/promoExtensionId;
+  фолбэк callouts из ads.json AdExtensions по CampaignId).
+- Оркестрация: pull-шаг в `_copy_run_job` после snapshot-фильтра; шаги постпроцесса в
+  `_copy_cookie_postprocess` (ctx после grid-init; блоки callout/promo заменены на шаги; age/places
+  после записи maps). Каждый шаг в try/except, пишет в отчёт `cookie_postprocess`, логи в copy job.
+- Проверено: py_compile (локально+сервер /root/venv), pyflakes чисто (0 undefined), import copy_steps
+  в контексте сервиса OK (все 5 функций), copy-page 302 (5022 и nginx), сервис active, лог без ошибок.
+- ⚠️ НЕ верифицировано мной (нужен реальный прогон Семёном на аккаунтах): фактическая простановка
+  age −100%/disabledPlaces/per-campaign callouts/promo в live-кабинете. Все шаги с фолбэком.
+
+## Сессия: 2026-07-03 (16:27) — копировщик: пофидовая замена фидов (feed_map)
+
+**Сделано + ЗАДЕПЛОЕНО (рестарт ТОЛЬКО direct-copy.service, воркер не тронут — доказано PID):**
+В UI копирования добавлена секция «Замена фидов» — пофидово `исходный_фид → фид нового аккаунта`
+(только существующие фиды target-аккаунта, дропдаун).
+- `blueprint.py`: `_copy_feeds_preview` (source+target фиды через `_grid_feeds`), `_copy_preseed_feed_maps`
+  (предзапись id_maps.json ПЕРЕД phase_upload — движок `direct_copy.py` НЕ трогали: он сам грузит
+  id_maps и для фида в maps['feeds'] делает continue). `_copy_run_job`: парсит `body.feed_map`,
+  валидирует target-фиды по аккаунту, при непустой карте зовёт `phase_upload(force_feed_url="")`
+  (форс единого фида пропускается), preflight-сентинел `__feed_map__`. UAC-ветка (`_copy_uac_campaigns`
+  +param feed_map): per-row target feed по исходному feed_id кампании, фолбэк на общий target_feed_id.
+- `routes_copy.py`: POST `/api/copy_feeds_preview` (+inject feeds_preview_func в _wire_copy_routes).
+- `copy.html`: карточка «Замена фидов», `loadCopyFeeds/renderCopyFeeds/buildFeedMap`, `feed_map` в copy_start.
+- Пусто/невалидно → полный фолбэк на прежнее поведение (единый target_feed_url / авто-пересоздание URL-фида).
+- Smoke: copy-page 302, `/api/copy_feeds_preview` 401 (=5022). НЕ верифицировано мной: реальная
+  подстановка фидов end-to-end (нужен логин+аккаунты в браузере).
+- ⚠️ Ограничение v1: preview показывает ВСЕ фиды исходного аккаунта (grid-строки кампаний не несут
+  feed-рефов до полного pull) — фильтрация по выбранным кампаниям = задел на будущее.
+
+## Сессия: 2026-07-03 (16:10) — копировщик вынесен в отдельный сервис direct-copy.service
+
+**Сделано + ЗАДЕПЛОЕНО на LXC 101, верифицировано:** копирование кампаний — теперь свой процесс
+`direct-copy.service` (порт 5022) со СВОЕЙ in-memory очередью. Рестарт copy НЕ трогает очередь
+создания РК и наоборот (доказано: рестарт direct-copy → PID direct-worker/web не изменились, drain
+не сработал).
+- `blueprint.py`: `_ensure_copy_worker` (пул воркеров БЕЗ recover/sweep/resume/repair/поллера),
+  `_copy_jobs_recover` (crash-cleanup только своих copy-джоб), `_jobs_db_recover` теперь ИСКЛЮЧАЕТ
+  `kind='copy_campaigns'` (2 места); проводка вынесена в `_wire_copy_routes` за гейт `DIRECT_REGISTER_COPY`.
+- `copy_main.py` (порт 5022), `routes_copy.py` +page `/direct/automation/copy`, `templates/direct/copy.html`
+  (самодостаточная, прогресс через `/api/copy_status`). Вкладка в index.html → ссылка (как «Контент ИИ»).
+- Деплой: `direct-copy.service` в systemd (enable --now); drop-in `direct.service.d/copy.conf`
+  (DIRECT_REGISTER_COPY=0) + restart direct; nginx locations `/direct/automation/copy` и
+  `/direct/api/copy_` → 5022 (бэкап конфига `.bak.copy_*`). Smoke: copy-page 302, copy-API 401 (=5022).
+- Механика: role='all' у copy_main → `_job_new` кладёт в in-memory (не `_web_posted`), поэтому
+  direct-worker copy-джобы НЕ клеймит; общие эндпоинты страницы (`/api/accounts`,`/goal_for_counter`)
+  через nginx уходят на 5020. Откат: убрать copy.conf + stop/disable direct-copy + убрать nginx-блоки.
+- ⚠️ Осталось: браузерная проверка Семёном (залогиниться → /direct/automation/copy → тест-копирование).
+
+## Сессия: 2026-07-03 (вечер) — воркфлоу-ревью 24 находки + прогон Павлова 21/21
+
+**Прогон Павлова (bfa3a130c1fc, no_cpa, single_feed): 21/21, 0 failed** — новые tp7 РОДИЛИСЬ с
+feed-фильтрами (FEED_FILTER_MISSING_UAC=0), ложняк EXTRA_TP ушёл; добивка: 276 заголовков + 303
+кнопки на 4 tp1 (созданы зависшими потоками до фикса, см. ниже). Аналогично добиты autoshop-23
+и autodealer-nsk (328 заголовков, 300+ кнопок, read-back везде 0).
+
+**Инциденты сессии:**
+- Джобу Павлова №1 убил watchdog: видео стримилось с sshfs в POST + heartbeat не трогался на
+  видео-загрузке → чинено (файл в память в _upload_video_result, heartbeat в _creatives_for_ct).
+- POST на /direct/api/create_set (СИНХРОННЫЙ!) вместо /api/create_set_async → web-процесс сам
+  создавал кампании в HTTP-потоке. Дублей нет (лок createset:login), 7 кампаний создались полными.
+  ПРАВИЛО: постановка джобы = ТОЛЬКО create_set_async.
+
+**Воркфлоу-ревью (28 агентов, 24 выживших находки) — исправлено 10 критичных:**
+deps-NameError _ensure_callout_exts (tp1 callouts молча не ставились) и _enabled_minus_places
+(tp3 v5 падал целиком); guard пустого full-replace в RMW (голые items фиксеров при упавшем чтении
+затирали бы объявления); существующая кнопка проносится в основной RMW-payload; probe у
+безусловного defer «нет ct-папок»; strict v5-miss _first_url_feed проваливается в Grid (иначе
+/yandex.xml «не находился»); UrlFeedFieldNames в _v5_get + матч single_feed по url (Bug D доводка);
+MUST_BE_NULL при создании tp7 → retry без фильтров; creativeIds+нормализация цены в
+images_forbidden_repair; adGroupId в мутации листингов.
+
+**(#5/#21) ИСПРАВЛЕНО тем же вечером:** сдвиг объявление↔группа на куки-пути tp1/tp2 —
+контракт `rep["ad_ids"]` теперь СТРОГО 1:1 с группами (None для упавших), при len-расхождении
+ответа Grid — read-back `_read_ads_agid_map` (adGroupId→adId, live 35/35 пар на 712111891);
+потребители (картинки/цены tp1, цены tp2/tp4, видео-мета) на прямом zip со skip None;
+юнит-тест сдвига: [101,None,103] вместо чужого id. Общий хелпер `_aligned_ad_ids` (grid_create).
+
+**Ревью-бэклог (подтверждено, НЕ исправлено):** (#10) 0 ListingAd у tp5
+теперь не удаляет кампанию, но авто-добивки листингов нет (нужен NO_LISTING detect в аудите);
+(#14/#20) фиксеры импортируют create_set_feeds без configure — падение на свежем процессе без
+blueprint-конфига; (#16) _grid_set_ad_prices шлёт creativeIds:[] (опасен для БУДУЩИХ вызовов по
+живым кампаниям с видео); (#6) _pad titles: пустой out при бедном корпусе → titles=[];
+верификатор флагает ITEM_NOT_PROCESSED (error) на items, отфильтрованных single_feed — шум.
+Прочее: видео-пул M3 только 1920×1080 (вертикальных нет — донарезка на M3); Терехов не прогнан
+авто-фиксами (timeout, 393 кампании — прогнать с бОльшим бюджетом или дождаться его джобы).
+
+## Сессия: 2026-07-03 (день, продолжение) — SHORT_TITLES/BUTTON_MISSING авто-фиксы + разбор ❌5
+
+**Новые авто-детекты+фиксы в спека-аудите (live-проверено на psm5h7q6, все read-back 0):**
+- **SHORT_TITLES** — заголовки с запасом ≥11 симв (скрины Семёна #78): банк суффиксов
+  `ai_agents.extend_title_to_max` (без цифр/процентов, стем-дедуп, ротация). Два транспорта:
+  tp1 Grid RMW (356 заголовков добито) и tp6/tp7 UAC cookie PATCH (путь контент-редактора).
+- **BUTTON_MISSING** — кнопка «Получить скидку» (скрин #80): 61 добита RMW; детект по `hasButton`.
+- **ПРОРЫВ: `typedCreatives{creativeId}` ЧИТАЕМ** (интроспекция Grid работает!) → RMW теперь
+  сохраняет видео (проверено: креативы 1163039418/31 уцелели после titles-апдейта). Давний
+  NOTE «creativeIds нечитаем» закрыт в `adaptive_ads_for_update`+`_grid_update_adaptive_ads`.
+
+**Разбор ❌5 джобы cb8769b131e5 (Кемерово) — три корня, все закрыты:**
+1. **tp5 «без ListingAd»**: после HAR36 `listing_build_items` несут name_value, а
+   `_add_listing_ads_v501` фильтровал по collection_ids → молча `[]` → кампания удалялась.
+   Фикс: общий Grid-путь tp1/tp5 `_grid_add_listings_with_name_filters` (без баллов), раздельные
+   try текст/листинги, кампания НЕ удаляется (принцип «дозаполнять»), warnings в result.
+2. **tp1 Модели/Общее пустышки (cts=0, 1 группа)**: транзиентный сбой чтения пака M3 (sshfs)
+   + фолбэк «Товарная галерея» маскировал. Фикс: `_pack_read_glitch` (probe соседнего tp-пака
+   отличает сбой от легитимно пустого пака Павлова) → defer на докрутку + пробros defer в v5-пути.
+3. **tp2/tp4 куки-путь клал картинки в поиск** (27/кампанию): гейт `_want_images` в
+   `_tp1_pack_groups` (v5-путь чинился раньше, куки-путь — дыра). 108 картинок вычищено CLI-fix.
+
+UI: бейджи «N сегм./шт» на панели структуры пересчитываются от чекбоксов+«Под стиль сайта»
+(`_recalcAcSetBadges`); web задеплоен. IMAGES_FORBIDDEN добавлен в CLI `--fix`.
+
+**Хвост (при пустой очереди):** рестарт direct-worker (фоновый монитор), удалить 3 пустышки
+tp1 (712112065/085/114) + пересоздать их и 5×tp5 Кемерово новой джобой; у Павлова (0fdfe24f577a,
+шла на старом коде) tp5 могли упасть так же — пересоздать после. FEED_FILTER_MISSING_UAC:
++2 новых tp7 без фильтров (712112280/310) — executor UAC PATCH всё ещё нужен.
+
+## Сессия: 2026-07-03 (утро-день) — СПЕКА-АУДИТ: ошибки находятся и чинятся сами
+
+**Главное требование Семёна выполнено**: `campaign_spec_audit.py` — декларативная спека per-tp,
+аудитор сверяет live-кампании, нарушения → repair_plan → in-place executors. Автоматически в
+delayed-repair цикле после каждой джобы + CLI `python3 -m direct.campaign_spec_audit <login> [--fix]`.
+
+- **KEYWORDS_WRONG_GROUP**: ключи группы vs эталон её ct из пака (математически; калибровка
+  42 ложняка→0: сдвиг = own_hits==0 И ≥2 ключа чужого ct, gate seg=Модели). Fix: ADD-FIRST→
+  DELETE-OLD + growth-guard (группа никогда не пустеет). Проверено контролируемым сдвигом:
+  поймал→починил→read-back ✓. На всех 5 боевых аккаунтах сдвигов 0.
+- **IMAGES_FORBIDDEN**: разовая очистка 2049 поисковых объявлений на 5 акк., ре-аудит → 0.
+- Попутно убиты 2 latent-бага: eventual-consistency delete→add; **add_keywords читал snake
+  `adgroup_id` вместо camel `adGroupId` → items молча пропускались** (причина «пустых групп»).
+- Сдвиг при создании: guard в grid_create (ag_ids≠groups → выравнивание по имени read-back'ом).
+- tp2/tp4 больше НЕ получают картинок при создании; set_default_text/listing — ретрай 5xx
+  по-чанково; UAC tp7 фильтры параметризованы полем через _resolve_feed_field + login/feed_id;
+  видео-гонка добита (хэши в мету, пустой image_hashes не шлётся); верификатор не красит
+  товарку-only; set_plan не создаёт tp6/tp7 отсутствующие в слепке; чистка 246 дублей утром.
+
+**Открытые (report-only, не чинить вслепую):** FEED_FILTER_MISSING_UAC — 14 существующих UAC
+без фильтров (до фикса), нужен executor UAC PATCH; EXTRA_TP_NOT_IN_SLEPOK — сначала выверить
+чтение структуры (_struct_cts флагает pavlov-tp6, который в слепке ЕСТЬ).
+
+## Сессия: 2026-07-03 06:00 — НОЧНОЙ ПРОГОН 5 АККАУНТОВ: 506 кампаний, все фиксы подтверждены live
+
+| Аккаунт | Слепок | Создано | failed | tp2 ключи (live) | tp1 цены | Картинки |
+|---|---|---|---|---|---|---|
+| porg-7bqj56f4 (autoshop-23) | Щербакова | 21/21 | 0 | 10000, пустых групп 29/105 | 26/35 | ✅ 0 пропаж |
+| porg-ozge4ntu (carsklad-126) | Павлов | 37/37 | 0 | 4717, пустых 0/150 ✅ | 26/34 | ✅ |
+| porg-asfbs7qe (autodealer-nsk) | Павлов | 36/37 | 2 | 4599, пустых 1/150 | 27/34 | ✅ |
+| porg-psm5h7q6 (autos-kemerovo) | Щербакова | 19/29 (дедуп) | 0 | 10000, пустых 28/105 | 29/32* | ✅ |
+| porg-lzjk6p5m (мультигород) | Терехов | 393/395 | 4 | 10000, пустых 2/63 | 29/32 | ✅ |
+
+Подтверждено: ключи заливаются при создании (AddKeywords), картинки/цены не затираются (RMW),
+авто-добивка ставится сама, зависаний ноль (stall-трейсов нет), воркер держал 5 джоб параллельно
+с прогревом. Пересоздание больше не нужно: план выдаёт in-place keywords_repair.
+
+**Хвосты (не блокеры):**
+1. Щербакова-структура: стабильно ~28-29 пустых групп на tp2 105-групповых кампаниях (у Павлова/
+   Терехова 0-2) — похоже на группы без семантики в паке; выяснить состав этих групп.
+2. execute_keywords_repair: пишет ключи (keywords_written>0), но applied=false и zero_kw не падает —
+   маппинг adGroupId↔ключи кладёт не в те группы ИЛИ пишет в непустые; дорасследовать.
+3. psm5h7q6 tp1 Модели 712106196: price_ads 0/300 (Марки-кампании ок) — матчинг цен моделей.
+4. lzjk6p5m: auto_queued_repair error «не удалось удалить неполный UAC draft перед recreate» (4 failed).
+5. Детект дефолт-текста: GdSmartAd.bodies FieldUndefined — читалка спит, найти правильное поле.
+
+## Сессия: 2026-07-03 00:15 — пакет root-cause фиксов задеплоен (worker+web)
+
+- **КЛЮЧИ (корень «вечных 8 битых»)**: Grid AddUnifiedAdGroups МОЛЧА игнорирует keywords в спеке
+  (подтверждённый no-op). Фикс: отдельная мутация AddKeywords (grid_create.add_keywords, батчи 1000)
+  в create_full + add_text_content_to_existing + repair_executor.execute_keywords_repair —
+  in-place дозаливка приоритетнее recreate. Счётчик build.keywords в result.
+- **RMW-апдейтер**: _grid_update_adaptive_ads(campaign_ids=...) читает текущее состояние
+  (adaptive_ads_for_update) и мержит — конец классу «видео затёрло картинки/цену»
+  (Belgee 712104529). Картинки затёртых групп вернутся при следующем repair/attach.
+- **Minus-set**: v5 NegativeKeywordSharedSetIds для ЕПК не существует — Grid libraryMinusKeywordsIds
+  уже вешает набор; v5 остался fallback'ом, note честный «OK (Grid)».
+- **Фильтры per-feed**: _resolve_feed_field (vendor|mark_id|brand · model|folder_id) по live
+  fieldsForUseAs (AUTO_RU фиды = mark_id/folder_id!); минус-марки тем же полем; дефолт-текст
+  с UNKNOWN_FIELD-страховкой; имена «Товары — site/feed.xml».
+- **Формулировки**: «{brand} по госпрограмме/в трейд-ин», «Успей» запрещён, правила в промпте M3.
+- UI: карточка авто-пересоздания в стеке очереди; «готово: заменён <тип> N/M» в контент-редакторе.
+- ОСТАЛОСЬ (#3): полный in-place детект пропаж картинок/видео/цен/дефолт-текстов в live-verification.
+
+## ✅ БОЕВОЕ ПЕРЕКЛЮЧЕНИЕ ВЫПОЛНЕНО 2026-07-02 22:03 (главная сессия)
+
+- `direct-worker.service` создан на LXC 101 (`/etc/systemd/system/`, enable --now) — лог
+  «worker started, 5 threads, poll=2s, role=worker». `direct.service` → роль web через drop-in
+  `/etc/systemd/system/direct.service.d/role.conf`. Все три сервиса active, smoke OK.
+- **Теперь рестартовать при правках:** логика создания (create_set_*/grid_*/campaign/kontent_pack/
+  repair_auto) → `direct-worker.service`; UI/роуты/шаблоны → `direct.service`. См. скилл deploy-seoadvanced.
+- **Watchdog-зависания — root cause НАВСЕГДА:** файлы с sshfs СТРИМИЛИСЬ в POST (read-timeout не
+  ограничивает отправку тела → вечный ssl.read; live-стек job 0bf287c861f2). Фикс: файл в память
+  до POST (grid_finalize.upload_image, campaign.py upload-content); heartbeat на каждый LLM-вызов
+  и upload_image; при килле — стек всех тредов в `/tmp/direct_stall_*.trace`; py-spy в /root/venv.
+- **Авто-исправление после создания**: delayed-демон через 180с исполняет ВСЕ in-place действия
+  «Плана добивки» (≤2 итерации, ре-сверка) → `result.auto_repair_full`; recreate — как раньше.
+- **Прогрев queued-джоб** (`create_set_prefetch.py`): M3-контент, видео→локальный кэш, цены
+  (кэш строго `(login,url)`), кука. Живёт в воркере.
+- **UI:** «будет создано: N» пересчитывается живо от галочек (`_recalcTpCounts`/`onSingleFeedToggle`).
+
+## Сессия: 2026-07-02 (22:00) — Фаза 2: воркер очереди в отдельный сервис direct-worker.service
+
+**Цель:** деплой UI (direct.service) не должен убивать активные джобы создания. Код+юнит в репо;
+сервисы на сервере НЕ рестартовал/НЕ создавал (это делает главная сессия в окне).
+
+- **Роль процесса** — env `DIRECT_ROLE` (`all` дефолт = как раньше · `web` · `worker`).
+  `blueprint.py:_direct_role()`. В `all` всё in-memory как сейчас (полная обратная совместимость —
+  можно задеплоить код БЕЗ включения split).
+- **web↔worker через Victory БД.** Новая колонка `direct_automation_jobs.control` (ALTER выполнен на
+  Victory, подтверждён information_schema). web-роль: `_job_new`→`_job_new_web` (INSERT status='queued',
+  `body._web_posted=true`, session в `body._session_snapshot`). worker-роль: БД-поллер каждые 2с
+  `_worker_claim_web_jobs` (queued→claimed `FOR UPDATE SKIP LOCKED RETURNING`) → `_worker_adopt_job`
+  заводит в in-memory очередь + прогрев `_prefetch_start`. Прогресс во время прогона уже флешится в БД
+  через `_job_db_progress` (троттлинг ≤4с) — web-статус читает БД.
+- **routes_jobs.py**: web-ветки в async/status/feed_decision/cancel/resume/create_jobs (читают/пишут БД).
+  feed-решение web применяет прямо в БД (status flip → queued); cancel running → `control='cancel'`
+  (worker применяет в `_worker_apply_controls` и NULL-ит).
+- **Crash-safety**: `_jobs_db_recover` теперь НЕ трогает web-posted queued (иначе убил бы очередь после
+  рестарта воркера), а осиротевший `claimed` → обратно `queued`. Drain: SIGTERM→`_worker_request_drain`
+  → `_claim_next_job` возвращает None → треды выходят; running-остаток в БД → interrupted на след. старте.
+- **Файлы**: `worker_main.py` (`python3 -m direct.worker_main`, `_worker_bootstrap`+SIGTERM-drain),
+  `deploy/direct-worker.service` (Environment=DIRECT_ROLE=worker, TimeoutStopSec=600, KillMode=mixed),
+  `deploy/direct.service` (закомментированный `DIRECT_ROLE=web` + инструкция переключения).
+- **Проверки**: py_compile (blueprint/routes_jobs/worker_main/main) OK; pyflakes undefined — чисто;
+  live LXC101 `DIRECT_ROLE=worker python -m direct.worker_main` → «worker started, 5 threads, poll=2s»,
+  idle 20с без падений, на SIGTERM корректный drain. web-роль helpers резолвятся.
+- **Осталось / порядок боевого переключения** (главной сессии, НЕ сделано): (1) задеплоить код в
+  `all`-режиме (безопасно, ничего не меняется); (2) создать `/etc/systemd/system/direct-worker.service`
+  из `deploy/`, `daemon-reload`, `enable --now direct-worker`; (3) раскомментировать `DIRECT_ROLE=web`
+  в direct.service, `restart direct` — порядок: worker ПЕРВЫМ, потом web. Откат: убрать env web +
+  stop worker → снова `all`. Известное ограничение: детальный лог copy_campaigns в web-роли читает
+  in-memory (пусто) — зеркалирование в карточку через БД работает; вынести copy-лог в БД — follow-up.
+- **Рекомендация**: 6+ правок в проекте → предложить `/code-review` на blueprint.py+routes_jobs.py.
+
+## ⚠️ КРИТИЧЕСКОЕ ЗНАНИЕ ДЕПЛОЯ (2026-07-02)
+
+**На LXC 101 ТРИ Flask-сервиса — рестартовать ПРАВИЛЬНЫЙ:**
+- `direct.service` (порт 5020, `python3 -m direct.main`) — **нейродиректолог /direct/automation** ← ЕГО рестартовать после правок direct/
+- `direct-content.service` (порт 5021, `python3 -m direct.content_main`) — Редактор контента /direct/automation/content
+- `digest.service` (порт 5010) — главный app.py (delta/work/sport/todo/movies/bonds/blog), direct-blueprint НЕ регистрирует
+
+**Весь день 2026-07-02 рестартовали digest.service вместо direct.service** — код синкался Mutagen'ом, но приложение работало на старом. Это был мета-корень «ошибки повторяются после фикса». Скилл deploy-seoadvanced говорит digest — для направления direct это НЕВЕРНО.
+
+## Сессия: 2026-07-02 (финал ~19:00) — code-review + добивка
+
+- **/code-review (6 углов)**: КРИТИКАЛ — tp2/tp4 (`create_set_text_builders.py:207`) повторный
+  update после цен шёл БЕЗ adPrice → затирал цены (тот же баг что чинили в tp1). Вызов удалён,
+  `repair_items` вычищен. Минор: magic 22 → `A.SITELINK_TITLE_TARGET_MIN`; `_tmp_vid_out.txt` удалён.
+  Отложено (в отчёте): видео-upload без кэша между кампаниями; minus-marks в 4 точках (нет choke-point);
+  content-editor кладёт сайтлинки мимо нормализации; read-back без retry.
+- **Правило цены**: марки/модели НЕТ в фиде → цена ПУСТАЯ (`_group_ad_price` фолбэк убран для
+  брендовых групп; для «Общее» остался). 8 брендов (Tank/UAZ/Moskvich/Jaecoo/Jetta/KNEWSTAR/SOUEAST/XCITE)
+  на 712094103 очищены live (read-back 8/8 null, 26 реальных цен не тронуты).
+- **HOTFIX NameError `_filter_allowed_feed_rows`** в set_plan: `create_set_plan.py:231` импортировал
+  `_first_url_feed` из create_set_feeds НАПРЯМУЮ (мимо configure) → на свежем процессе NameError → 500 →
+  «SyntaxError: <!doctype» в UI. Фикс: инжектирована blueprint-обёртка в `_create_set_plan_deps`.
+  ⚠️ ПАТТЕРН: функции configure-модулей НЕ импортировать напрямую — только через blueprint-обёртки/deps.
+
+## Сессия: 2026-07-02 (продолжение) — итог дня, всё задеплоено в direct.service + direct-content.service 18:30
+
+- **Чип «Запросы с упоминанием брендов конкурентов» (tp6/tp7)**: НЕ минус-слово, а отражение ВЫКЛЮЧЕННОЙ категории. tp1-tp5 работали т.к. grid_create шлёт все 3 autotargetingBrandSettings. Фикс: `campaign.py:1469` brand_settings все три + COMPETITOR_MARK возвращён в `_TP67_OPTIMAL_CATEGORIES` (blueprint.py:86) и `campaign.py:1088` (утром удаляли — это было В ОБРАТНУЮ сторону, НЕ повторять!)
+- **Цена tp1 — 3 слоя затирания, все исправлены** (`create_set_tp1_builders.py`): (1) Фаза 3.5 теперь `_account_offer_prices` вместо одного defaultFeedId (был 0 офферов); (2) `ads_repaired_after_price` удалён — затирал цену; (3) видео-attach несёт `meta.ad_price_payload`. Кампания 712094103 починена фактически: 34/34 с реальными ценами (read-back)
+- **Видео M3**: папка `/Users/Shared/agency/Video/<ct>/*.mp4` (155 роликов, 16 ct) проиндексирована в kontent_pack.py; tp6/tp7 — через content_ids; tp1 — разбужен `_tp1_video_ads` (upload_video_creative → meta.creative_id → creativeIds в UpdateAdaptiveTextAds). Счётчики: videos_uploaded/videos_attached/video_groups
+- **«Минус марки (фид)»**: таблица `direct_global_minus_marks` (Victory), GET/POST `/api/minus-marks`, `_enabled_minus_marks()`, NOT_CONTAINS_ALL vendor-условие добавляется во все 4 Grid-точки товарки + tp7 UAC; UI-секция во вкладке «Глобальные правила»
+- **Вкладка «Обзор» в Редакторе контента**: content_editor.html, копия 1-в-1 (таблица/фильтры/кнопки/итоги), backend без правок
+- **feed_alert модалка** — перенесена в ПРАВИЛЬНЫЙ файл `templates/direct/index.html` (direct/index.html Flask НЕ использует!); `_renderJobVerification` показывает «добивка запущена автоматически» по `auto_queued_repair.queued`
+
+## Сессия: 2026-07-02 — три точечных фикса (sitelink fillers, adPrice warnings, disabledPlaces read-back)
+
+**FIX 1 — sitelink_fillers ≥22 симв (SITELINK_TITLE_TARGET_MIN):**
+- `create_content.py:664-676` — все 11 `sitelink_fillers` переписаны (заголовки 22-26 симв)
+- `create_content.py:_take_sitelinks` — добавлен `len(title) < A.SITELINK_TITLE_TARGET_MIN` в skip-условие
+- `blueprint.py:_GENERIC_SITELINK_FILLERS` — 7/9 коротких заменены, все 9 теперь ≥22; добавлен `len(title)<22`-gate в `_norm_sitelinks_for_v501`
+
+**FIX 2 — adPrice: добавлены warnings в _UPD_ADAPTIVE_Q + лог:**
+- `create_set_feeds.py:_UPD_ADAPTIVE_Q` — добавлен `warnings{code path params}`
+- `create_set_feeds.py:_grid_set_ad_prices` — логирует warnings через `direct.feeds` logger
+- Live: формат adPrice (Format 2A) подтверждён рабочим; все 34 объявления 712094103 получили test-price 2 000 000 ₽ (placeholder — в проде цена берётся из фида)
+- Root cause null-bannerPrice: фид carsklad-126.site не имел цен в момент создания → `_grid_ad_price_payload(0)=None` → `upd=[]` → мутация не вызывалась
+
+**FIX 3 — disabledPlaces: logging + read-back:**
+- `create_set_finalize.py:_finalize_rsya` — добавлен лог warnings (через `direct.finalize`), read-back CampDP с предупреждением если Grid не применил
+- Live: формат `['gdz.ru']` (domain-only) РАБОТАЕТ, Grid нормализует full URL тоже корректно
+- Кампании 712094203 и 712094103 получили `disabledPlaces=['gdz.ru']` (read-back подтверждён)
+
+**py_compile:** create_content.py, blueprint.py, create_set_feeds.py, create_set_finalize.py, create_set_tp1_builders.py — ALL OK
+**Сервис НЕ рестартовался**
+**Осталось:** deploy-seoadvanced для обновления in-memory кода
+
+**Дополнительные фиксы (adPrice цепочка затирания) — 2026-07-02:**
+
+Root cause verified live (LXC 101, campaign 712094103 porg-ozge4ntu):
+- Фаза 3.5 звала `_grid_feed_offer_prices(login, defaultFeedId)` — единственный фид. У этого аккаунта defaultFeed имел 0 офферов при создании кампании → `_pmap={}` → `prices_set=0`.
+- `_grid_set_ad_prices` УЖЕ несёт `imageHashes`. `ads_repaired_after_price` был избыточен и затирал цену (вызывал `_grid_update_adaptive_ads` без adPrice ключа).
+- Grid UpdateAdaptiveTextAds = full-replace: без `adPrice` ключа в payload → `bannerPrice=null` (verified live: до fix — null, после — цена сохранена).
+- `_tp1_video_ads` attach аналогично не нёс `adPrice` → та же проблема.
+
+Правки `create_set_tp1_builders.py`:
+- Фаза 3.5: `_account_offer_prices(login, href)` вместо single-feed (fix price-A)
+- Фаза 3.5: `meta["ad_price_payload"] = _grid_ad_price_payload(cur, old)` в loop (fix price-C)
+- Фаза 3.5: убран `ads_repaired_after_price` (fix price-B)
+- `_tp1_video_ads` line 100: `"adPrice": meta.get("ad_price_payload")` в attach_items (fix price-C)
+
+Live итог (34/34 OK read-back):
+BAIC=2 040 546, Changan=2 219 900, Belgee=1 850 000, Haval=1 890 000, Geely=1 419 990,
+Lada=824 000, KIA=1 335 000, Hyundai=1 408 000, Skoda=1 051 000, Renault=1 124 000.
+8 марок без match в фиде (Jaecoo/Jetta/KNEWSTAR/SOUEAST/Tank/XCITE/Moskvich/UAZ) → global min 789 900.
+
+## Сессия: 2026-07-02 17:50 — видео M3 в tp1 РСЯ (разбужен _tp1_video_ads)
+
+Продолжение видео-фичи. Прошлый шаг — видео в tp6/tp7 UAC (пул `/Users/Shared/agency/Video/<ct>/`
++ `kp.videos_pool_for_ct`/`videos_for_ct`, см. блок ниже). Теперь то же для tp1 (ЕПК РСЯ).
+
+**Механика (HAR53):** upload видео = тот же `/web-api/uac/content?creative_type=tgo` (multipart
+video/mp4) → в ответе И `result.id` (content_id для tp6/7 content_ids), И `result.meta.creative_id`.
+Для ЕПК-объявления attach = Grid `UpdateAdaptiveTextAds` с `creativeIds:["<meta.creative_id>"]`
+по реальному ad_id (full-replace → шлём titles/bodies/imageHashes целиком).
+
+**Правки:**
+- `campaign.py`: рефактор `upload_video_file` → выделил `_upload_video_result`; добавил
+  `upload_video_creative` (возвращает `meta.creative_id`, НЕ `result.id`).
+- `create_set_feeds.py` (`_grid_update_adaptive_ads`): `creativeIds` теперь из item
+  (`creative_ids`, дефолт `[]` — обратная совместимость; `_apply_combo_button` уже копирует поле).
+- `create_set_tp1_builders.py`:
+  - в `ad_meta` добавил `ct` (нужен для видео по ct);
+  - разбудил `_tp1_video_ads(login, created_ad_meta, grid_cookie)` — загрузка по ct (кэш creative_id
+    на ct, дедуп, 1-2/группу) через `UacClient.upload_video_creative` → attach `_grid_update_adaptive_ads`;
+  - Фаза 3.6 в `_build_tp1_adgroups`: вызов ПОСЛЕ adPrice-фазы (иначе price-апдейт с `creativeIds:[]`
+    затёр бы видео). Best-effort: сбой не роняет кампанию;
+  - `_build_tp1_from_pack`: строку `rep["video"]="dormant…"` заменил на счётчики
+    `videos_uploaded/videos_attached/video_groups`.
+
+**Верификация (LXC101, БЕЗ рестарта сервиса):** py_compile 3 файлов OK; pyflakes — только
+инъекц. deps (cmc/kp/gf/_grid_update_adaptive_ads в `_create_set_tp1_builder_deps`), новых undefined нет;
+сигнатуры/методы есть; **live:** `pick_working_cookie(porg-ozge4ntu)` OK → `upload_video_creative(ct0021)`
+вернул реальный `creative_id=1163021331` (numeric meta.creative_id). Attach — тот же Grid-путь, что
+уже боевой для adPrice/картинок.
+
+**Осталось:** сервис НЕ рестартовал (задание) → задеплоить `deploy-seoadvanced` + smoke; полный
+tp1-прогон с attach в live не гонял (создаёт реальные черновики). Предложить `/code-review`
+(4+ правок). Замечание: Фаза 3.6 attach шлёт payload без adPrice (как и существующий
+`ads_repaired_after_price`) — если Grid full-replace обнулит adPrice, при желании держать
+цену+видео вместе нужно нести adPrice и в video-attach (follow-up, сейчас паритет с текущим кодом).
+
+## Сессия: 2026-07-02 17:30 — видео M3 в tp6/tp7 (UAC)
+
+**M3:** `/Users/Shared/agency/Video/<ctNNNN>/<ctNNNN_NN>.mp4` — 16 ct-папок × ~10 = 155 роликов,
+ct=coder-ct (ct0021 BAIC U5 Plus, ct0117 Haval H7, ct0253 Москвич 3 …).
+**Правки `kontent_pack.py`:** `_INDEX_BUILDER` индексирует `Video/<ct>/*.mp4` →
+`external_assets["Video|video|<ct>"]`; новая `videos_pool_for_ct(ct)`; `videos_for_ct` фолбэчит в пул.
+Цепочка tp6/7 (`create_set_master_product.py:421` → `video_files` → `campaign.py:1560 upload_video_file`
+→ `content_ids`) была готова — не хватало только источника видео. Верифицировано: refresh_index=True,
+16 ключей, `videos_pool_for_ct("ct0021")` тянет 2 mp4 в кэш.
+
+## Последняя сессия: 2026-07-02 — вкладка «Обзор» в «Редакторе контента» (content_editor.html)
+
+**Задача:** добавить вкладку «Обзор» (список аккаунтов + фильтры + Excel/баланс/блокировки) на
+`/direct/automation/content` — копия 1-в-1 вкладки accounts из `index.html`.
+
+**Правки (ТОЛЬКО `templates/direct/content_editor.html`, backend НЕ трогал):**
+- Сайдбар: пункт `📋 Обзор` (`data-section="accounts"`) после «Уточнения».
+- Контент-вью обёрнут в `#ce-content-view`; рядом добавлен `#panel-accounts` (панель accounts
+  вербатим из index 744-777 + свой прогресс-хост `#acc-progress` + скрытый `<datalist id=acc-list>`).
+- `ceSetSection` переключает `#ce-content-view` ↔ `#panel-accounts`; на accounts лениво зовёт
+  `loadAccounts()`/`applyFilters()`.
+- JS подсистемы «Обзор» перенесён вербатим (~388 строк): loadAccounts/applyFilters/rebuildFacets/
+  fillFacet/renderTable/autoSizeColumns/renderTotals/loadOtkrut/refreshData/checkBlocks/downloadExcel/
+  sortBy/creepStart+progress/esc/_normDomain/_statsMatch/copyCell/gotoDirect и т.д. Коллизий имён нет
+  (существующий код весь `ce*`/`CE*`). CSS `da-*` перенесён из index (нет в style.css).
+- Отличие от index: `gotoAccount` («Статистика →») ведёт на `/direct/automation?tab=stats` (на
+  изолированной странице панели «Статистика» нет; выбор аккаунта на целевой не переносится).
+
+**Эндпоинты (тот же blueprint, доступны без правок):** `/direct/api/accounts?status=__all__`,
+`/api/accounts_otkrut`, `/api/balance`, `/api/check_blocks`.
+
+**Проверки:** `node --check` извлечённого JS — OK (нет дублей let/const → имён-коллизий нет);
+структура div сбалансирована; CSS-дубликаты вычищены. **НЕ верифицировано живьём** (сервис НЕ
+рестартовал по заданию). Деплой = `deploy-seoadvanced` + smoke на `/direct/automation/content`.
+
+## Предыдущая сессия: 2026-07-02 17:40 — новая фича «Минус марки (фид)» (глобальное правило)
+
+### Минус марки (фид): исключение производителей из товарки фидовых кампаний
+
+**Что:** UI «Глобальные правила» → вкладка «Минус марки (фид)»: чеклист марок (по умолчанию сняты).
+Отмеченные исключаются из товарки ВСЕХ кампаний с фидами.
+
+**Фильтр (HAR52 entry131 FeedOffersPreview):**
+`{"field":"vendor","operator":"NOT_CONTAINS_ALL","stringValue":"[\"moskvich\"]"}` (Grid, поле
+«производитель»); одно условие на марку (AND). UAC tp7: `value`+`NOT_CONTAINS`.
+
+**БД:** `public.direct_global_minus_marks (mark PK, enabled bool default false, updated_at)` — создана.
+
+**Правки:** `blueprint.py` (`_minus_marks_ensure/_global_minus_marks/_enabled_minus_marks` TTL-кэш 30с;
+deps + register_settings_routes) · `routes_settings.py` (GET/POST `/api/minus-marks`, источник
+`_known_brand_canons`) · `create_set_feeds.py` (`_minus_marks_grid_conditions/_minus_marks_uac_conditions`
++ tp7 дописывает минус) · инъекция в 4 Grid-точки товарки (`grid_finalize.add_shopping_ads`,
+`grid_create.py`, `create_set_tp1_builders.py` ×2) — минус К существующим conditions ·
+`templates/direct/index.html` (вкладка + `loadMinusMarks/saveMinusMarks`).
+
+**Верификация:** py_compile OK, pyflakes routes_settings чист. **НЕ верифицировано живьём** (сервис
+НЕ рестартован). UAC-оператор `NOT_CONTAINS` (tp7) — по аналогии с существующим `CONTAINS`, без
+HAR-подтверждения NOT-варианта; Grid-путь HAR52-подтверждён. Риск: фид без поля `vendor` →
+UNKNOWN_FIELD (авто-стрип ловит только `model`).
+
+## Предыдущая сессия: 2026-07-02 17:30 — видео из M3 в tp6/tp7 (UAC)
+
+**Задача:** в M3 появились видео (`/Users/Shared/agency/Video/<ctNNNN>/<ctNNNN_NN>.mp4`,
+16 ct-папок × ~10 роликов = 155 шт, ct = coder-ct: ct0021 BAIC U5 Plus, ct0117 Haval H7 и т.д.).
+Грузить как картинки.
+
+**HAR (53har) — механика загрузки видео (совпадает с уже существующим кодом):**
+- Upload: `POST /web-api/uac/content?ulogin=X&adv_type=text&creative_type=tgo`, multipart,
+  поле `upload` = mp4, `Content-Type: video/mp4`. Ответ: `result.id` (content_id),
+  `result.meta.creative_id`, `result.type=video`. Это ровно `campaign.py:upload_video_file`.
+- Attach (ЕПК/tp1 adaptive-text-ad): `Grid UpdateAdaptiveTextAds` с `creativeIds:["<creative_id>"]`.
+  Для tp6/tp7 UAC — через `content_ids` в payload кампании (уже есть).
+
+**Что было:** цепочка tp6/tp7 UAC уже полностью готова: `create_set_master_product.py:421`
+`it_videos = kp.videos_for_ct(login,c_ct) or kp.videos_for_login(login)` → `video_files=it_videos`
+→ `campaign.py:1560 upload_video_file` → `content_ids` → payload. Но `it_videos` был всегда ПУСТ:
+`videos_for_*` читали только `_slepki_data/<folder>/videos/` (лишь haval_ufa_si7rw3ua).
+Новую папку `/Users/Shared/agency/Video/` никто не индексировал.
+
+**Правки (kontent_pack.py, только он тронут):**
+- `_INDEX_BUILDER` (после блока `manual_root`): индексируем `/Users/Shared/agency/Video/<ct>/*.mp4`
+  → `external_assets["Video|video|<ct>"]`, kind `video_external` (по аналогии с Manual).
+- `videos_for_ct`: если у слепка нет ролика для модели → фолбэк на новую `videos_pool_for_ct(ct)`.
+- Новая `videos_pool_for_ct(ct, limit=2)`: читает `Video|video|<ct>`, тянет байты через `_fetch_many`,
+  возвращает локальные пути (лимит Директа 2 видео/мастер).
+
+**Верификация (LXC101, без рестарта сервиса):** `refresh_index()=True`, 16 Video-ключей;
+`videos_pool_for_ct("ct0021")` → 2 реальных mp4 в кэш (5MB, 9MB); `videos_for_ct(non-slepok, ct0021)`
+корректно уходит в пул. `py_compile`/`pyflakes` — чисто (warning line 1218 `json` предсуществующий).
+
+**Осталось:** сервис НЕ рестартовал (по заданию) — задеплоить = `deploy-seoadvanced` + smoke.
+tp1 РСЯ намеренно НЕ трогал: HAR раскрыл его attach (`creativeIds` в `UpdateAdaptiveTextAds`) —
+`_tp1_video_ads` теперь можно разбудить, но это отдельная задача (по заданию — фокус на tp6/tp7).
+
+## Предыдущая сессия: 2026-07-02 15:58 — фикс сайтлинков и _pad в ai_agents.py
+
+### 2026-07-02 15:58 — Проблемы 1 и 4 исправлены в `ai_agents.py`
+
+**Проблема 1 (сайтлинки — короткие заголовки/описания):**
+- `SITELINK_TITLE_TARGET_MIN`: 20 → 22 (строка 625)
+- `SITELINK_DESC_TARGET_MIN`: 45 → 50 (строка 626)
+- Дедуп-фильтр (строка 1396): добавлен `len(ti) < SITELINK_TITLE_TARGET_MIN` — короткие заголовки дропаются
+- Промпт `build_sitelinks_messages` (строка 2093): добавлено "целься в 25–30 из 30; 22 символа = слабо"
+
+**Проблема 4 (`_pad` corpus fallback без фильтра длины):**
+- `_pad` (строки 1672-1680): для заголовков (maxlen == TITLE_MAX) убран fallback с floor=40;
+  вместо этого циклически повторяем уже одобренные заголовки (≥TITLE_TARGET_MIN).
+  Для текстов — прежнее поведение (max(40, minlen-14)).
+
+**Проблемы 2 и 3 — возвращены на диагностику:**
+- Проблема 2 ("Запросы с упоминанием брендов конкурентов" в tp6/tp7): `WITH_COMPETITOR_BRAND` есть
+  ТОЛЬКО в `grid_create.py:356` в ветке `elif autotargeting:` для ЕПК (tp1-tp5). UAC-путь (tp6/tp7)
+  использует `_TP67_OPTIMAL_CATEGORIES`/`_TP67_RELEVANCE_CATEGORIES` — ни один не содержит
+  COMPETITOR_MARK. `MasterCampaignSpec` дефолт тоже чист. Механизм "другой" не найден в коде.
+- Проблема 3 (tp7 фильтр фида по марке): `_tp7_product_feed_filters` уже существует
+  (create_set_feeds.py:988) и вызывается в create_set_master_product.py:460 при `c_brand` непустом.
+  "Нет фильтра" не подтверждён в коде — нужна live-диагностика.
+
+**Локальная проверка:** `python3 -m py_compile ai_agents.py` → OK. Деплой не выполнен.
+
+## Предыдущая сессия: 2026-07-02 11:00 — фикс NameError api_create_set + создание `carsklad-126.site`
 
 ### 2026-07-02 10:19 — фикс `name 'api_create_set' is not defined`
 
@@ -3795,3 +4511,423 @@ per-group сайтлинки Href=href группы (куки-путь отде�
 Требует live-проверки: v5-схема callout-usages (CalloutIds на TextCampaign) и sitelinks.add
 ключ `SitelinksSets` + переназначение SitelinkSetId. Деплой: mutagen разнесёт файлы, затем
 `ssh lxc101-ts "systemctl restart digest.service"` + smoke `/direct/automation/content`.
+
+---
+## Дополнение 37 — разделение Direct automation и content editor по сервисам (2026-07-02)
+
+Сделано и задеплоено на LXC101:
+- общий `/direct/automation` остался в `direct.service` на `127.0.0.1:5020`;
+- `/direct/automation/content` и `/direct/api/content-editor/*` вынесены в новый
+  `direct-content.service` на `127.0.0.1:5021`;
+- `direct.service` запускается с `DIRECT_REGISTER_CONTENT_EDITOR=0`, поэтому content routes
+  не регистрируются в общем Direct app;
+- добавлен `direct/content_main.py`, который регистрирует только content editor routes;
+- nginx получил два `^~` location перед общим `/direct/`: content page и content API идут в
+  `5021`, остальной `/direct/` — в `5020`.
+
+Проверка: local pytest `direct/tests/test_routes.py` → 11 passed; remote `py_compile`
+`direct/content_main.py`, `direct/blueprint.py`, `direct/routes_content_editor.py` OK; md5
+local==server по изменённым файлам; `direct-content.service active/enabled`; `nginx -t` OK и
+reload выполнен. Smoke: `5021/direct/automation/content → 302 /login`,
+`5021/direct/automation → 404`, `5020/direct/automation → 302 /login`, public
+`https://seoadvanced.ru/direct/automation/content → 302 /login`, public content API без сессии
+→ `401`. `direct.service` не перезапускался, активная create-job `d4c9e956f8a8` не прерывалась.
+
+---
+## Дополнение 38 — Фаза 1: ПРОГРЕВ (prefetch) queued-джобы (2026-07-02, НЕ задеплоено)
+
+Сделано (сервис НЕ рестартился — только mutagen-синк + юнит-прогон на LXC101):
+- Новый Flask-free модуль `create_set_prefetch.py` (`configure(deps)` по образцу create_set_*).
+  `prefetch_job(login, body, *, is_cancelled)` под глобальным `_PREFETCH_LOCK` (не более 1 джобы
+  греется одновременно; блокирующее взятие лока сериализует прогрев, is_cancelled после acquire
+  выходит если джоба уже не queued). Греет: (1) M3-контент через тот же `_cached_campaign_content`
+  + общий `_CONTENT_CACHE` (ключ = тот же `_content_cache_key` с RAW city, что и orchestrator →
+  попадание, не регенерация); (2) видео — уникальные ct items (+ brand ct кодера) → `kp.videos_pool_for_ct`
+  (brand-fallback внутри неё), бюджет 60с; (3) цены `_account_offer_prices(login, href)`; (4) кука
+  `pick_working_cookie`. Лог `direct.prefetch` (INFO), в result джобы НЕ пишет, сбой = warning.
+- `blueprint.py`: обёртка `_prefetch_start` (ленивый configure всеми инъект-хелперами) перед
+  `register_job_routes(...)`, передан `start_prefetch=_prefetch_start`.
+- `routes_jobs.py`: параметр `start_prefetch` + `_launch_prefetch(job_id, login, body)` (is_cancelled =
+  статус в `_CREATE_JOBS` != 'queued', БЕЗ Flask-объектов). Вызов при постановке (не дубль, не
+  awaiting_feed_decision) и после feed_decision→queued.
+- Цены: кэш `_OFFER_PRICE_CACHE` в create_set_feeds ключёван по `(login, url)` (стр. 682) — УЖЕ
+  per-login, чинить не пришлось. Доказано вживую: loginA/loginB дают изолированные значения,
+  ключи кэша = разные (login,url).
+
+Юнит-прогон LXC101 (без рестарта): py_compile+pyflakes чисто; видео ct0021 → 2 mp4 в
+`/opt/neuro_kontent_cache` (5МБ/9МБ); full prefetch_job 6.4с: content=0(pre-filled) videos=1/1
+prices=miss cookie=ok; per-login цены изолированы. blueprint импортируется на LXC101 без ошибок.
+
+ОСТАЛОСЬ: деплой (mutagen уже синкнул; нужен `systemctl restart direct.service` + smoke). Фаза 2 —
+перенести ВЕСЬ контур создания в воркер (тогда прогрев в том же процессе и создание сольются;
+сейчас прогрев валиден именно как in-process warm общего `_CONTENT_CACHE`/кэшей цен/видео).
+prices=miss в прогоне — транзиент (у тест-логинов не подтянулись фид-цены), пустая карта намеренно
+не кэшируется.
+
+---
+
+## 2026-07-02 — Авто-добивка полного цикла после done (auto_repair_full)
+
+ЗАДАЧА (Семён): после done ВСЕ actionable in-place действия repair_plan должны исполняться АВТО
+(то же, что кнопка «План добивки»), с ре-верификацией. Симптом: porg-ozge4ntu job fcb9260c69e8 —
+`create_or_attach_promo` остался actionable, sync auto_repair дал «нет безопасных post-create
+in-place действий», Семёну пришлось бы жать кнопку.
+
+КОРЕНЬ. `execute_safe_post_create` (auto_repair) зовётся СИНХРОННО внутри
+`run_create_set_postprocess` СРАЗУ после create — Grid ещё лагает → live-план часто без actionable
+in-place → `outputs` пуст → note «нет безопасных действий». Плюс sync-путь намеренно исключает
+`rebuild_missing_content` (риск дублей групп при Grid-lag). Кнопка работает, т.к. юзер жмёт ПОЗЖЕ:
+свежая live-сверка (Grid догнал) поднимает действия, и `execute_next_in_place` умеет ВСЕ типы
+(включая content). Ре-запуска auto-слоя после done не было → промо-only чинилось только руками.
+
+ФИКС (переиспользован существующий delayed-repair демон — off-worker, job уже done → watchdog не
+трогает running-only; delay=180с гасит Grid-lag):
+- `repair_auto.py`: новая `execute_all_in_place(login, ctx, plan, deps)` — исполняет ВСЕ in-place
+  типы за один снимок плана (content+promo+callouts+rename) теми же `rex`-исполнителями, что кнопка;
+  `uses_direct_units:true` действия гейтятся в `units_gated` и НЕ исполняются (in-place всё Grid-only).
+- `repair_auto.py::delayed_content_repair_request`: гейт расширен с «только content» на ЛЮБОЕ
+  in-place (content+promo+callouts+rename); добавлено поле `inplace_actions`.
+- `blueprint.py::_run_delayed_content_repair`: переписан в ПОЛНЫЙ цикл — свежая live-сверка →
+  `execute_all_in_place` → ре-верифай; макс `_DELAYED_FULL_REPAIR_MAX_ITERATIONS=2`, ранний стоп
+  если проход ничего не исполнил (anti ping-pong). Пишет `result.auto_repair_full`
+  {executed, failed, iterations, remaining_actions, units_gated}. recreate/UAC-replace по-прежнему
+  у `_auto_queue_recreate_after_done`.
+- `blueprint.py::_record_auto_repair_full` — пишет топ-уровневый ключ в result (mem+DB).
+- `templates/direct/index.html::_renderJobVerification` — если `auto_repair_full.executed` непуст:
+  «✅ авто-добивка: исполнено X действ.»; remaining 0 и errors 0 → «Проверка пройдена».
+
+Heartbeat (п.4 задачи) НЕ нужен: добивка идёт в delayed-демоне на job со status=done/finished_at →
+`_create_watchdog_tick` трогает только running. Units-гейт (п.2): in-place исполнители все
+uses_direct_units:False, так что гейт защитный (никогда не тратит баллы в авто-пути).
+
+ВЕРИФ: py_compile OK (repair_auto+blueprint); pyflakes чисто по новым символам (единственный warning
+`body unused` — предсуществующий в execute_safe_post_create, стр.111, не мой); node --check JS OK.
+НЕ верифицировано вживую (нет рестарта по указанию Семёна) — нужен деплой + smoke на реальной
+done-джобе с actionable промо.
+
+ОСТАЛОСЬ РУКАМИ: деплой (`systemctl restart digest.service`) + smoke; проверить на живой джобе, что
+`auto_repair_full.executed` заполняется и remaining→0. requires_campaign_delete/recreate — по-прежнему
+отдельный gated путь (не в этом цикле).
+
+---
+## 2026-07-03 — СПЕКА-АУДИТ кампаний (campaign_spec_audit.py) + фиксер сдвига ключей (НЕ задеплоено)
+
+ЗАДАЧА (Семён): декларативная спека per-tp «что ДОЛЖНО/НЕ должно быть» + аудитор live-vs-спека +
+подключение к repair-механизму. Главное: ошибки авто-детектятся/авто-чинятся без глаз Семёна.
+
+СДЕЛАНО (Flask-free `campaign_spec_audit.py`, deps-инъекция как create_set_*; py_compile+pyflakes чисто):
+- SPEC-константа (декларативно) + `audit_campaign(login,cid,tp,ctx)` / `audit_account_jobs` /
+  CLI `python3 -m direct.campaign_spec_audit <login> [--fix]`.
+- **KEYWORDS_WRONG_GROUP** (главное) — сдвиг ключей МАТЕМАТИЧЕСКИ: эталон per-ct пересчитан ТЕМ ЖЕ
+  кодом, что создание (`kp.gather`→`_filter_group_keywords`, 1 gather на кампанию) → канон. фраз-ключи
+  (токены sorted, ё→е, без операторов/минус-слов). Правило спеки: «ключи ⊆ эталон её ct = OK; сдвиг
+  ТОЛЬКО если own_hits==0 И ≥2 ключа = эталон другого ct». Гейты точности (откалиброваны live): только
+  seg='Модели' (бренд/Общее делят лексику); эталон своего ct непуст. Ложняки 42→0.
+- Прочие детекты (НЕ дублируют старые): IMAGES_FORBIDDEN (поисковые ads с imageHashes),
+  FEED_FILTER_MISSING_UAC (tp7 без фильтров, report-only), EXTRA_TP_NOT_IN_SLEPOK (report-only).
+  Слепок в CLI восстанавливается из директолога аккаунта.
+- ФИКСЕР (repair_executor.execute_keywords_wrong_group_repair): v5 keywords.delete (механика из
+  restore_shift_keywords) + Grid AddKeywords. **ADD-FIRST→DELETE-OLD + growth-guard (удаляем старое
+  ТОЛЬКО если keyword_count вырос) + 3 ретрая** → группа НИКОГДА не пустеет. Пофикшено 2 бага, найденных
+  живьём: (1) delete→add гонка eventual-consistency Grid эмулила пустую группу; (2) add молча пропускал
+  items с camelCase `adGroupId` — GridClient.add_keywords читает snake `adgroup_id` (тот же latent
+  no-op пофикшен и в существующей execute_keywords_repair).
+- ПОДКЛЮЧЕНО: repair_planner (KEYWORDS_WRONG_GROUP/IMAGES_FORBIDDEN → actions); blueprint
+  `_configure_spec_audit`/`_spec_audit_deps`/`_run_spec_audit_and_fix` вызывается в
+  `_run_delayed_content_repair` (авто-путь после done; авто-фиксит только KEYWORDS_WRONG_GROUP, отчёт в
+  afr.spec_audit); RepairDeps.v5_token_for_login добавлен.
+
+LIVE (LXC101, сервис НЕ трогал): psm5h7q6(22 РК)/ozge4ntu(54 РК) — 0 реальных сдвигов (ранние
+кандидаты = ложняки near-duplicate/бренд-сиблинг ct, держат СВОЙ эталон). Контролируемый шифт на draft
+ct0020 (навёл 6 чужих haval) → аудит поймал (own=ct0020 found=ct0114 own_hits=0 found_hits=6) → fix
+http200 deleted=6/added=17 → read-back 17 baic = эталон ct0020, не флагается. Группа возвращена в норму.
+
+ОСТАЛОСЬ: деплой (`systemctl restart digest.service` + smoke). IMAGES_FORBIDDEN — detect+planner-routed,
+executor не написан (report-only). EXTRA_TP/FEED_FILTER — report-only (EXTRA_TP pavlov tp4/5/6/7 может
+быть артефактом _struct_cts — подтвердить перед любым фиксом).
+
+---
+## 2026-07-03 — ФАЗА 2 п.8: adPrice из ФИДА target-аккаунта на копированные адаптивные (step_prices)
+
+ЗАДАЧА (Семён): при копировании РК проставлять НОВЫЕ РЕАЛЬНЫЕ цены из фида ЦЕЛЕВОГО аккаунта на
+созданные адаптивные объявления (adPrice). Раньше цены не ставились вовсе. Сервис — только
+direct-copy.service (5022), direct-worker НЕ трогать.
+
+ПУТЬ: выбран явный шаг `copy_steps.step_prices` (НЕ наполнение заглушки `_campaign_adprice_repair`).
+Причина: заглушка общая с create-set repair-путём и стреляет только при NO_ADPRICE_LIVE-детекте
+(недетерминированно, риск задеть create-set). step_prices — copy-only, детерминированный, тот же
+контракт что Фаза 1 (CopyCtx→dict, try/except, лог в copy job, фолбэк-безопасный).
+
+СДЕЛАНО:
+- `copy_steps.py`: +`import re`; +4 поля CopyCtx (feed_offer_prices/account_offer_prices/group_ad_price/
+  set_ad_prices — инъекция blueprint-обёрток create_set_feeds, configure() внутри); +`step_prices`,
+  +`_merge_cheaper`, +`_clean_group_brand`.
+- `blueprint.py::_copy_cookie_postprocess`: инъекция 4 хелперов в CopyCtx (~1391); вызов
+  `csteps.step_prices` после step_disabled_places (~1566).
+- Маппинг: целевые фиды = значения maps['feeds'] (пофидовая замена feed_map учтена предзасевом) →
+  `_grid_feed_offer_prices(target_login,fid)` мердж (мин); пусто → фолбэк `_account_offer_prices`.
+  tgt_ad→бренд по снапшоту (maps['ads']→ads.json.AdGroupId→adgroups.json.Name, _clean_group_brand).
+  Читаю созданные адаптивные ads через `grid.adaptive_ads_for_update(camp_ids,ad_ids)`. Цена =
+  group_ad_price(prices,brand,'Модели'); нет марки в фиде → фолбэк group_ad_price(prices,'','')=минимум.
+  Проставка `_grid_set_ad_prices`. Лог: priced/by_brand/by_min_fallback/no_price/feeds. ShoppingAd не
+  трогаю — товарные берут цену из фида нативно; adPrice=UpdateAdaptiveTextAds для адаптивных.
+
+ВЕРИФ: py_compile+pyflakes локально/сервер OK. worker MainPID 1014375 ДО=ПОСЛЕ (2 рестарта copy) —
+НЕ тронут. direct-copy active/running, import copy_main OK, /copy→302. Runtime: CopyCtx с новыми
+kwargs инстанцируется, step_prices no-grid→«нет grid-клиента» (безопасно), _clean_group_brand на
+6 кейсах верно ('01 | Changan Uni-K | Москва'→'Changan Uni-K'). НЕ верифицировано вживую на реальном
+копировании (Семён гоняет сам).
+
+ОСТАЛОСЬ (live-проверка Семёном): запустить реальное копирование с товарными/адаптивными → в отчёте
+cookie_post.prices увидеть priced>0, by_brand/by_min_fallback; в UI Директа у адаптивных объявлений
+адрес «от X ₽» из ФИДА TARGET (не старые). Заглушка `_campaign_adprice_repair` — по-прежнему no-op
+(create-set repair-путь; в этой задаче не трогал).
+
+---
+## 2026-07-03 — ФАЗА 3b п.4/п.12 + ретро п.14: адаптивы/видео/возраст копировщика по Grid/куки
+
+ЗАДАЧА: при копировании РК переносить адаптивные креативы и видео 1:1 по куки (0 v5-баллов);
+возрастные −100% перевести с v5 на Grid. Только direct-copy.service (5022); worker НЕ трогать.
+
+СДЕЛАНО:
+- `copy_steps.py`: +6 полей CopyCtx (source_login/source_grid/geo_pairs/update_adaptive_ads/
+  video_upload_client/video_file_resolver). +`step_adaptive_creatives` (п.4): читает состав
+  адаптива с ИСТОЧНИКА (source_grid.adaptive_ads_for_update), картинки ремапит maps['images'],
+  текст гео-морфит copy_geo_morph, пишет в target через RMW _grid_update_adaptive_ads (сохраняет
+  target href/adPrice/видео) — БЕЗ исходного CreativeId, БЕЗ кнопки источника (её href нёс бы
+  source-домен). +`step_videos` (п.12): детект VIDEO_ADDITION + аплоуд/привязка (upload_video_creative
+  по куки + RMW attach) готовы, но гейт на video_file_resolver=None → report-only (см. ниже).
+  `step_age_bidmods` (п.14): GRID-FIRST (grid.set_campaign_age_bidmods, 0 баллов) + v5-фолбэк ТОЛЬКО
+  для непокрытых Grid кампаний.
+- `grid_finalize.py`: +`GridClient.set_campaign_age_bidmods` — RMW UpdateCampaigns, negative percent
+  (−100% age _0_17/_18_24). Доказано что Grid принимает negative: _bid_modifiers_update_payload
+  переносит percent дословно (round-trip хранит отрицательные). Идемпотентно (пропуск уже-выставленных).
+- `blueprint.py::_copy_cookie_postprocess`: инъекция source_grid (куки источника)+geo_pairs
+  (_copy_geo_replacements теми же парами, что job)+update_adaptive_ads+video_upload_client(target
+  UacClient); вызовы step_adaptive_creatives ДО step_prices, step_videos ПОСЛЕ (иначе _grid_set_ad_prices
+  с creativeIds=[] стёр бы видео).
+
+п.14 ИТОГ: переведён на Grid (0 баллов), v5 остаётся лишь фолбэком для непокрытых Grid (копейки).
+п.12 ЧЕСТНО: видео 1:1 НЕ переносится сейчас — Grid/куки НЕ отдают скачиваемый mp4-URL для
+VIDEO_ADDITION (adaptive_ads_for_update даёт лишь account-scoped creativeId; v5 видео не умеет).
+Аплоуд/привязка target-стороны реализованы; нужен video_file_resolver (отд. задача: Grid-интроспекция
+video-URL ЛИБО брать mp4 из slepok-пула /Users/Shared/agency/Video/<ct> по группе, как create-set tp1).
+п.4 доклад keywords: базовое копирование (direct_copy.py:1395 phase_upload) шлёт v5 keywords.add
+(200/батч) — самый прожорливый; grid.add_keywords (postprocess) добирает лишь остаток после 152.
+На больших наборах ключи = тысячи v5-units. Grid-метод уже есть → перевод keywords на Grid-first
+реален, но = переработка keyword-loop+done_kw bookkeeping+per-batch group remap → ОТДЕЛЬНАЯ задача.
+
+ВЕРИФ: py_compile+pyflakes локально/сервер OK. Юнит-смоук: гео внутри креатива (Краснодаре→Уфе,
+Краснодара→Уфы OK); adaptive full пишет target-id, гео-титул, ремап h1→H1 (hX выкинут), без
+CreativeId/кнопки; videos none→skip, video+no-resolver→report-only. Grid age RMW: 222(пусто)→оба -100,
+333(оба есть)→satisfied без POST, 444(_25_34+30)→+30 сохранён, добавлены _0_17/_18_24=-100. Деплой:
+restart ТОЛЬКО direct-copy (active, PID 1015649→1016668); worker MainPID 1015510 ДО=ПОСЛЕ (не тронут).
+/copy→302, import copy_main+wiring OK. НЕ верифицировано на живом копировании (Семён гоняет сам).
+
+ОСТАЛОСЬ (live Семёном): реальное копирование → в cookie_post.adaptive_creatives updated>0/geo_applied;
+в UI target-адаптивы = контент источника с новым городом; age_bidmods.via='grid'/grid_ok>0 (0 баллов).
+
+---
+## 2026-07-03 — ФАЗА 3c: видео 1:1 (Grid-интроспекция originalUrl) + ключи Grid-first (copy-only)
+
+ЗАДАЧА (Семён): (1) видео копировщика реально переносить 1:1 через Grid-интроспекцию скачиваемого
+URL; (2) ключи в копировании перевести на Grid-first (0 баллов, экономия 152). Только
+direct-copy.service (5022); worker НЕ трогать.
+
+П.12 ВИДЕО — РЕШЕНО (не report-only!). Grid-интроспекция (`__type`, live 03.07) вскрыла тип
+`GdVideoAdditionCreative` c полем **`originalUrl`** = ПРЯМОЙ mp4 исходника
+(`https://storage.mds.yandex.net/get-bstor/…*.mp4`). Live-проба: HTTP 200 `video/mp4` 12МБ, valid
+ISO MP4, БЕЗ авторизации. Реализовано:
+- `grid_finalize.py::GridClient.video_creative_urls(camp_ids, ad_ids)` — читает typedCreatives с
+  фрагментом `...on GdVideoAdditionCreative{originalUrl livePreviewUrl previewUrl duration}` по куки
+  ИСТОЧНИКА → {creative_id: {original_url,...}}. (⚠ был лишний `}` в query — пофикшен, GraphQL
+  syntax error ловится только live, не py_compile.)
+- `blueprint.py::_copy_make_video_resolver(job_id, source_grid, maps, workdir)` — prefetch url_map +
+  closure: скачивает originalUrl (fallback livePreviewUrl) в `workdir/_video_cache/<cid>.mp4`
+  (кэш, content-type guard), отдаёт путь. Внедрён в `cstep_ctx.video_file_resolver` (был None).
+  `step_videos` (target-сторона: upload_video_creative по куки + RMW-привязка creativeIds) уже
+  готов → теперь видео РЕАЛЬНО переносится. Нет URL/download → честный report-only (внутри шага).
+LIVE-проба video_creative_urls на porg-ozge4ntu: 4 креатива, originalUrl скачивается 200 video/mp4.
+
+П.2 КЛЮЧИ Grid-first — РЕШЕНО. Было: `direct_copy.phase_upload` слал v5 keywords.add (пожиратель
+баллов), Grid добирал остаток после 152. Стало:
+- `direct_copy.py::phase_upload(..., skip_keywords=True)` — v5-путь ключей выключен (0 баллов).
+- `copy_steps.py::step_keywords(ctx)` — Grid-FIRST: `grid.add_keywords` по батчам 1000 (свой
+  батчинг — отказ батча не сбрасывает всё в v5), group-remap (maps['adgroups']), ставки
+  Bid→price/ContextBid→priceContext (руб). UserParam1/2: Grid `GdAddKeywordsItemInput` их НЕ умеет
+  (интроспекция: только adGroupId/keyword/price/priceContext) → такие фразы + не прошедшие Grid идут
+  в v5-ФОЛБЭК (сохраняем UserParam; точная реконструкция Bid из микро). done-учёт keywords_done.json,
+  идемпотентно. rep: via_grid/via_v5/v5_userparam/failed/grid_failed_batches.
+- `grid_finalize.py::add_keywords` — аддитивный `priceContext` (не ломает create-set repair-callers).
+- `blueprint._copy_cookie_postprocess`: inline keyword-блок заменён на `csteps.step_keywords`;
+  `keywords_added=via_grid+via_v5`; `uses_direct_units=True` только если был v5-фолбэк.
+
+ВЕРИФ: py_compile+pyflakes локально/сервер OK (нет undefined). Юниты (фикстуры): step_keywords —
+remap 100→900, Grid 2/v5 1(UserParam), skip no-group, idempotency (re-run 0 add), grid-fail→v5 с
+точной реконструкцией Bid, no-grid→full v5. Видео — live video_creative_urls+download OK. Деплой:
+restart ТОЛЬКО direct-copy (1016668→1018165, active); worker MainPID 1017811 ДО=ПОСЛЕ моего рестарта
+(не тронут; ранее в сессии worker сам сменил 1015510→1817811 — не мной). /copy→302 (local+public),
+import copy_main + wiring (step_keywords/video_creative_urls/resolver/skip_keywords) OK.
+
+ОСТАЛОСЬ (live Семёном): реальное копирование с видео → cookie_post.videos.uploaded>0/attached>0,
+в UI target-адаптивы = тот же ролик; cookie_post.keywords.via_grid≫via_v5 (баллы почти не тратятся);
+uses_direct_units=False если UserParam-фраз нет. Реальный прогон я НЕ запускал.
+video_file_resolver=None (видео report-only до отд. задачи).
+
+---
+## 2026-07-03 — Админка доступов редактора контента: деплой + live-верификация
+
+ЗАДАЧА: админка /direct/automation/content/admin (пользователи-специалисты, статус, доступы
+по директологам, только под main-админом сайта). Код был готов ранее; сделан деплой и проверка.
+
+СДЕЛАНО: md5-сверка Mac==LXC101 (app.py / routes_content_editor.py / content_main.py /
+content_admin.html — совпали, Mutagen доехал); restart digest.service + direct-content.service
+(19:35:54, оба active; direct/worker/copy НЕ тронуты).
+
+ВЕРИФ (live на seoadvanced.ru, полный цикл через API): admin/admin → редактор 200, админка 403;
+main-админ → админка 200, directologists API 28 строк; создан smoke-пользователь с «Терехов Евгений»
+→ видит ровно 45 своих аккаунтов, чужой /load 403, админка 403; статус blocked → логин запрещён
+(«Пользователь заблокирован»), старая сессия видит 0 аккаунтов; smoke-пользователь удалён, конфиг
+users пуст. Нюанс (не баг): у директолога RTA все 4 аккаунта в статусе «Удален» → при дефолтном
+фильтре «Контекст активно» список пуст; в счётчике админки аккаунты считаются без учёта статуса.
+
+---
+## 2026-07-03 — Чистка дублей + ре-ран копирования porg-mjyh6hjv→porg-si7rw3ua (job f439ca1a упал на RemoteDisconnected)
+
+ЗАДАЧА: почистить дубли от упавшего прогона (23 ЕПК «Копия2 Haval» из porg-mjyh6hjv в porg-si7rw3ua),
+перезапустить начисто. Работа на LXC101 через `ssh proxmox-ts "pct exec 101 -- ..."` (.202 напрямую
+не отвечает). Только direct-copy.service; worker не трогал.
+
+ШАГ1-2 ЧИСТКА: упавший прогон оставил РОВНО 5 «Копия2 » DRAFT (712130617/650/677/710/737), все
+GdUnifiedCampaign, гео Республика Башкортостан — не 15-22 как думали. Предохранитель пройден (все
+Копия2+DRAFT, <23, чужого нет). Удалены через `gc.GridCreateClient(TGT).delete_campaigns` (0 баллов),
+read-back чист (0 Копия2), total 26→21.
+
+ШАГ3 РЕ-РАН: standalone `B._copy_run_job(job_id, body)` на сервере (nohup, ~6 мин). job_id=b344eafcdad8.
+Ветка `_copy_grid_unified_campaigns` (grid-cookie, 0 баллов, все 23 источника — ЕПК). feed_map: 15
+source-фидов→3490453 (подтверждён в target). Standalone не пишет в direct_automation_jobs без карточки
+_CREATE_JOBS — зарегистрировал карточку kind=copy_campaigns + дампнул _COPY_JOBS в /tmp/copy_result_b344eafcdad8.json.
+
+РЕЗУЛЬТАТ: status=error, created 21/23. cookie_post: prices 82/82 ЦЕНЫ (фид 3490453, by_min_fallback),
+shopping+listing 68+68, age −100% 42 бидмода на 21 камп (via=v5-фолбэк т.к. Grid отдал 500 «Внутр.
+ошибка сервера» reqId=282..); disabled_places 0 updated (все search-only, сети нет → штатно); callouts/
+promos 0 (нет source-def reader — штатно); videos 0 (в источнике нет). uses_direct_units=False (кроме
+age v5-фолбэка — Yandex-side 500, не наш баг).
+
+2 ПАДЕНИЯ (НЕ транзиент, фикс RemoteDisconnected работает — job не крашнулся): src 712117605 (tp1_cpc_site)
+и 712117626 (tp5_cpc_site) → `gc.create_full` → AddAdaptiveTextAds validation
+`BannerDefectIds.Gen.IMAGE_NOT_FOUND` на adAddItems[0].imageHashes[1]. КОРЕНЬ: ЕПК-ветка НЕ ремапит/
+не переаплоадит картинки (STATE ранее, коммент blueprint.py:1304 «images не ремапятся») — использует
+SOURCE-хэши, которых нет в target-аккаунте → падает ВЕСЬ ad-add, кампания-оболочка сиротеет.
+ОСИРОТЕЛО: 712135233 (tp1) + 712135324 (tp5) = campaign+1 группа, 0 объявлений (Копия2 DRAFT, пустые).
+Итог в target: 23 Копия2 = 21 полных + 2 битые оболочки. Код НЕ трогал (вернул Семёну).
+
+ОСТАЛОСЬ/НАДО: (1) удалить 2 пустые оболочки 712135233/712135324; (2) КОД-ФИКС ЕПК-ветки —
+`_copy_grid_ad_image_hashes`/source_image_hashes: скипать хэши, которых нет в target, ЛИБО re-upload
+в target перед create_full (иначе повтор даст те же 2 IMAGE_NOT_FOUND). Артефакты на сервере:
+/tmp/copy_result_b344eafcdad8.json, /tmp/rerun.log.
+
+ОСТАЛОСЬ: Семёну завести реальных пользователей через админку.
+
+ДОРАБОТКА (та же сессия, 20:05): счётчик директологов в админке → «N акт. / M всего»
+(count FILTER по default_status), из списка убраны exclude-директологи (Аксиома и др.) — как в
+редакторе. Деплой: md5 OK, py_compile OK, restart direct-content.service (active). Live: 24
+директолога (было 28), исключённых нет, RTA = 0 акт./4, шаблон отдаёт новый формат.
+
+UI-ИТЕРАЦИИ по фидбеку Семёна (20:07–20:30): (1) мультиселект → вертикальный чеклист директологов;
+(2) финал: каждая строка пользователя = одна линия [логин|пароль|статус|«Директологи: N ▾»|Все|Снять|
+Сохранить|Удалить], чеклист раскрывается внутри своей строки (EXPANDED-state, max-height 340 скролл).
+Деплой каждой итерации: md5 OK + restart direct-content.service. Верификация — playwright-скриншоты
+с прода (chrome channel; кэш ms-playwright 1223 не совпал с 1.61 → channel:'chrome').
+
+## 2026-07-03 (v4 админки контент-редактора)
+- content_admin.html переписан по новой структуре Семёна: сверху форма добавления (логин/пароль/Добавить);
+  снизу список — №, логин+«Изменить», дропдаун-мультиселект специалистов, видимый пароль+«Изменить пароль»,
+  статус (активный зелёный / заблокирован красный), «Сохранить» (зелёная подсветка только при изменениях в строке),
+  крестик → попап-подтверждение удаления (удаление сразу сохраняется).
+- md5 170f9c5786ceb10af1fff3aa02f4f020 Mac==LXC101, direct-content.service перезапущен (active).
+- Скриншот-верификация на проде: admin_v4_main.png / admin_v4_modal.png (scratchpad). Конфиг пользователей не трогали.
+
+## 2026-07-03 (v5: ФИО + аккаунты директологов)
+- Созданы 24 аккаунта (по одному на каждого директолога): логин = транслит фамилии, случайный пароль,
+  статус active, доступ = только свой директолог. Смоук terehov: 45 аккаунтов, только «Терехов Евгений», админка 403.
+- Добавлено поле fio: бэкенд routes_content_editor.py (_access_cfg + POST admin/access), шаблон —
+  форма добавления 4 равных колонки (ФИО/логин/пароль/Добавить), в строках списка колонка ФИО
+  (разблокируется той же кнопкой «Изменить»). ФИО всем 24 заполнено именем директолога.
+- Деплой: md5 py=2d3d7793…, html=72c539ed… Mac==LXC101, direct-content.service active. Скриншот admin_v5.png.
+
+## 2026-07-03 (v6: бейдж ФИО, вкладка Админка, фикс user_services)
+- Новый API /direct/api/content-editor/me: username, fio, full_access, directologists.
+- content_editor.html: справа в шапке бейдж (ФИО + список доступов / «полный доступ»),
+  в сайдбаре вкладка «⚙️ Админка» — видна только при full_access (админ), директологам скрыта.
+- 🐞 BUGFIX: _inject_nav_context в content_main.py и app.py затирал session["user_services"]=[]
+  для пользователей не из БД (JSON-конфиг контент-редактора) → после первой загрузки страницы
+  все API отдавали 403, повторный заход редиректил на главную. Фикс: user=None → сессию не трогаем.
+- Фильтры директологов на страницах уже ограничены сервером: terehov видит в дропдаунах только
+  «Все директологи» + «Терехов Евгений» (несколько выданных = все его в списке, «Все» покрывает всех).
+- Деплой: app.py 41f03270…, content_main.py 541beb27…, routes a0c17bd5…, editor html bb30ba61…
+  Mac==LXC101; direct-content.service + digest.service перезапущены, оба active.
+- Скриншоты: editor_terehov.png (бейдж, нет Админки, только свой директолог), editor_admin.png (полный доступ).
+
+## 2026-07-03 (v7: бейдж без дубля + жёсткий дропдаун директолога)
+- Бейдж: вторая строка скрывается, если совпадает с ФИО (у terehov теперь одна строка).
+- Пользователь с ОДНИМ директологом: в обоих дропдаунах (ce-filter-dir, acc-dir) только его имя,
+  выбрано по умолчанию, пункта «Все директологи» нет. CE_MY_DIRS + ceRestrictDirFacet, хук в
+  ceFillTopFacet/fillFacet (переживает перестройку фасетов и сброс фильтров). При 2+ директологах
+  поведение прежнее («Все директологи» = все свои). Логика фильтрации не менялась.
+- md5 html 5897f1ab… Mac==LXC101, direct-content.service active. Проверка: terehov options=["Терехов Евгений"],
+  админ — полный список; бейдж terehov — одна строка.
+
+## 2026-07-03 (v8: баланс/блокировки для директологов + Обзор без чекбоксов)
+- Причина отказа: /direct/api/balance и /check_blocks идут на 5020 (direct.service), который не пускает
+  user_services=["direct:content"]. direct.service НЕ трогали.
+- Фикс: в register_content_editor_routes новые опц. kwargs balance_response/check_blocks_response;
+  content_main (5021) пробрасывает direct_legacy._do_balance/_check_blocks_response. Новые маршруты
+  /direct/api/content-editor/balance|check_blocks (nginx уже роутит этот префикс на 5021) + _pairs_allowed:
+  для ограниченного пользователя все pairs сверяются с его директологами по local_gsheet_sites (чужие → 403).
+  JS редактора переведён на новые URL (основная страница /direct/automation не тронута).
+- Обзор: удалена колонка чекбоксов + кнопки «Выбрать видимые/Снять выбор/Выбрано», colspan 11→10,
+  sticky-офсеты и autoSizeColumns пересчитаны на 10 колонок.
+- Верификация terehov: balance свои 200 (реальные суммы), чужой логин 403 «в запросе чужие аккаунты»,
+  check_blocks 200 {login: False}; в UI баланс заполнился (итого 5 814 768 ₽), чекбоксов 0.
+  429 на повторной проверке блокировок = штатный кулдаун _pull_begin 60с.
+- md5: routes a98ffa92…, content_main 2baa6b86…, editor html 557a70e4… Mac==LXC101; direct-content active,
+  direct.service active (не рестартовали). Скриншот overview_terehov.png.
+
+## 2026-07-03 (v9: обрезка городов + клик по карточке аккаунта)
+- Обзор: td теперь overflow:hidden + text-overflow:ellipsis (table-layout:fixed уже был) — длинные
+  списки городов («Перформ РФ») обрезаются многоточием, не наезжают на соседние колонки,
+  полное значение — в title при наведении (проверено: clipped=true, title полный).
+- «Выбор аккаунта»: убран onclick=cePick со span карточки — клик по логину/любому месту карточки
+  только ставит/снимает чекбокс (label-поведение), в поле поиска ничего не вставляется.
+  Проверено: 1 клик checked=true, 2 клик false, поле не изменилось.
+- md5 html 762bdc2e… Mac==LXC101, direct-content.service active.
+
+## 2026-07-04 (v10: Postgres-очередь заданий контент-редактора)
+- In-memory deque заменена на таблицу direct_content_jobs (БД seoadvanced, LXC 101). Задания
+  переживают рестарты. Новый сервис direct-content-worker.service (python -m direct.content_worker).
+- Правила: CE_WORKER_THREADS=4 глобально; ≤1 running на login; ≤CE_AGENCY_PARALLEL=2 на агентство
+  (разные агентства параллелятся своими токенами); fairness — приоритет пользователям без running;
+  клеймы сериализованы advisory-локом; орфаны running→queued на старте; CE_MAX_ATTEMPTS=3.
+- Суточный лимит: CE_DAILY_JOB_CAP=15 заданий на аккаунт в сутки (Мск), 429 при превышении.
+- API-контракт (jobs/status/cancel/replace_async) не менялся; /jobs теперь per-user
+  (директолог видит только свои, админ — все). Отмена: queued мгновенно, running — по флагу
+  cancel_requested (проверяется между load и replace). dismissed=true вместо удаления истории.
+- UI: вкладка «📊 Очередь» под «Админкой» (только full_access) — таблица всех заданий с автообновлением 5с
+  и отменой. make_job_executor/_scope_check вынесены на module-level (без Flask) для воркера.
+- Верифицировано live: 3 задания параллельно (victorylotsofads1×1 + victoryagency14×2 — лимит агентства
+  держится), отмена queued мгновенна, 16-е задание на логин → 429, terehov видит только свои 4,
+  админ — все. Фейковые qa_cap_* строки удалены.
+- Грабли: гонка CREATE INDEX IF NOT EXISTS при одновременном старте двух сервисов → обёрнуто try/except.
+- md5: routes f6cc9687…, worker d0ac3b84…, editor html d4e212d0… Mac==LXC101.
+  Сервисы: direct-content, direct-content-worker — active; direct.service не трогали.
+
+## 2026-07-04 (v11: лимит по Екб + реалистичная шкала прогресса)
+- Суточное окно лимита 15 заданий/аккаунт: Europe/Moscow → Asia/Yekaterinburg (CE_MSK_DAY_SQL).
+  Проверено в БД: начало суток 00:00+05.
+- Шкала «Показать» (ceLoadProgressStart): вместо добега до 99% за 6с — асимптота по времени
+  95*(1-exp(-t/45)): 5с→10%, 30с→46%, 60с→70%; потолок 95% до фактического завершения.
+  Живой замер на porg-x7km6p2o: точно по кривой, реальное завершение на ~63с → 100%.
+- Карточка задания (running): вместо статичных 55% — асимптота от server elapsed,
+  оценка длительности растёт с числом кампаний (est = max(40, 30+1.2*кампаний)), потолок 95%.
+- md5: routes 6e0d5bb3…, editor html 2a3907f7… Mac==LXC101; direct-content + worker перезапущены, active.

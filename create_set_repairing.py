@@ -196,6 +196,185 @@ def _attach_post_repair_verification(out: dict, login: str, ctx: dict) -> dict:
         out["post_repair_live_verification_error"] = str(e)[:220]
     return out
 
+def _campaign_images_repair(login: str, campaign_id: int, ctx: dict) -> dict:
+    """Пере-залить imageHashes tp1 через RMW + UpdateAdaptiveTextAds (in-place, no Direct units).
+
+    Алгоритм:
+    1. groups_for_edit → (adgroup_id, ct) маппинг для tp1-групп
+    2. Grid-запрос ads с images{imageHash} → находим объявления без картинок
+    3. Для каждого ct: _creative_images_for_ct → пути → _cached_upload_image → imageHash
+    4. _grid_update_adaptive_ads(RMW) проставляет imageHashes не трогая titles/bodies/adPrice
+    """
+    from . import grid_finalize as _gf
+    from . import campaign as _cmc
+    from . import repair_executor as _rex
+    body = ctx.get("body") or {}
+    acc = _account_ctx(login)
+    if not acc:
+        return {"ok": False, "error": f"аккаунт {login} не найден"}
+    agency = (ctx.get("agency") or body.get("agency") or acc.get("agency") or "").strip()
+    try:
+        client = _cmc.build_client(login, account=(agency or None))
+        cookie = client.sess.headers.get("Cookie") or ""
+        grid = _gf.GridClient(login, cookie=cookie)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"кука: {str(e)[:160]}"}
+
+    try:
+        groups = grid.groups_for_edit(campaign_id)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"groups_for_edit: {str(e)[:200]}"}
+
+    # Маппинг adgroup_id → ct (только tp1)
+    group_ct: dict[int, str] = {}
+    for grp in groups:
+        m = __import__("re").match(r"^\s*tp(\d+)_", str(grp.get("campaign_name") or ""), __import__("re").I)
+        if not m or int(m.group(1)) != 1:
+            continue
+        gid = int(grp.get("adgroup_id") or 0)
+        ct = _rex._ct_of(grp.get("adgroup_name") or "")
+        if gid > 0:
+            group_ct[gid] = ct
+
+    if not group_ct:
+        return {"ok": True, "note": "нет tp1-групп в кампании", "ads_updated": 0}
+
+    # Читаем объявления кампании с images{imageHash} и adGroupId
+    try:
+        from . import grid_read as _gr
+        rc = _gr.GridReadClient(login, cookie=cookie)
+        rc._bootstrap_csrf()
+        q = ("query AdsRepairImg($login:String!,$inp:GdAdsContainerInput!){"
+             "client(searchBy:{login:$login}){ads(input:$inp){rowset{id adGroupId campaignId "
+             "__typename ...on GdAdaptiveTextAd{images{imageHash}}}}}}")
+        inp = {
+            "filter": {"campaignIdIn": [str(campaign_id)]},
+            "statRequirements": {"preset": "LAST_30DAYS", "goalIds": [], "useCampaignGoalIds": True},
+            "limitOffset": {"limit": 5000, "offset": 0},
+            "orderBy": [{"order": "ASC", "field": "ID"}],
+        }
+        data = rc._post("AdsRepairImg", q, {"login": login, "inp": inp})
+        ad_rows = ((((data.get("data") or {}).get("client") or {})
+                   .get("ads") or {}).get("rowset") or [])
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"чтение объявлений: {str(e)[:200]}"}
+
+    ads_need_images: list[dict] = []
+    for row in ad_rows:
+        # По __typename, НЕ по «images is None»: Grid отдаёт images:null для ГОЛОГО адаптивного
+        # объявления (live 03.07: 420/420) — старый идиом пропускал ровно те объявления,
+        # которые репейр должен чинить (поэтому добивка картинок «никогда не срабатывала»).
+        if row.get("__typename") != "GdAdaptiveTextAd":
+            continue
+        if any(img.get("imageHash") for img in (row.get("images") or [])):
+            continue
+        try:
+            aid = int(row.get("id"))
+            gid = int(row.get("adGroupId") or 0)
+        except (TypeError, ValueError):
+            continue
+        ct = group_ct.get(gid, "ct0000")
+        ads_need_images.append({"id": aid, "ct": ct})
+
+    if not ads_need_images:
+        return {"ok": True, "note": "все tp1-объявления уже имеют imageHashes", "ads_updated": 0}
+
+    slepok = (body.get("agent") or "").strip()
+    if not slepok:
+        # Пустой slepok отключает фильтр по тегу в read_slepok_images → в кампанию полились бы
+        # картинки ВСЕХ слепков (ревью 03.07, CONFIRMED). Лучше честный отказ, чем чужой контент.
+        return {"ok": False, "error": "slepok (body.agent) пуст — не рискуем чужими картинками; "
+                                      "запусти аудит с --agent", "no_image_ads": len(ads_need_images)}
+    site_type = (body.get("site_type") or acc.get("site_type") or "").strip()
+    ct_hashes: dict[str, list[str]] = {}
+    for ct in {row["ct"] for row in ads_need_images}:
+        try:
+            paths = _creative_images_for_ct(site_type, "tp1", ct, slepok) or []
+        except Exception:  # noqa: BLE001
+            paths = []
+        # Репейр — сознательная повторная попытка: снимаем 15-мин blacklist ТОЧЕЧНО по путям
+        # этой кампании (сброс всего логина ре-армил бы чужие свежезаблэклищенные файлы —
+        # ревью 03.07), иначе delayed-repair (T+180с) попадает в окно TTL и получает None.
+        try:
+            from . import create_set_feeds as _csf_img
+            _csf_img._reset_img_fail_cache(login, (paths or [])[:5])
+        except Exception:  # noqa: BLE001
+            pass
+        hashes: list[str] = []
+        # Цель — 5 картинок на объявление (как create-путь [:5]); дедуп по хэшу ниже даёт ≤5.
+        # Потолок реально ограничен размером пула ct (модельные ct с 4 уник. останутся на 4 —
+        # контент-пробел на M3, не код: баг porg-psm5h7q6).
+        for path in (paths or [])[:5]:
+            try:
+                h = _cached_upload_image(grid, login, path)
+                # БЕЗ дублей: разные файлы пула бывают одним контентом → Яндекс дедупит в один
+                # hash, а дубль в imageHashes валит ВСЁ объявление MUST_NOT_CONTAIN_DUPLICATED_
+                # ELEMENTS при updatedAds:[null] (лайв 03.07, camp 712139017 — «ok» без эффекта).
+                if h and h not in hashes:
+                    hashes.append(h)
+            except Exception:  # noqa: BLE001
+                pass
+        if hashes:
+            ct_hashes[ct] = hashes
+
+    items = [
+        {"id": ad["id"], "image_hashes": ct_hashes[ad["ct"]]}
+        for ad in ads_need_images
+        if ct_hashes.get(ad["ct"])
+    ]
+    if not items:
+        return {"ok": False, "error": "не удалось загрузить картинки ни для одного ct из кп",
+                "no_image_ads": len(ads_need_images)}
+    try:
+        updated = _grid_update_adaptive_ads(login, items, campaign_ids=[campaign_id])
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"UpdateAdaptiveTextAds: {str(e)[:200]}"}
+    return {
+        "ok": updated > 0, "ads_updated": updated,
+        "attempted": len(items), "no_image_ads": len(ads_need_images),
+    }
+
+
+def _campaign_adprice_repair(login: str, campaign_id: int, ctx: dict) -> dict:
+    """Проставить adPrice через _grid_set_ad_prices по прайс-кэшу из offer_prices.
+
+    TODO: Полная реализация требует rebuilding price_map из offers + маппинга ad→brand.
+    Вызывается только когда NO_ADPRICE_LIVE задетектирован live-verification.
+    """
+    # Stub: возвращает ok=False с понятным сообщением.
+    # Pipeline замкнут: detect→plan→gate→executor→callback. Реализацию наполнить после
+    # live-тестирования offer_prices API и определения структуры price_map для repair.
+    return {
+        "ok": False,
+        "note": "adprice_repair: не реализован (нужен rebuild price_map из offer_prices + ad→brand маппинг)",
+        "campaign_id": campaign_id,
+    }
+
+
+def _campaign_default_text_repair(login: str, campaign_id: int, ctx: dict) -> dict:
+    """Заполнить bodies ShoppingAd через GridClient.set_default_text.
+
+    TODO: Полная реализация требует чтения shopping_ad_ids кампании + feed_id + body_text.
+    Вызывается только когда EMPTY_DEFAULT_TEXT_LIVE задетектирован live-verification.
+    """
+    # Stub: возвращает ok=False с понятным сообщением.
+    # Pipeline замкнут. Реализацию наполнить после live-теста GdSmartAd-читалки в grid_read.
+    return {
+        "ok": False,
+        "note": "default_text_repair: не реализован (нужны shopping_ad_ids + feed_id + text для кампании)",
+        "campaign_id": campaign_id,
+    }
+
+
+def _v5_token_for_login(login: str) -> str | None:
+    """v5 OAuth-токен по логину (для keywords.delete в keyword-shift-фиксе)."""
+    try:
+        token, _ = _token_for_login(login, "", _direct_tokens())
+        return token
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _repair_deps() -> rex.RepairDeps:
     """Wire blueprint IO helpers into pure repair executors."""
     return rex.RepairDeps(
@@ -207,6 +386,10 @@ def _repair_deps() -> rex.RepairDeps:
         shopping_content_context=_repair_shopping_content_context,
         callout_cap=_CALLOUT_PER_CAMPAIGN_CAP,
         group_keywords_context=_repair_keywords_group_context,
+        campaign_images_repair=_campaign_images_repair,
+        campaign_adprice_repair=_campaign_adprice_repair,
+        campaign_default_text_repair=_campaign_default_text_repair,
+        v5_token_for_login=_v5_token_for_login,
     )
 
 def _delete_uac_repair_campaigns(login: str, agency: str, replacements: list[dict]) -> dict:
@@ -382,4 +565,22 @@ def _auto_queue_recreate_after_done(parent_job_id: str, job_snapshot: dict) -> d
         dedup_login=True,
     )
     queued["source"] = req.get("source") or "auto_after_done"
+    # Помечаем repair_plan как разрешённый в родительском job, чтобы UI не показывал
+    # «нужна добавка» после успешной авто-докрутки (stale repair_plan).
+    # job_snapshot — shallow dict(j), поэтому мутация job_snapshot["result"][...] распространяется
+    # на _CREATE_JOBS[parent_job_id]["result"]; blueprint.py подберёт обновление при _job_final=dict(j)
+    # и сохранит в DB вместе с auto_queued_repair (строки 2711-2727 blueprint.py).
+    _new_jid = queued.get("job_id") or ""
+    try:
+        _res = job_snapshot.get("result") if isinstance(job_snapshot.get("result"), dict) else None
+        if _res is not None:
+            _lv = _res.get("live_verification") if isinstance(_res.get("live_verification"), dict) else None
+            if _lv is not None:
+                _rp = _lv.get("repair_plan") if isinstance(_lv.get("repair_plan"), dict) else None
+                if _rp is not None:
+                    _rp["status"] = "resolved"
+                    if _new_jid:
+                        _rp["resolved_by"] = _new_jid
+    except Exception:  # noqa: BLE001
+        pass
     return queued

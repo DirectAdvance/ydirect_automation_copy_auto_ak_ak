@@ -53,6 +53,7 @@ def run_create_set_gallery(*, kind: str, it: dict[str, Any], name: str,
         feed_id=num(it.get("feed_id"), 0), corr=corr, ret_map=ret_map,
         token=(st_token or ""), slepok=slepok, site_type=site_type,
         feed_name=(it.get("feed_name") or ""),
+        single_feed=single_feed,   # при feed_id=0 cookie-путь должен предпочесть /yandex.xml, а не первый фид
         callout_texts=callouts,
         callout_ids=callout_ids,
         ct=(it.get("ct") or "ct0000"), r_code=r_code,   # #5: кодер-имя группы tp5/tp3

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from flask import current_app, jsonify, request, session
+from flask import current_app, jsonify, render_template, request, session
 
 
 def register_copy_routes(
@@ -26,6 +26,7 @@ def register_copy_routes(
     create_jobs_lock,
     copy_jobs: dict,
     copy_jobs_lock,
+    feeds_preview_func: Callable,
 ) -> None:
     @bp.route("/api/copy_campaigns")
     @access
@@ -144,3 +145,27 @@ def register_copy_routes(
         if not job:
             return jsonify({"error": "job не найден"}), 404
         return jsonify(job)
+
+    @bp.route("/api/copy_feeds_preview", methods=["POST"])
+    @access
+    def api_copy_feeds_preview():
+        """Фиды для секции «Замена фидов»: исходные (что заменяем) + фиды целевого аккаунта (на что)."""
+        body = request.json or {}
+        source_login = (body.get("source_login") or "").strip()
+        target_login = (body.get("target_login") or "").strip()
+        if not source_login or not target_login:
+            return jsonify({"error": "source_login и target_login обязательны"}), 400
+        selected_ids = {int(x) for x in (body.get("campaign_ids") or []) if str(x).isdigit()}
+        try:
+            data = feeds_preview_func(source_login, target_login, selected_ids)
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"error": f"не удалось получить фиды: {str(e)[:200]}"}), 502
+        return jsonify(data)
+
+    @bp.route("/automation/copy")
+    @access
+    def copy_page():
+        """Отдельная изолированная страница копирования кампаний (свой процесс
+        direct-copy.service). Прогресс тянется с /api/copy_status — без общего
+        рендера карточек очереди создания РК."""
+        return render_template("direct/copy.html")

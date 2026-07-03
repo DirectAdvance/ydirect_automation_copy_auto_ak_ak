@@ -1,0 +1,22 @@
+[Unit]
+Description=SEOAdvanced Direct — Campaign Copy (isolated queue)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scripts/home/seoadvanced
+Environment=DIRECT_COPY_HOST=127.0.0.1
+Environment=DIRECT_COPY_PORT=5022
+Environment=DIRECT_REGISTER_COPY=0
+ExecStart=/root/venv/bin/python3 -m direct.copy_main
+Restart=always
+RestartSec=5
+
+# Copy service owns ONLY campaign copying, in its OWN in-memory queue (_ensure_copy_worker).
+# Isolated from the create-set queue in direct.service: restarting either service never
+# touches the other's queue. This process does NOT run the create-set recover/sweep/resume/
+# repair daemons nor the web-posted poller. direct.service's recover excludes kind='copy_campaigns'.
+
+[Install]
+WantedBy=multi-user.target

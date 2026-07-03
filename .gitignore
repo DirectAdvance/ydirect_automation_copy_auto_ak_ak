@@ -35,3 +35,6 @@ _har/
 _tmp*
 check_*
 tmp_*
+
+# Пароли пользователей редактора контента (plaintext) — НЕ в git
+content_editor_access.json

@@ -1,0 +1,19 @@
+[Unit]
+Description=SEOAdvanced Direct Content Editor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scripts/home/seoadvanced
+Environment=DIRECT_CONTENT_HOST=127.0.0.1
+Environment=DIRECT_CONTENT_PORT=5021
+Environment=DIRECT_REGISTER_CONTENT_EDITOR=0
+ExecStart=/root/venv/bin/python3 -m direct.content_main
+Restart=always
+RestartSec=5
+
+# Content editor is isolated from the campaign creation queue in direct.service.
+
+[Install]
+WantedBy=multi-user.target

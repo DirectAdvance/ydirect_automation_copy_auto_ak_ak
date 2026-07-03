@@ -32,26 +32,128 @@ def _tp1_group_name(ct: str, r_code: str, brand: str, with_shopping: bool = Fals
         return f"{ct}_{aud_code}_n000_{r_code}_ct010_ag011_g00 — {brand}"
     return f"{ct}_{aud_code}_n000_{r_code}_ct001_ag011_g00 — {brand}"
 
-def _tp1_video_ads(v501_client, login: str, ag_video: list) -> dict:
-    """[ЗАДЕЛ НА БУДУЩЕЕ] Видео-креативы для РСЯ tp1 — ОТДЕЛЬНЫЕ объявления, НЕ TextAd.
-    ag_video: [(adgroup_id, [абс.путь_видео, ...]), ...] — что собрал _build_tp1_from_pack.
+# Межкампанийный кэш загруженных видео-креативов: (login, ct) → [creative_id, ...].
+# Без него КАЖДАЯ кампания набора заново качала ролики с M3 (sshfs, 5-9 МБ/шт) и заново
+# грузила их в Яндекс — на Модели-кампании (150 групп × разные ct) фаза висла 15+ мин
+# без прогресса → watchdog убивал джобу (2026-07-02, jobs 9126bf12fb3a/3b0804ef0497).
+_VIDEO_CREATIVE_CACHE: dict = {}
+# Тайм-бюджет видео-фазы на ОДНУ кампанию (сек): дольше — прекращаем скачивания/загрузки,
+# attach'им что успели. Watchdog режет джобу после 15 мин тишины — фаза обязана быть короче.
+_VIDEO_PHASE_BUDGET_SEC = 150
+# Видео при СОЗДАНИИ выключено (решение Семёна 03.07.2026): каркас кампаний не ждёт медиа —
+# медленные ответы Яндекса на /uac/content (таймауты 3×180с) растягивали item на 10+ минут.
+# Видео добивается ПОСЛЕ создания спека-аудитом (VIDEO_MISSING → fix_video_missing, тот же
+# _tp1_video_ads). Вернуть загрузку в создание — поставить True.
+_VIDEO_AT_CREATE = False
 
-    Механика РСЯ-видео в ЕПК (почему отдельно от картинки):
-      видео → CREATIVE (видеоконструктор Директа) → CpcVideoAd(CreativeId) в группу.
-      • v5 API НЕ создаёт видео-креатив из файла (creatives.get — только чтение; креатив
-        делается в конструкторе/grid). → нужен creative-API (grid/web-api) — ПОКА не подключён.
-      • UAC-путь upload_video_file→content_id (campaign.py) — ТОЛЬКО для tp6/tp7 (Мастер/Товарка),
-        для ЕПК РСЯ не годится.
-      • TextAd видео не несёт (только AdImageHash — картинка; это уже работает).
 
-    Состояние: в паке M3 видео для tp1 НЕТ (скан 2026-06-22 → 0) → функция dormant.
-    Когда появятся: (1) положить видео в манифест `video_slepki.txt` (как image_slepki.txt),
-    (2) kp.read_videos подхватит, (3) здесь создать креатив и CpcVideoAd(CreativeId).
-    Возврат: отчёт без падения сборки (видео — необязательно)."""
-    rep = {"video_groups": sum(1 for _, v in ag_video if v), "video_ads": 0,
-           "note": "creative-API ЕПК не подключён — видео-объявления РСЯ пока не создаются (см. докстринг)"}
-    # TODO(video): for ag_id, paths in ag_video: creative_id = _make_video_creative(path);
-    #              v501_client.add_cpc_video_ad(ag_id, creative_id)
+def _tp1_video_ads(login: str, created_ad_meta: list, grid_cookie: str | None = None,
+                   limit_per_group: int = 2, campaign_id: int = 0) -> dict:
+    """Видео РСЯ (tp1 ЕПК) → creativeIds на КОМБИНАТОРНЫЕ объявления (Grid UpdateAdaptiveTextAds).
+
+    Механика (HAR53 — тот же upload, что картинки tp6/tp7):
+      1) видео ПО CT группы: ``kp.videos_for_ct(login, ct)`` (ролик слепка → фолбэк на общий
+         per-ct пул M3 ``/Users/Shared/agency/Video/<ct>/`` = ``videos_pool_for_ct``);
+      2) ``UacClient.upload_video_creative`` (POST /web-api/uac/content?creative_type=tgo,
+         multipart video/mp4) → ``result.meta.creative_id`` (НЕ content_id!);
+      3) attach: Grid ``UpdateAdaptiveTextAds`` с ``creativeIds`` по реальному ad_id. Это
+         full-replace, поэтому в payload шлём titles/bodies/imageHashes целиком (иначе затрёт).
+
+    created_ad_meta: ``[{id, meta:{ct, href, titles, bodies, image_hashes, ...}}]``.
+    Каждый ct-набор грузим ОДИН раз (кэш creative_id по ct), дедуп creative_id.
+    Best-effort: сбой загрузки/attach НЕ роняет создание кампании.
+    Порядок: вызывать ПОСЛЕ adPrice-фазы — иначе price-апдейт (creativeIds:[]) затрёт видео.
+    → {video_groups, videos_uploaded, videos_attached, warnings}."""
+    import os as _os
+    import time as _time
+    rep = {"video_groups": 0, "videos_uploaded": 0, "videos_attached": 0, "warnings": []}
+    if not created_ad_meta:
+        return rep
+    _uc = {"c": None}
+    _t0 = _time.monotonic()
+
+    def _budget_left() -> bool:
+        return (_time.monotonic() - _t0) < _VIDEO_PHASE_BUDGET_SEC
+
+    def _uac():
+        if _uc["c"] is None:
+            _uc["c"] = cmc.UacClient(grid_cookie or cmc.pick_working_cookie(login), login)
+        return _uc["c"]
+
+    _breaker = {"open": False}   # circuit-breaker: первый таймаут → фаза видео прерывается
+
+    def _creatives_for_ct(ct: str) -> list:
+        ct = (ct or "").strip().lower()
+        if not ct or ct == "ct0000":
+            return []
+        _ck = (login, ct)
+        if _ck in _VIDEO_CREATIVE_CACHE:                  # уже качали/грузили в этом процессе
+            return _VIDEO_CREATIVE_CACHE[_ck]
+        if _breaker["open"]:                              # Яндекс таймаутит → не мучаем остальные ct
+            return []
+        if not _budget_left():                            # бюджет фазы исчерпан — новые ct не качаем
+            return []
+        cids: list = []
+        _pool_read_ok = True
+        try:
+            paths = kp.videos_for_ct(login, ct, limit=limit_per_group) or []
+        except Exception as e:  # noqa: BLE001
+            paths, _ = [], rep["warnings"].append(f"videos_for_ct {ct}: {str(e)[:80]}")
+            _pool_read_ok = False   # транзиентный сбой чтения M3 ≠ «пул пуст» — не кэшировать
+        for p in (paths or [])[:limit_per_group]:
+            if not _budget_left() or _breaker["open"]:
+                break
+            try:
+                # видео-загрузка = прогресс: без heartbeat долгая легальная загрузка выглядела
+                # «зависанием» и watchdog killed джобу (Павлов 13:46 03.07.2026)
+                _hb = globals().get("_touch_running_jobs_heartbeat")
+                if callable(_hb):
+                    _hb()
+                cid = _uac().upload_video_creative(p)
+                if cid and cid not in cids:
+                    cids.append(cid)
+                    rep["videos_uploaded"] += 1
+            except Exception as e:  # noqa: BLE001
+                rep["warnings"].append(f"upload {_os.path.basename(str(p))}: {str(e)[:80]}")
+                if "timeout" in str(e).lower():
+                    # circuit-breaker (решение Семёна 03.07): Яндекс «не в духе» — прерываем
+                    # ВСЮ видео-фазу, не мучая остальные ролики; добьётся следующим аудитом.
+                    _breaker["open"] = True
+                    rep["warnings"].append("видео-фаза прервана по таймауту — добьётся аудитом")
+        # Кэшируем ТОЛЬКО достоверный результат: есть креативы, либо пул ЛЕГИТИМНО пуст
+        # (чтение M3 прошло и вернуло 0 путей). Пустоту от сбоя чтения / открытого breaker /
+        # проваленных аплоадов НЕ кэшируем — иначе fix_video_missing в том же процессе
+        # навсегда получал бы [] и «все видео в итоге загружены» не сходилось (ревью 03.07).
+        if cids or (_pool_read_ok and not paths and not _breaker["open"]):
+            _VIDEO_CREATIVE_CACHE[_ck] = cids
+        return cids
+
+    attach_items, seen = [], set()
+    for _rec in created_ad_meta:
+        meta = _rec.get("meta") or {}
+        cids = _creatives_for_ct(meta.get("ct") or "")
+        if not cids:
+            continue
+        ad_id = _rec.get("id")
+        if not ad_id or ad_id in seen:
+            continue
+        seen.add(ad_id)
+        attach_items.append({
+            "id": ad_id, "href": meta.get("href") or "",
+            "titles": meta.get("titles") or [], "bodies": meta.get("bodies") or [],
+            **({"image_hashes": meta.get("image_hashes")} if meta.get("image_hashes") else {}),
+            "creative_ids": list(cids[:limit_per_group]),
+            "adPrice": meta.get("ad_price_payload"),  # fix price-C (2026-07-02): нести adPrice чтобы
+            # Grid full-replace не затирал bannerPrice (verified live: без этого ключа цена = null)
+        })
+    rep["video_groups"] = len(attach_items)
+    if attach_items:
+        try:
+            rep["videos_attached"] = _grid_update_adaptive_ads(
+                login, attach_items,
+                campaign_ids=[campaign_id] if campaign_id else None)
+        except Exception as e:  # noqa: BLE001
+            rep["warnings"].append(f"attach: {str(e)[:100]}")
     return rep
 
 def _build_tp1_adgroups(
@@ -181,6 +283,7 @@ def _build_tp1_adgroups(
         ad_items.append({"AdGroupId": int(ag_ids[i]), "ResponsiveAd": ra})
         ad_meta.append({"brand": g.get("brand") or g.get("name") or "", "href": ad_href,
                         "seg": _ct_segment(g.get("ct") or ""),   # 'Марки' → цена = МИН по марке
+                        "ct": g.get("ct") or "",                 # для видео РСЯ (creativeIds по ct)
                         "titles": ra.get("Titles") or [], "bodies": ra.get("Texts") or [],
                         "image_hashes": [],
                         "image_paths": img_paths[:5]})
@@ -246,23 +349,44 @@ def _build_tp1_adgroups(
 
     # ── Фаза 3.5: ЦЕНА из фида в комбинаторное объявление (#2) — Grid по куке (без баллов).
     # adPrice = {current, old} самого дешёвого оффера фида по бренду/модели группы («от X · зачёркнуто old»).
+    # FIX price-A (2026-07-02): _account_offer_prices (30 фидов, мердж) вместо одного defaultFeedId —
+    # у porg-ozge4ntu defaultFeed имел 0 офферов в момент создания, поэтому цены не ставились.
+    # FIX price-B: _grid_set_ad_prices уже несёт imageHashes → ads_repaired_after_price затирал только цену;
+    # убран. FIX price-C: сохраняем ad_price_payload в meta → _tp1_video_ads несёт adPrice в attach.
     try:
-        _pfeed = feed_id or _grid_price_feed(login, href) or _first_url_feed(token, login)
-        _pmap = _grid_feed_offer_prices(login, _pfeed) if _pfeed else {}
+        _pmap = _account_offer_prices(login, href)     # multi-feed мердж (fix price-A)
         if _pmap and created_ad_meta:
             _pitems = []
             for _rec in created_ad_meta:
                 ad_id, meta = _rec["id"], _rec["meta"]
                 cur, old = _group_ad_price(_pmap, meta.get("brand", ""), meta.get("seg", ""))
                 if cur:
+                    meta["ad_price_payload"] = _grid_ad_price_payload(cur, old)  # fix price-C: для видео
                     _pitems.append({"id": ad_id, "href": meta["href"], "titles": meta["titles"],
                                     "bodies": meta["bodies"], "image_hashes": meta["image_hashes"],
                                     "current": cur, "old": old})
             rep["prices_set"] = _grid_set_ad_prices(login, _pitems)
-            if repair_items:
-                rep["ads_repaired_after_price"] = _grid_update_adaptive_ads(login, repair_items)
+            # ads_repaired_after_price убран (fix price-B): imageHashes уже в _grid_set_ad_prices,
+            # повторный _grid_update_adaptive_ads без adPrice затирал цену.
     except Exception as _e:  # noqa: BLE001 — цена не критична, объявление уже создано
         rep.setdefault("warnings", []).append(f"adPrice: {str(_e)[:100]}")
+
+    # ── Фаза 3.6: ВИДЕО РСЯ → creativeIds на комбинаторные объявления (Grid, по куке, без баллов).
+    # ПОСЛЕ цены: adPrice-апдейт шлёт creativeIds:[] и затёр бы видео, поэтому attach — последним.
+    # _VIDEO_AT_CREATE=False: видео вынесено в добивку (спека-аудит VIDEO_MISSING) — каркас не ждёт.
+    if created_ad_meta and _VIDEO_AT_CREATE:
+        try:
+            _vr = _tp1_video_ads(login, created_ad_meta, grid_cookie=grid_cookie,
+                                campaign_id=campaign_id)
+            rep["videos_uploaded"] = _vr.get("videos_uploaded", 0)
+            rep["videos_attached"] = _vr.get("videos_attached", 0)
+            rep["video_groups"] = _vr.get("video_groups", 0)
+            if _vr.get("warnings"):
+                rep.setdefault("warnings", []).extend(_vr["warnings"])
+        except Exception as _e:  # noqa: BLE001 — видео best-effort, объявления уже созданы
+            rep.setdefault("warnings", []).append(f"tp1 video: {str(_e)[:100]}")
+    elif created_ad_meta:
+        rep["videos_deferred"] = True   # добьётся аудитом (VIDEO_MISSING) после создания
 
     # ── Фаза 4: товарные по фиду (как в слепках Щербаковой): ListingAd (динамика) + ShoppingAd (товарное)
     # в каждую группу → состав «Т+Л+ТОВ». ShoppingAd создаём ЧЕРЕЗ GRID (addShoppingAds, БЕЗ баллов) —
@@ -282,6 +406,19 @@ def _build_tp1_adgroups(
         _feed_models_eff = dict(feed_models or {})
         if not _feed_models_eff:
             _feed_models_eff = _feed_models_from_collections(_feed_colls)
+        # Bug A fix: резолвим имена полей бренда/модели для ЭТОГО фида (AUTO_RU: mark_id/folder_id;
+        # YANDEX_MARKET: vendor/model). Без этого AUTO_RU фиды получали UNKNOWN_FIELD → стрип фильтра.
+        _brand_field = "vendor"
+        _model_field = "model"
+        try:
+            from . import create_set_feeds as _csf_ff
+            _brand_field = _csf_ff._resolve_feed_field(login, int(feed_id), "brand") or "vendor"
+            _model_field = _csf_ff._resolve_feed_field(login, int(feed_id), "model") or "model"
+            if _brand_field != "vendor" or _model_field != "model":
+                print(f"[tp1] feed {feed_id}: brand_field={_brand_field!r} model_field={_model_field!r}",
+                      flush=True)
+        except Exception:  # noqa: BLE001
+            pass
         for i in range(len(groups)):
             if not ag_ids[i]:
                 continue
@@ -310,7 +447,8 @@ def _build_tp1_adgroups(
             _model_vals = _model_field_values(_g_brand, _g_seg) if (_g_brand and _is_brand_seg) else []  # Модели → +model
             _grid_shop_items.append({"adgroup_id": int(ag_ids[i]), "feed_id": int(feed_id),
                                      "vendor": _vendor, "collection_id": None, "model": _model_vals,
-                                     "name": groups[i].get("name", "?")})
+                                     "name": groups[i].get("name", "?"),
+                                     "brand_field": _brand_field, "model_field": _model_field})
             rep["listing_build_items"].append({
                 "adgroup_id": int(ag_ids[i]),
                 "feed_id": int(feed_id),
@@ -332,23 +470,41 @@ def _build_tp1_adgroups(
                     if _nv:
                         rep["listing_name_by_shop"][int(_raw_id)] = _nv
                     _conds = []
+                    _bf = _src.get("brand_field") or "vendor"
+                    _mf = _src.get("model_field") or "model"
                     if _src.get("vendor"):
-                        _conds.append({"field": "vendor", "operator": "CONTAINS_ANY",
+                        _conds.append({"field": _bf, "operator": "CONTAINS_ANY",
                                        "stringValue": json.dumps(_vendor_filter_values(_src["vendor"]), ensure_ascii=False)})
                     if _src.get("model"):
                         _mvals = _src["model"] if isinstance(_src["model"], list) else [str(_src["model"])]
                         _mvals = [str(x) for x in _mvals if str(x).strip()]
                         if _mvals:
-                            _conds.append({"field": "model", "operator": "CONTAINS_ANY",
+                            _conds.append({"field": _mf, "operator": "CONTAINS_ANY",
                                            "stringValue": json.dumps(_mvals, ensure_ascii=False)})
                     if not _conds and _src.get("collection_id"):
-                        _conds.append({"field": "collectionId", "operator": "EQUALS_ANY",   # collectionId → EQUALS_ANY
+                        _conds.append({"field": "collectionId", "operator": "EQUALS_ANY",
                                        "stringValue": json.dumps([str(_src["collection_id"])], ensure_ascii=False)})
+                    try:                                 # глобальные минус-марки: используем тот же brand_field
+                        from . import create_set_feeds as _csf
+                        _conds.extend(_csf._minus_marks_grid_conditions(brand_field=_bf))
+                    except Exception:  # noqa: BLE001
+                        pass
                     if _conds:
                         rep["shopping_filters"][int(_raw_id)] = {"tab": "CONDITION", "conditions": _conds}
             except Exception as e:  # noqa: BLE001
                 rep["errors"].append(f"shopping(Grid addShoppingAds): {str(e)[:120]}")
     return rep
+
+def _pack_read_glitch(key: str, site_type: str, pack_tp: str) -> bool:
+    """Пустой пак: сбой чтения M3 (sshfs) или пака легитимно нет у слепка?
+    Дискриминатор — probe СОСЕДНЕГО tp-пака: он тоже пуст → чтение сломано глобально
+    (sshfs/relay) → True (пункт надо деферить на докрутку, а не строить пустышку)."""
+    probe_tp = "tp2" if pack_tp != "tp2" else "tp1"
+    try:
+        return not (kp.gather(key, site_type, probe_tp) or {})
+    except Exception:  # noqa: BLE001
+        return True
+
 
 def _build_tp1_from_pack(
     token: str,
@@ -391,9 +547,11 @@ def _build_tp1_from_pack(
     if not pack:
         # Пустой пак (у слепка нет tp_code-пака, напр. pavlov/tp5; M3 при этом жив — tp1-пак есть).
         # Для ТОВАРНОЙ ГАЛЕРЕИ по фиду это НЕ блокер: фид-товарка не зависит от бренд-пака →
-        # проваливаемся в фид-фолбэк ниже (создаст товарную галерею по фиду). Иначе — честный скип.
+        # проваливаемся в фид-фолбэк ниже (создаст товарную галерею по фиду). Иначе — честный скип
+        # (defer=True при глобальном сбое чтения M3 — пункт уйдёт на докрутку).
         if not (with_shopping and feed_id):
-            return {"skipped": "пак недоступен (мост M3?)"}
+            return {"skipped": "пак недоступен (мост M3?)",
+                    "defer": _pack_read_glitch(key, site_type, tp_code)}
         pack = {}
 
     text0 = (texts[0] if texts else "")[:81] or "Официальный дилер. Тест-драйв и выгодные условия по кредиту. Авто в наличии."
@@ -462,6 +620,15 @@ def _build_tp1_from_pack(
             "callouts": data.get("callouts", []),
         })
 
+    if not groups and segment and _pack_read_glitch(key, site_type, tp_code):
+        # СЕГМЕНТНОЙ кампании (Марки/Модели/Общее) нужны группы из пака, а пак пуст из-за
+        # ГЛОБАЛЬНОГО сбоя чтения M3 (probe соседнего tp-пака тоже пуст). Фолбэк «Товарная
+        # галерея» дал бы пустышку — инцидент 03.07.2026: tp1 Модели/Общее с 1 группой (cts=0,
+        # camp 712112065). → defer на докрутку. Легитимно пустой пак (pavlov tp5: probe tp2
+        # читается) идёт ниже в фид-фолбэк как раньше.
+        return {"skipped": f"пак пуст для сегмента {segment} ({tp_code}) — сбой чтения M3, "
+                           "отложено на докрутку",
+                "defer": True}
     if not groups and with_shopping and feed_id:
         # Бренд-пак слепка для tp_code ПУСТ (напр. у pavlov нет tp5-пака), НО это товарная галерея
         # по фиду — фид-товарка (ShoppingAd/ListingAd) НЕ зависит от бренд-пака. Чтобы tp5/tp3 не
@@ -478,7 +645,10 @@ def _build_tp1_from_pack(
         }]
         autotarget = True                                 # товарная галерея по фиду = автотаргет (нет бренд-ключей)
     if not groups:
-        return {"skipped": f"пак пуст: нет ct-папок с ключами scherbakova для {tp_code}"}
+        # defer только при СБОЕ чтения M3 (probe): у слепка может легитимно не быть пака —
+        # безусловный defer гонял бы «ядовитый» пункт по 3 ресума (ревью 03.07 #22).
+        return {"skipped": f"пак пуст: нет ct-папок с ключами scherbakova для {tp_code}",
+                "defer": _pack_read_glitch(key, site_type, tp_code)}
 
     # Быстрые ссылки: создаём набор ОДИН раз → SitelinkSetId на каждое объявление.
     # Важно: v5-only путь здесь молча оставлял tp1 без ссылок при пустом kind='sitelinks'.
@@ -496,13 +666,37 @@ def _build_tp1_from_pack(
     except Exception as e:  # noqa: BLE001 — sitelinks не критичны, но должны быть видны в отчёте
         asset_warns.append(f"sitelinks(tp1): {str(e)[:120]}")
 
-    # Callouts: создаём общий пул AdExtensions (уточнения из пака)
+    # Callouts: создаём общий пул AdExtensions (уточнения из пака).
+    # Правило Семёна 03.07.2026: грузим ТОЛЬКО используемые (первые 4 на группу — столько
+    # и вешаем) + ЗАПАС 5 уточнений с ДРУГИМ УТП (которых нет среди используемых) — для
+    # ручной замены в кабинете. Остальной пул слепка в аккаунт НЕ регистрируем (сироты).
     co_pool = {}
     try:
-        all_co = [c for g in groups for c in (g.get("callouts") or [])]
-        co_pool = _ensure_callout_exts(token, login, all_co) if all_co else {}
+        import re as _re_co   # module-scope `re` в этом файле нет (только локальные импорты)
+        used, seen_used = [], set()
         for g in groups:
-            ids = [co_pool[c] for c in (g.get("callouts") or []) if c in co_pool]
+            for c in (g.get("callouts") or [])[:4]:
+                if c and c not in seen_used:
+                    seen_used.add(c)
+                    used.append(c)
+
+        def _co_utp_key(t: str) -> str:
+            # смысловой ключ УТП уточнения: без цифр/процентов, первые 2 слова
+            base = _re_co.sub(r"[0-9%]+", " ", str(t or "").lower().replace("ё", "е"))
+            return " ".join(base.split()[:2])
+
+        used_keys = {_co_utp_key(c) for c in used}
+        spare: list = []
+        for c in (c for g in groups for c in (g.get("callouts") or [])[4:]):
+            if not c or c in seen_used or c in spare or _co_utp_key(c) in used_keys:
+                continue
+            spare.append(c)
+            used_keys.add(_co_utp_key(c))
+            if len(spare) >= 5:
+                break
+        co_pool = _ensure_callout_exts(token, login, used + spare) if (used or spare) else {}
+        for g in groups:
+            ids = [co_pool[c] for c in (g.get("callouts") or [])[:4] if c in co_pool]
             if ids:
                 g["callout_ext_ids"] = ids[:4]
     except Exception:  # noqa: BLE001
@@ -520,10 +714,49 @@ def _build_tp1_from_pack(
     rep["sitelinks_set_id"] = sitelink_set_id
     if asset_warns:
         rep.setdefault("warnings", []).extend(asset_warns)
-    # [задел на будущее] видео-объявления РСЯ — отдельный хук _tp1_video_ads (сейчас dormant:
-    # видео для tp1 в паке M3 нет + creative-API ЕПК не подключён; картинки РСЯ уже работают).
-    rep["video"] = "хук готов (_tp1_video_ads), dormant — нет видео в tp1 на M3 + нужен creative-API ЕПК"
+    # Видео РСЯ (tp1 ЕПК): загрузка по ct из пула M3 + attach creativeIds (Grid) — Фаза 3.6
+    # внутри _build_tp1_adgroups. Счётчики уже в rep; здесь только гарантируем их наличие.
+    rep.setdefault("videos_uploaded", 0)
+    rep.setdefault("videos_attached", 0)
+    rep.setdefault("video_groups", 0)
     return rep
+
+def _grid_add_listings_with_name_filters(gcl, shop_ids: list, build: dict,
+                                         feed_id: int, default_text: str) -> None:
+    """Листинги «Страницы каталога» через Grid by-shopping (без баллов) + name-фильтры.
+
+    Общий путь tp1/tp5 (#ФИКС-1): создаём ListingAd по shopping_ad_ids, затем ставим
+    name-фильтр CONTAINS_ANY [марка|марка+модель] из ``build['listing_build_items']``
+    (HAR36 updateListingAds; by-shopping фильтр не наследует). saveDraft:True → addedAds
+    может быть пуст → фолбэк построения items по adGroupId. Ошибки — в build['warnings'],
+    кампанию НЕ валим (принцип «дозаполнять, не удалять»). Результаты в build:
+    listing_ads (кол-во), listing_name_set."""
+    try:
+        _rows = gcl.add_listing_ads_by_shopping_ads(shop_ids) or []
+        build["listing_ads"] = len(_rows)
+        _agid_to_nv = {str(it["adgroup_id"]): it.get("name_value")
+                       for it in (build.get("listing_build_items") or [])
+                       if it.get("adgroup_id") and it.get("name_value")}
+        _lf_items = []
+        for _idx, _row in enumerate(_rows):
+            _lid = _row.get("id") if isinstance(_row, dict) else _row
+            _agid = str(_row.get("adGroupId") or "") if isinstance(_row, dict) else ""
+            _val = _agid_to_nv.get(_agid)
+            if not _val and _idx < len(shop_ids):
+                _val = (build.get("listing_name_by_shop") or {}).get(int(shop_ids[_idx]))
+            if _lid and _val:
+                _lf_items.append({"id": _lid, "feed_id": feed_id, "value": _val,
+                                  "bodies": [default_text]})
+        if not _lf_items and _agid_to_nv:
+            # saveDraft:True → addedAds пуст; строим по adGroupId (фильтр ставится на группу)
+            for _agid_s, _val in _agid_to_nv.items():
+                _lf_items.append({"adgroup_id": _agid_s, "feed_id": feed_id,
+                                  "value": _val, "bodies": [default_text]})
+        if _lf_items:
+            build["listing_name_set"] = gcl.set_listing_name_filters(_lf_items)
+    except Exception as _le:  # noqa: BLE001
+        build.setdefault("warnings", []).append(f"listing(grid): {str(_le)[:160]}")
+
 
 def _add_listing_ads_v501(token: str, login: str, items: list[dict]) -> list[int]:
     """Создать ListingAd через v501 с явным FeedFilterConditions по collectionId.
@@ -655,7 +888,10 @@ def _create_tp1_single(
             segment=segment, ai_title2=ai_title2, city=city, autotarget=autotarget,
             products_only=products_only, sitelinks=sitelinks, grid_cookie=grid_cookie)
         if tp1_build.get("error") or tp1_build.get("skipped") or not tp1_build.get("adgroups"):
-            return _cleanup_partial("tp1 не дозаполнена: " + str(tp1_build.get("error") or tp1_build.get("skipped") or "группы не созданы"))
+            _fail = _cleanup_partial("tp1 не дозаполнена: " + str(tp1_build.get("error") or tp1_build.get("skipped") or "группы не созданы"))
+            if tp1_build.get("defer"):
+                _fail["defer"] = True   # пустой пак M3 (временный сбой) → докрутка, не permanent-fail
+            return _fail
         if not products_only and not tp1_build.get("ads"):
             _details = []
             for _k in ("adgroups", "keywords", "images_uploaded"):
@@ -694,33 +930,7 @@ def _create_tp1_single(
                 tp1_build.setdefault("warnings", []).append(f"shopping text: {str(_e)[:120]}")
             # Листинги «Страницы каталога» — НЕЗАВИСИМО от текста (Grid by-shopping, без баллов), затем
             # name-фильтр CONTAINS_ANY [марка|марка+модель] (HAR36 updateListingAds; by-shopping не наследует).
-            # #ФИКС-1: saveDraft:True → addedAds пуст → строим _lf_items из listing_build_items по adGroupId.
-            try:
-                _rows = _gcl.add_listing_ads_by_shopping_ads(_shop_ids) or []
-                tp1_build["listing_ads"] = len(_rows)
-                # adGroupId→name_val из listing_build_items (независимо от addedAds)
-                _agid_to_nv = {str(it["adgroup_id"]): it.get("name_value")
-                               for it in (tp1_build.get("listing_build_items") or [])
-                               if it.get("adgroup_id") and it.get("name_value")}
-                _lf_items = []
-                for _idx, _row in enumerate(_rows):
-                    _lid = _row.get("id") if isinstance(_row, dict) else _row
-                    _agid = str(_row.get("adGroupId") or "") if isinstance(_row, dict) else ""
-                    _val = _agid_to_nv.get(_agid)
-                    if not _val and _idx < len(_shop_ids):
-                        _val = (tp1_build.get("listing_name_by_shop") or {}).get(int(_shop_ids[_idx]))
-                    if _lid and _val:
-                        _lf_items.append({"id": _lid, "feed_id": feed_id, "value": _val,
-                                          "bodies": [_tp1_default_text]})
-                if not _lf_items and _agid_to_nv:
-                    # saveDraft:True → addedAds пуст; строим по adGroupId (фильтр ставится на группу)
-                    for _agid_s, _val in _agid_to_nv.items():
-                        _lf_items.append({"adgroup_id": _agid_s, "feed_id": feed_id,
-                                          "value": _val, "bodies": [_tp1_default_text]})
-                if _lf_items:
-                    tp1_build["listing_name_set"] = _gcl.set_listing_name_filters(_lf_items)
-            except Exception as _le:  # noqa: BLE001
-                tp1_build.setdefault("warnings", []).append(f"listing(grid): {str(_le)[:160]}")
+            _grid_add_listings_with_name_filters(_gcl, _shop_ids, tp1_build, feed_id, _tp1_default_text)
         if with_shopping and feed_id and _shop_ids and not int(tp1_build.get("listing_ads") or 0):
             # Bug2 graceful: ShoppingAd есть, а листинги «Страницы каталога» пусты (фид-каталог без
             # готовых офферов) → НЕ удаляем кампанию, оставляем товарку без листингов + warning.
@@ -746,6 +956,7 @@ def _create_tp1_single(
                                      grid_cookie=grid_cookie)
         slset = a.get("sitelink_set_id")
         wkl = int(budget_rub) if budget_rub else int(cpa_value_rub) * 10
+        _mp_disabled = _enabled_minus_places()            # #21 минус-площадки РСЯ (v5-путь tp1)
         try:
             _finalize_rsya(
                 login, campaign_id, name=name, goal_id=goal_id or 0,
@@ -754,7 +965,8 @@ def _create_tp1_single(
                 pay_for_conversion=(mode == "network_payconv"),
                 callout_ids=a["callout_ids"], sitelink_set_id=slset,
                 promo_id=(a["promos"][0] if a["promos"] else None),
-                minus_set_ids=None, grid_cookie=grid_cookie)
+                minus_set_ids=None, grid_cookie=grid_cookie,
+                disabled_places=_mp_disabled)
             result_d["rsya_finalized"] = True
             result_d["callouts_set"] = len(a["callout_ids"])
             result_d["sitelink_set_id"] = slset
@@ -998,13 +1210,17 @@ def _tp1_pack_groups(login: str, slepok: str, site_type: str, r_code: str, href:
             "texts": _gx or ([text0] if text0 else []),
             "href": model_href,
         }
-        _all_imgs = _creative_images_for_ct(site_type, tp_code, ct, key)
+        # ПОИСКОВЫЕ tp2/tp4: объявления БЕЗ картинок (IMAGES_FORBIDDEN — правило Семёна).
+        # Раньше куки-путь цеплял image_hashes и поисковым → 27 объявл./кампанию с картинками
+        # (инцидент 03.07.2026, докрутка psm5h7q6) → аудит чистил постфактум. Гейт у источника.
+        _want_images = tp_code not in ("tp2", "tp4")
+        _all_imgs = _creative_images_for_ct(site_type, tp_code, ct, key) if _want_images else []
         if _all_imgs:
             g["image_paths"] = _all_imgs[:5]
         # РСЯ-картинки по куке (БЕЗ баллов): источник — пак M3 + Manual-добивка.
         # basename → hash из image_map (уже залитые в аккаунт, без баллов). Найденные → imageHashes.
         # Fallback по другим слепкам для того же ct (не менять ct — ct0000 ЗАПРЕЩЁН).
-        if image_map:
+        if image_map and _want_images:
             _hh = [image_map.get(_os.path.basename(p)) for p in _all_imgs]
             _hh = [h for h in _hh if h]
             if _hh:
@@ -1142,9 +1358,21 @@ def _create_tp1_via_cookie(
             _listing_ids: list[int] = []
             if ok and with_shopping and feed_id:
                 _grid_shop_items = []
-                # ДВА фильтра по типу (решение Семёна, HAR36): Товары → vendor [марка]; Страницы каталога
-                # → name [марка|марка+модель]. ct0000 без марки → без фильтра. (Коллекции фида для
-                # collectionId БОЛЬШЕ НЕ нужны — товары на vendor, листинг на name.)
+                # Bug A fix: резолвим имена полей бренда/модели для ЭТОГО фида (AUTO_RU: mark_id/folder_id;
+                # YANDEX_MARKET: vendor/model). Без этого AUTO_RU фиды получали UNKNOWN_FIELD → стрип фильтра.
+                _ck_brand_field = "vendor"
+                _ck_model_field = "model"
+                try:
+                    from . import create_set_feeds as _csf_ck
+                    _ck_brand_field = _csf_ck._resolve_feed_field(login, int(feed_id), "brand") or "vendor"
+                    _ck_model_field = _csf_ck._resolve_feed_field(login, int(feed_id), "model") or "model"
+                    if _ck_brand_field != "vendor" or _ck_model_field != "model":
+                        print(f"[tp1-cookie] feed {feed_id}: brand_field={_ck_brand_field!r} model_field={_ck_model_field!r}",
+                              flush=True)
+                except Exception:  # noqa: BLE001
+                    pass
+                # ДВА фильтра по типу (решение Семёна, HAR36): Товары → brand_field [марка]; Страницы каталога
+                # → name [марка|марка+модель]. ct0000 без марки → без фильтра.
                 _shop_name_vals = []   # параллельно _grid_shop_items: name-значение листинга на группу
                 for _grp, _agid in zip(groups, rep.get("adgroup_ids") or []):
                     if not _agid:
@@ -1164,6 +1392,8 @@ def _create_tp1_via_cookie(
                         "collection_id": None,
                         "model": _model_vals,
                         "name": _grp.get("name", "?"),
+                        "brand_field": _ck_brand_field,
+                        "model_field": _ck_model_field,
                     })
                     _shop_name_vals.append(_name_val)
                 if _grid_shop_items:
@@ -1182,15 +1412,22 @@ def _create_tp1_via_cookie(
                             _shop_filters = {}
                             for _sid, _src in zip(_shop_ids, [s for s in _grid_shop_items]):
                                 _conds = []
+                                _bf2 = _src.get("brand_field") or "vendor"
+                                _mf2 = _src.get("model_field") or "model"
                                 if _src.get("vendor"):
-                                    _conds.append({"field": "vendor", "operator": "CONTAINS_ANY",
+                                    _conds.append({"field": _bf2, "operator": "CONTAINS_ANY",
                                                    "stringValue": json.dumps(_vendor_filter_values(_src["vendor"]), ensure_ascii=False)})
                                 if _src.get("model"):
                                     _mvals = _src["model"] if isinstance(_src["model"], list) else [str(_src["model"])]
                                     _mvals = [str(x) for x in _mvals if str(x).strip()]
                                     if _mvals:
-                                        _conds.append({"field": "model", "operator": "CONTAINS_ANY",
+                                        _conds.append({"field": _mf2, "operator": "CONTAINS_ANY",
                                                        "stringValue": json.dumps(_mvals, ensure_ascii=False)})
+                                try:                     # глобальные минус-марки: используем тот же brand_field
+                                    from . import create_set_feeds as _csf
+                                    _conds.extend(_csf._minus_marks_grid_conditions(brand_field=_bf2))
+                                except Exception:  # noqa: BLE001
+                                    pass
                                 if _conds:
                                     _shop_filters[int(_sid)] = {"tab": "CONDITION", "conditions": _conds}
                             # G review: set_default_text в СВОЁМ try — падение (Яндекс 500) НЕ блокирует
@@ -1297,7 +1534,11 @@ def _create_tp1_via_cookie(
                         _gc_img = gf.GridClient(login)
                         _uploaded_by_name: dict[str, str] = {}
                         _upd_items = []
+                        # ad_ids теперь 1:1 с groups (None = объявление группы не создано) —
+                        # zip больше не смещает пары (ревью 03.07 #5/#21)
                         for _aid, _grp in zip(_ad_ids, groups):
+                            if not _aid:
+                                continue
                             _gpaths = _grp.get("image_paths") or []
                             _hashes = list(dict.fromkeys(_grp.get("image_hashes") or []))
                             for _pth in _gpaths:
@@ -1318,6 +1559,7 @@ def _create_tp1_via_cookie(
                                     "bodies": _grp.get("texts") or []}
                             if _hashes:
                                 _upd["image_hashes"] = _hashes[:5]
+                                _grp["image_hashes"] = _hashes[:5]  # фикс 3a: video-meta видит реальные хэши
                             _cur, _old = _group_ad_price(
                                 _price_map, _grp.get("brand") or _grp.get("name") or "",
                                 _grp.get("seg") or _ct_segment(_grp.get("ct") or "")
@@ -1335,6 +1577,47 @@ def _create_tp1_via_cookie(
                                 _fin["image_groups"] = sum(1 for _it in _upd_items if _it.get("image_hashes"))
                     except Exception:  # noqa: BLE001 — картинки не критичны
                         pass
+                # ── Видео РСЯ по куке (аналог _tp1_video_ads в v5 Фазе 3.6) ──────────────
+                # created_ad_meta: adgroup_ids И ad_ids оба СТРОГО 1:1 с groups (None для
+                # упавших) — прямой zip без счётчика. Старое последовательное потребление
+                # ad_ids смещало видео на чужие объявления при частичных отказах Grid
+                # (ревью 03.07 #5/#21). adPrice несём в мета (fix price-C): full-replace
+                # без adPrice обнулил бы цену (verified live 2026-07-02).
+                _ag_ids_v = rep.get("adgroup_ids") or []
+                _ad_ids_v = rep.get("ad_ids") or []
+                _cookie_ad_meta: list = []
+                for _vgrp, _vagid, _vaid in zip(groups, _ag_ids_v, _ad_ids_v):
+                    if not _vagid or not _vaid:
+                        continue
+                    _vcur, _vold = _group_ad_price(
+                        _price_map, _vgrp.get("brand") or _vgrp.get("name") or "",
+                        _vgrp.get("seg") or _ct_segment(_vgrp.get("ct") or "")
+                    )
+                    _cookie_ad_meta.append({
+                        "id": _vaid,
+                        "meta": {
+                            "ct": _vgrp.get("ct") or "",
+                            "href": _vgrp.get("href") or href,
+                            "titles": _vgrp.get("titles") or [],
+                            "bodies": _vgrp.get("texts") or [],
+                            "image_hashes": _vgrp.get("image_hashes") or [],
+                            "ad_price_payload": _grid_ad_price_payload(_vcur, _vold),
+                        }
+                    })
+                if _cookie_ad_meta and _VIDEO_AT_CREATE:
+                    try:
+                        _vr2 = _tp1_video_ads(login, _cookie_ad_meta, grid_cookie=None,
+                                              campaign_id=cid)
+                        if _fin and isinstance(_fin, dict):
+                            _fin.update({k: _vr2[k] for k in
+                                         ("videos_uploaded", "videos_attached", "video_groups")
+                                         if k in _vr2})
+                        if _vr2.get("warnings"):
+                            rep.setdefault("warnings", []).extend(_vr2["warnings"][:3])
+                    except Exception as _ve2:  # noqa: BLE001 — видео best-effort
+                        rep.setdefault("warnings", []).append(f"видео(куки): {str(_ve2)[:100]}")
+                elif _cookie_ad_meta:
+                    rep["videos_deferred"] = True   # добьётся аудитом (VIDEO_MISSING)
             out_campaigns.append({
                 "ok": ok, "name": nm, "campaign_id": cid, "launched": False,
                 "via": "cookie", "rsya_finalized": _fin,

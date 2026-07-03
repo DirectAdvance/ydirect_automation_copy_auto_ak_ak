@@ -20,7 +20,9 @@ def verify_local_result(row: dict[str, Any]) -> list[dict[str, Any]]:
                            "message": str(build.get("error") or build.get("skipped"))[:240]})
         if "groups" in build and int(build.get("groups") or 0) <= 0:
             issues.append({"severity": "error", "code": "NO_ADGROUPS_REPORTED", "name": nm})
-        if "ads" in build and int(build.get("ads") or 0) <= 0:
+        _shop_only = (int(build.get("shopping_ads") or 0) > 0
+                      or int(build.get("listing_ads") or 0) > 0)
+        if "ads" in build and int(build.get("ads") or 0) <= 0 and not _shop_only:
             issues.append({"severity": "error", "code": "NO_ADS_REPORTED", "name": nm})
         if int(build.get("shopping_ads") or 0) < 0:
             issues.append({"severity": "warn", "code": "SHOPPING_COUNT_BAD", "name": nm})

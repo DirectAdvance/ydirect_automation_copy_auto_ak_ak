@@ -51,6 +51,7 @@ def run_create_set_tp1(*, it: dict[str, Any], name: str,
                        create_tp1_via_cookie: Callable[..., dict[str, Any]],
                        create_tp1_campaign: Callable[..., dict[str, Any]],
                        units_in_result: Callable[[dict[str, Any]], bool],
+                       auth_error_in_result: Optional[Callable[[dict[str, Any]], bool]] = None,
                        apply_corrections: Callable[..., tuple[int, Any]],
                        job_db_progress: Callable[[dict[str, Any]], Any],
                        add_job_err: Callable[..., Any],
@@ -63,7 +64,10 @@ def run_create_set_tp1(*, it: dict[str, Any], name: str,
         results.append({"name": name, "ok": False,
                         "error": "нет рабочего агентского токена для создания tp1"})
         return results
-    it_texts = lines(it.get("texts")) or tpl_texts
+    # Сортируем по убыванию длины: texts[0] → самый длинный → лучший «Текст по умолчанию»
+    # для ShoppingAd (set_default_text в create_set_tp1_builders, лимит 81 симв).
+    # _rsya_texts для текстовых объявлений переупорядочивает по своей логике → порядок не важен.
+    it_texts = sorted(lines(it.get("texts")) or tpl_texts, key=len, reverse=True)
     cpc_cpa_val = num(it.get("cpa"), rs["cpc_cpa"])    # целевой CPA из правил
     tp1_budget = int(num(it.get("budget"), rs.get("cpc_budget") or 0))
     # Товарные/динамика в группах tp1 — как в слепке (Щербакова): нужен XML-фид аккаунта.
@@ -81,7 +85,14 @@ def run_create_set_tp1(*, it: dict[str, Any], name: str,
     else:
         feed_variants = [(0, "", None)]                # tp1 без товарных (не Щербакова) → одна РСЯ
     if single_feed and feed_variants:
-        feed_variants = feed_variants[:1]             # «по одному фиду» — только первый
+        # «По одному фиду» теперь означает именно /yandex.xml. Для tp1 catalog_only-список
+        # может не содержать сырой yandex.xml, поэтому берём его через first_url_feed.
+        ff = first_url_feed(st_token, login, w_agency or "") if tp1_shopping else 0
+        if ff:
+            feed_variants = [(int(ff), "yandex.xml", None)]
+        else:
+            from .create_set_input import prefer_single_feed_variants
+            feed_variants = prefer_single_feed_variants(feed_variants)
     multi = sum(1 for fv in feed_variants if fv[0]) > 1
     for f_id, f_name, f_models in feed_variants:
         if job and job.get("cancel"):            # отмена: стоп ПЕРЕД следующим фидом fan-out
@@ -137,10 +148,13 @@ def run_create_set_tp1(*, it: dict[str, Any], name: str,
                     grid_cookie=grid_cookie,
                     job=job,                      # отмена: проверка cancel между cpc/cpa
                 )
-                if (not res.get("ok")) and units_in_result(res):
+                if (not res.get("ok")) and (
+                    units_in_result(res)
+                    or (auth_error_in_result and auth_error_in_result(res))
+                ):
                     res = create_tp1_via_cookie(**_tp1_cookie_kwargs)
                     if res.get("ok"):
-                        res.setdefault("warnings", []).append("api->cookie fallback after 152")
+                        res.setdefault("warnings", []).append("api->cookie fallback after 152/53")
             # Применяем корректировки ставок к созданной кампании (через v5 — стоит баллов;
             # на куки-пути при 152 пропускаем, иначе вызов всё равно упадёт на лимите).
             if res.get("ok") and not via_cookie:

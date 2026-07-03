@@ -16,6 +16,18 @@ def _keywords_repair(name: str, cid: int | None) -> dict[str, Any]:
     return {"kind": "keywords_repair", "name": name, "id": cid}
 
 
+def _images_repair(name: str, cid: int | None) -> dict[str, Any]:
+    return {"kind": "images_repair", "name": name, "id": cid}
+
+
+def _adprice_repair(name: str, cid: int | None) -> dict[str, Any]:
+    return {"kind": "adprice_repair", "name": name, "id": cid}
+
+
+def _default_text_repair(name: str, cid: int | None) -> dict[str, Any]:
+    return {"kind": "default_text_repair", "name": name, "id": cid}
+
+
 def _tp(name: str) -> int | None:
     m = _TP_RE.match(str(name or ""))
     return int(m.group(1)) if m else None
@@ -102,23 +114,58 @@ def verify_grid_content(name: str, campaign_id: int | None,
                        "expected_minus_places": exp_minus,
                        "note": "минус-площадки РСЯ пусты у tp1 (report-only)"})
 
-    # ── PRICE_MISSING (report-only): tp1 товарка without adPrice on ads ───────
-    hp = counts.get("has_ad_price")
-    exp_price = exp.get("expects_price")
-    if tp == 1 and ads > 0 and hp is False and (exp_price is None or bool(exp_price)):
-        issues.append({"severity": "warn", "code": "PRICE_MISSING",
-                       "name": nm, "id": cid,
-                       "note": "нет adPrice у объявлений tp1 при наличии карты цен (report-only)"})
+    # PRICE_MISSING (report-only) заменён на NO_ADPRICE_LIVE (с repair-candidate) ниже.
 
     # ── PROMO_MISSING (report-only, НЕ auto-repair) ───────────────────────────
-    # Фиксируем только при ЯВНОМ ожидании промо (expects_promo=True) — иначе срабатывал бы на каждой
-    # промо-less кампании и (при непроверенной read-схеме promoExtensionId) плодил дубль-промо через
-    # auto-repair. Repair отключён в repair_planner; поднять после live-верификации схемы + expects_promo.
+    # Фиксируем только при ЯВНОМ ожидании промо (expects_promo=True).
+    # promoExtensionId FieldUndefined в Grid-схеме → promo_extension_id всегда None → не детектируем.
     promo_present = bool(str(counts.get("promo_extension_id") or "").strip())
     exp_promo = exp.get("expects_promo")
     if (tp is not None and counts.get("settings_read") and not promo_present and bool(exp_promo)):
         issues.append({"severity": "warn", "code": "PROMO_MISSING",
                        "name": nm, "id": cid,
                        "note": "у кампании не привязано промо (report-only)"})
+
+    # ── NO_IMAGES_LIVE (error): tp1 адаптивные объявления без imageHashes ────────
+    # Детектируется через _enrich_adaptive_images (Grid images{imageHash}).
+    # Repair: images_repair (RMW + UpdateAdaptiveTextAds — in-place).
+    no_img = counts.get("no_images_ads")
+    if (tp == 1 and ads > 0 and counts.get("adaptive_images_read")
+            and isinstance(no_img, int) and no_img > 0):
+        issues.append({"severity": "error", "code": "NO_IMAGES_LIVE",
+                       "name": nm, "id": cid,
+                       "actual": no_img, "total_adaptive": counts.get("adaptive_total"),
+                       "note": f"tp1: {no_img} объявлений без imageHashes (in-place: images_repair)"})
+        repair.append(_images_repair(nm, cid))
+
+    # ── NO_ADPRICE_LIVE (warn): tp1 комбинаторные объявления без bannerPrice ─────
+    # Более actionable версия PRICE_MISSING: несёт repair-candidate adprice_repair.
+    # Детектируется только когда ad_price_read=True (bannerPrice{price} работает).
+    # PRICE_MISSING (report-only) ниже не дублируем — оба бы сработали на том же условии.
+    hp = counts.get("has_ad_price")
+    exp_price = exp.get("expects_price")
+    # Товарка-only (только ShoppingAd/ListingAd): bannerPrice неприменим — не выдаём NO_ADPRICE_LIVE.
+    # Когда читалка shopping_bodies оживёт — заменить на EMPTY_DEFAULT_TEXT_LIVE.
+    _shop_only_live = (int(counts.get("shopping_ads") or 0) > 0
+                       or int(counts.get("listing_ads") or 0) > 0)
+    if (tp == 1 and ads > 0 and not _shop_only_live
+            and counts.get("ad_price_read")
+            and hp is False and (exp_price is None or bool(exp_price))):
+        issues.append({"severity": "warn", "code": "NO_ADPRICE_LIVE",
+                       "name": nm, "id": cid,
+                       "note": "нет adPrice (bannerPrice) ни на одном объявлении tp1 (in-place: adprice_repair)"})
+        repair.append(_adprice_repair(nm, cid))
+
+    # ── EMPTY_DEFAULT_TEXT_LIVE (warn): ShoppingAd без bodies ──────────────────
+    # Детектируется через _enrich_shopping_bodies (GdSmartAd fragment, best-effort).
+    # Repair: default_text_repair (set_default_text — in-place).
+    shop_no_bodies = counts.get("shopping_no_bodies_ads")
+    if (tp in (1, 3, 5) and counts.get("shopping_bodies_read")
+            and isinstance(shop_no_bodies, int) and shop_no_bodies > 0):
+        issues.append({"severity": "warn", "code": "EMPTY_DEFAULT_TEXT_LIVE",
+                       "name": nm, "id": cid,
+                       "actual": shop_no_bodies,
+                       "note": f"{shop_no_bodies} ShoppingAd без bodies (in-place: default_text_repair)"})
+        repair.append(_default_text_repair(nm, cid))
 
     return issues, repair

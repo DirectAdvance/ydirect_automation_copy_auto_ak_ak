@@ -339,6 +339,51 @@ def executable_content_repairs(body: dict[str, Any], plan: dict[str, Any]) -> tu
     return selected, unsupported
 
 
+def _executable_cid_actions(plan: dict[str, Any],
+                             action_type: str) -> tuple[list[int], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Generic picker: campaign ids for a given in-place action type with a concrete campaign_id."""
+    actions = [a for a in (plan or {}).get("actions") or [] if isinstance(a, dict)]
+    matched = [a for a in actions if a.get("action") == action_type]
+    unsupported = [a for a in actions if a.get("action") != action_type]
+    ids: list[int] = []
+    executable: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for action in matched:
+        try:
+            cid = int(action.get("campaign_id") or 0)
+        except (TypeError, ValueError):
+            cid = 0
+        if cid <= 0:
+            unsupported.append(action)
+            continue
+        if cid in seen:
+            continue
+        seen.add(cid)
+        ids.append(cid)
+        executable.append(action)
+    return ids, executable, unsupported
+
+
+def executable_images_repairs(plan: dict[str, Any]) -> tuple[list[int], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Pick campaign ids for images_repair actions (tp1 ads without imageHashes)."""
+    return _executable_cid_actions(plan, "images_repair")
+
+
+def executable_adprice_repairs(plan: dict[str, Any]) -> tuple[list[int], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Pick campaign ids for adprice_repair actions (tp1 ads with null bannerPrice)."""
+    return _executable_cid_actions(plan, "adprice_repair")
+
+
+def executable_default_text_repairs(plan: dict[str, Any]) -> tuple[list[int], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Pick campaign ids for default_text_repair actions (ShoppingAd without bodies)."""
+    return _executable_cid_actions(plan, "default_text_repair")
+
+
+def executable_images_forbidden_repairs(plan: dict[str, Any]) -> tuple[list[int], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Pick campaign ids for images_forbidden_repair actions (search tp2/tp4 ads with imageHashes)."""
+    return _executable_cid_actions(plan, "images_forbidden_repair")
+
+
 def executable_keywords_repairs(plan: dict[str, Any]) -> tuple[list[int], list[dict[str, Any]], list[dict[str, Any]]]:
     """Pick campaign ids for keywords_repair actions (search adgroup keywords/autotarget fix).
 
@@ -373,6 +418,10 @@ def summarize_repair_gate(body: dict[str, Any], results: list[Any], plan: dict[s
     recreate_items, _ = executable_recreate_items(body or {}, plan or {})
     content_repairs, _ = executable_content_repairs(body or {}, plan or {})
     keyword_ids, keyword_actions, _ = executable_keywords_repairs(plan or {})
+    images_ids, images_actions, _ = executable_images_repairs(plan or {})
+    img_forbidden_ids, img_forbidden_actions, _ = executable_images_forbidden_repairs(plan or {})
+    adprice_ids, adprice_actions, _ = executable_adprice_repairs(plan or {})
+    default_text_ids, default_text_actions, _ = executable_default_text_repairs(plan or {})
     promo_ids, promo_actions, _ = executable_promo_campaign_ids(results or [], plan or {})
     callout_ids, callout_actions, _ = executable_callout_campaign_ids(results or [], plan or {})
     rename_names, rename_actions, _ = executable_rename_campaigns(plan or {})
@@ -382,6 +431,10 @@ def summarize_repair_gate(body: dict[str, Any], results: list[Any], plan: dict[s
         len(recreate_items)
         + len(content_repairs)
         + len(keyword_ids)
+        + len(images_ids)
+        + len(img_forbidden_ids)
+        + len(adprice_ids)
+        + len(default_text_ids)
         + (1 if promo_ids and promo_actions else 0)
         + (1 if callout_ids and callout_actions else 0)
         + len(rename_names)
@@ -393,9 +446,12 @@ def summarize_repair_gate(body: dict[str, Any], results: list[Any], plan: dict[s
         "queued_recreate_items": len(recreate_items),
         "recreate_delete_campaigns": len(recreate_delete),
         "in_place_content_repairs": len(content_repairs),
-        # keyword_repair_campaigns теперь всегда 0: in-place keywords_repair (UpdateUnifiedAdGroups)
-        # отключён как no-op, NO_KEYWORDS_LIVE идёт в recreate. Ключ оставлен для обратной совместимости UI.
+        # keyword_repair_campaigns: in-place через Grid AddKeywords (2026-07-03 подтверждён рабочим)
         "keyword_repair_campaigns": len(keyword_ids),
+        "images_repair_campaigns": len(images_ids),
+        "images_forbidden_repair_campaigns": len(img_forbidden_ids),
+        "adprice_repair_campaigns": len(adprice_ids),
+        "default_text_repair_campaigns": len(default_text_ids),
         "promo_campaigns": len(promo_ids) if promo_actions else 0,
         "callout_campaigns": len(callout_ids) if callout_actions else 0,
         "rename_campaigns": len(rename_names),

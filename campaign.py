@@ -1085,7 +1085,9 @@ class MasterCampaignSpec:
     id_time_zone: int = 130                               # 130 = Москва
     utm_template: str = UTM_TEMPLATE                       # UTM → поле tracking_params ("" = без UTM)
     relevance_match_categories: list[str] = field(default_factory=lambda: [
-        "ALTERNATIVE_MARK", "ACCESSORY_MARK", "COMPETITOR_MARK", "BROADER_MARK", "EXACT_MARK",
+        # COMPETITOR_MARK ОБЯЗАТЕЛЕН: его отсутствие = категория исключена → в UI чип
+        # «Запросы с упоминанием брендов конкурентов» в минус-словах (НЕ убирать повторно!)
+        "ALTERNATIVE_MARK", "ACCESSORY_MARK", "BROADER_MARK", "COMPETITOR_MARK", "EXACT_MARK",
     ])
     alternative_texts_enabled: bool = True
     ml_banners_enabled: bool = False
@@ -1300,15 +1302,18 @@ class UacClient:
         if self.csrf:
             headers["x-csrf-token"] = self.csrf
         resp = None
+        # Файл в память ДО POST: путь бывает на sshfs (Мак) — стрим fh в requests растягивает
+        # отправку тела бесконечно (timeout меряет ответ, не отправку) → зависание воркера.
+        with p.open("rb") as fh:
+            _file_bytes = fh.read()
         for attempt in range(3):
             try:
-                with p.open("rb") as fh:
-                    files = {"upload": (p.name, fh, _guess_mime(p.name))}
-                    resp = self.sess.post(
-                        f"{BASE}/content",
-                        params={"ulogin": self.ulogin, "adv_type": adv_type, "creative_type": "tgo"},
-                        files=files, headers=headers, timeout=self.timeout,
-                    )
+                files = {"upload": (p.name, _file_bytes, _guess_mime(p.name))}
+                resp = self.sess.post(
+                    f"{BASE}/content",
+                    params={"ulogin": self.ulogin, "adv_type": adv_type, "creative_type": "tgo"},
+                    files=files, headers=headers, timeout=self.timeout,
+                )
                 break
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
                 if attempt >= 2:
@@ -1325,12 +1330,13 @@ class UacClient:
             raise UacApiError("content-file", 200, json.dumps(data)[:400])
         return str(cid)
 
-    def upload_video_file(self, path: str | Path, adv_type: str = "text") -> str:
-        """Шаг 2 (локальный файл): multipart-загрузка ВИДЕО (mp4) с диска → content_id.
+    def _upload_video_result(self, path: str | Path, adv_type: str = "text") -> dict:
+        """Multipart-загрузка ВИДЕО (mp4) с диска → ``result`` из ответа /uac/content.
 
         Тот же эндпоинт и поле "upload", что для картинок, но mime video/mp4.
-        Официальный API v5 видео не умеет — этот путь работает. Лимит 2 видео на мастер.
-        """
+        В ``result`` есть И ``id`` (content_id, для content_ids UAC-кампаний), И
+        ``meta.creative_id`` (для creativeIds ЕПК-объявлений через Grid UpdateAdaptiveTextAds).
+        Официальный API v5 видео не умеет — этот путь работает. Лимит 2 видео на мастер."""
         p = Path(path)
         if not p.exists():
             raise FileNotFoundError(f"видео не найдено: {p}")
@@ -1339,29 +1345,56 @@ class UacClient:
         headers = {"Accept": "application/json"}
         if self.csrf:
             headers["x-csrf-token"] = self.csrf
+        # ВЕСЬ файл в память ДО POST: sshfs-источник (/opt/neuro_kontent) стримился прямо в
+        # сокет — read-timeout не ограничивает фазу отправки, и загрузка висла бессрочно
+        # (stall-trace 02-03.07: _upload_video_result → ssl.read; watchdog killed джобу Павлова).
+        # Тот же фикс, что у картинок (_upload_image_result, fh.read()).
+        _file_bytes = p.read_bytes()
         resp = None
-        for attempt in range(3):
+        # Timeout НЕ ретраим (решение Семёна 03.07): сервер уже жевал запрос 180с — повтор
+        # редко помогает и заливает канал (3×180с растягивали item на 9 мин/ролик).
+        # Видео добивается аудитом позже. ConnectionError (мгновенный обрыв) — 1 повтор.
+        for attempt in range(2):
             try:
-                with p.open("rb") as fh:
-                    files = {"upload": (p.name, fh, "video/mp4")}
-                    resp = self.sess.post(
-                        f"{BASE}/content",
-                        params={"ulogin": self.ulogin, "adv_type": adv_type, "creative_type": "tgo"},
-                        files=files, headers=headers, timeout=max(self.timeout, 180),
-                    )
+                files = {"upload": (p.name, _file_bytes, "video/mp4")}
+                resp = self.sess.post(
+                    f"{BASE}/content",
+                    params={"ulogin": self.ulogin, "adv_type": adv_type, "creative_type": "tgo"},
+                    files=files, headers=headers, timeout=max(self.timeout, 180),
+                )
                 break
-            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-                if attempt >= 2:
+            except requests.exceptions.Timeout:
+                raise UacApiError(f"content-video:{p.name}", 0,
+                                  "video-upload timeout 180s — добьётся аудитом позже")
+            except requests.exceptions.ConnectionError:
+                if attempt >= 1:
                     raise
-                time.sleep(1.0 + attempt)
+                time.sleep(1.5)
         if resp is None:
             raise UacApiError(f"content-video:{p.name}", 0, "empty response")
         self._absorb_csrf(resp)
         if resp.status_code >= 400:
             raise UacApiError(f"content-video:{p.name}", resp.status_code, resp.text)
-        cid = ((resp.json() if resp.content else {}).get("result") or {}).get("id")
+        return (resp.json() if resp.content else {}).get("result") or {}
+
+    def upload_video_file(self, path: str | Path, adv_type: str = "text") -> str:
+        """Загрузка видео → content_id (result.id) — для content_ids UAC-кампаний (tp6/tp7)."""
+        res = self._upload_video_result(path, adv_type)
+        cid = res.get("id")
         if not cid:
-            raise UacApiError("content-video", 200, resp.text[:400])
+            raise UacApiError("content-video", 200, json.dumps(res, ensure_ascii=False)[:400])
+        return str(cid)
+
+    def upload_video_creative(self, path: str | Path, adv_type: str = "text") -> str:
+        """Загрузка видео → creative_id (result.meta.creative_id) — для attach в ЕПК-объявление
+        через Grid UpdateAdaptiveTextAds ``creativeIds`` (HAR53, tp1 РСЯ).
+
+        ВАЖНО: это НЕ content_id (result.id). Для creativeIds Директ ждёт именно
+        meta.creative_id (в HAR: content id 1252…881, но creativeIds:["1163020076"] = meta)."""
+        res = self._upload_video_result(path, adv_type)
+        cid = (res.get("meta") or {}).get("creative_id")
+        if not cid:
+            raise UacApiError("content-video-creative", 200, json.dumps(res, ensure_ascii=False)[:400])
         return str(cid)
 
     def create_campaign(self, payload: dict) -> str:
@@ -1466,7 +1499,11 @@ class UacClient:
                 "age_lower": spec.age_lower,
                 "age_upper": spec.age_upper,
             },
-            "relevance_match": {"active": True, "categories": spec.relevance_match_categories},
+            "relevance_match": {"active": True, "categories": spec.relevance_match_categories,
+                                # ВСЕ ТРИ бренд-настройки ЯВНО: без WITH_COMPETITOR_BRAND Яндекс
+                                # отключает категорию → в UI группы появляется чип-исключение
+                                # «Запросы с упоминанием брендов конкурентов» (жалоба Семёна ×3)
+                                "brand_settings": ["WITHOUT_BRAND", "WITH_BRAND", "WITH_COMPETITOR_BRAND"]},
             "texts": spec.texts,
             "titles": spec.titles,
             "week_limit": str(int(spec.week_budget)),
@@ -1581,6 +1618,14 @@ class UacClient:
                 # UAC API отклонил набор быстрых ссылок как содержащий дубли description.
                 # Sitelinks не критичны — retry без них (кампания создаётся, ссылки добавить позже).
                 payload["sitelinks"] = []
+                campaign_id = self.create_campaign(payload)
+            elif (e.status == 400 and "MUST_BE_NULL" in e.body
+                  and ("feedFilters" in e.body or "listingsFeed" in e.body or "feedId" in e.body)):
+                # Тип UAC-кампании запрещает фид-фильтры/каталог (feedFilters MUST_BE_NULL — live
+                # 712112280, ревью 03.07 #24). Правило Семёна: такие пропускаем — retry без фильтров
+                # (кампания создаётся, фильтр там непроставим в принципе).
+                for _k in ("feed_filters", "listings_feed_filters"):
+                    payload.pop(_k, None)
                 campaign_id = self.create_campaign(payload)
             else:
                 raise

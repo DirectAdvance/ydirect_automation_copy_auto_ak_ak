@@ -3,13 +3,17 @@
 Веб-модуль для seoadvanced.ru: создание кампаний в Яндекс.Директе и **ИИ-генерация
 промоакций в стиле реальных директологов** (через локальную LLM на M3).
 
-- **Маршрут:** `https://seoadvanced.ru/direct/automation`
-- **Сервис:** отдельный Flask `direct.service` на **LXC 101** (`192.168.0.202`),
-  `127.0.0.1:5020`, за nginx `location /direct/`.
+- **Маршруты:** `https://seoadvanced.ru/direct/automation` и
+  `https://seoadvanced.ru/direct/automation/content`.
+- **Сервисы:** отдельные Flask-процессы на **LXC 101** (`192.168.0.202`):
+  `direct.service` на `127.0.0.1:5020` обслуживает создание/управление РК,
+  `direct-content.service` на `127.0.0.1:5021` обслуживает только редактор контента.
 - **Главный сайт:** `digest.service` остаётся на `5010`; `/direct/*` он больше не обслуживает.
-- **Деплой Direct:** Mutagen синкает Mac↔LXC101 автоматически → `systemctl restart direct.service`
-  (Jinja кеширует шаблон, рестарт обязателен для правок HTML/Python).
-  Команда: `ssh proxmox-ts "pct exec 101 -- systemctl restart direct.service"`.
+- **Деплой Direct:** Mutagen синкает Mac↔LXC101 автоматически. После правок общего
+  Direct — `systemctl restart direct.service`; после правок редактора контента —
+  `systemctl restart direct-content.service`. Команды:
+  `ssh proxmox-ts "pct exec 101 -- systemctl restart direct.service"` и
+  `ssh proxmox-ts "pct exec 101 -- systemctl restart direct-content.service"`.
 
 Папка **самодостаточна**: `blueprint + campaign.py + promo.py + ai_agents.py + *.json`.
 Нужен доступ к `.secret/loader.py` выше по дереву (куки главпотока, токены Директа/Метрики, БД).
@@ -18,12 +22,16 @@
 
 - `routes_*.py` — Flask route-слой `/direct/*`. `blueprint.py` остаётся местом для legacy
   helper/adapter-логики, но больше не содержит `@bp.route`.
+- `main.py` — entrypoint общего Direct app. В systemd он запускается с
+  `DIRECT_REGISTER_CONTENT_EDITOR=0`, чтобы не держать content editor в `direct.service`.
+- `content_main.py` — entrypoint отдельного content editor app: только
+  `/direct/automation/content` и `/direct/api/content-editor/*`.
 - `routes_create_set.py` — `/api/create_set`, legacy `/api/create`, verification/repair endpoints.
   Важно: `/direct/api/create_set` должен всегда смотреть на endpoint `direct.api_create_set`;
   это закреплено smoke-тестом `tests/test_routes.py`.
 - `routes_content_editor.py` — отдельный редактор `/direct/automation/content` для массовой правки
   AI-сгенерированного контента. Direct API v5 вызывается только с валидными top-level полями:
-  campaigns без subtype `TextCampaignFieldNames`, adgroups/ads с обязательным
+  campaigns без subtype `TextCampaignFieldNames`, `adgroups.get`/`ads.get` батчами по 10
   `SelectionCriteria.CampaignIds`, responsive ads через `Titles`/`Texts`.
   Отдельная документация сервиса: `CONTENT_EDITOR.md` и `CONTENT_EDITOR_COOKIE_GRID.md`.
 - `create_set_*.py` — вынесенные части create_set orchestration: context, feeds, minus, assets,
@@ -110,7 +118,7 @@ resume-skip не пропустил существующую плохую кам
 | Шаблонные тексты объявлений (фолбэк) | Victory БД `public.direct_ad_templates` (по `site_type`×`kind`) |
 | **Контент слепка** (campaign/promo) — фолбэк при недоступном M3 | Victory БД `public.direct_slepok_content` (`slepok`×`site_type`×`kind`) |
 | **Нативные интересы** (аудитории по группам) для МК/Товарки | Victory БД `public.direct_slepok_audiences` (`slepok`×`site_type`×`tp`×`category`×`kind`→`interest_ids`) |
-| **Глобальные правила** (бюджет/CPA/корректировки/фиды/минус-площадки) | Victory БД `direct_automation_rules`, `direct_audience_corrections`, `direct_demographic_corrections`, `direct_global_feed_rules`, `direct_global_minus_places` |
+| **Глобальные правила** (бюджет/CPA/корректировки/фиды/минус-площадки/минус-марки) | Victory БД `direct_automation_rules`, `direct_audience_corrections`, `direct_demographic_corrections`, `direct_global_feed_rules`, `direct_global_minus_places`, `direct_global_minus_marks` |
 | Структура слепков (кодеры кампаний `tpN_{cpc\|cpa}_{site\|kviz}`) | `direct/slepki_structure.json` (генерится из `work/slepki_direktologov`) |
 | Баланс / блокировки / ассеты | Яндекс.Директ API v5 (OAuth) + Live v4 + Grid (куки) |
 | Локальная LLM | mlx_lm.server на Mac M3 (через обратный SSH-туннель, см. `_M3_LLM_URL`) |
@@ -134,8 +142,11 @@ resume-skip не пропустил существующую плохую кам
 `/api/campaigns` · `/api/campaigns/stop_all` (POST) · `/api/goal_for_counter`.
 
 **Создание РК:** `/api/feeds` · `/api/audiences` · `/api/ad_template_sites` ·
-`/api/ad_templates` · `/api/set_plan` (POST, предпросмотр набора) ·
-`/api/create_set` (POST, набор черновиков) · `/api/create` (POST, одна РК).
+`/api/ad_templates` · `/api/set_plan` (POST, предпросмотр набора; в ответе `feed_alert`
+если нет /yandex.xml) · `/api/create_set` (POST, набор черновиков) · `/api/create` (POST, одна РК) ·
+`/api/create_set_feed_decision` (POST, решение по feed_alert) · `/api/minus-marks` (GET/POST,
+глобальное правило «Минус марки (фид)» — выбранные марки исключаются NOT_CONTAINS-фильтром
+фида во всех товарных/фид-кампаниях).
 
 **Локальная ИИ:** `/api/ai/status` · `/api/ai/chat` (POST, чат) ·
 `/api/ai/agents` · `/api/ai/promo/generate` (POST) · `/api/ai/promo/publish` (POST) ·
@@ -350,7 +361,7 @@ API:
 | `repair_gate.py` | чистая нормализация repair-gate: job context, truthy/jsonish, выбор исполнимых actions |
 | `repair_executor.py` | scoped executor-ы добивки без Direct units: retry wiring остаётся в `blueprint.py`, in-place `content/promo/callouts/rename` выполняются через cookie/Grid |
 | `repair_auto.py` | orchestration-слой добивки: общий порядок executor-ов для repair endpoint, безопасная post-create автодобивка `promo/callouts/rename`, preflight/decision/queue orchestration и response contracts для repair без Flask/DB |
-| `kontent_pack.py` | чтение контент-пака с M3 (`/opt/neuro_kontent/kontent_oktyabr`): ключи, уточнения, картинки, видео по `(segment, tp, ct, slepok)`; батч-сбор через ssh; `videos_for_login` |
+| `kontent_pack.py` | чтение контент-пака с M3 (`/opt/neuro_kontent/kontent_oktyabr`): ключи, уточнения, картинки, видео по `(segment, tp, ct, slepok)`; батч-сбор через ssh; `videos_for_login`; **видео-пул** `/Users/Shared/agency/Video/<ct>/*.mp4` (индекс `Video\|video\|<ct>`, `videos_pool_for_ct` — до 2 роликов; фолбэк в `videos_for_ct`). Видео идут в tp6/tp7 (content_ids) и tp1 (`_tp1_video_ads`: `upload_video_creative` → `meta.creative_id` → `creativeIds` в UpdateAdaptiveTextAds) |
 | `promotions.py` | референс-копия PromoClient из skill (не используется blueprint'ом — рабочий `promo.py`) |
 | `slepki_structure.json` | структура слепков (кодеры `tpN_*`, `splits` по site/kviz) |
 | `seed_slepok_content.py` | сидер `direct_slepok_content` (фолбэк-контент по слепкам) |
@@ -383,6 +394,17 @@ API:
 `collection_id` — `collectionId` из listings фида (формат `model_N`);
 `FeedFilterConditions=[{Operand:"collectionId", Operator:EQUALS_ANY, Arguments:[id]}]` —
 фильтрует объявление по конкретной модели из фида.
+
+### Цена в объявлениях (adPrice) — правила (2026-07-02)
+
+- Источник: `_account_offer_prices(login, href)` — минимум по ключу-бренду/модели со ВСЕХ фидов
+  аккаунта (НЕ один defaultFeedId — у него бывало 0 офферов → цены «пропадали»).
+- Сегмент «Марки» → мин. цена марки; «Модели» → цена модели (фолбэк на марку); «Общее» → мин. товар фида.
+- **Марки/модели НЕТ в фиде → цена ПУСТАЯ** (правило Семёна: «Tank от 789 900 ₽» вводит в заблуждение).
+- ⚠️ Grid `UpdateAdaptiveTextAds` — full-replace: ЛЮБОЙ повторный апдейт объявления БЕЗ `adPrice`
+  ЗАТИРАЕТ цену (и без `creativeIds` — затирает видео). Поэтому: `ads_repaired_after_price` удалён
+  из tp1 И tp2/tp4; видео-attach (Фаза 3.6) несёт `meta.ad_price_payload`. Новые мутации объявлений —
+  ОБЯЗАТЕЛЬНО прокидывать оба поля.
 
 ### Статус production (обновлено 2026-06-24)
 

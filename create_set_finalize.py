@@ -71,6 +71,40 @@ def _finalize_rsya(login: str, campaign_id: int, *, name: str, goal_id: int,
     if data.get("errors") or vr.get("errors"):
         raise gf.GridFinalizeError("РСЯ-finalize: " + json.dumps(
             data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
+    # fix 3c: логируем warnings (мутация уже запрашивает их через ValidationWarningFragment)
+    warns = vr.get("warnings") or []
+    if warns:
+        import logging as _log
+        _log.getLogger("direct.finalize").warning(
+            "РСЯ-finalize campaign %s warnings: %s",
+            campaign_id, json.dumps(warns, ensure_ascii=False)[:400],
+        )
+    # fix 3c: read-back disabledPlaces — подтвердить что Grid принял значение
+    if disabled_places:
+        _rb_q = (
+            "query CampDP($login:String!,$inp:GdCampaignsContainerInput!){"
+            "client(searchBy:{login:$login}){campaigns(input:$inp){rowset{"
+            "id ...on GdUnifiedCampaign{disabledPlaces}}}}}"
+        )
+        _rb_inp = {
+            "filter": {"campaignIdIn": [str(campaign_id)]},
+            "statRequirements": {"preset": "TODAY", "goalIds": [], "useCampaignGoalIds": True},
+            "limitOffset": {"limit": 1, "offset": 0},
+            "orderBy": [{"order": "ASC", "field": "ID"}],
+        }
+        try:
+            _rb_j = gc._post("CampDP", _rb_q, {"login": login, "inp": _rb_inp}).json()
+            _rb_rows = ((((_rb_j.get("data") or {}).get("client") or {})
+                         .get("campaigns") or {}).get("rowset") or [])
+            _rb_dp = _rb_rows[0].get("disabledPlaces") if _rb_rows else None
+            if not _rb_dp:
+                import logging as _log
+                _log.getLogger("direct.finalize").warning(
+                    "РСЯ-finalize campaign %s: disabledPlaces sent=%r read-back=%r — Grid не применил",
+                    campaign_id, disabled_places, _rb_dp,
+                )
+        except Exception:  # noqa: BLE001 — read-back best-effort, не валим создание
+            pass
     return res.get("updatedCampaigns") or []
 
 def _grid_minus_pack_id(login: str, name_marker: str = "Минуса общие") -> int | None:

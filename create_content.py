@@ -162,7 +162,9 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
     _kw14b = {"max_tokens": 280, "temperature": 0.72, "top_p": 0.9,
               "repetition_penalty": 1.15,
               "tries": 1 if fast_mode else 2,
-              "timeout": min(_M3_LLM_TIMEOUT_14B, 12 if fast_mode else _M3_LLM_TIMEOUT_14B)}
+              # fast_mode 12с был откалиброван под 14B (~28 ток/с); на одной 72B (~6.5 ток/с,
+              # 03.07) прогрев со 12с падал в 100% и молча заливал шаблонный корпус (ревью 03.07)
+              "timeout": min(_M3_LLM_TIMEOUT_14B, 90 if fast_mode else _M3_LLM_TIMEOUT_14B)}
     urls14 = _M3_LLM_URLS_14B
     par_results = _m3_complete_parallel([
         (urls14[0], msgs_t,  _kw14b),
@@ -661,18 +663,18 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
                 "Новые авто по акции. Трейд-ин и кредитные условия. Узнайте выгоду онлайн!",
                 "Кредит на новое авто от 15 банков. Подберите условия онлайн сегодня!",
             ]
-        sitelink_fillers = [
-            {"title": "Кредит за 30 минут", "description": "Подберем условия от 15 банков онлайн за 30 минут"},
-            {"title": "Платеж от 9 000 ₽/мес", "description": "Рассчитайте платеж от 9 000 ₽/мес для вашей заявки"},
-            {"title": "Кредит от 15 банков", "description": "Сравним предложения 15 банков и подберем вариант"},
-            {"title": "КАСКО на 1 год", "description": "КАСКО на 1 год. Дарим при покупке авто в кредит"},
-            {"title": "Трейд-ин за 1 день", "description": "Оценим авто за 1 день и зачтём в покупку нового"},
-            {"title": "Авто в наличии", "description": "Подберем авто под бюджет от 9 000 ₽/мес онлайн"},
-            {"title": "Первый взнос 0 ₽", "description": "Первый взнос 0 ₽. Кредит оформим за 1 день онлайн"},
-            {"title": "Заявка онлайн", "description": "Оставьте заявку и получите расчет за 15 минут"},
-            {"title": "Господдержка 2025", "description": "Проверим доступные программы. Выгода до 30% с 2025"},
-            {"title": "Подарок к покупке", "description": "Расскажем о бонусах от 5 000 ₽ при оформлении авто"},
-            {"title": "Консультация онлайн", "description": "Менеджер ответит за 5 минут и подскажет следующий шаг"},
+        sitelink_fillers = [  # все заголовки ≥ SITELINK_TITLE_TARGET_MIN=22 (fix 1a, 2026-07-02)
+            {"title": "Кредит за 30 минут онлайн", "description": "Подберем условия от 15 банков онлайн за 30 минут"},
+            {"title": "Платеж от 9 000 ₽ в месяц", "description": "Рассчитайте платеж от 9 000 ₽/мес для вашей заявки"},
+            {"title": "Автокредит от 15 банков", "description": "Сравним предложения 15 банков и подберем вариант"},
+            {"title": "КАСКО на 1 год бесплатно", "description": "КАСКО на 1 год. Дарим при покупке авто в кредит"},
+            {"title": "Трейд-ин за 1 рабочий день", "description": "Оценим авто за 1 день и зачтём в покупку нового"},
+            {"title": "Авто в наличии сегодня", "description": "Подберем авто под бюджет от 9 000 ₽/мес онлайн"},
+            {"title": "Первый взнос 0 ₽ онлайн", "description": "Первый взнос 0 ₽. Кредит оформим за 1 день онлайн"},
+            {"title": "Заявка онлайн за 15 минут", "description": "Оставьте заявку и получите расчет за 15 минут"},
+            {"title": "Господдержка авто 2025", "description": "Проверим доступные программы. Выгода до 30% с 2025"},
+            {"title": "Подарок каждому покупателю", "description": "Расскажем о бонусах от 5 000 ₽ при оформлении авто"},
+            {"title": "Консультация менеджера", "description": "Менеджер ответит за 5 минут и подскажет следующий шаг"},
         ]
         _foreign_brands, _foreign_cities = _title2_blocklist()
         _ctx_city_words = set(re.sub(r"[^\wа-яё]+", " ", (ctx.get("city") or "").lower()).split())
@@ -791,7 +793,8 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
                     continue
                 title = A._clean_line(raw.get("title") or "", A.SITELINK_TITLE_MAX, sitelink=True)
                 desc = A._clean_line(raw.get("description") or "", A.SITELINK_DESC_MAX, sitelink=True)
-                if (not title or not desc or _bad_ad_sitelink(title, desc)
+                if (not title or not desc or len(title) < A.SITELINK_TITLE_TARGET_MIN  # fix 1b: min 22
+                        or _bad_ad_sitelink(title, desc)
                         or _bad_num(title) or _bad_num(desc) or _has_salon(title) or _has_salon(desc)
                         or _bad_inventory(title) or _bad_inventory(desc)
                         or not _site_ok_line(title) or not _site_ok_line(desc)

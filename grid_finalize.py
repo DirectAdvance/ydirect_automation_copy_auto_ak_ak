@@ -34,10 +34,23 @@ _GRID_MUTATION_CHUNK = 50  # приватный Grid нестабилен на �
 _MUTATION = (_DIR / "grid_uc_mutation.graphql").read_text(encoding="utf-8")
 _TEMPLATE = json.loads((_DIR / "grid_uc_template.json").read_text(encoding="utf-8"))
 _SHOPPING_MUTATION = (_DIR / "grid_shopping_mutation.graphql").read_text(encoding="utf-8")
+_CAMPAIGNS_EDIT_DATA_Q = (_DIR / "grid_campaigns_edit_data.graphql").read_text(encoding="utf-8")
 
 # Транзиентные серверные ошибки Яндекса (top-level errors, НЕ валидация) — ретраим с backoff.
 _TRANSIENT_ERR = ("внутренняя ошибка сервера", "internal server error", "internal error",
                   "timeout", "timed out", "temporarily", "try again", "503", "502", "504")
+
+
+def _is_transient_data_error(errs) -> bool:
+    """True если data['errors'] содержит транзиентную серверную ошибку (нужно ретраить).
+    False — если ошибка валидационная/авторизационная (не ретраить)."""
+    for e in (errs if isinstance(errs, list) else [errs]):
+        txt = (str(e.get("message") or "") + " " +
+               str((e.get("extensions") or {}).get("code") or "")).lower()
+        if any(t in txt for t in _TRANSIENT_ERR):
+            return True
+    return False
+
 
 # READ: облегчённый GroupsForEdit (реверс HAR GroupsForEdit) — только поля, нужные для round-trip
 # UpdateUnifiedAdGroups + идемпотентность (kw-count/relevanceMatch) + safety (bidModifiers/retargetings).
@@ -78,6 +91,19 @@ PLATFORMS_SEARCH = {
     "cityformat": False,
 }
 
+# Fallback broadMatch for narrow campaign mutations — broadMatch is NonNull in
+# GdUpdateCampaignsInput; omitting it produces: Field 'broadMatch' has coerced Null
+# value for NonNull type 'GdBroadMatchRequestInput!'.
+_BROAD_MATCH_DEFAULT: dict = {"broadMatchFlag": False, "broadMatchGoalId": None, "broadMatchLimit": 0}
+
+
+def _strip_graphql_typenames(value):
+    if isinstance(value, dict):
+        return {k: _strip_graphql_typenames(v) for k, v in value.items() if k != "__typename"}
+    if isinstance(value, list):
+        return [_strip_graphql_typenames(v) for v in value]
+    return value
+
 
 class GridFinalizeError(RuntimeError):
     pass
@@ -103,6 +129,9 @@ class GridClient:
         if self.csrf:
             headers["x-csrf-token"] = self.csrf
         url = f"{GRID_URL}?operationName={op}&ulogin={self.login}"
+        # БЕЗ транспортного ретрая: add_shopping_ads/add_listing_ads/add_callouts/add_keywords —
+        # НЕ идемпотентны (обрыв ответа после commit + ретрай = ДУБЛЬ). Идемпотентные RMW-сеттеры
+        # (disabledPlaces/age/callouts full-RMW) переживают единичный обрыв через ре-ран джобы.
         r = self.sess.post(url, json={"operationName": op, "query": query, "variables": variables},
                            headers=headers, timeout=40)
         m = re.search(r"_direct_csrf_token=([^;,\s]+)", r.headers.get("Set-Cookie", ""))
@@ -196,39 +225,345 @@ class GridClient:
     def add_callouts(self, texts: list[str]) -> dict[str, int]:
         """Создать уточнения через Grid (БЕЗ баллов) → {текст: id}.
         Сначала читаем существующие (get_callouts) — дедуп. Только новые тексты создаём.
-        Mutation AddCallouts — схема аналогична AddSitelinkSets (HAR23/entry262).
-        Если приватная схема не поддерживает AddCallouts, безопасно возвращаем только
-        существующие уточнения: создание кампаний не должно падать из-за optional asset.
+        HAR56: редактор кампаний создаёт новые уточнения через SaveCallouts.
         Лимит ≤25 симв. на текст должен быть выполнен на стороне вызывающего."""
         existing = self.get_callouts()
         to_create = [t for t in texts if t and t not in existing]
         if not to_create:
             return {t: existing[t] for t in texts if t in existing}
         self._bootstrap_csrf()
-        q = ("mutation AddCallouts($input:GdAddCalloutsInput!$login:String!){"
-             "reqId:getReqId addCallouts(input:$input){"
-             "addedCallouts{id __typename}"
-             "validationResult{errors{code params path}warnings{code params path}}}"
-             "getClientMutationId(input:{login:$login}){mutationId}}")
-        # Создаём батчем
-        r = self._post("AddCallouts", q, {
-            "login": self.login,
-            "input": {"calloutsAddItems": [{"text": t} for t in to_create]},
+        q = ("mutation SaveCallouts($input:GdSaveCalloutsInput!){"
+             "saveCallouts(input:$input){calloutIds "
+             "validationResult{errors{code params path}warnings{params path code}}}}")
+        r = self._post("SaveCallouts", q, {
+            "input": {"saveItems": [{"text": t} for t in to_create]},
         })
         data = r.json()
-        res = (data.get("data") or {}).get("addCallouts") or {}
+        res = (data.get("data") or {}).get("saveCallouts") or {}
         vr = res.get("validationResult") or {}
         if data.get("errors") or vr.get("errors"):
             err_blob = json.dumps(data.get("errors") or vr.get("errors"), ensure_ascii=False)
-            if "GdAddCalloutsInput" in err_blob or "Unknown type" in err_blob or "UnknownType" in err_blob:
-                return {t: existing[t] for t in texts if t in existing}
             raise GridFinalizeError(
-                "Grid add-callouts: " + err_blob[:400])
-        added = res.get("addedCallouts") or []
-        for text, item in zip(to_create, added):
-            if item and item.get("id"):
-                existing[text] = int(item["id"])
+                "Grid save-callouts: " + err_blob[:400])
+        added_ids = res.get("calloutIds") or []
+        for text, raw_id in zip(to_create, added_ids):
+            try:
+                cid = int(raw_id)
+            except (TypeError, ValueError):
+                cid = 0
+            if cid > 0:
+                existing[text] = cid
+        missing = [t for t in to_create if t not in existing]
+        if missing:
+            fresh = self.get_callouts()
+            for text in missing:
+                if text in fresh:
+                    existing[text] = fresh[text]
         return {t: existing[t] for t in texts if t in existing}
+
+    def _read_broad_match_map(self, campaign_ids: list[int]) -> dict[int, dict]:
+        """Read broadMatch for campaigns to echo back in narrow UpdateCampaigns mutations.
+
+        broadMatch is NonNull in GdUnifiedCampaignInput — narrow mutations that omit it
+        receive: "Field 'broadMatch' has coerced Null value for NonNull type
+        'GdBroadMatchRequestInput!'". This reads the current value so it can be included
+        unchanged. Falls back to _BROAD_MATCH_DEFAULT on any read failure.
+        """
+        ids = [cid for cid in (campaign_ids or []) if cid > 0]
+        if not ids:
+            return {}
+        q = ("query CampaignsBroadMatch($login:String!,$inp:GdCampaignsContainerInput!){"
+             "client(searchBy:{login:$login}){campaigns(input:$inp){"
+             "rowset{id name startDate endDate timeTarget{enabledHolidaysMode "
+             "holidaysSettings{isShow startHour endHour rateCorrections}idTimeZone timeBoard "
+             "useWorkingWeekends} notification{smsSettings{smsTime{startTime{hour minute}"
+             "endTime{hour minute}}}emailSettings{stopByReachDailyBudget email}} "
+             "...on GdUnifiedCampaign{dayBudget enableCompanyInfo "
+             "excludePausedCompetingAds hasAddMetrikaTagToUrl hasAddOpenstatTagToUrl "
+             "hasExtendedGeoTargeting broadMatch{"
+             "broadMatchFlag broadMatchGoalId broadMatchLimit}}}}}}")
+        out: dict[int, dict] = {}
+        for chunk in [ids[i:i + 100] for i in range(0, len(ids), 100)]:
+            inp = {
+                "filter": {"campaignIdIn": [str(cid) for cid in chunk]},
+                "statRequirements": {"preset": "LAST_30DAYS", "goalIds": [], "useCampaignGoalIds": True},
+                "limitOffset": {"limit": 5000, "offset": 0},
+                "orderBy": [{"order": "ASC", "field": "ID"}],
+            }
+            r = self._post("CampaignsBroadMatch", q, {"login": self.login, "inp": inp})
+            data = r.json()
+            rows = ((((data.get("data") or {}).get("client") or {})
+                     .get("campaigns") or {}).get("rowset") or [])
+            for row in rows:
+                try:
+                    cid = int(row.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                bm = row.get("broadMatch") if isinstance(row.get("broadMatch"), dict) else {}
+                out[cid] = {
+                    "name": row.get("name") or "",
+                    "startDate": row.get("startDate") or None,
+                    "endDate": row.get("endDate") or None,
+                    "timeTarget": row.get("timeTarget") or None,
+                    "notification": row.get("notification") or None,
+                    "broadMatchFlag": bool(bm.get("broadMatchFlag")),
+                    "broadMatchGoalId": bm.get("broadMatchGoalId"),
+                    "broadMatchLimit": int(bm.get("broadMatchLimit") or 0),
+                    "dayBudget": str(row.get("dayBudget") or "0"),
+                    "enableCompanyInfo": bool(row.get("enableCompanyInfo")),
+                    "excludePausedCompetingAds": bool(row.get("excludePausedCompetingAds")),
+                    "hasAddMetrikaTagToUrl": bool(row.get("hasAddMetrikaTagToUrl")),
+                    "hasAddOpenstatTagToUrl": bool(row.get("hasAddOpenstatTagToUrl")),
+                    "hasExtendedGeoTargeting": bool(row.get("hasExtendedGeoTargeting")),
+                    "hasSiteMonitoring": None,
+                    "hasTitleSubstitute": None,
+                }
+        return out
+
+    def _narrow_campaign_base(self, cid: int, bm_map: dict[int, dict]) -> dict:
+        """Build the minimal GdUnifiedCampaignInput skeleton for narrow campaign mutations.
+
+        All narrow UpdateCampaigns mutations (set-callouts, set-sitelink-set, set-names)
+        must include broadMatch because the Grid schema declares it NonNull. The caller
+        adds the mutation-specific field on top of the returned dict.
+        """
+        bm = bm_map.get(cid) or _BROAD_MATCH_DEFAULT
+        has_site_monitoring = bm.get("hasSiteMonitoring")
+        has_title_substitute = bm.get("hasTitleSubstitute")
+        notification = bm.get("notification") or {
+            "smsSettings": {
+                "smsTime": {
+                    "startTime": {"hour": 9, "minute": 0},
+                    "endTime": {"hour": 21, "minute": 0},
+                },
+                "enableEvents": [],
+            },
+            "emailSettings": {"stopByReachDailyBudget": True, "email": ""},
+        }
+        notification.setdefault("smsSettings", {})
+        notification["smsSettings"].setdefault("enableEvents", [])
+        notification.setdefault("emailSettings", {})
+        notification["emailSettings"].setdefault("stopByReachDailyBudget", True)
+        notification["emailSettings"].setdefault("email", "")
+        return {
+            "id": str(cid),
+            "name": str(bm.get("name") or ""),
+            "state": bm.get("state") or "COMPLETE",
+            "startDate": bm.get("startDate"),
+            "endDate": bm.get("endDate"),
+            "timeTarget": bm.get("timeTarget"),
+            "notification": notification,
+            "attributionModel": "AUTOMATIC",
+            "broadMatch": {
+                "broadMatchFlag": bool(bm.get("broadMatchFlag")),
+                "broadMatchGoalId": bm.get("broadMatchGoalId"),
+                "broadMatchLimit": int(bm.get("broadMatchLimit") or 0),
+            },
+            "dayBudget": str(bm.get("dayBudget") or "0"),
+            "enableCompanyInfo": bool(bm.get("enableCompanyInfo")),
+            "hasAddMetrikaTagToUrl": bool(bm.get("hasAddMetrikaTagToUrl")),
+            "hasAddOpenstatTagToUrl": bool(bm.get("hasAddOpenstatTagToUrl")),
+            "hasExtendedGeoTargeting": bool(bm.get("hasExtendedGeoTargeting")),
+            "hasSiteMonitoring": bool(has_site_monitoring) if has_site_monitoring is not None else True,
+            "hasTitleSubstitute": bool(has_title_substitute) if has_title_substitute is not None else True,
+            "excludePausedCompetingAds": bool(bm.get("excludePausedCompetingAds")),
+        }
+
+    @staticmethod
+    def _strategy_update_payload(row: dict) -> dict:
+        strategy = row.get("strategy") or {}
+        platforms = strategy.get("platforms") or {}
+        budget = strategy.get("budget") or {}
+        strategy_type = str(strategy.get("strategyType") or "")
+        if strategy_type == "OPTIMIZE_CONVERSIONS":
+            strategy_name = "AUTOBUDGET_AVG_CPA"
+        else:
+            strategy_name = strategy.get("strategyName") or strategy_type or "AUTOBUDGET_AVG_CPA"
+        return {
+            "platforms": {
+                "gallery": bool(platforms.get("gallery")),
+                "network": bool(platforms.get("network")),
+                "search": bool(platforms.get("search")),
+                "telegram": bool(platforms.get("telegram")),
+                "maxMessenger": bool(platforms.get("maxMessenger")),
+                "taxi": bool(platforms.get("taxi")),
+                "pillar": bool(platforms.get("pillar")),
+                "cityBusDisplay": bool(platforms.get("cityBusDisplay")),
+                "showcaseScreen": bool(platforms.get("showcaseScreen")),
+                "mediafacade": bool(platforms.get("mediafacade")),
+                "supersite": bool(platforms.get("supersite")),
+                "billboard": bool(platforms.get("billboard")),
+                "cityboard": bool(platforms.get("cityboard")),
+                "cityformat": bool(platforms.get("cityformat")),
+                "organic": bool(platforms.get("organic")),
+                "serpGeoWizard": bool(platforms.get("serpGeoWizard")),
+                "yandexMaps": bool(platforms.get("yandexMaps")),
+            },
+            "strategyData": {
+                "goalId": str(strategy.get("goalId") or "0"),
+                "avgCpa": str(int(strategy.get("avgCpa") or 0)),
+                "sum": str(int(budget.get("sum") or 0)),
+                "budgetType": "WEEKLY" if budget.get("period") == "WEEK" else str(budget.get("period") or "WEEKLY"),
+                "payForConversion": bool(strategy.get("payForConversion")),
+                "payForShows": bool(strategy.get("payForShows")),
+                "autoApplyRecommendationOptions": {"budgetIncreasePercent": None},
+                "isExplorationBudgetValueCustom": bool(strategy.get("isExplorationBudgetValueCustom")),
+            },
+            "strategyName": strategy_name,
+        }
+
+    @staticmethod
+    def _notification_update_payload(row: dict) -> dict:
+        notification = row.get("notification") or {}
+        sms = notification.get("smsSettings") or {}
+        email = notification.get("emailSettings") or {}
+        events = []
+        for event in sms.get("events") or []:
+            if event.get("checked") and event.get("event"):
+                events.append(event.get("event"))
+        return {
+            "smsSettings": {
+                "smsTime": sms.get("smsTime") or {
+                    "startTime": {"hour": 9, "minute": 0},
+                    "endTime": {"hour": 21, "minute": 0},
+                },
+                "enableEvents": events,
+            },
+            "emailSettings": {
+                "stopByReachDailyBudget": bool(email.get("stopByReachDailyBudget")),
+                "email": email.get("email") or "",
+            },
+        }
+
+    @staticmethod
+    def _bid_modifiers_update_payload(row: dict) -> dict:
+        out: dict = {}
+        campaign_id = str(row.get("id") or "")
+        for modifier in row.get("bidModifiers") or []:
+            mtype = modifier.get("type")
+            clean = {
+                "campaignId": campaign_id,
+                "enabled": bool(modifier.get("enabled")),
+                "adjustments": [],
+                "type": mtype,
+            }
+            for adj in modifier.get("adjustments") or []:
+                item = {"percent": int(adj.get("percent") or 0), "id": str(adj.get("id") or "")}
+                if mtype == "RETARGETING_MULTIPLIER":
+                    item["retargetingConditionId"] = str(adj.get("retargetingConditionId") or "")
+                elif mtype == "DEMOGRAPHY_MULTIPLIER":
+                    item["age"] = adj.get("age")
+                    item["gender"] = adj.get("gender")
+                clean["adjustments"].append(item)
+            if mtype == "RETARGETING_MULTIPLIER":
+                out["bidModifierRetargeting"] = clean
+            elif mtype == "DEMOGRAPHY_MULTIPLIER":
+                out["bidModifierDemographics"] = clean
+        return out
+
+    @classmethod
+    def _unified_campaign_update_from_edit_row(cls, row: dict) -> dict:
+        """Build browser-shaped GdUnifiedCampaignInput from CampaignsEditData."""
+        promo = row.get("promoExtension") or {}
+        callouts = (row.get("inheritableCallouts") or {}).get("assetValue") or []
+        sitelink_set_id = (row.get("inheritableSitelinkSet") or {}).get("assetValue")
+        additional = row.get("additionalData") or {}
+        return _strip_graphql_typenames({
+            "abExperiments": [],
+            "abSegmentRetargetingConditionId": ((row.get("abSegmentRetargetingCondition") or {}).get("id")),
+            "abSegmentStatisticRetargetingConditionId": ((row.get("abSegmentStatisticRetargetingCondition") or {}).get("id")),
+            "name": row.get("name") or "",
+            "enableCpcHold": bool(row.get("hasEnableCpcHold")),
+            "contextLimit": int(row.get("contextLimit") or 100),
+            "dynamicPlacesAdvTextsOnly": bool(row.get("dynamicPlacesAdvTextsOnly")),
+            "dayBudget": str(int(float(row.get("dayBudget") or 0))),
+            "attributionModel": row.get("attributionModel") or "AUTOMATIC",
+            "metrikaCounters": [int(x) for x in (row.get("metrikaCounters") or []) if str(x).isdigit()],
+            "meaningfulGoals": [],
+            "strategyId": str(row.get("strategyId") or "0"),
+            "biddingStategyWithPlatforms": cls._strategy_update_payload(row),
+            "startDate": row.get("startDate"),
+            "endDate": row.get("endDate"),
+            "notification": cls._notification_update_payload(row),
+            "hasTitleSubstitute": bool(row.get("hasTitleSubstitution")),
+            "disabledPlaces": list(row.get("disabledPlaces") or []),
+            "hasSiteMonitoring": True,
+            "hasExtendedGeoTargeting": bool(row.get("hasExtendedGeoTargeting")),
+            "disabledIps": row.get("disabledIps"),
+            "hasAddOpenstatTagToUrl": bool(row.get("hasAddOpenstatTagToUrl")),
+            "excludePausedCompetingAds": bool(row.get("excludePausedCompetingAds")),
+            "enableCompanyInfo": bool(row.get("enableCompanyInfo")),
+            "timeTarget": row.get("timeTarget"),
+            "minusKeywords": list(row.get("minusKeywords") or []),
+            "libraryMinusKeywordsIds": [str(x) for x in (row.get("libraryMinusKeywordsIds") or [])],
+            "defaultPermalinkId": row.get("defaultPermalinkId"),
+            "brandSafetyCategories": list(row.get("brandSafetyCategories") or []),
+            "defaultTrackingPhoneId": row.get("defaultTrackingPhoneId"),
+            "isOrderPhraseLengthPrecedenceEnabled": bool(row.get("isOrderPhraseLengthPrecedenceEnabled")),
+            "placementTypes": row.get("placementTypes") or None,
+            "promoExtensionId": str(promo.get("id")) if promo.get("id") else None,
+            "deliveryId": row.get("deliveryId"),
+            "bannerHrefParams": row.get("bannerHrefParams") or "",
+            "isRecommendationsManagementEnabled": bool(row.get("isRecommendationsManagementEnabled")),
+            "isPriceRecommendationsManagementEnabled": bool(row.get("isPriceRecommendationsManagementEnabled")),
+            "isAlternativeTextsEnabled": bool(row.get("isAlternativeTextsEnabled")),
+            "additionalData": {"href": additional.get("href") or ""},
+            "hasAddMetrikaTagToUrl": bool(row.get("hasAddMetrikaTagToUrl")),
+            "bidModifiers": cls._bid_modifiers_update_payload(row),
+            "isS2sTrackingEnabled": bool(row.get("isS2sTrackingEnabled")),
+            "isUniversalCamp": bool(row.get("isUniversalCamp")),
+            "broadMatch": _BROAD_MATCH_DEFAULT,
+            "isOrganicSearchEnabled": bool(row.get("isOrganicSearchEnabled")),
+            "inheritableCallouts": {"calloutIds": [str(x) for x in callouts]},
+            "inheritableSitelinkSet": {"sitelinkSetId": str(sitelink_set_id) if sitelink_set_id else None},
+            "useDiscounts": bool(row.get("useDiscounts")),
+            "reserveHref": row.get("reserveHref"),
+            "state": "COMPLETE",
+            "id": str(row.get("id") or ""),
+        })
+
+    def _read_unified_campaign_update_payloads(self, campaign_ids: list[int]) -> dict[int, dict]:
+        ids = []
+        for raw in campaign_ids or []:
+            try:
+                cid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if cid > 0 and cid not in ids:
+                ids.append(cid)
+        if not ids:
+            return {}
+        self._bootstrap_csrf()
+        out: dict[int, dict] = {}
+        for chunk in [ids[i:i + 50] for i in range(0, len(ids), 50)]:
+            inp = {
+                "filter": {"campaignIdIn": [str(cid) for cid in chunk]},
+                "orderBy": [{"field": "ID", "order": "ASC"}],
+                "statRequirements": {"preset": "TODAY"},
+                "limitOffset": {"offset": 0, "limit": len(chunk)},
+            }
+            r = self._post("CampaignsEditData", _CAMPAIGNS_EDIT_DATA_Q, {
+                "login": self.login,
+                "campaignInput": inp,
+            })
+            data = r.json()
+            rows = (((data.get("data") or {}).get("client") or {})
+                    .get("campaigns") or {}).get("rowset") or []
+            # Частичные GraphQL-ошибки (например strategyLearningStatus падает у Яндекса
+            # на батчах) не мешают чтению rowset — фатально только отсутствие данных.
+            if data.get("errors") and not rows:
+                raise GridFinalizeError(
+                    "Grid read-campaign-edit-data: " + json.dumps(data.get("errors"), ensure_ascii=False)[:400])
+            for row in rows:
+                if row.get("__typename") != "GdUnifiedCampaign":
+                    continue
+                try:
+                    cid = int(row.get("id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if cid > 0:
+                    out[cid] = self._unified_campaign_update_from_edit_row(row)
+        return out
 
     def set_campaign_callouts(self, campaign_ids: list[int], callout_ids: list[int | str]) -> list:
         """Attach inheritable callouts to campaigns through a narrow Grid update.
@@ -256,15 +591,18 @@ class GridClient:
                 co_ids.append(co)
         if not ids or not co_ids:
             return []
-        self._bootstrap_csrf()
+        payloads = self._read_unified_campaign_update_payloads(ids)
         q = ("mutation UpdateCampaigns($input:GdUpdateCampaignsInput!$login:String!){"
              "updateCampaigns(input:$input){updatedCampaigns{id}"
              "validationResult{errors{code params path}warnings{code params path}}}"
              "getClientMutationId(input:{login:$login}){mutationId}}")
-        items = [{"unifiedCampaign": {
-            "id": str(cid),
-            "inheritableCallouts": {"calloutIds": [str(i) for i in co_ids]},
-        }} for cid in ids]
+        items = []
+        for cid in ids:
+            base = payloads.get(cid)
+            if not base:
+                raise GridFinalizeError(f"Grid set-callouts: не удалось прочитать кампанию {cid}")
+            base["inheritableCallouts"] = {"calloutIds": [str(i) for i in co_ids]}
+            items.append({"unifiedCampaign": base})
         r = self._post("UpdateCampaigns", q, {
             "login": self.login,
             "input": {"campaignUpdateItems": items},
@@ -277,6 +615,182 @@ class GridClient:
                 "Grid set-callouts: " + json.dumps(
                     data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
         return res.get("updatedCampaigns") or []
+
+    def set_campaign_sitelink_set(self, campaign_ids: list[int], sitelink_set_id: int | str) -> list:
+        """Attach one inheritable sitelink set to campaigns through Grid.
+
+        Content editor uses this when a sitelink title/description changes:
+        create a new SitelinkSet, then repoint campaigns from the old set to
+        the new one. Ads in these campaigns inherit the campaign-level asset.
+        """
+        ids = []
+        for raw in campaign_ids or []:
+            try:
+                cid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if cid > 0 and cid not in ids:
+                ids.append(cid)
+        try:
+            sid = int(sitelink_set_id)
+        except (TypeError, ValueError):
+            sid = 0
+        if not ids or sid <= 0:
+            return []
+        payloads = self._read_unified_campaign_update_payloads(ids)
+        q = ("mutation UpdateCampaigns($input:GdUpdateCampaignsInput!$login:String!){"
+             "updateCampaigns(input:$input){updatedCampaigns{id}"
+             "validationResult{errors{code params path}warnings{code params path}}}"
+             "getClientMutationId(input:{login:$login}){mutationId}}")
+        items = []
+        for cid in ids:
+            base = payloads.get(cid)
+            if not base:
+                raise GridFinalizeError(f"Grid set-sitelink-set: не удалось прочитать кампанию {cid}")
+            base["inheritableSitelinkSet"] = {"sitelinkSetId": str(sid)}
+            items.append({"unifiedCampaign": base})
+        r = self._post("UpdateCampaigns", q, {
+            "login": self.login,
+            "input": {"campaignUpdateItems": items},
+        })
+        data = r.json()
+        res = (data.get("data") or {}).get("updateCampaigns") or {}
+        vr = res.get("validationResult") or {}
+        if data.get("errors") or vr.get("errors"):
+            raise GridFinalizeError(
+                "Grid set-sitelink-set: " + json.dumps(
+                    data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
+        return res.get("updatedCampaigns") or []
+
+    def set_campaign_disabled_places(self, campaign_ids: list[int], hosts: list[str]) -> list:
+        """Set the campaign-level disabledPlaces (minus площадки) through a narrow Grid update.
+
+        Copy-path use (П.13): apply our standard РСЯ minus-list to copied network
+        campaigns. Like ``set_campaign_callouts`` this reads the full unified payload
+        and rewrites ONLY ``disabledPlaces`` so strategy/placements stay untouched.
+        """
+        ids = []
+        for raw in campaign_ids or []:
+            try:
+                cid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if cid > 0 and cid not in ids:
+                ids.append(cid)
+        clean_hosts = [str(h).strip() for h in (hosts or []) if str(h).strip()]
+        if not ids or not clean_hosts:
+            return []
+        payloads = self._read_unified_campaign_update_payloads(ids)
+        q = ("mutation UpdateCampaigns($input:GdUpdateCampaignsInput!$login:String!){"
+             "updateCampaigns(input:$input){updatedCampaigns{id}"
+             "validationResult{errors{code params path}warnings{code params path}}}"
+             "getClientMutationId(input:{login:$login}){mutationId}}")
+        items = []
+        for cid in ids:
+            base = payloads.get(cid)
+            if not base:
+                raise GridFinalizeError(f"Grid set-disabled-places: не удалось прочитать кампанию {cid}")
+            # MERGE: сохраняем ранее скопированные excluded-площадки + добавляем новые без дублей
+            existing = list(base.get("disabledPlaces") or [])
+            seen = set(existing)
+            merged = existing + [h for h in clean_hosts if h not in seen]
+            base["disabledPlaces"] = merged
+            items.append({"unifiedCampaign": base})
+        r = self._post("UpdateCampaigns", q, {
+            "login": self.login,
+            "input": {"campaignUpdateItems": items},
+        })
+        data = r.json()
+        res = (data.get("data") or {}).get("updateCampaigns") or {}
+        vr = res.get("validationResult") or {}
+        if data.get("errors") or vr.get("errors"):
+            raise GridFinalizeError(
+                "Grid set-disabled-places: " + json.dumps(
+                    data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
+        return res.get("updatedCampaigns") or []
+
+    def set_campaign_age_bidmods(self, campaign_ids: list[int],
+                                 ages_percent: dict[str, int]) -> list[int]:
+        """Set age demographic bid modifiers on campaigns through the narrow Grid RMW
+        (UpdateCampaigns) — БЕЗ v5-баллов. ``ages_percent`` — {Grid-age-enum: percent},
+        напр. {"_0_17": -100, "_18_24": -100} (−100% == исключить возраст).
+
+        СЕМАНТИКА Grid: поле demographic-adjustment ``percent`` — это МУЛЬТИПЛИКАТОР 0..1300
+        (min=0), а НЕ знаковая дельта. 100 = нейтрально (как v5 BidModifier=100+delta),
+        0 = −100% (исключить), 130 = +30%. Вход ``ages_percent`` использует конвенцию «дельта»
+        (−100..+1200), а конвертация delta→multiplier (``100 + pct``, clamp 0..1300) делается
+        ЗДЕСЬ, в Grid-слое. Отрицательный percent Grid отвергает
+        (``INVALID_PERCENT_SHOULD_BE_POSITIVE``) → раньше это уводило age в v5-фолбэк (баллы).
+
+        Идемпотентно: возраст, у которого на кампании уже есть adjustment, пропускается.
+        Возвращает список campaign_id, ГАРАНТИРОВАННО удовлетворённых (обновлены ИЛИ уже имели
+        нужные возрасты). Бросает GridFinalizeError на validation error (→ v5-фолбэк у вызывающего)."""
+        ids = []
+        for raw in campaign_ids or []:
+            try:
+                cid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if cid > 0 and cid not in ids:
+                ids.append(cid)
+        wanted = {str(k): int(v) for k, v in (ages_percent or {}).items() if str(k).strip()}
+        if not ids or not wanted:
+            return []
+        payloads = self._read_unified_campaign_update_payloads(ids)
+        q = ("mutation UpdateCampaigns($input:GdUpdateCampaignsInput!$login:String!){"
+             "updateCampaigns(input:$input){updatedCampaigns{id}"
+             "validationResult{errors{code params path}warnings{code params path}}}"
+             "getClientMutationId(input:{login:$login}){mutationId}}")
+        items = []
+        satisfied: list[int] = []           # уже-ок (без апдейта)
+        to_send: list[int] = []             # уходят в UpdateCampaigns
+        for cid in ids:
+            base = payloads.get(cid)
+            if not base:
+                raise GridFinalizeError(f"Grid set-age-bidmods: не удалось прочитать кампанию {cid}")
+            bm = base.get("bidModifiers")
+            if not isinstance(bm, dict):
+                bm = {}
+                base["bidModifiers"] = bm
+            dem = bm.get("bidModifierDemographics")
+            if not isinstance(dem, dict) or not dem:
+                dem = {"campaignId": str(cid), "enabled": True,
+                       "adjustments": [], "type": "DEMOGRAPHY_MULTIPLIER"}
+                bm["bidModifierDemographics"] = dem
+            adjustments = list(dem.get("adjustments") or [])
+            have_ages = {str(a.get("age")) for a in adjustments if a.get("age")}
+            missing = {age: pct for age, pct in wanted.items() if age not in have_ages}
+            if not missing:
+                satisfied.append(cid)       # все нужные возрасты уже есть → без апдейта (0 запросов)
+                continue
+            for age, pct in missing.items():
+                # Grid percent = мультипликатор 0..1300 (не знаковая дельта): delta→mult = 100+pct.
+                # −100 → 0 (исключить), +30 → 130. clamp в допустимый диапазон.
+                mult = max(0, min(1300, 100 + int(pct)))
+                adjustments.append({"percent": mult, "id": None, "age": age, "gender": None})
+            dem["adjustments"] = adjustments
+            dem["enabled"] = True
+            items.append({"unifiedCampaign": base})
+            to_send.append(cid)
+        if items:
+            _vars = {"login": self.login, "input": {"campaignUpdateItems": items}}
+            r = self._post("UpdateCampaigns", q, _vars)
+            if r.status_code >= 500:                 # 1 ретрай на «внутреннюю ошибку сервера» Grid
+                time.sleep(1.0)                       # (живой прогон: 500 → age ушёл в v5-фолбэк = баллы)
+                r = self._post("UpdateCampaigns", q, _vars)
+            try:
+                data = r.json()
+            except Exception as e:  # noqa: BLE001 — non-JSON (напр. 5xx HTML) не должен дать сырой JSONDecodeError
+                raise GridFinalizeError(
+                    f"Grid set-age-bidmods: bad json (HTTP {r.status_code}) {str(e)[:120]}") from e
+            res = (data.get("data") or {}).get("updateCampaigns") or {}
+            vr = res.get("validationResult") or {}
+            if data.get("errors") or vr.get("errors"):
+                raise GridFinalizeError(
+                    "Grid set-age-bidmods: " + json.dumps(
+                        data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
+            satisfied.extend(to_send)
+        return satisfied
 
     def set_campaign_names(self, campaign_names: dict[int, str]) -> list:
         """Rename campaigns through a narrow Grid update.
@@ -300,13 +814,33 @@ class GridClient:
         if not items:
             return []
         self._bootstrap_csrf()
+        # broadMatch is NonNull in GdUpdateCampaignsInput — read current value per campaign.
+        _cids = []
+        for _it in items:
+            try:
+                _cids.append(int((_it.get("unifiedCampaign") or {}).get("id") or 0))
+            except (TypeError, ValueError):
+                pass
+        bm_map = self._read_broad_match_map([c for c in _cids if c > 0])
+        items_with_bm = []
+        for _it in items:
+            _uc = _it.get("unifiedCampaign") or {}
+            try:
+                _cid = int(_uc.get("id") or 0)
+            except (TypeError, ValueError):
+                _cid = 0
+            if _cid <= 0:
+                continue
+            _base = self._narrow_campaign_base(_cid, bm_map)
+            _base["name"] = _uc.get("name") or ""
+            items_with_bm.append({"unifiedCampaign": _base})
         q = ("mutation UpdateCampaigns($input:GdUpdateCampaignsInput!$login:String!){"
              "updateCampaigns(input:$input){updatedCampaigns{id}"
              "validationResult{errors{code params path}warnings{code params path}}}"
              "getClientMutationId(input:{login:$login}){mutationId}}")
         r = self._post("UpdateCampaigns", q, {
             "login": self.login,
-            "input": {"campaignUpdateItems": items},
+            "input": {"campaignUpdateItems": items_with_bm},
         })
         data = r.json()
         res = (data.get("data") or {}).get("updateCampaigns") or {}
@@ -338,6 +872,11 @@ class GridClient:
             row = {"adGroupId": str(gid), "keyword": phrase}
             if it.get("price") is not None:
                 row["price"] = it.get("price")
+            # priceContext = сетевая ставка (v5 ContextBid). Аддитивно: старые вызовы (create-set
+            # repair) не передают price_context → поведение не меняется. GdAddKeywordsItemInput
+            # поддерживает priceContext (интроспекция 2026-07-03).
+            if it.get("price_context") is not None:
+                row["priceContext"] = it.get("price_context")
             clean.append(row)
         if not clean:
             return []
@@ -396,6 +935,49 @@ class GridClient:
             return int(added[0]["id"])
         return None
 
+    def get_sitelink_sets(self, sitelink_set_ids: list[int | str]) -> dict[int, list[dict]]:
+        """Read sitelink set contents through Grid/cookies → {set_id: [{title, href, description}]}."""
+        ids = []
+        for raw in sitelink_set_ids or []:
+            try:
+                sid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if sid > 0 and sid not in ids:
+                ids.append(sid)
+        if not ids:
+            return {}
+        self._bootstrap_csrf()
+        q = (
+            "query SitelinkSets($login:String!$sitelinkSetsInput:GdSitelinkSetsFilterInput!){"
+            "client(searchBy:{login:$login}){sitelinkSets(input:$sitelinkSetsInput){"
+            "id sitelinks{id title description href}}}}"
+        )
+        out: dict[int, list[dict]] = {}
+        for chunk in [ids[i:i + 100] for i in range(0, len(ids), 100)]:
+            r = self._post("SitelinkSets", q, {
+                "login": self.login,
+                "sitelinkSetsInput": {"sitelinkSetIdsIn": [str(sid) for sid in chunk]},
+            })
+            data = r.json()
+            if data.get("errors"):
+                raise GridFinalizeError(
+                    "Grid get-sitelink-sets: " + json.dumps(data.get("errors"), ensure_ascii=False)[:400])
+            rows = (((data.get("data") or {}).get("client") or {}).get("sitelinkSets") or [])
+            for row in rows:
+                try:
+                    sid = int(row.get("id") or 0)
+                except (TypeError, ValueError):
+                    sid = 0
+                if sid <= 0:
+                    continue
+                out[sid] = [{
+                    "title": item.get("title") or "",
+                    "href": item.get("href") or "",
+                    "description": item.get("description") or "",
+                } for item in (row.get("sitelinks") or [])]
+        return out
+
     def set_default_text(self, shopping_ad_ids: list, feed_id: int, text: str,
                          filters_by_ad_id: dict | None = None) -> list:
         """«Текст по умолчанию» товарных объявлений (ShoppingAd) — поле bodies через
@@ -405,9 +987,18 @@ class GridClient:
         # одним запросом). Чанкуем по _GRID_MUTATION_CHUNK (как add_shopping_ads), иначе bodies остаются пусты.
         if len(shopping_ad_ids or []) > _GRID_MUTATION_CHUNK:
             out: list = []
+            import logging as _log_sdt
+            _log_sdt = _log_sdt.getLogger("direct.finalize")
             for i in range(0, len(shopping_ad_ids), _GRID_MUTATION_CHUNK):
-                out.extend(self.set_default_text(shopping_ad_ids[i:i + _GRID_MUTATION_CHUNK],
-                                                 feed_id, text, filters_by_ad_id))
+                try:
+                    out.extend(self.set_default_text(shopping_ad_ids[i:i + _GRID_MUTATION_CHUNK],
+                                                     feed_id, text, filters_by_ad_id))
+                except GridFinalizeError as _sdt_ce:
+                    _log_sdt.warning(
+                        "set_default_text chunk %d/%d потерян (server error), skip; feed=%d: %s",
+                        i // _GRID_MUTATION_CHUNK + 1,
+                        -(-len(shopping_ad_ids) // _GRID_MUTATION_CHUNK),
+                        feed_id, str(_sdt_ce)[:200])
                 time.sleep(0.15)
             return out
         self._bootstrap_csrf()
@@ -423,11 +1014,39 @@ class GridClient:
                 if ff:
                     item["feedFilter"] = ff
             items.append(item)
-        r = self._post("UpdateShoppingAds", _SHOPPING_MUTATION,
-                       {"updateShoppingInput": {"adUpdateItems": items, "saveDraft": True}})
-        data = r.json()
+        _sdt_wait = (2, 5)
+        for _sdt_att in range(3):
+            r = self._post("UpdateShoppingAds", _SHOPPING_MUTATION,
+                           {"updateShoppingInput": {"adUpdateItems": items, "saveDraft": True}})
+            data = r.json()
+            if data.get("errors") and _is_transient_data_error(data["errors"]) and _sdt_att < 2:
+                import logging as _log_sdt_r
+                _log_sdt_r.getLogger("direct.finalize").warning(
+                    "set_default_text server error attempt %d, retry in %ds; feed=%d login=%s",
+                    _sdt_att + 1, _sdt_wait[_sdt_att], feed_id, self.login)
+                time.sleep(_sdt_wait[_sdt_att])
+                continue
+            break
         res = (data.get("data") or {}).get("updateShoppingAds") or {}
-        if data.get("errors") or (res.get("validationResult") or {}).get("errors"):
+        vr_upd_errs = (res.get("validationResult") or {}).get("errors") or []
+        if data.get("errors") or vr_upd_errs:
+            # Bug C fix: UNKNOWN_FIELD в UpdateShoppingAds → feedFilter содержит поле, которого
+            # нет в фиде (напр. vendor для AUTO_RU). Снимаем feedFilter и ретраим (текст сохраняется).
+            # С исправлением Bug A caller теперь передаёт правильный brand_field → UNKNOWN_FIELD
+            # здесь маловероятен, но оставляем как страховку.
+            _has_unk = any("UNKNOWN_FIELD" in str(e.get("code") or "") for e in vr_upd_errs)
+            if _has_unk and not data.get("errors"):
+                import logging as _log_dt
+                _log_dt.getLogger("direct.finalize").warning(
+                    "set_default_text UNKNOWN_FIELD: снимаем feedFilter, ретрай без фильтра; "
+                    "feed=%d login=%s", feed_id, self.login)
+                _items_no_ff = [{k: v for k, v in it.items() if k != "feedFilter"} for it in items]
+                r2 = self._post("UpdateShoppingAds", _SHOPPING_MUTATION,
+                                {"updateShoppingInput": {"adUpdateItems": _items_no_ff, "saveDraft": True}})
+                d2 = r2.json()
+                res2 = (d2.get("data") or {}).get("updateShoppingAds") or {}
+                if not (d2.get("errors") or (res2.get("validationResult") or {}).get("errors")):
+                    return res2.get("updatedAds") or []
             raise GridFinalizeError("Grid default-text: " + json.dumps(
                 data.get("errors") or res.get("validationResult"), ensure_ascii=False)[:400])
         return res.get("updatedAds") or []
@@ -457,28 +1076,38 @@ class GridClient:
                 "inheritableSitelinkSet": {"policy": "INHERIT"},
             }
             conds = []
+            # brand_field/model_field: разрешённые имена полей для этого фида.
+            # Caller (create_set_tp1_builders) выставляет их через _resolve_feed_field.
+            # Фолбэк "vendor"/"model" — для обратной совместимости и если probe не запускался.
+            _brand_fld = it.get("brand_field") or "vendor"
+            _model_fld = it.get("model_field") or "model"
             if it.get("vendor"):
-                # Регистр vendor зависит от ФИДА (HAR42/43: один фид <vendor>Belgee</vendor>, другой
-                # <vendor>baic</vendor>). CONTAINS_ANY case-sensitive → передаём оба регистра, чтобы
-                # совпасть с фидом независимо от его написания.
+                # Регистр зависит от ФИДА (HAR42/43). CONTAINS_ANY case-sensitive → передаём оба регистра.
                 _vv = str(it["vendor"])
                 _variants = list(dict.fromkeys([_vv, _vv.lower(), _vv.title()]))
-                conds.append({"field": "vendor", "operator": "CONTAINS_ANY",
+                conds.append({"field": _brand_fld, "operator": "CONTAINS_ANY",
                               "stringValue": json.dumps(_variants, ensure_ascii=False)})
-            # МОДЕЛЬ (Модели-группы): доп. условие field=model (HAR: <vendor>Lada</vendor><model>Vesta Седан</model>).
-            # Фид может не иметь поля model → UNKNOWN_FIELD → ретрай без него (ниже).
+            # МОДЕЛЬ (Модели-группы): доп. условие по model_field (AUTO_RU: folder_id; YML: model).
+            # Фид может не иметь поля → UNKNOWN_FIELD → ретрай без него (ниже).
             _mv = it.get("model")
             if _mv:
                 _mvals = _mv if isinstance(_mv, list) else [str(_mv)]
                 _mvals = [str(x) for x in _mvals if str(x).strip()]
                 if _mvals:
-                    conds.append({"field": "model", "operator": "CONTAINS_ANY",
+                    conds.append({"field": _model_fld, "operator": "CONTAINS_ANY",
                                   "stringValue": json.dumps(_mvals, ensure_ascii=False)})
             if not conds and it.get("collection_id"):
                 # collectionId требует EQUALS_ANY (НЕ CONTAINS_ANY → Grid даёт INVALID_OPERATOR и
-                # ShoppingAd не создаётся). vendor — CONTAINS_ANY (строка), collectionId — EQUALS_ANY (id-set).
+                # ShoppingAd не создаётся). brand_fld — CONTAINS_ANY (строка), collectionId — EQUALS_ANY.
                 conds.append({"field": "collectionId", "operator": "EQUALS_ANY",
                               "stringValue": json.dumps([str(it["collection_id"])], ensure_ascii=False)})
+            # Глобальные минус-марки: «марка НЕ содержит <марка>» — используем ТОТ ЖЕ brand_fld.
+            # Добавляем ПОСЛЕ brand/model/collectionId, в т.ч. для ct0000 (тогда — к всей витрине).
+            try:
+                from . import create_set_feeds as _csf
+                conds.extend(_csf._minus_marks_grid_conditions(brand_field=_brand_fld))
+            except Exception:  # noqa: BLE001 — минус-марки best-effort
+                pass
             if conds:
                 entry["feedFilter"] = {"tab": "CONDITION", "conditions": conds}
             ad_items.append(entry)
@@ -494,21 +1123,49 @@ class GridClient:
         res = (data.get("data") or {}).get("addShoppingAds") or {}
         vr_errors = (res.get("validationResult") or {}).get("errors") or []
         if data.get("errors") or vr_errors:
-            # UNKNOWN_FIELD: мы добавили условие field=model (Модели-группы), но фид не имеет поля
-            # <model> → Директ отбивает. Ретрай БЕЗ model-условия (vendor остаётся) — товарка по марке
-            # лучше падения всей кампании (та же грабля, что у lzjk6p5m с tp7).
+            # UNKNOWN_FIELD: фид не поддерживает одно или несколько полей условия (model, vendor
+            # или иное — зависит от формата: yandex.xml авто не имеет <vendor>).
+            # Парсим path каждой ошибки вида "adAddItems[N].feedFilter.conditions[M]" → field в M-й
+            # позиции → собираем bad_fields и снимаем именно их (обобщение, не хардкод "model").
+            # Fallback: если paths непарсируемы — полный сброс feedFilter (товарка по всему фиду).
             has_unknown = any("UNKNOWN_FIELD" in str(e.get("code") or "") for e in vr_errors)
             if has_unknown and not data.get("errors"):
+                import re as _re_uf
+                bad_fields: set = set()
+                for _uf_e in vr_errors:
+                    if "UNKNOWN_FIELD" not in str(_uf_e.get("code") or ""):
+                        continue
+                    _uf_p = str(_uf_e.get("path") or "")
+                    _uf_m = _re_uf.search(
+                        r"adAddItems\[(\d+)\]\.feedFilter\.conditions\[(\d+)\]", _uf_p)
+                    if _uf_m:
+                        _ni, _ci = int(_uf_m.group(1)), int(_uf_m.group(2))
+                        if _ni < len(ad_items):
+                            _ff0 = ad_items[_ni].get("feedFilter") or {}
+                            _cc0 = _ff0.get("conditions") or []
+                            if _ci < len(_cc0):
+                                _bf = _cc0[_ci].get("field")
+                                if _bf:
+                                    bad_fields.add(_bf)
+                _strip_all_ff = not bad_fields   # не смогли распарсить path → ядерный fallback
+                # Предупреждение: сообщаем какие поля сняты (помогает выявить фиды без нужных полей)
+                import logging as _log_uf
+                _log_uf.getLogger("direct.finalize").warning(
+                    "add_shopping_ads UNKNOWN_FIELD: bad_fields=%r strip_all=%s login=%s",
+                    bad_fields, _strip_all_ff, self.login)
                 _stripped = []
                 for it in ad_items:
                     it2 = dict(it)
                     ff = it2.get("feedFilter")
                     if ff and ff.get("conditions"):
-                        _c = [c for c in ff["conditions"] if c.get("field") != "model"]
-                        if _c:
-                            it2["feedFilter"] = {"tab": "CONDITION", "conditions": _c}
-                        else:
+                        if _strip_all_ff:
                             it2.pop("feedFilter", None)
+                        else:
+                            _c = [c for c in ff["conditions"] if c.get("field") not in bad_fields]
+                            if _c:
+                                it2["feedFilter"] = {"tab": "CONDITION", "conditions": _c}
+                            else:
+                                it2.pop("feedFilter", None)
                     _stripped.append(it2)
                 r3 = self._post("AddShoppingAds", q,
                                 {"addShoppingInput": {"adAddItems": _stripped, "saveDraft": True}})
@@ -516,7 +1173,18 @@ class GridClient:
                 res3 = (d3.get("data") or {}).get("addShoppingAds") or {}
                 if not (d3.get("errors") or (res3.get("validationResult") or {}).get("errors")):
                     return [a.get("id") for a in (res3.get("addedAds") or []) if a.get("id")]
-                # без model тоже не вышло → общая обработка ниже (FEED_NOT_EXIST / raise), data/res ОСТАЮТСЯ исходными
+                # поле-специфичный стрип не помог → ядерный fallback: полный сброс feedFilter
+                if not _strip_all_ff:
+                    _nuked = [{k: v for k, v in it.items() if k != "feedFilter"}
+                              for it in ad_items]
+                    r4 = self._post("AddShoppingAds", q,
+                                    {"addShoppingInput": {"adAddItems": _nuked, "saveDraft": True}})
+                    d4 = r4.json()
+                    res4 = (d4.get("data") or {}).get("addShoppingAds") or {}
+                    if not (d4.get("errors") or (res4.get("validationResult") or {}).get("errors")):
+                        return [a.get("id") for a in (res4.get("addedAds") or []) if a.get("id")]
+                # все ретраи не вышли → общая обработка ниже (FEED_NOT_EXIST / raise),
+                # data/res ОСТАЮТСЯ исходными (первый ответ с UNKNOWN_FIELD)
             # Фид в ERROR-состоянии: Директ возвращает FEED_NOT_EXIST в validationResult.
             # Retry без feedId — товарка без фида лучше, чем падение всей кампании.
             has_feed_error = any("FEED_NOT_EXIST" in str(e.get("code") or "") for e in vr_errors)
@@ -552,6 +1220,10 @@ class GridClient:
                 out.extend(self.add_listing_ads_by_shopping_ads(ids[i:i + _GRID_MUTATION_CHUNK]))
             return out
         self._bootstrap_csrf()
+        # ⛔ adGroupId в addedAds НЕ запрашивать: GdAddListingAdByShoppingAdItem его НЕ имеет —
+        # FieldUndefined валил ВСЮ мутацию (инцидент 03.07 15:36-41: ListingAd=0 на новых
+        # кампаниях; live-откат проверен — листинг создался). Матчинг name-фильтров живёт
+        # индексным фолбэком (#ФИКС-1), addedAds{id} при saveDraft возвращается непустым.
         q = ("mutation AddListingAdsByShoppingAds($input:GdAddListingAdsByShoppingAdsInput!){"
              "addListingAdsByShoppingAds(input:$input){addedAds{id}"
              "validationResult{errors{code params path}}}}")
@@ -575,7 +1247,13 @@ class GridClient:
         if len(items or []) > _GRID_MUTATION_CHUNK:
             total = 0
             for i in range(0, len(items), _GRID_MUTATION_CHUNK):
-                total += self.set_listing_name_filters(items[i:i + _GRID_MUTATION_CHUNK])
+                try:
+                    total += self.set_listing_name_filters(items[i:i + _GRID_MUTATION_CHUNK])
+                except GridFinalizeError as _lnf_ce:
+                    import logging as _log_lnf
+                    _log_lnf.getLogger("direct.finalize").warning(
+                        "set_listing_name_filters chunk %d потерян (server error), skip: %s",
+                        i // _GRID_MUTATION_CHUNK + 1, str(_lnf_ce)[:200])
                 time.sleep(0.15)
             return total
         upd = []
@@ -609,14 +1287,128 @@ class GridClient:
         q = ("mutation updateListingAds($updateListingInput:GdUpdateListingAdsInput!){"
              "updateListingAds(input:$updateListingInput){updatedAds{id}"
              "validationResult{errors{code params path}}}}")
-        r = self._post("updateListingAds", q,
-                       {"updateListingInput": {"adUpdateItems": upd, "saveDraft": True}})
-        data = r.json()
+        _lnf_wait = (2, 5)
+        for _lnf_att in range(3):
+            r = self._post("updateListingAds", q,
+                           {"updateListingInput": {"adUpdateItems": upd, "saveDraft": True}})
+            data = r.json()
+            if data.get("errors") and _is_transient_data_error(data["errors"]) and _lnf_att < 2:
+                import logging as _log_lnf2
+                _log_lnf2.getLogger("direct.finalize").warning(
+                    "set_listing_name_filters server error attempt %d, retry in %ds; login=%s",
+                    _lnf_att + 1, _lnf_wait[_lnf_att], self.login)
+                time.sleep(_lnf_wait[_lnf_att])
+                continue
+            break
         res = (data.get("data") or {}).get("updateListingAds") or {}
         if data.get("errors") or (res.get("validationResult") or {}).get("errors"):
             raise GridFinalizeError("updateListingAds(name-filter): " + json.dumps(
                 data.get("errors") or res.get("validationResult"), ensure_ascii=False)[:400])
         return len(res.get("updatedAds") or [])
+
+    def set_product_feed_filters(self, items: list, *, listing: bool = False) -> int:
+        """Проставить ПРОИЗВОЛЬНЫЙ feedFilter товарным (updateShoppingAds) или каталожным
+        (updateListingAds) объявлениям. Live-подтверждено 03.07.2026 на camp 712120488:
+        vendor NOT_CONTAINS_ALL ["uaz"] встал и читается назад. Полный item обязателен
+        (permalinkWithPhone/bodies/inheritable* — иначе internal error, как у name-фильтров).
+        items: [{id, feed_id, conditions:[{field,operator,stringValue}], bodies}].
+        → число обновлённых. Бросает GridFinalizeError при ошибке (UNKNOWN_FIELD — тоже:
+        вызывающий решает, пропускать ли фид без поля)."""
+        if len(items or []) > _GRID_MUTATION_CHUNK:
+            total = 0
+            for i in range(0, len(items), _GRID_MUTATION_CHUNK):
+                try:
+                    total += self.set_product_feed_filters(
+                        items[i:i + _GRID_MUTATION_CHUNK], listing=listing)
+                except GridFinalizeError as _pff_ce:
+                    import logging as _log_pff
+                    _log_pff.getLogger("direct.finalize").warning(
+                        "set_product_feed_filters chunk %d потерян, skip: %s",
+                        i // _GRID_MUTATION_CHUNK + 1, str(_pff_ce)[:200])
+                time.sleep(0.15)
+            return total
+        upd = []
+        for it in (items or []):
+            conds = list(it.get("conditions") or [])
+            if not it.get("id") or not it.get("feed_id") or not conds:
+                continue
+            upd.append({
+                "id": str(it["id"]),
+                "feedId": str(it["feed_id"]),
+                "feedFilter": {"tab": "CONDITION", "conditions": conds},
+                "bodies": list(it.get("bodies") or []),
+                "hrefParams": "",
+                "fieldsToUseAsBody": None, "fieldsToUseAsName": None,
+                "permalinkWithPhone": {"policy": "CLEAR"},
+                "inheritableCallouts": {"policy": "INHERIT"},
+                "inheritableSitelinkSet": {"policy": "INHERIT"},
+            })
+        if not upd:
+            return 0
+        self._bootstrap_csrf()
+        op = "updateListingAds" if listing else "updateShoppingAds"
+        gtype = "GdUpdateListingAdsInput" if listing else "GdUpdateShoppingAdsInput"
+        q = ("mutation %s($inp:%s!){%s(input:$inp){updatedAds{id}"
+             "validationResult{errors{code params path}}}}" % (op, gtype, op))
+        _pff_wait = (2, 5)
+        for _pff_att in range(3):
+            r = self._post(op, q, {"inp": {"adUpdateItems": upd, "saveDraft": True}})
+            data = r.json()
+            if data.get("errors") and _is_transient_data_error(data["errors"]) and _pff_att < 2:
+                import logging as _log_pff2
+                _log_pff2.getLogger("direct.finalize").warning(
+                    "set_product_feed_filters server error attempt %d, retry in %ds; login=%s",
+                    _pff_att + 1, _pff_wait[_pff_att], self.login)
+                time.sleep(_pff_wait[_pff_att])
+                continue
+            break
+        res = (data.get("data") or {}).get(op) or {}
+        if data.get("errors") or (res.get("validationResult") or {}).get("errors"):
+            raise GridFinalizeError(f"{op}(feed-filter): " + json.dumps(
+                data.get("errors") or res.get("validationResult"), ensure_ascii=False)[:400])
+        return len(res.get("updatedAds") or [])
+
+    def set_campaign_placement_types(self, campaign_ids: list[int],
+                                     placement_types: list[str]) -> list:
+        """Узкий UpdateCampaigns: только placementTypes («Места показа → Ручная настройка»).
+        Шаблон = set_campaign_sitelink_set (narrow-мутации обязаны эхом вернуть broadMatch
+        и базовый скелет — _read_unified_campaign_update_payloads). Для tp5 эталон —
+        PLACEMENTS_TP5 (Товарная галерея + Продвижение в поисковой выдаче)."""
+        ids = []
+        for raw in campaign_ids or []:
+            try:
+                cid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if cid > 0 and cid not in ids:
+                ids.append(cid)
+        pts = [str(p) for p in (placement_types or []) if p]
+        if not ids or not pts:
+            return []
+        payloads = self._read_unified_campaign_update_payloads(ids)
+        q = ("mutation UpdateCampaigns($input:GdUpdateCampaignsInput!$login:String!){"
+             "updateCampaigns(input:$input){updatedCampaigns{id}"
+             "validationResult{errors{code params path}warnings{code params path}}}"
+             "getClientMutationId(input:{login:$login}){mutationId}}")
+        items = []
+        for cid in ids:
+            base = payloads.get(cid)
+            if not base:
+                raise GridFinalizeError(f"Grid set-placements: не удалось прочитать кампанию {cid}")
+            base["placementTypes"] = pts
+            items.append({"unifiedCampaign": base})
+        # _post_json_retry: 403/CSRF + транзиент-ретраи (правило «tries+backoff в HTTP»)
+        data = self._post_json_retry("UpdateCampaigns", q, {
+            "login": self.login,
+            "input": {"campaignUpdateItems": items},
+        })
+        res = (data.get("data") or {}).get("updateCampaigns") or {}
+        vr = res.get("validationResult") or {}
+        if data.get("errors") or vr.get("errors"):
+            raise GridFinalizeError(
+                "Grid set-placements: " + json.dumps(
+                    data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
+        return res.get("updatedCampaigns") or []
 
     # ── Изображения для РСЯ-объявлений (куки-путь, без баллов) ───────────────
 
@@ -653,10 +1445,14 @@ class GridClient:
         Реверс из HAR-25/Entry10. image_type=BANNER_TEXT (РСЯ-баннер).
         → imageHash строка или None при ошибке. Не требует баллов (куки-путь)."""
         import os as _os
+        fname = _os.path.basename(image_path or "")
         try:
             if not _os.path.isfile(image_path):
+                print(f"[img-upload] FAIL {self.login} {fname}: файл не найден ({image_path})",
+                      flush=True)
                 return None
-            self._bootstrap_csrf()
+            if not self.csrf:                          # CSRF живёт на клиенте — не бутстрапить
+                self._bootstrap_csrf()                 # заново на каждую картинку
             url = f"https://direct.yandex.ru/web-api/image/upload?ulogin={self.login}"
             headers = {
                 "Cookie": self.cookie,
@@ -666,20 +1462,36 @@ class GridClient:
             }
             if self.csrf:
                 headers["x-csrf-token"] = self.csrf
-            fname = _os.path.basename(image_path)
+            # ЧИТАЕМ ФАЙЛ В ПАМЯТЬ до POST: путь бывает на sshfs (Мак M3) — стрим файл-хэндла
+            # в requests растягивал ОТПРАВКУ тела на минуты/бесконечно (read-timeout=60 меряет
+            # только ответ, не отправку) → воркер висел в ssl.read, watchdog убивал джобу
+            # (live-стек 2026-07-02 21:39, job 0bf287c861f2: upload_image → ssl.read).
             with open(image_path, "rb") as fh:
-                files = {"files": (fname, fh, "image/jpeg")}
-                data = {"image_type": "BANNER_TEXT"}
-                r = self.sess.post(url, files=files, data=data, headers=headers, timeout=60)
+                _img_bytes = fh.read()
+            files = {"files": (fname, _img_bytes, "image/jpeg")}
+            data = {"image_type": "BANNER_TEXT"}
+            r = self.sess.post(url, files=files, data=data, headers=headers, timeout=60)
             if r.status_code == 403:
-                # CSRF мог обновиться — пробуем ещё раз
-                with open(image_path, "rb") as fh:
-                    files = {"files": (fname, fh, "image/jpeg")}
-                    r = self.sess.post(url, files=files, data=data, headers=headers, timeout=60)
+                # CSRF протух — добираем свежий и повторяем с ним (те же bytes, без sshfs).
+                # Если ре-бутстрап токен не дал — стейл-заголовок УБИРАЕМ, а не шлём повторно
+                # тот же, что только что дал 403 (сессия могла получить свежую куку токена).
+                self.csrf = None
+                self._bootstrap_csrf()
+                if self.csrf:
+                    headers["x-csrf-token"] = self.csrf
+                else:
+                    headers.pop("x-csrf-token", None)
+                r = self.sess.post(url, files=files, data=data, headers=headers, timeout=60)
             j = r.json()
             result = ((j.get("result") or [None])[0]) or {}
-            return result.get("hash") or None
-        except Exception:  # noqa: BLE001
+            h = result.get("hash") or None
+            if not h:
+                print(f"[img-upload] FAIL {self.login} {fname}: HTTP {r.status_code} "
+                      f"resp={r.text[:200]!r}", flush=True)
+            return h
+        except Exception as e:  # noqa: BLE001
+            print(f"[img-upload] FAIL {self.login} {fname}: {type(e).__name__}: {str(e)[:160]}",
+                  flush=True)
             return None
 
     def update_ad_images(self, ad_items: list[dict], *, allow_empty_images: bool = False) -> int:
@@ -699,8 +1511,10 @@ class GridClient:
                 "domain": None,
                 "titles": it.get("titles") or [],
                 "bodies": it.get("bodies") or [],
-                "imageHashes": list(it["imageHashes"]),
-                "creativeIds": [],
+                "imageHashes": list(it.get("imageHashes") or []),
+                # видео-креативы вызывающего (напр. из adaptive_ads_for_update.creativeIds) —
+                # раньше жёсткий [] стирал видео при чистке картинок (ревью 03.07 #13)
+                "creativeIds": [str(c) for c in (it.get("creativeIds") or []) if c],
                 "permalinkId": None,
                 "phoneId": None,
                 "erirAdDescription": None,
@@ -729,6 +1543,282 @@ class GridClient:
             return len(res.get("updatedAds") or [])
         except Exception:  # noqa: BLE001
             return 0
+
+    def adaptive_ads_for_update(self, campaign_ids: list[int], ad_ids: list[int]) -> dict[int, dict]:
+        """Read full adaptive ads needed for safe ``UpdateAdaptiveTextAds`` round-trip.
+
+        Grid update replaces the editable ad payload, so content editor must
+        preserve href, titles, bodies, images, and price while changing only
+        the requested text fragment.
+        """
+        cids: list[int] = []
+        for raw in campaign_ids or []:
+            try:
+                cid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if cid > 0 and cid not in cids:
+                cids.append(cid)
+        wanted: set[int] = set()
+        for raw in ad_ids or []:
+            try:
+                aid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if aid > 0:
+                wanted.add(aid)
+        if not cids or not wanted:
+            return {}
+        self._bootstrap_csrf()
+        # typedCreatives{creativeId} — ЧИТАЕМЫЙ источник видео-креативов (подтверждено live
+        # 03.07.2026, интроспекция): закрывает давнюю дыру «creativeIds нечитаем → RMW стирает
+        # видео». hasButton/button — для детекта и добивки кнопки «Получить скидку».
+        q = ("query AdaptiveAdsForUpdate($login:String!,$inp:GdAdsContainerInput!){"
+             "client(searchBy:{login:$login}){ads(input:$inp){rowset{id campaignId "
+             "...on GdAdaptiveTextAd{href titles bodies images{imageHash} "
+             "bannerPrice{price priceOld prefix currency} "
+             "hasVideo hasButton button{action href} "
+             "typedCreatives{creativeId creativeType}}"
+             "}}}}")
+        out: dict[int, dict] = {}
+        for chunk in [cids[i:i + 100] for i in range(0, len(cids), 100)]:
+            inp = {
+                "filter": {"campaignIdIn": [str(cid) for cid in chunk]},
+                "statRequirements": {"preset": "LAST_30DAYS", "goalIds": [], "useCampaignGoalIds": True},
+                "limitOffset": {"limit": 5000, "offset": 0},
+                "orderBy": [{"order": "ASC", "field": "ID"}],
+            }
+            data = self._post_json_retry(
+                "AdaptiveAdsForUpdate",
+                q,
+                {"login": self.login, "inp": inp},
+            )
+            rows = ((((data.get("data") or {}).get("client") or {})
+                     .get("ads") or {}).get("rowset") or [])
+            for row in rows:
+                try:
+                    aid = int(row.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                if aid not in wanted:
+                    continue
+                image_hashes = []
+                for image in row.get("images") or []:
+                    image_hash = (image or {}).get("imageHash")
+                    if image_hash:
+                        image_hashes.append(image_hash)
+                # видео-креативы: только VIDEO_ADDITION (другие типы в creativeIds Grid не ждёт)
+                creative_ids = [str(c.get("creativeId")) for c in (row.get("typedCreatives") or [])
+                                if c and c.get("creativeId")
+                                and (c.get("creativeType") or "") == "VIDEO_ADDITION"]
+                out[aid] = {
+                    "id": aid,
+                    "href": row.get("href") or "",
+                    "titles": list(row.get("titles") or []),
+                    "bodies": list(row.get("bodies") or []),
+                    "imageHashes": image_hashes,
+                    "adPrice": row.get("bannerPrice"),
+                    "creativeIds": creative_ids,
+                    "hasVideo": bool(row.get("hasVideo")),
+                    "hasButton": bool(row.get("hasButton")),
+                    "button": row.get("button"),
+                }
+        return out
+
+    def video_creative_urls(self, campaign_ids: list[int], ad_ids: list[int]) -> dict[str, dict]:
+        """Скачиваемые URL видео-креативов (VIDEO_ADDITION) по куки → {creative_id: {...}}.
+
+        ФАЗА 3c п.12: Grid-интроспекция (2026-07-03) вскрыла тип ``GdVideoAdditionCreative`` с
+        полем ``originalUrl`` — это ПРЯМОЙ mp4 исходника (``https://storage.mds.yandex.net/get-bstor/
+        …*.mp4``, отдаётся HTTP 200 ``video/mp4`` БЕЗ авторизации — проверено live). Читаем его по
+        куки ИСТОЧНИКА, чтобы перенести ролик 1:1. Возвращаем и запасные ``livePreviewUrl``/
+        ``previewUrl`` на случай пустого originalUrl.
+        """
+        cids: list[int] = []
+        for raw in campaign_ids or []:
+            try:
+                cid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if cid > 0 and cid not in cids:
+                cids.append(cid)
+        wanted: set[int] = set()
+        for raw in ad_ids or []:
+            try:
+                aid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if aid > 0:
+                wanted.add(aid)
+        if not cids or not wanted:
+            return {}
+        self._bootstrap_csrf()
+        q = ("query VideoCreativeUrls($login:String!,$inp:GdAdsContainerInput!){"
+             "client(searchBy:{login:$login}){ads(input:$inp){rowset{id campaignId "
+             "...on GdAdaptiveTextAd{typedCreatives{creativeId creativeType "
+             "...on GdVideoAdditionCreative{originalUrl livePreviewUrl previewUrl duration}}}"
+             "}}}}")
+        out: dict[str, dict] = {}
+        for chunk in [cids[i:i + 100] for i in range(0, len(cids), 100)]:
+            inp = {
+                "filter": {"campaignIdIn": [str(cid) for cid in chunk]},
+                "statRequirements": {"preset": "LAST_30DAYS", "goalIds": [], "useCampaignGoalIds": True},
+                "limitOffset": {"limit": 5000, "offset": 0},
+                "orderBy": [{"order": "ASC", "field": "ID"}],
+            }
+            data = self._post_json_retry(
+                "VideoCreativeUrls", q, {"login": self.login, "inp": inp})
+            rows = ((((data.get("data") or {}).get("client") or {})
+                     .get("ads") or {}).get("rowset") or [])
+            for row in rows:
+                try:
+                    aid = int(row.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                if aid not in wanted:
+                    continue
+                for c in (row.get("typedCreatives") or []):
+                    if not c or (c.get("creativeType") or "") != "VIDEO_ADDITION":
+                        continue
+                    ccid = str(c.get("creativeId") or "").strip()
+                    if not ccid:
+                        continue
+                    out[ccid] = {
+                        "creative_id": ccid,
+                        "original_url": c.get("originalUrl") or "",
+                        "live_preview_url": c.get("livePreviewUrl") or "",
+                        "preview_url": c.get("previewUrl") or "",
+                        "duration": c.get("duration"),
+                    }
+        return out
+
+    def update_adaptive_text_ads(self, ad_items: list[dict]) -> int:
+        """Update adaptive ads text fields through Grid and raise on validation errors."""
+        upd = []
+        for it in ad_items or []:
+            if not it.get("id"):
+                continue
+            item = {
+                "href": it.get("href") or "",
+                "hrefParams": "",
+                "domain": None,
+                "titles": list(it.get("titles") or []),
+                "bodies": list(it.get("bodies") or []),
+                "imageHashes": list(it.get("imageHashes") or []),
+                "creativeIds": [],
+                "permalinkId": None,
+                "phoneId": None,
+                "erirAdDescription": None,
+                "inheritableCallouts": {"policy": "INHERIT"},
+                "inheritableSitelinkSet": {"policy": "INHERIT"},
+                "id": str(it["id"]),
+            }
+            if it.get("adPrice"):
+                item["adPrice"] = it["adPrice"]
+            upd.append(item)
+        if not upd:
+            return 0
+        q = ("mutation UpdateAdaptiveTextAds($updateInput:GdUpdateAdaptiveTextAdsInput!){"
+             "reqId:getReqId updateAdaptiveTextAds(input:$updateInput){"
+             "updatedAds{id}validationResult{errors{code params path}"
+             "warnings{code params path}}}}")
+        self._bootstrap_csrf()
+        data = self._post_json_retry(
+            "UpdateAdaptiveTextAds",
+            q,
+            {"updateInput": {"adUpdateItems": upd, "saveDraft": True}},
+        )
+        res = (data.get("data") or {}).get("updateAdaptiveTextAds") or {}
+        vr = res.get("validationResult") or {}
+        if data.get("errors") or vr.get("errors"):
+            raise GridFinalizeError(
+                "Grid update-adaptive-texts: " + json.dumps(
+                    data.get("errors") or vr.get("errors"), ensure_ascii=False)[:500])
+        return len(res.get("updatedAds") or [])
+
+    def find_and_replace_text(
+        self,
+        ad_ids: list[int],
+        *,
+        target_types: list[str],
+        search: str,
+        replace: str,
+        case_sensitive: bool = True,
+        sitelink_title_order_nums: list[int] | None = None,
+        sitelink_description_order_nums: list[int] | None = None,
+        sitelink_href_order_nums: list[int] | None = None,
+    ) -> dict:
+        """Run Direct Grid mass find-and-replace for ad text fields.
+
+        This is the cookie/Grid path used by the content editor for old
+        ``GdTextAd`` and newer adaptive ads. ``target_types`` are Grid enum
+        values: ``TITLE``, ``TITLE_EXTENSION``, ``BODY``, ``SITELINK_TITLE``.
+        """
+        ids = []
+        for raw in ad_ids or []:
+            try:
+                aid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if aid > 0 and aid not in ids:
+                ids.append(aid)
+        targets = []
+        allowed = {"TITLE", "TITLE_EXTENSION", "BODY", "SITELINK_TITLE", "SITELINK_DESCRIPTION", "SITELINK_HREF"}
+        for raw in target_types or []:
+            target = str(raw or "").strip().upper()
+            if target in allowed and target not in targets:
+                targets.append(target)
+        if not ids or not targets or not str(search or ""):
+            return {"replaced": 0, "total": 0, "rowset": [], "errors": []}
+        self._bootstrap_csrf()
+        q = ("mutation FindAndReplaceText($input:GdFindAndReplaceTextInput!){"
+             "findAndReplaceText(input:$input){successCount totalCount "
+             "rowset{adId}validationResult{errors{code params path}"
+             "warnings{code params path}}}}")
+        def _clean_order_nums(values: list[int] | None) -> list[int]:
+            clean: list[int] = []
+            for raw in values or []:
+                try:
+                    num = int(raw)
+                except (TypeError, ValueError):
+                    continue
+                if num > 0 and num not in clean:
+                    clean.append(num)
+            return clean
+
+        variables = {
+            "input": {
+                "adIds": [str(i) for i in ids],
+                "cacheKey": None,
+                "limitOffset": {"limit": len(ids), "offset": 0},
+                "targetTypes": targets,
+                "replaceInstruction": {
+                    "search": str(search),
+                    "replace": str(replace),
+                    "options": {
+                        "caseSensitive": bool(case_sensitive),
+                        "linkReplacementMode": "FULL",
+                        "replacementMode": "FIND_AND_REPLACE",
+                        "sitelinkOrderNumsToUpdateDescription": _clean_order_nums(sitelink_description_order_nums),
+                        "sitelinkOrderNumsToUpdateHref": _clean_order_nums(sitelink_href_order_nums),
+                        "sitelinkOrderNumsToUpdateTitle": _clean_order_nums(sitelink_title_order_nums),
+                    },
+                },
+            }
+        }
+        data = self._post_json_retry("FindAndReplaceText", q, variables)
+        res = (data.get("data") or {}).get("findAndReplaceText") or {}
+        vr = res.get("validationResult") or {}
+        if data.get("errors") or vr.get("errors"):
+            raise GridFinalizeError(
+                "Grid find-replace-text: " + json.dumps(
+                    data.get("errors") or vr.get("errors"), ensure_ascii=False)[:500])
+        return {
+            "replaced": int(res.get("successCount") or 0),
+            "total": int(res.get("totalCount") or 0),
+            "rowset": res.get("rowset") or [],
+            "errors": [],
+        }
 
     # ── AUTO-REPAIR: чтение групп (GroupsForEdit) + full-object обновление групп ──
 

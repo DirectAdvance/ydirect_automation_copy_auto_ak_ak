@@ -122,7 +122,6 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
                         "image_hashes": [],
                         "image_paths": img_paths[:5]})
     created_ad_meta = []
-    repair_items: list[dict] = []
     _base = 0
     for chunk in _chunks(ad_items, _AC_CHUNK_AD):
         jd = _v501_svc("ads", "add", token, login, {"Ads": chunk})
@@ -184,7 +183,6 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
                     _upd["image_hashes"] = meta.get("image_hashes") or []
                 _upd_items.append(_upd)
             if _upd_items:
-                repair_items = list(_upd_items)
                 rep["ads_repaired"] = _grid_update_adaptive_ads(login, _upd_items)
                 rep["image_groups"] = sum(1 for _it in _upd_items if _it.get("image_hashes"))
         except Exception as _e:  # noqa: BLE001
@@ -203,8 +201,9 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
                                     "bodies": meta["bodies"], "image_hashes": meta["image_hashes"],
                                     "current": cur, "old": old})
             rep["prices_set"] = _grid_set_ad_prices(login, _pitems)
-            if repair_items:
-                rep["ads_repaired_after_price"] = _grid_update_adaptive_ads(login, repair_items)
+            # ads_repaired_after_price УДАЛЁН (2026-07-02, code-review): repair_items без adPrice →
+            # Grid full-replace ЗАТИРАЛ только что установленные цены (тот же баг чинили в tp1).
+            # Контент цела: _grid_set_ad_prices сам шлёт titles/bodies/imageHashes полностью.
     except Exception as _e:  # noqa: BLE001
         rep.setdefault("warnings", []).append(f"adPrice: {str(_e)[:100]}")
 
@@ -256,6 +255,17 @@ def _struct_cts(slepok: str, site_type: str, tp_code: str) -> list:
 def _tp2_struct_cts(slepok: str, site_type: str) -> list:
     """Совместимость: модель-ct для tp2."""
     return _struct_cts(slepok, site_type, "tp2")
+
+def _struct_has_tp(slepok: str, site_type: str, tp_code: str) -> bool:
+    """tp ОБЪЯВЛЕН в структуре слепка — независимо от наличия модель-ct.
+    _struct_cts для этого НЕ годится: у tp7/tp6 бывают только ct0000-группы («Товарка -
+    Общая», «Автотаргетинг») → он даёт [] и tp ложно считался «не в слепке»
+    (ложняки EXTRA_TP_NOT_IN_SLEPOK: scherbakova-tp7, pavlov-tp6, выверено 03.07.2026)."""
+    key = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
+    struct = _json("slepki_structure.json").get("directologists", [])
+    d = next((x for x in struct if x.get("key") == key), None)
+    st = next((s for s in (d or {}).get("site_types", []) if s.get("name") == site_type), None)
+    return any(tp.get("code") == tp_code for tp in (st or {}).get("tp", []))
 
 def _text_group_name(ct: str, r_code: str, model: str) -> str:
     """Кодер-имя группы текстовой кампании (tp2/tp4 Поиск) по текущему канону:
@@ -349,8 +359,9 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
             "title": title, "title2": ttl2,      # совместимость (в ResponsiveAd не используются)
             "text": text0 or "Официальный дилер. Тест-драйв и выгодные условия по кредиту. Авто в наличии.",
             "href": model_href,                  # deep-link страницы модели (если возможен)
-            "image_path": tp2_all_images[0] if tp2_all_images else None,   # баг #4: картинки tp2/tp4
-            "image_paths": tp2_all_images[:5],                              # баг #4: все пути
+            # tp2/tp4 (поиск) — картинки запрещены правилом Семёна; tp5/tp1 — разрешены.
+            "image_path": (tp2_all_images[0] if tp2_all_images else None) if tp_code not in ("tp2", "tp4") else None,
+            "image_paths": tp2_all_images[:5] if tp_code not in ("tp2", "tp4") else [],
             "callouts": data.get("callouts", []),   # уточнения слепка по модели (из пака)
         })
     if not groups:

@@ -1,0 +1,27 @@
+[Unit]
+Description=SEOAdvanced Direct Automation — Worker (create-set queue executor)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scripts/home/seoadvanced
+Environment=DIRECT_ROLE=worker
+ExecStart=/root/venv/bin/python3 -m direct.worker_main
+Restart=always
+RestartSec=5
+
+# Graceful drain on stop: SIGTERM → worker stops claiming new jobs, lets the current
+# item finish, then exits. Give it up to 10 min before SIGKILL (worker itself exits at
+# ~540s). KillMode=mixed: SIGTERM to the main process only, SIGKILL to the whole group
+# after the timeout.
+TimeoutStopSec=600
+KillMode=mixed
+
+# This service OWNS the campaign-creation queue. It must be a SINGLE process (in-memory
+# queue + per-agency throttling). Do NOT run multiple instances against the same DB —
+# claim is race-safe (queued→claimed FOR UPDATE SKIP LOCKED), but the per-agency
+# parallelism limit is per-process only.
+
+[Install]
+WantedBy=multi-user.target

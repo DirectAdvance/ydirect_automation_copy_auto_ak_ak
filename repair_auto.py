@@ -54,9 +54,72 @@ def execute_next_in_place(login: str, ctx: dict, plan: dict[str, Any], deps: rex
             unsupported=content_unsupported,
         ), status
 
-    # keywords_repair (UpdateUnifiedAdGroups) — подтверждённый no-op: Яндекс возвращает success,
-    # но ключи в группе не появляются. NO_KEYWORDS_LIVE/WRONG_AUTOTARGET теперь идут в
-    # resume_or_recreate_campaign (repair_planner). Блок убран из in-place пути.
+    # keywords_repair: заливаем через Grid AddKeywords (НЕ UpdateUnifiedAdGroups — тот no-op для ключей).
+    # Для NO_KEYWORDS_LIVE пробуем дозалить ключи in-place; recreate только если не помогло.
+    keyword_ids, keyword_actions, keyword_unsupported = rgate.executable_keywords_repairs(plan or {})
+    if keyword_ids and keyword_actions:
+        out, status = rex.execute_keywords_repair(login, ctx, keyword_ids, deps)
+        if post_verify:
+            post_verify(out, login, ctx)
+        return _with_common(
+            out,
+            job_id=job_id,
+            plan=plan,
+            executed=[{k: v for k, v in a.items()} for a in keyword_actions],
+            unsupported=keyword_unsupported,
+        ), status
+
+    images_ids, images_actions, images_unsupported = rgate.executable_images_repairs(plan or {})
+    if images_ids and images_actions:
+        out, status = rex.execute_images_repair(login, ctx, images_ids, deps)
+        if post_verify:
+            post_verify(out, login, ctx)
+        return _with_common(
+            out,
+            job_id=job_id,
+            plan=plan,
+            executed=[{k: v for k, v in a.items()} for a in images_actions],
+            unsupported=images_unsupported,
+        ), status
+
+    img_forbidden_ids, img_forbidden_actions, img_forbidden_unsupported = rgate.executable_images_forbidden_repairs(plan or {})
+    if img_forbidden_ids and img_forbidden_actions:
+        out, status = rex.execute_images_forbidden_repair(login, ctx, img_forbidden_ids, deps)
+        if post_verify:
+            post_verify(out, login, ctx)
+        return _with_common(
+            out,
+            job_id=job_id,
+            plan=plan,
+            executed=[{k: v for k, v in a.items()} for a in img_forbidden_actions],
+            unsupported=img_forbidden_unsupported,
+        ), status
+
+    adprice_ids, adprice_actions, adprice_unsupported = rgate.executable_adprice_repairs(plan or {})
+    if adprice_ids and adprice_actions:
+        out, status = rex.execute_adprice_repair(login, ctx, adprice_ids, deps)
+        if post_verify:
+            post_verify(out, login, ctx)
+        return _with_common(
+            out,
+            job_id=job_id,
+            plan=plan,
+            executed=[{k: v for k, v in a.items()} for a in adprice_actions],
+            unsupported=adprice_unsupported,
+        ), status
+
+    dt_ids, dt_actions, dt_unsupported = rgate.executable_default_text_repairs(plan or {})
+    if dt_ids and dt_actions:
+        out, status = rex.execute_default_text_repair(login, ctx, dt_ids, deps)
+        if post_verify:
+            post_verify(out, login, ctx)
+        return _with_common(
+            out,
+            job_id=job_id,
+            plan=plan,
+            executed=[{k: v for k, v in a.items()} for a in dt_actions],
+            unsupported=dt_unsupported,
+        ), status
 
     promo_ids, promo_actions, promo_unsupported = rgate.executable_promo_campaign_ids(results, plan or {})
     if promo_ids and promo_actions:
@@ -153,9 +216,12 @@ def execute_safe_post_create(login: str, ctx: dict, plan: dict[str, Any], deps: 
         "failed_actions": failed[:20],
         "results": outputs[:20],
         "skipped_actions": [
-            "rebuild_missing_content",
+            "rebuild_missing_content",   # отложено на delayed-цикл (Grid-лаг после create)
             "resume_or_recreate_campaign",
-            "keywords_repair",  # no-op: UpdateUnifiedAdGroups не добавляет ключи; NO_KEYWORDS_LIVE → recreate
+            "keywords_repair",    # отложено на delayed-цикл (в safe-post-create Grid ещё не достиг консистентности)
+            "images_repair",
+            "adprice_repair",
+            "default_text_repair",
         ],
         "uses_direct_units": False,
     }
@@ -164,6 +230,159 @@ def execute_safe_post_create(login: str, ctx: dict, plan: dict[str, Any], deps: 
     if not outputs:
         summary["ok"] = True
         summary["note"] = "нет безопасных post-create in-place действий"
+    return summary
+
+
+def _plan_actions_of(plan: dict[str, Any], action_type: str) -> list[dict[str, Any]]:
+    return [
+        a for a in (plan or {}).get("actions") or []
+        if isinstance(a, dict) and a.get("action") == action_type
+    ]
+
+
+def _actions_use_units(actions: list[dict[str, Any]]) -> bool:
+    return any(rgate.truthy(a.get("uses_direct_units")) for a in actions or [])
+
+
+def execute_all_in_place(login: str, ctx: dict, plan: dict[str, Any], deps: rex.RepairDeps,
+                         *, post_verify: PostVerify | None = None) -> dict:
+    """Execute ALL executable in-place repair action types once from a single plan snapshot.
+
+    Unlike ``execute_safe_post_create`` this ALSO performs ``rebuild_missing_content``: it is
+    meant for the delayed post-done cycle, when Grid has already caught up (the create-time
+    Grid-lag hazard that keeps content repair out of the synchronous path no longer applies).
+    Recreate/UAC-replace stays with the async queue path (``_auto_queue_recreate_after_done``).
+
+    ``uses_direct_units`` actions are gated: they are recorded in ``units_gated`` and skipped,
+    never executed automatically (in-place executors are Grid-only, so this is defensive).
+    """
+    body = ctx.get("body") or {}
+    results = ctx.get("results") or []
+    executed: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    outputs: list[dict[str, Any]] = []
+    units_gated: list[dict[str, Any]] = []
+
+    content_repairs, _ = rgate.executable_content_repairs(body, plan or {})
+    if content_repairs:
+        if _actions_use_units(_plan_actions_of(plan, "rebuild_missing_content")):
+            units_gated.append({"action": "rebuild_missing_content", "reason": "uses_direct_units"})
+        else:
+            out, status = rex.execute_content_repair(login, ctx, content_repairs, deps)
+            outputs.append({"action": "rebuild_missing_content", "status": status, "result": out})
+            if 200 <= int(status) < 300 and out.get("ok"):
+                executed.extend([{k: v for k, v in a.items() if k != "item"} for a in content_repairs])
+            else:
+                failed.append({"action": "rebuild_missing_content", "status": status, "result": out})
+
+    keyword_ids, keyword_actions, _ = rgate.executable_keywords_repairs(plan or {})
+    if keyword_ids and keyword_actions:
+        if _actions_use_units(keyword_actions):
+            units_gated.append({"action": "keywords_repair", "reason": "uses_direct_units"})
+        else:
+            out, status = rex.execute_keywords_repair(login, ctx, keyword_ids, deps)
+            outputs.append({"action": "keywords_repair", "status": status, "result": out})
+            if 200 <= int(status) < 300 and out.get("ok"):
+                executed.extend([{k: v for k, v in a.items()} for a in keyword_actions])
+            else:
+                failed.append({"action": "keywords_repair", "status": status, "result": out})
+
+    images_ids, images_actions, _ = rgate.executable_images_repairs(plan or {})
+    if images_ids and images_actions:
+        if _actions_use_units(images_actions):
+            units_gated.append({"action": "images_repair", "reason": "uses_direct_units"})
+        else:
+            out, status = rex.execute_images_repair(login, ctx, images_ids, deps)
+            outputs.append({"action": "images_repair", "status": status, "result": out})
+            if 200 <= int(status) < 300 and out.get("ok"):
+                executed.extend([{k: v for k, v in a.items()} for a in images_actions])
+            else:
+                failed.append({"action": "images_repair", "status": status, "result": out})
+
+    img_forbidden_ids, img_forbidden_actions, _ = rgate.executable_images_forbidden_repairs(plan or {})
+    if img_forbidden_ids and img_forbidden_actions:
+        if _actions_use_units(img_forbidden_actions):
+            units_gated.append({"action": "images_forbidden_repair", "reason": "uses_direct_units"})
+        else:
+            out, status = rex.execute_images_forbidden_repair(login, ctx, img_forbidden_ids, deps)
+            outputs.append({"action": "images_forbidden_repair", "status": status, "result": out})
+            if 200 <= int(status) < 300 and out.get("ok"):
+                executed.extend([{k: v for k, v in a.items()} for a in img_forbidden_actions])
+            else:
+                failed.append({"action": "images_forbidden_repair", "status": status, "result": out})
+
+    adprice_ids, adprice_actions, _ = rgate.executable_adprice_repairs(plan or {})
+    if adprice_ids and adprice_actions:
+        if _actions_use_units(adprice_actions):
+            units_gated.append({"action": "adprice_repair", "reason": "uses_direct_units"})
+        else:
+            out, status = rex.execute_adprice_repair(login, ctx, adprice_ids, deps)
+            outputs.append({"action": "adprice_repair", "status": status, "result": out})
+            if 200 <= int(status) < 300 and out.get("ok"):
+                executed.extend([{k: v for k, v in a.items()} for a in adprice_actions])
+            else:
+                failed.append({"action": "adprice_repair", "status": status, "result": out})
+
+    dt_ids, dt_actions, _ = rgate.executable_default_text_repairs(plan or {})
+    if dt_ids and dt_actions:
+        if _actions_use_units(dt_actions):
+            units_gated.append({"action": "default_text_repair", "reason": "uses_direct_units"})
+        else:
+            out, status = rex.execute_default_text_repair(login, ctx, dt_ids, deps)
+            outputs.append({"action": "default_text_repair", "status": status, "result": out})
+            if 200 <= int(status) < 300 and out.get("ok"):
+                executed.extend([{k: v for k, v in a.items()} for a in dt_actions])
+            else:
+                failed.append({"action": "default_text_repair", "status": status, "result": out})
+
+    promo_ids, promo_actions, _ = rgate.executable_promo_campaign_ids(results, plan or {})
+    if promo_ids and promo_actions:
+        if _actions_use_units(promo_actions):
+            units_gated.append({"action": "create_or_attach_promo", "reason": "uses_direct_units"})
+        else:
+            out, status = rex.execute_promo_repair(login, ctx, promo_ids, deps)
+            outputs.append({"action": "create_or_attach_promo", "status": status, "result": out})
+            if 200 <= int(status) < 300 and out.get("ok"):
+                executed.extend(promo_actions)
+            else:
+                failed.append({"action": "create_or_attach_promo", "status": status, "result": out})
+
+    callout_ids, callout_actions, _ = rgate.executable_callout_campaign_ids(results, plan or {})
+    if callout_ids and callout_actions:
+        if _actions_use_units(callout_actions):
+            units_gated.append({"action": "ensure_callouts", "reason": "uses_direct_units"})
+        else:
+            out, status = rex.execute_callouts_repair(login, ctx, callout_ids, deps)
+            outputs.append({"action": "ensure_callouts", "status": status, "result": out})
+            if 200 <= int(status) < 300 and out.get("ok"):
+                executed.extend(callout_actions)
+            else:
+                failed.append({"action": "ensure_callouts", "status": status, "result": out})
+
+    rename_names, rename_actions, _ = rgate.executable_rename_campaigns(plan or {})
+    if rename_names and rename_actions:
+        if _actions_use_units(rename_actions):
+            units_gated.append({"action": "rename_campaign", "reason": "uses_direct_units"})
+        else:
+            out, status = rex.execute_rename_repair(login, ctx, rename_names, deps)
+            outputs.append({"action": "rename_campaign", "status": status, "result": out})
+            if 200 <= int(status) < 300 and out.get("ok"):
+                executed.extend(rename_actions)
+            else:
+                failed.append({"action": "rename_campaign", "status": status, "result": out})
+
+    summary = {
+        "ok": not failed,
+        "executed": len(executed),
+        "failed": len(failed),
+        "executed_actions": executed[:40],
+        "failed_actions": failed[:20],
+        "results": outputs[:20],
+        "units_gated": units_gated[:10],
+        "uses_direct_units": False,
+    }
+    if outputs and post_verify:
+        post_verify(summary, login, ctx)
     return summary
 
 
@@ -306,7 +525,20 @@ def delayed_content_repair_request(parent_job_id: str, job_snapshot: dict[str, A
         summary = rgate.summarize_repair_gate(body, result.get("results") or [], plan)
     except Exception:  # noqa: BLE001
         summary = {}
-    if int((summary or {}).get("in_place_content_repairs") or 0) <= 0:
+    # Schedule the delayed FULL in-place cycle whenever ANY in-place action is pending.
+    # Recreate/UAC-replace handled separately by _auto_queue_recreate_after_done, not counted here.
+    inplace_actions = (
+        int((summary or {}).get("in_place_content_repairs") or 0)
+        + int((summary or {}).get("keyword_repair_campaigns") or 0)
+        + int((summary or {}).get("images_repair_campaigns") or 0)
+        + int((summary or {}).get("images_forbidden_repair_campaigns") or 0)
+        + int((summary or {}).get("adprice_repair_campaigns") or 0)
+        + int((summary or {}).get("default_text_repair_campaigns") or 0)
+        + (1 if (summary or {}).get("promo_campaigns") else 0)
+        + (1 if (summary or {}).get("callout_campaigns") else 0)
+        + int((summary or {}).get("rename_campaigns") or 0)
+    )
+    if inplace_actions <= 0:
         return None
 
     login = (job_snapshot.get("login") or result.get("login") or "").strip()
@@ -324,6 +556,7 @@ def delayed_content_repair_request(parent_job_id: str, job_snapshot: dict[str, A
         "agency": (job_snapshot.get("agency") or body.get("agency") or ""),
         "parent_job_id": parent_job_id,
         "content_repairs": int((summary or {}).get("in_place_content_repairs") or 0),
+        "inplace_actions": inplace_actions,
         "summary": summary,
         "uses_direct_units": False,
     }

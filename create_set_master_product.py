@@ -456,8 +456,12 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     # Загружаем фиды с модельными коллекциями лениво — один раз на весь запрос.
     it_lff = []                                  # listings_feed_filters
     it_ff = []                                   # feed_filters (товарная часть)
+    if is_product and it_feed:
+        # ЛЮБАЯ товарная tp7 получает фильтр: брендовый ct → позитив по марке/модели + минус-марки;
+        # ct0000/общая → ТОЛЬКО минус-марки из глобальных правил (правило Семёна; раньше гейт
+        # c_ct != "ct0000" оставлял общие товарки ВООБЩЕ без фильтров — FEED_FILTER_MISSING_UAC).
+        it_ff = _tp7_product_feed_filters(c_brand or "", c_ct or "ct0000", login=login, feed_id=it_feed or 0)
     if is_product and it_feed and c_brand and c_ct and c_ct != "ct0000" and c_ct != "ct0111":
-        it_ff = _tp7_product_feed_filters(c_brand, c_ct)
         if _tp7_mf is None:                      # ленивая загрузка (не дёргать API на каждый item)
             _tp7_mf = _account_model_feeds(login, _w_agency or "")
         fm_entry = next((f for f in _tp7_mf if f["id"] == it_feed), None)

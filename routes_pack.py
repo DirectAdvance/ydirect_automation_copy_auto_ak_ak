@@ -17,6 +17,7 @@ def register_pack_routes(
     m3_content_status: Callable,
     m3_status_response: Callable,
     pack_preview_response: Callable,
+    cookies_status_response: Callable | None = None,
 ) -> None:
     @bp.route("/api/slepok_callouts")
     @access
@@ -55,6 +56,14 @@ def register_pack_routes(
     def api_m3_status():
         """Лёгкий health M3 для индикатора в сайдбаре."""
         return m3_status_response()
+
+    @bp.route("/api/cookies-status")
+    @access
+    def api_cookies_status():
+        """Health агентских кук главпотока — бейдж в сайдбаре под M3."""
+        if cookies_status_response is None:
+            return jsonify({"ok": False, "detail": "not configured"})
+        return cookies_status_response()
 
     @bp.route("/api/pack_preview")
     @access

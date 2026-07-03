@@ -17,6 +17,9 @@ def register_settings_routes(
     global_minus_places: Callable[[], list[dict]],
     minus_places_ensure: Callable,
     place_host: Callable[[str], str],
+    global_minus_marks: Callable[[], list[dict]],
+    minus_marks_ensure: Callable,
+    known_brand_canons: Callable[[], list[str]],
     victory_conn: Callable,
     victory_conn_rw: Callable,
 ) -> None:
@@ -308,6 +311,74 @@ def register_settings_routes(
                     "VALUES(%s, %s, %s, now()) ON CONFLICT(url) DO UPDATE SET enabled=EXCLUDED.enabled, "
                     "sort=EXCLUDED.sort, updated_at=now()",
                     (url, enabled, i),
+                )
+            conn.commit()
+        except Exception:  # noqa: BLE001
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return jsonify({"ok": True, "saved": len(items)})
+
+    @bp.route("/api/minus-marks")
+    @access
+    def api_minus_marks_get():
+        """Минус-марки (фид): полный список марок из фидов + состояние галочек.
+        По умолчанию все сняты (в БД строк нет → enabled=false). → {marks:[{mark,enabled}]}."""
+        try:
+            saved = {str(r.get("mark") or "").strip().lower(): bool(r.get("enabled"))
+                     for r in (global_minus_marks() or [])}
+        except Exception:  # noqa: BLE001
+            saved = {}
+        try:
+            catalog = [str(m).strip() for m in (known_brand_canons() or []) if str(m).strip()]
+        except Exception:  # noqa: BLE001
+            catalog = []
+        # Полный список = марки-каталог ∪ ранее сохранённые (на случай марки не из каталога).
+        seen: set[str] = set()
+        marks: list[dict] = []
+        for m in catalog + list(saved.keys()):
+            key = m.lower()
+            if not m or key in seen:
+                continue
+            seen.add(key)
+            marks.append({"mark": m, "enabled": saved.get(key, False)})
+        marks.sort(key=lambda x: x["mark"].lower())
+        return jsonify({"marks": marks})
+
+    @bp.route("/api/minus-marks", methods=["POST"])
+    @access
+    def api_minus_marks_post():
+        """Сохранить минус-марки (replace-all). Пишем ТОЛЬКО отмеченные (enabled=true) — снятые
+        отсутствуют в таблице (дефолт = не минусовать). Body: {marks:[{mark,enabled}]} | [str,...]."""
+        body = request.json or {}
+        raw = body.get("marks") if isinstance(body, dict) else body
+        if not isinstance(raw, list):
+            return jsonify({"ok": False, "error": "marks должен быть массивом"}), 400
+        seen: set[str] = set()
+        items: list[str] = []
+        for r in raw:
+            if isinstance(r, dict):
+                mark = str(r.get("mark") or "").strip()
+                enabled = bool(r.get("enabled", True))
+            else:
+                mark = str(r or "").strip()
+                enabled = True
+            if not mark or not enabled or mark.lower() in seen:
+                continue
+            seen.add(mark.lower())
+            items.append(mark)
+        conn = victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            minus_marks_ensure(cur)
+            cur.execute("DELETE FROM public.direct_global_minus_marks")
+            for mark in items:
+                cur.execute(
+                    "INSERT INTO public.direct_global_minus_marks(mark, enabled, updated_at) "
+                    "VALUES(%s, true, now()) ON CONFLICT(mark) DO UPDATE SET enabled=true, "
+                    "updated_at=now()",
+                    (mark,),
                 )
             conn.commit()
         except Exception:  # noqa: BLE001

@@ -620,10 +620,62 @@ TITLES_N = 7
 TEXTS_N = 3
 SITELINKS_N = 8
 # Целевая ЗАПОЛНЕННОСТЬ (чтобы заголовки/тексты не были куцыми, а с УТП):
-TITLE_TARGET_MIN = 45          # заголовок старайся заполнять на 45–56
+TITLE_TARGET_MIN = 48          # заголовок старайся заполнять на 48–56; цель 50–55
 TEXT_TARGET_MIN = 68           # текст — порог приёмки (68–81 — полноценные); промпт целит в 76–80
-SITELINK_TITLE_TARGET_MIN = 20  # заголовок быстрой ссылки — на 20–30
-SITELINK_DESC_TARGET_MIN = 45   # описание быстрой ссылки — не куцое, близко к лимиту 60
+SITELINK_TITLE_TARGET_MIN = 22  # заголовок быстрой ссылки — на 22–30; цель 25–30
+SITELINK_DESC_TARGET_MIN = 50   # описание быстрой ссылки — не куцое, близко к лимиту 60
+
+# Добивка коротких заголовков до верхней границы длины: нейтральные суффиксы без цифр и
+# процентов (не ломают когерентность скидок и не вводят новых чисел). Самый короткий —
+# «В наличии» (9): заголовок длиной ≤45 всегда добиваем хотя бы им (9+2 сепаратор = 11).
+TITLE_FILL_SUFFIXES = [
+    "Выгодные условия",
+    "Одобрение онлайн",
+    "Подбор под ваш бюджет",
+    "Официальная гарантия",
+    "В наличии у дилера",
+    "Быстрое оформление",
+    "Успейте сегодня",
+    "В наличии",
+    "Гарантия",
+    "Тест-драйв",
+]
+
+
+def extend_title_to_max(title: str, idx: int = 0, *, max_len: int = TITLE_MAX,
+                        target_min: int = TITLE_TARGET_MIN,
+                        used: set | None = None) -> str:
+    """Добить короткий заголовок (<target_min) суффиксом из банка ближе к max_len.
+
+    ``idx`` ротирует банк, чтобы соседние заголовки набора получали разные суффиксы;
+    ``used`` — суффиксы, уже занятые в рамках одного объявления/кампании (свободные в
+    приоритете, при исчерпании допускается повтор). Суффикс пропускается, если его
+    смысловое слово уже есть в заголовке или он не влезает в max_len. Из влезающих
+    берётся самый длинный. Заголовок ≥target_min возвращается без изменений.
+    """
+    t = str(title or "").strip()
+    if not t or len(t) >= target_min:
+        return t
+    # стемы (первые 5 букв слов ≥4) — ловят «выгода»↔«выгодные», «гарантия»↔«гарантий»
+    _stems = lambda s: {w[:5] for w in re.findall(r"[а-яёa-z]{4,}", s.lower())}  # noqa: E731
+    t_stems = _stems(t)
+    sep = " " if t[-1] in ".!?…" else ". "
+    n = len(TITLE_FILL_SUFFIXES)
+    order = [TITLE_FILL_SUFFIXES[(idx + i) % n] for i in range(n)]
+    fitting = []                           # (suffix, candidate) — влезающие и без пересечения смысла
+    for sfx in order:
+        if t_stems & _stems(sfx):
+            continue                       # смысловое слово суффикса уже есть в заголовке
+        cand = t + sep + sfx
+        if len(cand) <= max_len:
+            fitting.append((sfx, cand))
+    if not fitting:
+        return t
+    pool = [f for f in fitting if f[0] not in (used or ())] or fitting  # свободные в приоритете
+    best_sfx, best = max(pool, key=lambda f: len(f[1]))
+    if used is not None:
+        used.add(best_sfx)
+    return best
 # Быстрые ссылки: запрещены «!», «?», «[», «]» и эмодзи (quick-links.md).
 _SITELINK_BAD = set("!?[]")
 _SITELINK_VEHICLE_RE = re.compile(
@@ -1393,7 +1445,7 @@ def _dedup_sitelinks(seq: list[dict], site_type: str = "", limit: int = 0) -> li
             continue
         ti = str(s.get("title") or "").strip()
         de = str(s.get("description") or "").strip()
-        if (not ti or len(de) < SITELINK_DESC_TARGET_MIN
+        if (not ti or len(ti) < SITELINK_TITLE_TARGET_MIN or len(de) < SITELINK_DESC_TARGET_MIN
                 or _bad_sitelink_phrase(ti) or _bad_sitelink_phrase(de)):
             continue
         tk = _sitelink_norm_key(ti)
@@ -1669,9 +1721,17 @@ def assemble_campaign(titles: list, texts: list, sitelinks: list, agent: dict,
 
         for pool in pools:               # сначала корпус агента (его стиль), потом банк по типу сайта
             _take(pool, minlen)
-        if len(out) < n:                 # ≥minlen не хватило — добираем чуть короче, не оставляя пустой слот
-            for pool in pools:
-                _take(pool, max(40, minlen - 14))
+        if len(out) < n:                 # ≥minlen не хватило
+            if maxlen == TITLE_MAX:      # заголовки: не снижаем порог до 40; лучше повторить одобренный чем взять короткий
+                _approved = list(out)
+                _idx = 0
+                while _approved and len(out) < n:
+                    out.append(_approved[_idx % len(_approved)])
+                    _idx += 1
+                    padded = True
+            else:                        # тексты: добираем чуть короче, не оставляя пустой слот
+                for pool in pools:
+                    _take(pool, max(40, minlen - 14))
         if maxlen == TITLE_MAX:
             out = diversify_title_utp(out, n)
         return out[:n], padded
@@ -1970,7 +2030,7 @@ def build_titles_messages(agent: dict, ctx: dict, item: dict | None = None,
         + f"Верни JSON: {{\"titles\": [...], \"title2\": \"...\"}}\n"
         + "Поле titles должно быть массивом СТРОК. Не возвращай массив объектов вида "
         + "{\"title1\":\"...\",\"title2\":\"...\"}.\n"
-        + f"ЗАГОЛОВКИ: каждый {TITLE_TARGET_MIN}–{TITLE_MAX} символов (слово ≤{TITLE_WORD_MAX}). "
+        + f"ЗАГОЛОВКИ: каждый {TITLE_TARGET_MIN}–{TITLE_MAX} символов; целься в 50–55 символов, максимально заполняй длину; 45–47 символов = слабо, брак; никогда не превышай {TITLE_MAX} (слово ≤{TITLE_WORD_MAX}). "
         + "В КАЖДОМ заголовке обязательна цифра: платёж («от 9 000 ₽/мес» до «от 15 000 ₽/мес»), скидка («до 45%»), срок или банк. "
         + f"Все {TITLES_N} РАЗНЫЕ по смыслу, не перефразировки одного.\n"
         + "ОБЩАЯ РАМКА ДЛЯ ВСЕХ ЗАГОЛОВКОВ: упор на КРЕДИТ. "
@@ -1997,6 +2057,8 @@ def build_titles_messages(agent: dict, ctx: dict, item: dict | None = None,
         + "⛔ ЗАПРЕЩЕНО ТИРЕ «—» и «–» — вместо тире ставь точку или пиши двумя предложениями.\n"
         + "⛔ ЗАПРЕЩЁН ДЕФИС «-» как РАЗДЕЛИТЕЛЬ частей фразы: НЕ «Кредит - без взноса», а «Кредит. Без взноса». "
         + "Дефис допустим ТОЛЬКО внутри слов: «трейд-ин», «тест-драйв».\n"
+        + "⛔ ЗАПРЕЩЕНО «Успей», «Не упусти», «Налетай» и любые ты-формы повелительного — только вы-формы или безличные конструкции.\n"
+        + "✅ БРЕНД — ПОДЛЕЖАЩЕЕ: пиши «BAIC по госпрограмме», а не «Госпрограмма BAIC»; «BAIC в трейд-ин», а не «Трейд-ин BAIC».\n"
         + f"Твой стиль:\n   • {ex_titles}\n"
     )
     _akey = next((k for k, v in AGENTS.items() if v is agent), "")
@@ -2082,8 +2144,8 @@ def build_sitelinks_messages(agent: dict, ctx: dict, item: dict | None = None,
         _fanout_head(agent, ctx, site_type, (brand or "").strip(), kind)
         + f"Сгенерируй РОВНО {SITELINKS_N} быстрых ссылок объявления Яндекс.Директа.\n"
         + 'Верни JSON: {"sitelinks": [{"title": "...", "description": "..."}, ...]}\n'
-        + f"Заголовок: {SITELINK_TITLE_TARGET_MIN}–{SITELINK_TITLE_MAX} симв (конкретная выгода с цифрой). "
-        + f"Описание: {SITELINK_DESC_TARGET_MIN}–{SITELINK_DESC_MAX} симв — ОБЯЗАТЕЛЬНО с цифрой или УТП-маркером "
+        + f"Заголовок: {SITELINK_TITLE_TARGET_MIN}–{SITELINK_TITLE_MAX} симв, целься в 25–30 из 30 (конкретная выгода с цифрой); {SITELINK_TITLE_TARGET_MIN} символов = слабо. "
+        + f"Описание: {SITELINK_DESC_TARGET_MIN}–{SITELINK_DESC_MAX} симв, целься в 52–60 из 60 — ОБЯЗАТЕЛЬНО с цифрой или УТП-маркером "
         + "(число, %, ₽, «0 ₽», «1 год», «30 минут», «15 банков», «9 000 ₽/мес», «2025» и т.п.), 1 связная фраза.\n"
         + f"Все {SITELINKS_N} заголовков РАЗНЫЕ. Все {SITELINKS_N} описаний РАЗНЫЕ и с РАЗНЫМИ УТП. Описание без обрывков.\n"
         + "ВНУТРИ НАБОРА ссылки должны быть с РАЗНЫМИ УТП: кредит, платёж, трейд-ин, КАСКО, господдержка, "

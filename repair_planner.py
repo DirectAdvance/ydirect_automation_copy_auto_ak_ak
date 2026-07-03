@@ -17,13 +17,12 @@ _COOKIE_FIRST_CODES = {
     "SHOPPING_NOT_FINALIZED",
     "GRID_FINALIZE_WARN",
 }
-# Поисковые кампании с пустыми группами / битым автотаргетом. IN-PLACE keyword-repair невозможен:
-# UpdateUnifiedAdGroups НЕ добавляет ключи в существующую группу (Яндекс отвечает success, но kw
-# остаётся 0 — подтверждено уникальным ключом) + кампания упирается в лимит 10000 ключей. Единственный
-# способ починить — удалить кампанию и пересоздать с корректным cap. Поэтому эти коды идут в RECREATE
-# и помечаются requires_campaign_delete (кампания реально существует и её надо снести перед пересозданием).
+# Поисковые кампании с битым автотаргетом — UpdateUnifiedAdGroups no-op для ключей, но для
+# relevanceMatch ТЕОРЕТИЧЕСКИ работает. Пока идут в RECREATE из-за надёжности.
+# NO_KEYWORDS_LIVE УБРАН из этого набора (2026-07-03): in-place repair через Grid AddKeywords
+# (execute_keywords_repair) подтверждён рабочим → предпочитаем keywords_repair, recreate только
+# если in-place попытка не помогла (repair_attempts в issue > 0).
 _SEARCH_RECREATE_CODES = {
-    "NO_KEYWORDS_LIVE",
     "WRONG_AUTOTARGET",
 }
 _RECREATE_CODES = {
@@ -130,8 +129,176 @@ def _action_for_issue(issue: dict[str, Any]) -> dict[str, Any] | None:
             "uses_direct_units": False,
             "note": "добить группы/объявления через существующие cookie/Grid builders",
         }
-    # NO_KEYWORDS_LIVE / WRONG_AUTOTARGET обрабатываются выше через _RECREATE_CODES
-    # (in-place keywords_repair через UpdateUnifiedAdGroups — подтверждённый no-op, отключён).
+    # NO_KEYWORDS_LIVE: in-place через Grid AddKeywords (execute_keywords_repair). Recreate только
+    # если in-place уже провалился (repair_attempts > 0 в issue — выставляется repair-executor'ом).
+    if code == "NO_KEYWORDS_LIVE":
+        attempts = int(issue.get("repair_attempts") or 0)
+        if attempts > 0:
+            return {
+                "action": "resume_or_recreate_campaign",
+                "transport": "cookie_grid_preferred",
+                "campaign_id": cid,
+                "name": name,
+                "issue_code": code,
+                "requires_campaign_delete": True,
+                "uses_direct_units": False,
+                "note": (f"in-place keyword-repair выполнялся {attempts} раз без результата "
+                         "→ удалить кампанию и пересоздать через cookie/Grid"),
+            }
+        return {
+            "action": "keywords_repair",
+            "transport": "grid",
+            "campaign_id": cid,
+            "name": name,
+            "issue_code": code,
+            "uses_direct_units": False,
+            "note": "дозалить ключи через Grid AddKeywords (in-place, executable_now)",
+        }
+
+    if code == "KEYWORDS_WRONG_GROUP":
+        return {
+            "action": "keywords_wrong_group_repair",
+            "transport": "grid",
+            "campaign_id": cid,
+            "name": name,
+            "adgroup_id": issue.get("adgroup_id"),
+            "expected_ct": issue.get("expected_ct"),
+            "found_ct": issue.get("found_ct"),
+            "issue_code": code,
+            "uses_direct_units": False,
+            "note": "снять сдвинутые ключи чужого ct (v5 keywords.delete) и залить эталонные (Grid AddKeywords)",
+        }
+
+    if code == "IMAGES_FORBIDDEN":
+        return {
+            "action": "images_forbidden_repair",
+            "transport": "grid",
+            "campaign_id": cid,
+            "name": name,
+            "issue_code": code,
+            "uses_direct_units": False,
+            "note": "очистить imageHashes у поисковых объявлений (UpdateAdaptiveTextAds, allow_empty_images)",
+        }
+
+    if code == "FEED_FILTER_MISSING_UAC":
+        return {
+            "action": "feed_filters_uac_repair",
+            "transport": "uac_cookie",
+            "campaign_id": cid,
+            "name": name,
+            "issue_code": code,
+            "uses_direct_units": False,
+            "note": "проставить feed_filters товарной UAC (бренд → позитив+минус-марки, ct0000 → "
+                    "минус-марки; PATCH uac/campaign, исполняется в fix_feed_filters_uac)",
+        }
+
+    if code == "NO_LISTING":
+        return {
+            "action": "no_listing_repair",
+            "transport": "grid",
+            "campaign_id": cid,
+            "name": name,
+            "issue_code": code,
+            "uses_direct_units": False,
+            "note": "создать «Страницы каталога» от товарных объявлений (Grid by-shopping, "
+                    "in-place; исполняется в спека-аудите fix_no_listing)",
+        }
+
+    if code == "FEED_FILTER_MISSING_GRID":
+        return {
+            "action": "feed_filter_grid_repair",
+            "transport": "grid",
+            "campaign_id": cid,
+            "name": name,
+            "issue_code": code,
+            "uses_direct_units": False,
+            "note": "проставить минус-марки feedFilter товарным/каталожным объявлениям "
+                    "(updateShoppingAds/updateListingAds; исполняется в спека-аудите "
+                    "fix_feed_filters_grid)",
+        }
+
+    if code == "PLACEMENTS_WRONG":
+        return {
+            "action": "placements_repair",
+            "transport": "grid",
+            "campaign_id": cid,
+            "name": name,
+            "issue_code": code,
+            "uses_direct_units": False,
+            "note": "выставить места показа PLACEMENTS_TP5 узким UpdateCampaigns "
+                    "(исполняется в спека-аудите fix_placements_wrong)",
+        }
+
+    if code == "VIDEO_MISSING":
+        return {
+            "action": "video_missing_repair",
+            "transport": "uac_cookie_grid",
+            "campaign_id": cid,
+            "name": name,
+            "issue_code": code,
+            "uses_direct_units": False,
+            "note": "догрузить видео из пула M3 и привязать RMW-апдейтом (deferred-video; "
+                    "исполняется в спека-аудите fix_video_missing, до полного нуля missing)",
+        }
+
+    if code == "BUTTON_MISSING":
+        return {
+            "action": "button_missing_repair",
+            "transport": "grid",
+            "campaign_id": cid,
+            "name": name,
+            "issue_code": code,
+            "uses_direct_units": False,
+            "note": "добить кнопку «Получить скидку» RMW-апдейтом (видео сохраняется через "
+                    "typedCreatives; исполняется в спека-аудите fix_button_missing)",
+        }
+
+    if code == "SHORT_TITLES":
+        return {
+            "action": "short_titles_repair",
+            "transport": "uac_cookie",
+            "campaign_id": cid,
+            "name": name,
+            "issue_code": code,
+            "uses_direct_units": False,
+            "note": "добить короткие заголовки Мастера суффиксами (cookie PATCH uac/campaign, in-place; "
+                    "исполняется в спека-аудите fix_short_titles)",
+        }
+
+    if code in ("NO_IMAGES_LIVE", "IMAGE_MISSING"):
+        return {
+            "action": "images_repair",
+            "transport": "grid",
+            "campaign_id": cid,
+            "name": name,
+            "issue_code": code,
+            "uses_direct_units": False,
+            "note": "пере-заливка картинок через RMW + UpdateAdaptiveTextAds (in-place; "
+                    "IMAGE_MISSING исполняется и в спека-аудите fix_image_missing)",
+        }
+
+    if code == "NO_ADPRICE_LIVE":
+        return {
+            "action": "adprice_repair",
+            "transport": "grid",
+            "campaign_id": cid,
+            "name": name,
+            "issue_code": code,
+            "uses_direct_units": False,
+            "note": "проставить adPrice через _grid_set_ad_prices по прайс-кэшу (in-place)",
+        }
+
+    if code == "EMPTY_DEFAULT_TEXT_LIVE":
+        return {
+            "action": "default_text_repair",
+            "transport": "grid",
+            "campaign_id": cid,
+            "name": name,
+            "issue_code": code,
+            "uses_direct_units": False,
+            "note": "заполнить bodies ShoppingAd через set_default_text (in-place)",
+        }
+
     # PROMO_MISSING — ПОКА report-only (не auto-repair): Grid-read поле promoExtensionId ещё НЕ
     # подтверждено живым запросом + нет per-item expects_promo → срабатывал бы на КАЖДОЙ кампании
     # без промо и плодил дубль-промо. Вернуть в set после live-верификации схемы + плюмбинга expected.
@@ -213,19 +380,59 @@ def _action_for_candidate(candidate: dict[str, Any]) -> dict[str, Any] | None:
             "note": "проверить/создать уточнения через Grid",
         }
     if kind == "keywords_repair":
-        # in-place keywords_repair (UpdateUnifiedAdGroups) — подтверждённый no-op. Пустую поисковую
-        # группу чинит только пересоздание кампании, поэтому кандидат маппится в recreate с гейтом
-        # на удаление существующей битой кампании (см. _SEARCH_RECREATE_CODES).
+        # in-place keywords_repair через Grid AddKeywords (подтверждён рабочим, 2026-07-03).
+        # Recreate только если in-place уже провалился (repair_attempts > 0 у кандидата).
+        attempts = int(candidate.get("repair_attempts") or 0)
+        if attempts > 0:
+            return {
+                "action": "resume_or_recreate_campaign",
+                "transport": "cookie_grid_preferred",
+                "campaign_id": _cid(candidate),
+                "name": name,
+                "issue_code": "NO_KEYWORDS_LIVE",
+                "requires_campaign_delete": True,
+                "uses_direct_units": False,
+                "note": (f"in-place keyword-repair выполнялся {attempts} раз без результата "
+                         "→ удалить кампанию и пересоздать через cookie/Grid"),
+            }
         return {
-            "action": "resume_or_recreate_campaign",
-            "transport": "cookie_grid_preferred",
+            "action": "keywords_repair",
+            "transport": "grid",
             "campaign_id": _cid(candidate),
             "name": name,
             "issue_code": "NO_KEYWORDS_LIVE",
-            "requires_campaign_delete": True,
             "uses_direct_units": False,
-            "note": ("поисковая группа без ключей: in-place repair невозможен — удалить кампанию "
-                     "и пересоздать с корректным cap (destructive, только под гейтом)"),
+            "note": "дозалить ключи через Grid AddKeywords (in-place, executable_now)",
+        }
+    if kind == "images_repair":
+        return {
+            "action": "images_repair",
+            "transport": "grid",
+            "campaign_id": _cid(candidate),
+            "name": name,
+            "issue_code": "NO_IMAGES_LIVE",
+            "uses_direct_units": False,
+            "note": "пере-заливка картинок через RMW + UpdateAdaptiveTextAds (in-place)",
+        }
+    if kind == "adprice_repair":
+        return {
+            "action": "adprice_repair",
+            "transport": "grid",
+            "campaign_id": _cid(candidate),
+            "name": name,
+            "issue_code": "NO_ADPRICE_LIVE",
+            "uses_direct_units": False,
+            "note": "проставить adPrice через _grid_set_ad_prices по прайс-кэшу (in-place)",
+        }
+    if kind == "default_text_repair":
+        return {
+            "action": "default_text_repair",
+            "transport": "grid",
+            "campaign_id": _cid(candidate),
+            "name": name,
+            "issue_code": "EMPTY_DEFAULT_TEXT_LIVE",
+            "uses_direct_units": False,
+            "note": "заполнить bodies ShoppingAd через set_default_text (in-place)",
         }
     return None
 
@@ -263,11 +470,16 @@ def build_repair_plan(report: dict[str, Any] | None) -> dict[str, Any]:
         "resume_or_recreate_campaign": 0,
         "rebuild_missing_content": 1,
         "keywords_repair": 2,
-        "create_or_attach_promo": 3,
-        "ensure_callouts": 4,
-        "rename_campaign": 5,
-        "retry_live_verification": 6,
-        "verify_with_grid": 7,
+        "keywords_wrong_group_repair": 2,
+        "images_forbidden_repair": 3,
+        "images_repair": 3,
+        "adprice_repair": 4,
+        "default_text_repair": 5,
+        "create_or_attach_promo": 6,
+        "ensure_callouts": 7,
+        "rename_campaign": 8,
+        "retry_live_verification": 9,
+        "verify_with_grid": 10,
     }
     actions.sort(key=lambda a: (severity_order.get(str(a.get("action")), 99), str(a.get("name") or "")))
     return {
