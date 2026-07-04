@@ -7,6 +7,37 @@
 > и для impact-анализа («что сломается, если тронуть X»). Правила «когда смотреть» —
 > в шапке того файла.
 
+## Сессия: 2026-07-04 (вечер) — 8 дефектов качества РК + добивка по кукам, пересоздание
+
+**Семён нашёл 8 серьёзных дефектов созданных РК (должны чиниться добивкой после создания). Root-cause
+(direct_investigator): ГЛАВНОЕ — вся post-create добивка КРАШИЛАСЬ на `cmc` NameError (не чинила ничего),
++ отдельные баги. ВСЕ исправлены, задеплоены, код-ревью пройдено:**
+
+- **🔴 Корень: `cmc` NameError** (`create_set_repairing._delete_uac_repair_campaigns`) → recreate/добивка
+  падала → видео/кнопка/картинки/заголовки не дозаполнялись. Фикс `edd455e` (локальный `import cmc`).
+  Пруф: recreate по кукам done 3/3+1/1. **recreate/добивка — cookie-путь, БАЛЛЫ НЕ НУЖНЫ** (ждать 152 не надо).
+- **#6 сдвиг ключей (регресс):** `text_gen._filter_group_keywords` для seg=Общее при опустошении дропом
+  моделей возвращал модельные ключи в общую группу. Фикс: `_generic_common_keywords(city)` (норм. через
+  `_content_city`). `3aa51ae`.
+- **#2 порядок заголовка:** `_brand_title_set` — марка ПЕРВОЙ (автотаргет), потом кредит. **#1 символы:**
+  короткие УТП-хвосты. Пруф: «BAIC в Кемерово. Кредит от 15 банков...», длины 50-55. `3aa51ae`.
+- **#5 листинг минус-фильтр:** ListingAd получает минус-маркер глоб.правил (был только у ShoppingAd).
+  **#7 tp5 сайтлинки:** cookie-фолбэк `_ai_common_sitelinks` при 152. **#8 tp5 каталог-объявления:**
+  `create_shopping_full` отдаёт `shopping_ad_ids` → cookie докручивает ListingAd (guard `not is_rsya`). `4bf30a4`.
+- **#3 видео / #4 кнопка:** чинятся ДОБИВКОЙ (`fix_video_missing`/`BUTTON_MISSING`) — теперь без краша cmc.
+- **Ревью (skill code-review) нашёл 2 бага в моих же фиксах:** `_create_shopping_via_cookie` без параметра
+  `city` → NameError глушил ВЕСЬ финализ tp5 (места/уточнения/коррекции); `_generic_common_keywords` без
+  норм. города. Оба исправлены `4bf30a4`.
+- **+ `import os`** в `create_set_feeds` (был NameError, рушил цикл добивки картинок). `3aa51ae`.
+- **Удаление черновиков — только `GridCreateClient.delete_campaigns` (cookie, все типы, без баллов).**
+  `delete_campaign` (UAC-only) для TEXT-РК = no-op (404→already_gone). `campaigns.delete` v5 нужны баллы.
+- **Пересоздание 2 РК (e8b45574e306 psm/b3175889ab2a ozge):** идёт на исправленном коде. ⚠️ Мешает ИНФРА:
+  M3-LLM периодически лежит (→ OpenRouter/DeepSeek), воркер рестартит SIGTERM (M3-автоматика?) → джобы
+  interrupted → resume. НЕ регресс кода. Живая проверка 8 дефектов — на созданных РК после завершения.
+- ⚠️ Осталось: дождаться пересоздания → проверить 8 дефектов live → мета: расширить live_verification
+  (сейчас не чекает видео/кнопку/сайтлинки/каталог/порядок заголовков — эти есть в campaign_spec_audit,
+  который гоняется в delayed-repair; после cmc-фикса он отрабатывает).
+
 ## Сессия: 2026-07-04 (день) — вынос text_gen + ai_content (монолит −39%), прогон 2 РК
 
 ### ⚡ Замер скорости + ФИКС переноса контента (item 8/9)
@@ -5115,3 +5146,20 @@ UI-ИТЕРАЦИИ по фидбеку Семёна (20:07–20:30): (1) мул
 - Отложено (некритично): В4 — AUTOBUDGET_WEEK_BUNDLE/AVG_CLICK без clicksLimit/avgBid в strategyData
   (нет таких кампаний в скоупе, кейс редкий); М5 — callouts старых TEXT-кампаний невидимы Grid-карте;
   М2 — race суточного лимита ±1-2; М10-М12 — косметика/наследие.
+
+## 2026-07-04 (v14: быстрые ссылки комбинаторных — куки/Grid без баллов)
+- _replace_sitelink_text_grid: ad_items делятся на v5-совместимые (TextAd/DynamicTextAd → ads.update)
+  и grid_fr (ResponsiveAd и прочие → куки/Grid findAndReplaceText SITELINK_TITLE/DESCRIPTION, 0 баллов
+  на запись). Новый набор создаётся только для campaign/v5-веток.
+- ⚠️ ГРАБЛИ: findAndReplaceText возвращает successCount=N, НИЧЕГО не меняя (проверено live на
+  GdTextAd porg-xgauwt56, даже с sitelinkOrderNums, задержка 45с не помогает — memory 15467).
+  Поэтому replaced для комбинаторных считается ТОЛЬКО по read-back: _confirm_ads_sitelink_text
+  перечитывает SitelinkSetId объявлений (v5, по подтипам) + sitelinks.get и требует new-в-наборе
+  и old-отсутствует. Тест обеих сторон: негатив → confirmed=0 + ошибка, позитив → confirmed=3.
+- Живых ResponsiveAd с ad-level наборами в кабинетах Терехова НЕТ (скан 5 аккаунтов: все адаптивные
+  с policy INHERIT — наборы на кампаниях, campaign-ветка их уже покрывает). Ветка «не верифицирована
+  на живом ResponsiveAd», но самопроверяемая: тихого ложного успеха быть не может.
+- Кандидат на будущее, если findAndReplaceText не сработает и на адаптивных: UpdateAdaptiveTextAds
+  (grid_finalize.update_ad_images / adaptive_ads_for_update) с inheritableSitelinkSet{policy,...} —
+  схему policy узнать с живого примера (интроспекция Грида закрыта).
+- md5 routes 13ad080c… Mac==LXC101, direct-content + worker перезапущены, active.
