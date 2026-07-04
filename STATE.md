@@ -52,8 +52,16 @@
   не блокирует). Юнит-тест PASS (True/False/True/True). Копир не сломан (baseline 302). commit 28cf083.
   ⚠️ **Живая проверка Семёна:** create-набор + copy-набор ОДНОГО агентства одновременно → в логах
   `direct-copy`/`direct-worker` второй ЖДЁТ (не идёт параллельно); разные агентства — параллельно.
-- ⏳ **copy_engine.py** (вынос _copy_* из blueprint, −1040) — спека готова (агент acbf8bc), выбор
-  Семёна «оба, очередь первой» → следующий шаг после проверки гейта.
+- **✅ copy_engine.py ВЫНЕСЕН (−2156!):** все 47 `_copy_*` + `_direct_copy_module` + copy-глобалы →
+  copy_engine.py (2229 стр). 28 DI через configure() (_CREATE_JOBS — ТОТ ЖЕ объект для mirror);
+  прямой импорт sibling-модулей; `_wire_copy_routes`/`_ensure_copy_worker` оставлены в blueprint
+  (copy_main/routes_copy не тронуты). Safety: **pyflakes 0 undefined** + import-smoke (DI ок) +
+  copy-worker чистый старт + baseline копира 302 сохранён. commit c4b6deb. ⚠️ живой копир-прогон — Семёну.
+  **blueprint 11198 → 7759 (−3439, ~31% за сессию, 7 модулей).** Осталось: #F yandex_api+db, text_gen,
+  ai_content, queue — HIGH, по одному с живым прогоном.
+- **🛠 Регрессия исправлена:** перенос content_editor_access.json в .secret/ (e8497ce) сломал
+  JSON-фолбэк логина в `app.py` (digest.service читал из direct/, файла нет). Фикс: тот же
+  walk-parents резолвер в app.py (commit fc25366, home-репо). digest active, /login 200, 19 users.
 
 ## Сессия: 2026-07-04 — ре-ран копира Haval (устранение 1626 дублей ключей)
 
