@@ -2535,6 +2535,13 @@ def _jobs_db_init() -> None:
             cur.execute("ALTER TABLE public.direct_automation_jobs ADD COLUMN IF NOT EXISTS errors_log jsonb")
             # control: команда web→worker (сейчас используется 'cancel' для running-джоб; worker её NULL-ит)
             cur.execute("ALTER TABLE public.direct_automation_jobs ADD COLUMN IF NOT EXISTS control text")
+            # Кросс-процессный per-agency гейт (create-worker ↔ copy-worker делят куки/баллы агентства).
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS public.direct_agency_active (
+                    agency     text PRIMARY KEY,
+                    job_id     text NOT NULL,
+                    started_at timestamptz NOT NULL DEFAULT now()
+                )""")
             conn.commit()
         finally:
             conn.close()
@@ -2958,6 +2965,7 @@ def _create_watchdog_tick() -> None:
                 _CREATE_ACTIVE_AGENCIES[agency] = active
             else:
                 _CREATE_ACTIVE_AGENCIES.pop(agency, None)
+            _agency_gate_release(agency, jid)             # кросс-процессный слот (watchdog-таймаут)
         # Проверка awaiting_feed_decision: дедлайн истёк — запускаем без фида
         _expired_feed_awaiting = False
         for jid, job in list(_CREATE_JOBS.items()):
@@ -2991,6 +2999,7 @@ def _create_watchdog_tick() -> None:
     for jid, snap in timed_out:
         _job_db_save(jid, snap, full=True)
     _jobs_db_mark_stale_running(_CREATE_RUNNING_TIMEOUT)
+    _agency_gate_sweep()                                  # освободить слоты агентств крашнутых/терминальных джоб
 
 
 def _create_watchdog_loop() -> None:
@@ -3637,6 +3646,68 @@ def _create_jobs_ahead(jid: str) -> int:
     return running + idx
 
 
+# ── Кросс-процессный per-agency гейт (create-worker ↔ copy-worker) ──────────────────
+# _CREATE_ACTIVE_AGENCIES — in-memory В КАЖДОМ процессе, потому direct-worker (create) и
+# direct-copy (copy) НЕ координируются → create+copy одного агентства жгут куки/API Яндекса
+# параллельно (152, инвалидация кук). Слот агентства держим в БД (одна строка на кластер).
+# FAIL-OPEN: ЛЮБОЙ сбой БД → ведём себя как раньше (не блокируем) — гейт не может сломать пайплайн.
+def _agency_gate_claim(agency: str, job_id: str) -> bool:
+    """Занять кросс-процессный слот агентства. True = слот наш / не применимо; False = занят другим процессом."""
+    if not agency:                                    # пустой ключ агентства — не гейтим (как in-memory)
+        return True
+    try:
+        conn = _victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO public.direct_agency_active (agency, job_id, started_at) "
+                "VALUES (%s, %s, now()) ON CONFLICT (agency) DO NOTHING RETURNING agency",
+                (agency, job_id))
+            got = cur.fetchone() is not None
+            conn.commit()
+            return got
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001 — FAIL-OPEN
+        print(f"[agency-gate] claim fail-open ({agency}): {str(e)[:120]}", flush=True)
+        return True
+
+
+def _agency_gate_release(agency: str, job_id: str) -> None:
+    """Освободить СВОЙ слот агентства (идемпотентно, только своя job_id). FAIL-OPEN."""
+    if not agency:
+        return
+    try:
+        conn = _victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM public.direct_agency_active WHERE agency=%s AND job_id=%s",
+                        (agency, job_id))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001
+        print(f"[agency-gate] release fail-open ({agency}): {str(e)[:120]}", flush=True)
+
+
+def _agency_gate_sweep() -> None:
+    """Backstop (из watchdog): освободить слоты, чей job больше не running/claimed
+    (терминальный/пропал/краш процесса — после того как watchdog пометил его interrupted)."""
+    try:
+        conn = _victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "DELETE FROM public.direct_agency_active a WHERE NOT EXISTS ("
+                "  SELECT 1 FROM public.direct_automation_jobs j "
+                "   WHERE j.job_id = a.job_id AND j.status IN ('running','claimed'))")
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001
+        print(f"[agency-gate] sweep fail-open: {str(e)[:120]}", flush=True)
+
+
 def _claim_next_job():
     """Берёт из очереди следующую джобу, если по агентству ещё не достигнут лимит параллельности.
     Ждёт, если очередь пуста ИЛИ все доступные джобы упёрлись в лимит агентства.
@@ -3658,8 +3729,12 @@ def _claim_next_job():
                     pick = "retry"; break
                 active = _CREATE_ACTIVE_AGENCIES.get(_job_agency(q_job), 0)
                 if active >= _CREATE_MAX_PER_AGENCY:
-                    continue                              # лимит по агентству исчерпан — ждёт
-                # подходит: по агентству есть свободный слот
+                    continue                              # лимит по агентству исчерпан (в этом процессе) — ждёт
+                # Кросс-процессный гейт: агентство может быть занято ДРУГИМ процессом (copy↔create) —
+                # тогда не берём, ждём (не жжём куки/баллы одного агентства параллельно). FAIL-OPEN внутри.
+                if not _agency_gate_claim(_job_agency(q_job), q_jid):
+                    continue
+                # подходит: по агентству есть свободный слот (и локально, и кросс-процессно)
                 _CREATE_QUEUE.pop(i)
                 q_job["status"] = "running"
                 q_job["started_at"] = time.time()         # старт прогона — для «ушло времени» в итоге
@@ -3782,6 +3857,7 @@ def _create_worker_loop(app):
                 else:
                     _CREATE_ACTIVE_AGENCIES.pop(agency, None)
                 _CREATE_COND.notify_all()
+            _agency_gate_release(agency, jid)             # кросс-процессный слот (вне _CREATE_COND — DB I/O не держит лок)
         if final_status == "done":                        # пауза ТОЛЬКО после успешного полного аккаунта
             time.sleep(_CREATE_POOL_PAUSE)
 
