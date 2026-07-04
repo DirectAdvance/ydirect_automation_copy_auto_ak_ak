@@ -27,14 +27,18 @@
   neg-кэш уже корректен. Наполнить видеопул на M3 + заменить 2 битых mp4 (76999070…, 16f27d01…).
 - **Перенос контента M3→LXC101** (задача 1): `scripts/sync_content_m3.py` (rsync-мирро + сжатие
   видео ffmpeg ≤9.9МБ / картинки q80+EXIF / PNG lossless, идемпотентность, disk-check, prune).
-  Cron `0 3 * * *` (Екб) активен. Диск LXC101 +50ГБ (118Г, free 74). `kontent_pack.PACK_MOUNT`
-  теперь через env `NEURO_PACK_MOUNT` (дефолт не тронут). ⚠ ТУННЕЛЬ M3=0.4МБ/с → первая заливка
-  34ГБ ≈ СУТКИ (идёт в фоне, /var/log/neuro_content_sync.log). **ОСТАЛОСЬ: после сборки
-  /opt/neuro_content_local — выставить NEURO_PACK_MOUNT в direct*.service и рестарт (флип на локаль).**
+  Cron `0 3 * * *` (Екб) активен. Диск LXC101 +50ГБ (118Г). `kontent_pack.PACK_MOUNT` через env
+  `NEURO_PACK_MOUNT`. **✅ ЗАВЕРШЕНО:** DST собран (30ГБ, 57500 файлов, err=0); скрипт распараллелен
+  на 8 потоков (ThreadPoolExecutor — остаток за ~3мин; ffmpeg `-threads 1`, disk-check RAW+DST);
+  **ФЛИП СДЕЛАН** — drop-in `NEURO_PACK_MOUNT=/opt/neuro_content_local` на direct/-worker/-content
+  (подтв. в /proc/PID/environ). Днём читаем локаль, не M3. ⚠ Free 9.2ГБ (RAW 34+DST 30) — тесно;
+  RAW держим ради инкрементального крона. Drop-in'ы в /etc/systemd/system/*.d/ (не в git/Mutagen).
 - **Шкала прогресса** (index.html): создание 0..90%, финализация 90→95%, 100% по факту done.
-- **Задача 2 (монолит blueprint.py 11179):** карта+план разбиения в ARCHITECTURE.md (8 кластеров
-  LOW→HIGH, инвариант wiring-hub, DI/re-export). ФИЗ. ПЕРЕНОС ДЕФЕРНУТ на сессию при Семёне (нужен
-  живой create-set smoke). Начинать с llm_providers (3 DI-колбэка: heartbeat/error_leak).
+- **Задача 2 (монолит blueprint.py):** карта+план в ARCHITECTURE.md (8 кластеров LOW→HIGH, инвариант
+  wiring-hub, DI/re-export). **✅ Кластер #1 ВЫНЕСЕН:** `llm_providers.py` (351 стр., blueprint 11198→
+  10896), ревью чисто, heartbeat-DI доказан, в проде. ⏳ Остальные (city_morph, text_norm, text_gen,
+  ai_content, queue…) выносить ПО ОДНОМУ с живым create-set между шагами (city_morph трогает контент
+  объявлений + тянет `_title2_blocklist` → MED, не LOW). Порядок и связность — в ARCHITECTURE.md.
 
 ## Сессия: 2026-07-04 — ре-ран копира Haval (устранение 1626 дублей ключей)
 
@@ -51,6 +55,23 @@
 - РЕЗУЛЬТАТ: status=done, created=23, failed=0 (~6 мин). Верификация ключей (source vs target,
   дубли внутри групп): tp5 712166889 601==601 dup0 · tp1 712166913 193==193 dup0 · tp2 712167294
   601==601 dup0. ДУБЛИ УШЛИ, фикс подтверждён живьём. Врем.скрипты удалены (лок+сервер).
+- КОРЕНЬ (grid_create.py): `create_full` + `add_text_content_to_existing` лили ключи ДВАЖДЫ —
+  и полем `keywords` в build_adgroup (AddUnifiedAdGroups), и отдельным `add_keywords` (AddKeywords).
+  Grid создавал ключи ОБОИМИ путями для групп <~140 фраз → точные дубли (крупные, как Jolion-148,
+  не задеты — там AddUnifiedAdGroups keywords игнорит). Фикс: build_adgroup(keywords=[]) в обеих
+  функциях, ключи ЕДИНСТВЕННЫМ путём через AddKeywords (проверен на всех объёмах). build_adgroup
+  НЕ тронут; товарные (create_shopping_full/add_shopping_content) уже были keywords=[]. ⚠ Бил и по
+  боевому create-set: tp1 РСЯ (create_set_tp1_builders:1331) + feed (create_set_feed_builders:58) —
+  ранее созданные боевые РК с <140 кл/группу тоже несут дубли (аудит/дедуп — по запросу, не делали).
+- CALLOUTS 0/23 = КОРРЕКТНО (не баг): живой Grid-read источника porg-mjyh6hjv — 0/23 campaign-level
+  (inheritableCallouts пусты), 0/226 ad-level (hasCallouts=False). 15 уточнений в аккаунте —
+  неиспользуемая библиотека, ни к чему не привязана. Переносить нечего; нужны на цели → назначать отдельно.
+- CODE-REVIEW правки (3 корректностных угла, консенсус): единственный реальный риск — `add_keywords`
+  был в `except Exception: pass`, а после фикса это ЕДИНСТВЕННЫЙ путь ключей → немой сбой = кампания
+  без ключей, невидимо (все вызывающие проверяют `not rep["errors"]`). ФИКС: оба места пишут сбой в
+  rep["errors"] (`ключи(AddKeywords): …`). Задеплоено worker+copy (compile OK, copy 302). Пред-существующее
+  (НЕ вносили, на живых данных не стреляло): позиц.сдвиг ключей при двойном отказе (уже логирует warning),
+  `[:cap]` до фильтра, `_alloc_kw_caps` считает `---`/пустые, нет дедупа перед add_keywords.
 
 ## Сессия: 2026-07-03 (ночь) — попап LLM-провайдера + M3 → одна 72B
 
@@ -4931,3 +4952,51 @@ UI-ИТЕРАЦИИ по фидбеку Семёна (20:07–20:30): (1) мул
 - Карточка задания (running): вместо статичных 55% — асимптота от server elapsed,
   оценка длительности растёт с числом кампаний (est = max(40, 30+1.2*кампаний)), потолок 95%.
 - md5: routes 6e0d5bb3…, editor html 2a3907f7… Mac==LXC101; direct-content + worker перезапущены, active.
+
+## 2026-07-04 (v12: боевая эмуляция замен под terehov + 6 фиксов Grid/v5)
+- Полный цикл на 3 аккаунтах (x7km6p2o, qfnapixm, xgauwt56): заголовки(2 акк), тексты(2),
+  уточнение(33 живых кампании B), быстрые ссылки題+описание(2 акк, 776+75 объявлений). Все замены
+  применены, верифицированы перечиткой, затем ОТКАЧЕНЫ и откат верифицирован (ВСЁ OK).
+- Найденные и исправленные баги (все задеплоены):
+  1. grid_finalize._read_unified_campaign_update_payloads: частичные GraphQL-ошибки (strategyLearningStatus)
+     роняли чтение → толерантность при непустом rowset.
+  2. routes: sitelink-замена работала только через campaign-level inheritable набор; у обычных аккаунтов
+     наборы на уровне объявлений → новая ветка _v5_rebind_ads_sitelink_set (ads.update SitelinkSetId,
+     чанки 500, ретрай на error 1000, read-back, страховка «немых» UpdateResults). Убран опасный фолбэк
+     «привязать всем кампаниям при пустой карте».
+  3. add_sitelink_set: пустой description → омит поля (SITELINK_DESCRIPTION_CANNOT_BE_EMPTY). «!» в текстах
+     ссылок запрещён Яндексом (ALLOWED_SYMBOLS_*).
+  4. callout: Grid нестабильно отдаёт inheritableCallouts.assetValue → добивающие проходы (2) в
+     _replace_callout_grid; архивные кампании скипаются (ARCHIVED_CAMPAIGN_MODIFICATION).
+  5. _strategy_update_payload: омит avgCpa/sum при 0 (MUST_BE_GREATER_THAN_OR_EQUAL_TO_MIN);
+     омит additionalData при пустом href (EMPTY_HREF).
+  6. ⚠️ ГРАБЛИ: Grid strategyName AUTOBUDGET = «Максимум конверсий»! Отправка его кампании
+     «Максимум кликов» (OPTIMIZE_CLICKS, write-имени нет в enum) МЕНЯЕТ стратегию. Кампания
+     702916352 была случайно переведена и ВОССТАНОВЛЕНА (v501 WB_MAXIMUM_CLICKS, read-back ок).
+     Теперь такие кампании помечаются _unsupported_strategy и узкие апдейты их пропускают с понятной ошибкой.
+- Очередь вживую: 40 заданий за сессию, ср. выполнение 91с (макс 242с), ср. ожидание 39с,
+  по интервалам БД: 0 пересечений на логин, ≤2 на агентство. Fairness работает.
+- Восстановление отката последней кампании: Grid-мутацией (AUTOBUDGET_AVG_CPA, avgCpa=1, goalId 0)
+  + немедленный возврат стратегии v501 → WB_MAXIMUM_CLICKS. Всё верифицировано.
+
+## 2026-07-04 (v13: код-ревью очереди — 3 критичных + 6 важных фиксов, всё задеплоено)
+- К1: маркер _unsupported_strategy утекал в GraphQL у set_campaign_disabled_places/age_bidmods/
+  placement_types (ломал бы copy-сервис/tp5-repair) → единый хелпер GridClient._narrow_bases
+  (skip+strip _-ключей) во всех 5 узких апдейтах.
+- К2: _run_one вне try в _worker_loop — падение финализации убивало daemon-поток навсегда → обёрнуто.
+- К3: _pairs_allowed пропускал неизвестные логины (можно было читать баланс любого аккаунта агентств)
+  → found < len(logins) = отказ + фильтр direction='Авто'. Смоук: 403 «неизвестные аккаунты».
+- В1: ce_job_status/cancel без проверки владельца → _job_owned (чужой status=404, cancel=403).
+- В2: перепривязка наборов слала TextAd всем → subtype в _ads_by_set/ad_items, группировка
+  TextAd/DynamicTextAd, ResponsiveAd — честная ошибка. Read-back чанками по 10000 (М6).
+- В3: два процесса воркера дублировали задания → session advisory lock ce_worker_singleton
+  (смоук: второй процесс выходит).
+- В5: watchdog в main-цикле — running старше 2ч возвращается в queued (attempts не сбрасывается).
+- В6: sitelink-батч больше не валится из-за одной неподдерживаемой кампании — фильтр до мутации.
+- М1: CE_MSK_DAY_SQL → CE_EKB_DAY_SQL; М3: безопасный parse campaign_count; М8: ensure_jobs_table в try.
+- md5: routes 5193bf81…, grid_finalize 321fe2f8…, worker 3149913f… Mac==LXC101; direct-content +
+  direct-content-worker перезапущены, direct.service/direct-copy.service active (не рестартовали).
+- Смоук после деплоя: очередь прожевала задание end-to-end, баланс своих 200/чужих-неизвестных 403.
+- Отложено (некритично): В4 — AUTOBUDGET_WEEK_BUNDLE/AVG_CLICK без clicksLimit/avgBid в strategyData
+  (нет таких кампаний в скоупе, кейс редкий); М5 — callouts старых TEXT-кампаний невидимы Grid-карте;
+  М2 — race суточного лимита ±1-2; М10-М12 — косметика/наследие.
