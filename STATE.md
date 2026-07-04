@@ -34,11 +34,16 @@
   (подтв. в /proc/PID/environ). Днём читаем локаль, не M3. ⚠ Free 9.2ГБ (RAW 34+DST 30) — тесно;
   RAW держим ради инкрементального крона. Drop-in'ы в /etc/systemd/system/*.d/ (не в git/Mutagen).
 - **Шкала прогресса** (index.html): создание 0..90%, финализация 90→95%, 100% по факту done.
-- **Задача 2 (монолит blueprint.py):** карта+план в ARCHITECTURE.md (8 кластеров LOW→HIGH, инвариант
-  wiring-hub, DI/re-export). **✅ Кластер #1 ВЫНЕСЕН:** `llm_providers.py` (351 стр., blueprint 11198→
-  10896), ревью чисто, heartbeat-DI доказан, в проде. ⏳ Остальные (city_morph, text_norm, text_gen,
-  ai_content, queue…) выносить ПО ОДНОМУ с живым create-set между шагами (city_morph трогает контент
-  объявлений + тянет `_title2_blocklist` → MED, не LOW). Порядок и связность — в ARCHITECTURE.md.
+- **Задача 2 (монолит blueprint.py):** карта+план в ARCHITECTURE.md. **✅ 5 КЛАСТЕРОВ ВЫНЕСЕНЫ**
+  (в проде, import-smoke зелёный, ревью чисто по llm/sync): `llm_providers`(351) · `text_norm`(404) ·
+  `city_morph`(190) · `promo_gen`(267) · `campaign_naming`(262)+`model_urls`(124). **blueprint 11198→
+  9839 (−1359, ~12%).** Паттерн: sed-вынос по контент-якорям → DI-заглушка+configure → ре-экспорт →
+  compile+изолированный тест+import-smoke LXC101 → деплой → коммит.
+  ⏳ **#F yandex_api+db ОТЛОЖЕН** (foundation, критически перемешан с register_routes + `_bp.X` из 4
+  entrypoint → нужен точный re-export-шим + живой create-set; НЕ вслепую). ⏳ #6 text_gen/#7 ai_content/
+  #8 queue — HIGH, по одному с живым прогоном. Детали и грабли каждого — в ARCHITECTURE.md.
+  ⚠️ **Проверь живым create-set:** 5 вынесенных кластеров задеплоены — прогони один набор, убедись что
+  контент/имена/промо/города в объявлениях те же (import-smoke не прогоняет генерацию).
 
 ## Сессия: 2026-07-04 — ре-ран копира Haval (устранение 1626 дублей ключей)
 
