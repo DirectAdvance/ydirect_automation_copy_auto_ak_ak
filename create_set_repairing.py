@@ -394,6 +394,7 @@ def _repair_deps() -> rex.RepairDeps:
 
 def _delete_uac_repair_campaigns(login: str, agency: str, replacements: list[dict]) -> dict:
     """Delete specific incomplete UAC drafts before queued recreate."""
+    from . import campaign as cmc          # cookie-клиент удаления (был NameError: cmc не импортирован)
     rows = []
     failed = []
     if not replacements:
