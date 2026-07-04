@@ -41,8 +41,14 @@
   cookie/Grid (БЕЗ баллов), но ловит те же транзиентные Yandex Grid 500 (как `set_default_text` при
   создании). НЕ баллы, НЕ баг — проходит на ретрае. Картинки же добились полностью (images_repair→0).
   Рекомендация: retry+backoff на `groups_for_edit` в execute_keywords_repair (не правил живьём).
-- **recreate×5 требуют баллов Direct (152)** — заблокированы до сброса лимита (полночь МСК). keywords/images/
-  adprice через Grid (без баллов) — добиваются. Запущен nohup-цикл добивки обоих аккаунтов (Grid-действия).
+- **🐞 БАГ recreate-добивки (ИСПРАВЛЕНО `edd455e`):** `_delete_uac_repair_campaigns` (create_set_repairing.py:395)
+  падал с **`NameError: name 'cmc' is not defined`** — cookie-удаление неполных UAC (tp6/tp7) перед recreate
+  крашилось → вся recreate-добивка прерывалась, tp5/tp7 «висели». Казалось «ждём баллы», но recreate — **cookie,
+  баллы НЕ нужны** (моё раннее «ждём полночь» — НЕВЕРНО, Семён поправил). Фикс: локальный `from . import campaign as cmc`.
+  **Пруф:** после фикса recreate-джоба psm5h7q6 `345c06d58fa4` done **3/3, 0 failed** (3 tp5 пересозданы по кукам);
+  ozge4ntu recreate тоже queued. keywords_repair — Grid без баллов, падал на транзиентном `groups_for_edit` 500 (ретрай).
+- **Триггер recreate по кукам:** `_queue_recreate_repair_job` с `body._auto_recreate_with_delete=True` (кампании DRAFT
+  → безопасно) + `via_cookie=True`, запуск `DIRECT_ROLE=web` → воркер клеймит из БД, идёт по кукам (без 152).
 - **⚠️ Карточка ozge4ntu в UI СТАРАЯ** («прервано, создано 6») — реально c7860c9e0576 done 23/23.
   НЕ жать «Удалить созданные» — снесёт 23 живые РК.
 
