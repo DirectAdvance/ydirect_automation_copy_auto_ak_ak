@@ -52,6 +52,7 @@ def run_create_set_gallery(*, kind: str, it: dict[str, Any], name: str,
         body_text=body_text,
         feed_id=num(it.get("feed_id"), 0), corr=corr, ret_map=ret_map,
         token=(st_token or ""), slepok=slepok, site_type=site_type,
+        city=(city or ""),                         # #7: нужен для cookie-фолбэка сайтлинков (_ai_common_sitelinks)
         feed_name=(it.get("feed_name") or ""),
         single_feed=single_feed,   # при feed_id=0 cookie-путь должен предпочесть /yandex.xml, а не первый фид
         callout_texts=callouts,

@@ -593,8 +593,10 @@ def create_full(login: str, *, campaign_spec: dict, groups: list, region_ids: li
     if _kw_items:
         try:
             rep["keywords"] = len(cl.add_keywords(_kw_items))
-        except Exception:  # noqa: BLE001 — best-effort; группы/объявления уже созданы
-            pass
+        except Exception as e:  # noqa: BLE001 — группы созданы; но ключи теперь ЕДИНСТВЕННЫМ путём,
+            # молчать нельзя: сбой = кампания без ключей (не будет показываться). Выносим в rep["errors"],
+            # чтобы вызывающий (ЕПК-копир/feed/tp1/repair) увидел провал по стандартной проверке errors.
+            rep["errors"].append(f"ключи(AddKeywords): {str(e)[:200]}")
 
     # Объявления пачкой + adPrice по бренду группы.
     ad_items, ad_brand = [], []
@@ -716,8 +718,9 @@ def add_text_content_to_existing(login: str, *, campaign_id: int, groups: list,
     if _kw_items_tc:
         try:
             rep["keywords"] = len(cl.add_keywords(_kw_items_tc))
-        except Exception:  # noqa: BLE001 — best-effort; группы уже созданы
-            pass
+        except Exception as e:  # noqa: BLE001 — группы созданы; ключи теперь ЕДИНСТВЕННЫМ путём,
+            # сбой = группы без ключей. Выносим в rep["errors"] (repair-gate проверяет not errors).
+            rep["errors"].append(f"ключи(AddKeywords): {str(e)[:200]}")
 
     ad_items = []
     for g, agid in zip(use_groups, ag_ids):
@@ -1018,6 +1021,7 @@ def create_shopping_full(login: str, *, campaign_spec: dict, group_names: list, 
     try:
         a_ids = cl.add_shopping_ads(ad_items)
         rep["ads"] = sum(1 for x in a_ids if x)
+        rep["shopping_ad_ids"] = [int(x) for x in a_ids if x]
     except GridCreateError as e:
         rep["errors"].append(f"товарные объявления(куки): {str(e)[:200]}")
     return rep

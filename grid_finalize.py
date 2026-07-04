@@ -377,6 +377,17 @@ class GridClient:
         strategy_type = str(strategy.get("strategyType") or "")
         if strategy_type == "OPTIMIZE_CONVERSIONS":
             strategy_name = "AUTOBUDGET_AVG_CPA"
+        elif strategy_type == "OPTIMIZE_CLICKS":
+            # ⚠️ Во write-enum Грида НЕТ имени для «Максимум кликов» с недельным бюджетом:
+            # AUTOBUDGET означает «Максимум конверсий» и МЕНЯЕТ стратегию кампании
+            # (проверено на porg-qfnapixm/702916352). Такие кампании помечаются
+            # _unsupported_strategy и пропускаются узкими апдейтами.
+            if strategy.get("clicksLimit"):
+                strategy_name = "AUTOBUDGET_WEEK_BUNDLE"
+            elif strategy.get("avgBid"):
+                strategy_name = "AUTOBUDGET_AVG_CLICK"
+            else:
+                strategy_name = "AUTOBUDGET"
         else:
             strategy_name = strategy.get("strategyName") or strategy_type or "AUTOBUDGET_AVG_CPA"
         return {
@@ -401,13 +412,16 @@ class GridClient:
             },
             "strategyData": {
                 "goalId": str(strategy.get("goalId") or "0"),
-                "avgCpa": str(int(strategy.get("avgCpa") or 0)),
-                "sum": str(int(budget.get("sum") or 0)),
+                # avgCpa и sum добавляются ниже только если заданы:
+                # «0» не проходит валидатор (MUST_BE_GREATER_THAN_OR_EQUAL_TO_MIN)
+                **({"avgCpa": str(int(strategy.get("avgCpa") or 0))}
+                   if int(strategy.get("avgCpa") or 0) > 0 else {}),
                 "budgetType": "WEEKLY" if budget.get("period") == "WEEK" else str(budget.get("period") or "WEEKLY"),
                 "payForConversion": bool(strategy.get("payForConversion")),
                 "payForShows": bool(strategy.get("payForShows")),
                 "autoApplyRecommendationOptions": {"budgetIncreasePercent": None},
                 "isExplorationBudgetValueCustom": bool(strategy.get("isExplorationBudgetValueCustom")),
+                **({"sum": str(int(budget.get("sum") or 0))} if int(budget.get("sum") or 0) > 0 else {}),
             },
             "strategyName": strategy_name,
         }
@@ -468,7 +482,7 @@ class GridClient:
         callouts = (row.get("inheritableCallouts") or {}).get("assetValue") or []
         sitelink_set_id = (row.get("inheritableSitelinkSet") or {}).get("assetValue")
         additional = row.get("additionalData") or {}
-        return _strip_graphql_typenames({
+        payload = _strip_graphql_typenames({
             "abExperiments": [],
             "abSegmentRetargetingConditionId": ((row.get("abSegmentRetargetingCondition") or {}).get("id")),
             "abSegmentStatisticRetargetingConditionId": ((row.get("abSegmentStatisticRetargetingCondition") or {}).get("id")),
@@ -507,7 +521,6 @@ class GridClient:
             "isRecommendationsManagementEnabled": bool(row.get("isRecommendationsManagementEnabled")),
             "isPriceRecommendationsManagementEnabled": bool(row.get("isPriceRecommendationsManagementEnabled")),
             "isAlternativeTextsEnabled": bool(row.get("isAlternativeTextsEnabled")),
-            "additionalData": {"href": additional.get("href") or ""},
             "hasAddMetrikaTagToUrl": bool(row.get("hasAddMetrikaTagToUrl")),
             "bidModifiers": cls._bid_modifiers_update_payload(row),
             "isS2sTrackingEnabled": bool(row.get("isS2sTrackingEnabled")),
@@ -521,6 +534,38 @@ class GridClient:
             "state": "COMPLETE",
             "id": str(row.get("id") or ""),
         })
+        href = additional.get("href") or ""
+        if href:
+            # пустой href не проходит валидатор (EMPTY_HREF) — поле шлём только заполненным
+            payload["additionalData"] = {"href": href}
+        strategy_type = str((row.get("strategy") or {}).get("strategyType") or "")
+        if strategy_type == "OPTIMIZE_CLICKS" and not (row.get("strategy") or {}).get("clicksLimit") \
+                and not (row.get("strategy") or {}).get("avgBid"):
+            # «Максимум кликов + недельный бюджет»: валидного write-имени нет,
+            # полный апдейт сменил бы стратегию — узкие апдейты обязаны пропустить кампанию.
+            payload["_unsupported_strategy"] = "Максимум кликов (недельный бюджет)"
+        return payload
+
+    @staticmethod
+    def _narrow_bases(payloads: dict, ids: list[int], op: str) -> tuple[dict[int, dict], dict[int, str]]:
+        """Подготовка payload'ов для узкого UpdateCampaigns.
+
+        Возвращает ({cid: чистый payload}, {cid: причина пропуска}). Кампании с маркером
+        _unsupported_strategy (например «Максимум кликов» — write-имени нет в enum Грида,
+        полный апдейт сменил бы стратегию) уходят в skipped; служебные _-ключи зачищаются,
+        чтобы не улететь в GraphQL-input. Отсутствие payload'а — фатально.
+        """
+        bases: dict[int, dict] = {}
+        skipped: dict[int, str] = {}
+        for cid in ids:
+            base = payloads.get(cid)
+            if not base:
+                raise GridFinalizeError(f"{op}: не удалось прочитать кампанию {cid}")
+            if base.get("_unsupported_strategy"):
+                skipped[cid] = str(base["_unsupported_strategy"])
+                continue
+            bases[cid] = {k: v for k, v in base.items() if not k.startswith("_")}
+        return bases, skipped
 
     def _read_unified_campaign_update_payloads(self, campaign_ids: list[int]) -> dict[int, dict]:
         ids = []
@@ -596,11 +641,14 @@ class GridClient:
              "updateCampaigns(input:$input){updatedCampaigns{id}"
              "validationResult{errors{code params path}warnings{code params path}}}"
              "getClientMutationId(input:{login:$login}){mutationId}}")
+        bases, skipped = self._narrow_bases(payloads, ids, "Grid set-callouts")
+        if skipped:
+            cid0, why = next(iter(skipped.items()))
+            raise GridFinalizeError(
+                f"Grid set-callouts: кампания {cid0}: стратегия «{why}» не поддерживается — пропущена")
         items = []
         for cid in ids:
-            base = payloads.get(cid)
-            if not base:
-                raise GridFinalizeError(f"Grid set-callouts: не удалось прочитать кампанию {cid}")
+            base = bases[cid]
             base["inheritableCallouts"] = {"calloutIds": [str(i) for i in co_ids]}
             items.append({"unifiedCampaign": base})
         r = self._post("UpdateCampaigns", q, {
@@ -642,13 +690,15 @@ class GridClient:
              "updateCampaigns(input:$input){updatedCampaigns{id}"
              "validationResult{errors{code params path}warnings{code params path}}}"
              "getClientMutationId(input:{login:$login}){mutationId}}")
+        bases, skipped = self._narrow_bases(payloads, ids, "Grid set-sitelink-set")
+        for cid, why in skipped.items():
+            print(f"[grid] set-sitelink-set: кампания {cid} пропущена — стратегия «{why}»", flush=True)
         items = []
-        for cid in ids:
-            base = payloads.get(cid)
-            if not base:
-                raise GridFinalizeError(f"Grid set-sitelink-set: не удалось прочитать кампанию {cid}")
+        for cid, base in bases.items():
             base["inheritableSitelinkSet"] = {"sitelinkSetId": str(sid)}
             items.append({"unifiedCampaign": base})
+        if not items:
+            return []
         r = self._post("UpdateCampaigns", q, {
             "login": self.login,
             "input": {"campaignUpdateItems": items},
@@ -685,17 +735,19 @@ class GridClient:
              "updateCampaigns(input:$input){updatedCampaigns{id}"
              "validationResult{errors{code params path}warnings{code params path}}}"
              "getClientMutationId(input:{login:$login}){mutationId}}")
+        bases, skipped = self._narrow_bases(payloads, ids, "Grid set-disabled-places")
+        for cid, why in skipped.items():
+            print(f"[grid] set-disabled-places: кампания {cid} пропущена — стратегия «{why}»", flush=True)
         items = []
-        for cid in ids:
-            base = payloads.get(cid)
-            if not base:
-                raise GridFinalizeError(f"Grid set-disabled-places: не удалось прочитать кампанию {cid}")
+        for cid, base in bases.items():
             # MERGE: сохраняем ранее скопированные excluded-площадки + добавляем новые без дублей
             existing = list(base.get("disabledPlaces") or [])
             seen = set(existing)
             merged = existing + [h for h in clean_hosts if h not in seen]
             base["disabledPlaces"] = merged
             items.append({"unifiedCampaign": base})
+        if not items:
+            return []
         r = self._post("UpdateCampaigns", q, {
             "login": self.login,
             "input": {"campaignUpdateItems": items},
@@ -741,13 +793,16 @@ class GridClient:
              "updateCampaigns(input:$input){updatedCampaigns{id}"
              "validationResult{errors{code params path}warnings{code params path}}}"
              "getClientMutationId(input:{login:$login}){mutationId}}")
+        bases, skipped = self._narrow_bases(payloads, ids, "Grid set-age-bidmods")
+        for _cid, _why in skipped.items():
+            print(f"[grid] set-age-bidmods: кампания {_cid} пропущена — стратегия «{_why}»", flush=True)
         items = []
         satisfied: list[int] = []           # уже-ок (без апдейта)
         to_send: list[int] = []             # уходят в UpdateCampaigns
         for cid in ids:
-            base = payloads.get(cid)
-            if not base:
-                raise GridFinalizeError(f"Grid set-age-bidmods: не удалось прочитать кампанию {cid}")
+            base = bases.get(cid)
+            if base is None:
+                continue  # пропущенная стратегия
             bm = base.get("bidModifiers")
             if not isinstance(bm, dict):
                 bm = {}
@@ -912,11 +967,19 @@ class GridClient:
              "addedSitelinkSets{id __typename}"
              "validationResult{errors{code params path}warnings{code params path}}}"
              "getClientMutationId(input:{login:$login}){mutationId}}")
-        items = [{"title": (s.get("Title") or s.get("title") or "")[:30],
-                  "href": (s.get("Href") or s.get("href") or ""),
-                  "description": (s.get("Description") or s.get("description") or "")[:60]}
-                 for s in sitelinks if (s.get("Title") or s.get("title"))
-                                    and (s.get("Href") or s.get("href"))]
+        items = []
+        for s in sitelinks:
+            title = (s.get("Title") or s.get("title") or "")[:30]
+            href = s.get("Href") or s.get("href") or ""
+            if not title or not href:
+                continue
+            item = {"title": title, "href": href}
+            desc = (s.get("Description") or s.get("description") or "")[:60]
+            if desc:
+                # Grid-валидатор не принимает пустую строку (SITELINK_DESCRIPTION_CANNOT_BE_EMPTY) —
+                # у ссылок без описания поле опускаем целиком.
+                item["description"] = desc
+            items.append(item)
         if not items:
             return None
         r = self._post("AddSitelinkSets", q, {
@@ -1264,13 +1327,15 @@ class GridClient:
             # поддержка adgroup_id как ключа (saveDraft:True → addedAds пуст, фильтр ставится на группу)
             if (not _item_id and not _item_agid) or not it.get("feed_id") or not val:
                 continue
+            _lnf_conds = [{"field": "name", "operator": "CONTAINS_ANY",
+                           "stringValue": json.dumps([val], ensure_ascii=False)}]
+            if it.get("extra_conds"):
+                _lnf_conds.extend(it["extra_conds"])
             _entry: dict = {
                 "permalinkWithPhone": {"policy": "CLEAR"},
                 "fieldsToUseAsBody": None, "fieldsToUseAsName": None,
                 "feedId": str(it["feed_id"]),
-                "feedFilter": {"tab": "CONDITION", "conditions": [
-                    {"field": "name", "operator": "CONTAINS_ANY",
-                     "stringValue": json.dumps([val], ensure_ascii=False)}]},
+                "feedFilter": {"tab": "CONDITION", "conditions": _lnf_conds},
                 "bodies": list(it.get("bodies") or []),
                 "hrefParams": "",
                 "inheritableCallouts": {"policy": "INHERIT"},
@@ -1390,13 +1455,15 @@ class GridClient:
              "updateCampaigns(input:$input){updatedCampaigns{id}"
              "validationResult{errors{code params path}warnings{code params path}}}"
              "getClientMutationId(input:{login:$login}){mutationId}}")
+        bases, skipped = self._narrow_bases(payloads, ids, "Grid set-placements")
+        for _cid, _why in skipped.items():
+            print(f"[grid] set-placements: кампания {_cid} пропущена — стратегия «{_why}»", flush=True)
         items = []
-        for cid in ids:
-            base = payloads.get(cid)
-            if not base:
-                raise GridFinalizeError(f"Grid set-placements: не удалось прочитать кампанию {cid}")
+        for cid, base in bases.items():
             base["placementTypes"] = pts
             items.append({"unifiedCampaign": base})
+        if not items:
+            return []
         # _post_json_retry: 403/CSRF + транзиент-ретраи (правило «tries+backoff в HTTP»)
         data = self._post_json_retry("UpdateCampaigns", q, {
             "login": self.login,

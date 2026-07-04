@@ -737,7 +737,16 @@ def _grid_add_listings_with_name_filters(gcl, shop_ids: list, build: dict,
         _agid_to_nv = {str(it["adgroup_id"]): it.get("name_value")
                        for it in (build.get("listing_build_items") or [])
                        if it.get("adgroup_id") and it.get("name_value")}
+        # Глобальные минус-марки для ListingAd — тот же brand_field что у ShoppingAd (lines ~487-491).
+        _lad_minus_conds: list = []
+        try:
+            from . import create_set_feeds as _csf
+            _lad_bf = _csf._resolve_feed_field(gcl.login, feed_id, "brand") or "vendor"
+            _lad_minus_conds = _csf._minus_marks_grid_conditions(brand_field=_lad_bf)
+        except Exception:  # noqa: BLE001
+            pass
         _lf_items = []
+        _lad_general_lids: list = []   # listing ad IDs без name-фильтра (Общее группы)
         for _idx, _row in enumerate(_rows):
             _lid = _row.get("id") if isinstance(_row, dict) else _row
             _agid = str(_row.get("adGroupId") or "") if isinstance(_row, dict) else ""
@@ -745,15 +754,31 @@ def _grid_add_listings_with_name_filters(gcl, shop_ids: list, build: dict,
             if not _val and _idx < len(shop_ids):
                 _val = (build.get("listing_name_by_shop") or {}).get(int(shop_ids[_idx]))
             if _lid and _val:
-                _lf_items.append({"id": _lid, "feed_id": feed_id, "value": _val,
-                                  "bodies": [default_text]})
+                _ent = {"id": _lid, "feed_id": feed_id, "value": _val, "bodies": [default_text]}
+                if _lad_minus_conds:
+                    _ent["extra_conds"] = _lad_minus_conds
+                _lf_items.append(_ent)
+            elif _lid and _lad_minus_conds:
+                _lad_general_lids.append(_lid)
         if not _lf_items and _agid_to_nv:
             # saveDraft:True → addedAds пуст; строим по adGroupId (фильтр ставится на группу)
             for _agid_s, _val in _agid_to_nv.items():
-                _lf_items.append({"adgroup_id": _agid_s, "feed_id": feed_id,
-                                  "value": _val, "bodies": [default_text]})
+                _ent = {"adgroup_id": _agid_s, "feed_id": feed_id,
+                        "value": _val, "bodies": [default_text]}
+                if _lad_minus_conds:
+                    _ent["extra_conds"] = _lad_minus_conds
+                _lf_items.append(_ent)
         if _lf_items:
             build["listing_name_set"] = gcl.set_listing_name_filters(_lf_items)
+        # Общее группы (нет name-фильтра): проставляем только минус-марки через set_product_feed_filters.
+        if _lad_general_lids and _lad_minus_conds:
+            _gen_items = [{"id": _lid, "feed_id": feed_id,
+                           "conditions": _lad_minus_conds, "bodies": [default_text]}
+                          for _lid in _lad_general_lids]
+            try:
+                gcl.set_product_feed_filters(_gen_items, listing=True)
+            except Exception as _ge:  # noqa: BLE001
+                build.setdefault("warnings", []).append(f"listing-minus(grid): {str(_ge)[:120]}")
     except Exception as _le:  # noqa: BLE001
         build.setdefault("warnings", []).append(f"listing(grid): {str(_le)[:160]}")
 

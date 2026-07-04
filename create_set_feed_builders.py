@@ -173,7 +173,7 @@ def _create_shopping_via_cookie(
     budget_rub: int, region_ids: list, href: str, agency: str = "",
     body_text: str = "", feed_id: int = 0,
     corr: dict | None = None, ret_map: dict | None = None,
-    token: str = "", slepok: str = "", site_type: str = "",
+    token: str = "", slepok: str = "", site_type: str = "", city: str = "",
     callout_texts: list | None = None, feed_name: str = "",
     callout_ids: list | None = None,
     ct: str = "ct0000", r_code: str = "",
@@ -235,6 +235,21 @@ def _create_shopping_via_cookie(
                                       body_text=(body_text or "")[:81], goal_id=goal_id or 0)
         cid = rep.get("campaign_id")
         ok = bool(cid) and not (rep.get("errors") and not rep.get("groups"))
+        # БАГ-8 фикс: ListingAd «Страницы каталога» — by-shopping, без name-фильтра (Общее, автотаргет).
+        # create_shopping_full создаёт ShoppingAd но не ListingAd; докрутка через Grid (без баллов).
+        # Сбой не блокирует — ShoppingAd уже создан; warnings идут в rep["errors"].
+        # Guard: ТОЛЬКО не-РСЯ (tp5 Поиск+Динамика+ТГ). tp3 = РСЯ товарная галерея — ListingAd
+        # (страницы каталога, поиск/динамика) там НЕ нужен, иначе лишние объявления в РСЯ.
+        _sh_ids = rep.get("shopping_ad_ids") or []
+        if ok and cid and _sh_ids and not is_rsya:
+            try:
+                from .create_set_tp1_builders import _grid_add_listings_with_name_filters
+                _lst_build: dict = {"listing_build_items": [], "listing_name_by_shop": {}}
+                _grid_add_listings_with_name_filters(
+                    gf.GridClient(login), _sh_ids, _lst_build, fid, (body_text or "")[:81])
+                rep["listing_ads"] = _lst_build.get("listing_ads", 0)
+            except Exception as _le8:  # noqa: BLE001
+                rep.setdefault("errors", []).append(f"листинги(куки): {str(_le8)[:120]}")
         # БАГ-12 фикс: Grid-finalize — callouts/sitelinks/инварианты на уровне кампании.
         # Раньше отсутствовал полностью для tp3/tp5 куки-пути → кампании без ассетов и без инвариантов.
         # Сбой финализации не блокирует результат — товарная галерея уже создана.
@@ -253,6 +268,11 @@ def _create_shopping_via_cookie(
                         pass
                 if _prefer_callout_ids:
                     _sh_assets["callout_ids"] = _prefer_callout_ids[:8]
+                # Sitelinks: если v5 ничего не дал (152/нет токена) — локальный фолбэк как в tp1/tp2-пути.
+                if not _sh_assets.get("sitelinks"):
+                    _ai_sl = _ai_common_sitelinks(login, slepok, site_type, city, tp_code)
+                    if _ai_sl:
+                        _sh_assets["sitelinks"] = _ai_sl
                 # Sitelinks: Grid-первичный (БЕЗ баллов) — HAR23/entry262 AddSitelinkSets.
                 _sh_asl = _norm_sitelinks_for_v501(_sh_assets.get("sitelinks") or [], href)
                 if _sh_asl:
