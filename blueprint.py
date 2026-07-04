@@ -3108,8 +3108,11 @@ _CALLOUT_MAX_TOTAL_MOBILE = 76    # суммарно на мобильных
 
 _SLEPOK_KEY = {"слепок_павлов": "pavlov", "слепок_щербакова": "scherbakova",
                "слепок_крючкова": "kryuchkova", "слепок_терехов": "terehov",
-               "слепок_караваев": "karavaev"}
-_SLEPOK_CANONICAL = {"pavlov", "kryuchkova", "scherbakova", "terehov", "karavaev"}
+               "слепок_караваев": "karavaev", "слепок_саламахин": "salamahin",
+               "слепок_гордеева": "gordeeva", "слепок_зубакин": "zubakin",
+               "слепок_чепелев": "chepelev", "слепок_тумашенко": "tumashenko"}
+_SLEPOK_CANONICAL = {"pavlov", "kryuchkova", "scherbakova", "terehov", "karavaev",
+                      "salamahin", "gordeeva", "zubakin", "chepelev", "tumashenko"}
 
 
 def _slepok_key_from_text(raw: str) -> str:
@@ -3119,7 +3122,7 @@ def _slepok_key_from_text(raw: str) -> str:
         return ""
     if s in _SLEPOK_KEY:
         return _SLEPOK_KEY[s]
-    if s in {"pavlov", "kryuchkova", "scherbakova", "terehov", "karavaev"}:
+    if s in _SLEPOK_CANONICAL:
         return s
     if "павлов" in s:
         return "pavlov"
@@ -3131,6 +3134,16 @@ def _slepok_key_from_text(raw: str) -> str:
         return "terehov"
     if "караваев" in s:
         return "karavaev"
+    if "саламахин" in s:
+        return "salamahin"
+    if "гордеев" in s:
+        return "gordeeva"
+    if "зубакин" in s:
+        return "zubakin"
+    if "чепелев" in s:
+        return "chepelev"
+    if "тумашенко" in s:
+        return "tumashenko"
     return ""
 
 
@@ -6544,6 +6557,10 @@ def _ai_common_sitelinks(login: str, slepok: str, site_type: str, city: str,
         "campaign_type": tp_code,
         "type": tp_code,
         "name": "ct0000",
+        # Провайдер обязателен: без него _gen_campaign_content уходит на M3-дефолт (перегружен →
+        # ЗАВИСАЕТ >170с → финализ tp5 не доходит до сайтлинков, #7). OpenRouter (deepseek-chat) ~50с
+        # и кэшируется по ct0000. M3 остаётся фолбэком внутри _llm_pair_for.
+        "llm_provider": "openrouter",
     }
     content = _ai_campaign_content_for_item(login, slepok, site_type, city, item)
     if not isinstance(content, dict):

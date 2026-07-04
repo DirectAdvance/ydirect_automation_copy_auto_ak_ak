@@ -166,7 +166,9 @@ def _gen_campaign_content(login: str, agent: dict, agent_key: str, item: dict,
     from .create_content import run_gen_campaign_content
     # Провайдер из попапа создания (body.llm_provider → item.llm_provider): пара функций
     # с двусторонним фолбэком — «падение одного — переключение на другого» (Семён 03.07).
-    _llm_url, _llm_par = _llm_pair_for(str((item or {}).get("llm_provider") or ""))
+    # Дефолт БЕЗ провайдера → openrouter (не M3): вспомогательные ген-ы (сайтлинки/группы) без
+    # явного провайдера уходили на перегруженный M3 и ЗАВИСАЛИ (#7). M3 остаётся фолбэком.
+    _llm_url, _llm_par = _llm_pair_for(str((item or {}).get("llm_provider") or "openrouter"))
     return run_gen_campaign_content(
         login=login, agent=agent, agent_key=agent_key, item=item,
         avoid=avoid, ctx_override=ctx_override, fast_mode=fast_mode,
@@ -256,5 +258,5 @@ def _seed_slepok_content(only_missing: bool = True, m3_timeout: float = 45.0) ->
                     content, _ = A.assemble_campaign([], [], [], agent, site_type=st, brand="")
                     csrc = "slepok"
                 _slepok_content_save(key, st, "campaign", content, csrc)
-            rep["campaign"][csrc] += 1
+                rep["campaign"][csrc] += 1
     return rep
