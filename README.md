@@ -3,6 +3,10 @@
 Веб-модуль для seoadvanced.ru: создание кампаний в Яндекс.Директе и **ИИ-генерация
 промоакций в стиле реальных директологов** (через локальную LLM на M3).
 
+> 🗺 **Карта пакета — [`ARCHITECTURE.md`](ARCHITECTURE.md):** слои, инвентарь модулей,
+> граф импортов, план разбиения `blueprint.py`. Смотреть ПЕРЕД правкой незнакомого места
+> и для impact-анализа.
+
 - **Маршруты:** `https://seoadvanced.ru/direct/automation` и
   `https://seoadvanced.ru/direct/automation/content`.
 - **Сервисы:** отдельные Flask-процессы на **LXC 101** (`192.168.0.202`):
@@ -361,7 +365,7 @@ API:
 | `repair_gate.py` | чистая нормализация repair-gate: job context, truthy/jsonish, выбор исполнимых actions |
 | `repair_executor.py` | scoped executor-ы добивки без Direct units: retry wiring остаётся в `blueprint.py`, in-place `content/promo/callouts/rename` выполняются через cookie/Grid |
 | `repair_auto.py` | orchestration-слой добивки: общий порядок executor-ов для repair endpoint, безопасная post-create автодобивка `promo/callouts/rename`, preflight/decision/queue orchestration и response contracts для repair без Flask/DB |
-| `kontent_pack.py` | чтение контент-пака с M3 (`/opt/neuro_kontent/kontent_oktyabr`): ключи, уточнения, картинки, видео по `(segment, tp, ct, slepok)`; батч-сбор через ssh; `videos_for_login`; **видео-пул** `/Users/Shared/agency/Video/<ct>/*.mp4` (индекс `Video\|video\|<ct>`, `videos_pool_for_ct` — до 2 роликов; фолбэк в `videos_for_ct`). Видео идут в tp6/tp7 (content_ids) и tp1 (`_tp1_video_ads`: `upload_video_creative` → `meta.creative_id` → `creativeIds` в UpdateAdaptiveTextAds) |
+| `kontent_pack.py` | чтение контент-пака с M3 (`/opt/neuro_kontent/kontent_oktyabr`): ключи, уточнения, картинки, видео по `(segment, tp, ct, slepok)`; батч-сбор через ssh; `videos_for_login`; **видео-пул** `/Users/Shared/agency/Video/<ct>/*.mp4` (индекс `Video\|video\|<ct>`, `videos_pool_for_ct` — до 2 роликов; фолбэк в `videos_for_ct`). Видео идут в tp6/tp7 (content_ids) и tp1 (`_tp1_video_ads`: `upload_video_creative` → `meta.creative_id` → `creativeIds` в UpdateAdaptiveTextAds). **`PACK_MOUNT` переключаем через env `NEURO_PACK_MOUNT`** — на ЛОКАЛЬНУЮ копию пака (`/opt/neuro_content_local`, собирается ночным `scripts/sync_content_m3.py`, крон 03:00 Екб; видео ≤9.9МБ, картинки q80) → днём не зависим от M3 |
 | `promotions.py` | референс-копия PromoClient из skill (не используется blueprint'ом — рабочий `promo.py`) |
 | `slepki_structure.json` | структура слепков (кодеры `tpN_*`, `splits` по site/kviz) |
 | `seed_slepok_content.py` | сидер `direct_slepok_content` (фолбэк-контент по слепкам) |
@@ -423,7 +427,9 @@ API:
 поп-ап** (`via_cookie=True`, ставится ТОЛЬКО в `_deferred_enqueue_now` от кнопки «создать по куки»)
 token-типы создаются по куке агентства через Grid web-api:
 - **tp1 РСЯ** (`_create_tp1_via_cookie`), **tp2/tp4 Поиск** (`_create_text_via_cookie`) — `create_full`:
-  `AddCampaigns` + `AddUnifiedAdGroups` (ключи/минуса/автотаргет) + `AddAdaptiveTextAds` (комбинаторное).
+  `AddCampaigns` + `AddUnifiedAdGroups` (минуса/автотаргет — **без ключей**) + `AddKeywords` (ключи
+  ЕДИНСТВЕННЫМ путём: `build_adgroup(keywords=[])`, иначе Grid дублирует фразы для групп <~140 кл) +
+  `AddAdaptiveTextAds` (комбинаторное).
   После первичного `create_full` для `tp1/tp2/tp4` обязателен **post-create repair** по фактическим
   `ad_id` через `UpdateAdaptiveTextAds`: он переписывает полный payload (`titles`, `bodies`,
   `image_hashes`) и выравнивает live-черновик с тем контентом, который был рассчитан AI/slepok
