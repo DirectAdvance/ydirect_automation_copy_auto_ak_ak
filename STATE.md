@@ -44,6 +44,16 @@
   #8 queue — HIGH, по одному с живым прогоном. Детали и грабли каждого — в ARCHITECTURE.md.
   ⚠️ **Проверь живым create-set:** 5 вынесенных кластеров задеплоены — прогони один набор, убедись что
   контент/имена/промо/города в объявлениях те же (import-smoke не прогоняет генерацию).
+- **✅ ОБЩАЯ ОЧЕРЕДЬ create+copy (per-agency гейт), задеплоено:** `_CREATE_ACTIVE_AGENCIES` была
+  in-memory В КАЖДОМ процессе → direct-worker(create) и direct-copy(copy) не координировались,
+  create+copy одного агентства жгли куки/баллы параллельно. Фикс: слот агентства в БД
+  `direct_agency_active` (claim INSERT ON CONFLICT / release DELETE в finally+watchdog / sweep
+  status-based), врезано в `_claim_next_job`+2 release+watchdog. **FAIL-OPEN** (сбой БД → как раньше,
+  не блокирует). Юнит-тест PASS (True/False/True/True). Копир не сломан (baseline 302). commit 28cf083.
+  ⚠️ **Живая проверка Семёна:** create-набор + copy-набор ОДНОГО агентства одновременно → в логах
+  `direct-copy`/`direct-worker` второй ЖДЁТ (не идёт параллельно); разные агентства — параллельно.
+- ⏳ **copy_engine.py** (вынос _copy_* из blueprint, −1040) — спека готова (агент acbf8bc), выбор
+  Семёна «оба, очередь первой» → следующий шаг после проверки гейта.
 
 ## Сессия: 2026-07-04 — ре-ран копира Haval (устранение 1626 дублей ключей)
 
