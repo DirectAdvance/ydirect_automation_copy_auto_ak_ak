@@ -138,7 +138,7 @@ def _grid_client(login: str):
 CE_JOBS_TABLE = "direct_content_jobs"
 CE_DAILY_JOB_CAP = int(os.environ.get("CE_DAILY_JOB_CAP") or 15)  # заданий на аккаунт в сутки (Екб)
 # начало текущих суток по Екатеринбургу (timestamptz)
-CE_MSK_DAY_SQL = "(date_trunc('day', now() AT TIME ZONE 'Asia/Yekaterinburg') AT TIME ZONE 'Asia/Yekaterinburg')"
+CE_EKB_DAY_SQL = "(date_trunc('day', now() AT TIME ZONE 'Asia/Yekaterinburg') AT TIME ZONE 'Asia/Yekaterinburg')"
 
 
 def _jobs_db():
@@ -310,6 +310,7 @@ def _grid_campaign_callout_ids(
     grid._bootstrap_csrf()
     q = ("query CampaignCallouts($login:String!,$inp:GdCampaignsContainerInput!){"
          "client(searchBy:{login:$login}){campaigns(input:$inp){rowset{id name "
+         "status{archived} "
          "...on GdUnifiedCampaign{inheritableCallouts{assetValue}}"
          "}}}}")
     out: dict[int, list[int]] = {}
@@ -333,6 +334,8 @@ def _grid_campaign_callout_ids(
                 cid = int(row.get("id"))
             except (TypeError, ValueError):
                 continue
+            if (row.get("status") or {}).get("archived"):
+                continue  # архивные кампании менять нельзя — не показываем их привязки
             raw_callouts = (row.get("inheritableCallouts") or {}).get("assetValue") or []
             clean: list[int] = []
             for co in raw_callouts:
@@ -696,7 +699,8 @@ def _load_account(
         ssid = (content_rows[0] if content_rows else _ad_texts(a))["sitelink_set_id"]
         if ssid:
             sitelink_usages.setdefault(str(ssid), []).append(usage)
-            ads_by_set.setdefault(str(ssid), []).append({"ad_id": ad_id})
+            subtype = next((k for k in ("TextAd", "DynamicTextAd", "ResponsiveAd") if a.get(k)), "TextAd")
+            ads_by_set.setdefault(str(ssid), []).append({"ad_id": ad_id, "subtype": subtype})
 
     # 3b) UAC-кампании (tp6/tp7, Type=UNIFIED_CAMPAIGN) — через UAC web-api.
     # v5 ads.get не возвращает объявления UAC. Читаем titles/texts напрямую через UacReadClient;
@@ -838,6 +842,7 @@ def _match_targets(content: dict, typ: str, old_text: str) -> list[dict]:
                     "items": s.get("items", []),
                     "usages": s.get("usages", []),
                     "ad_ids": _ads_using_set(content, int(s.get("set_id") or 0)),
+                    "ad_items": content.get("_ads_by_set", {}).get(str(s.get("set_id")), []),
                 })
     return hits
 
@@ -964,41 +969,84 @@ def _replace_uac_texts(
     return {"replaced": replaced, "errors": errors, "updated_uac_campaigns": updated_campaigns}
 
 
+_REBIND_SUBTYPE_FIELDS = {"TextAd": "TextAdFieldNames", "DynamicTextAd": "DynamicTextAdFieldNames"}
+
+
 def _v5_rebind_ads_sitelink_set(v5_call: Callable, token: str, login: str,
-                                ad_ids: list[int], new_set_id: int) -> tuple[int, list[str]]:
-    """v5 ads.update: перепривязать SitelinkSetId у объявлений + read-back."""
+                                ad_items: list[dict], new_set_id: int) -> tuple[int, list[str]]:
+    """v5 ads.update: перепривязать SitelinkSetId у объявлений + read-back.
+
+    ad_items: [{ad_id, subtype}] — подтип обязателен: TextAd/DynamicTextAd идут своим
+    ключом в ads.update; прочие (ResponsiveAd) v5 не обновляет — честная ошибка.
+    """
     errors: list[str] = []
-    ok_ids: list[int] = []
-    for chunk in [ad_ids[i:i + 500] for i in range(0, len(ad_ids), 500)]:
-        payload = {"Ads": [{"Id": aid, "TextAd": {"SitelinkSetId": new_set_id}} for aid in chunk]}
-        j = v5_call("ads", "update", token, login, payload)
-        if j.get("error"):
-            errors.append("ads.update: " + json.dumps(j["error"], ensure_ascii=False)[:160])
+    by_subtype: dict[str, list[int]] = {}
+    for it in ad_items or []:
+        try:
+            aid = int((it or {}).get("ad_id") or 0)
+        except (TypeError, ValueError):
             continue
-        for res in (j.get("result") or {}).get("UpdateResults") or []:
-            if res.get("Errors"):
-                msg = "; ".join((e.get("Message") or "") for e in res["Errors"])
-                errors.append(f"объявление {res.get('Id')}: {msg[:120]}")
-            elif res.get("Id"):
-                ok_ids.append(int(res["Id"]))
-    if not ok_ids:
-        return 0, errors
-    got, err = _v5_paginate(
-        v5_call, "ads", token, login,
-        {"SelectionCriteria": {"Ids": ok_ids[:10000]}, "FieldNames": ["Id"],
-         "TextAdFieldNames": ["SitelinkSetId"]},
-        "Ads")
-    if err:
-        errors.append(f"read-back ads.get: {err}")
-        return 0, errors
-    confirmed = {
-        int(a.get("Id") or 0) for a in got
-        if int(((a.get("TextAd") or {}).get("SitelinkSetId") or 0)) == int(new_set_id)
-    }
-    bad = [aid for aid in ok_ids if aid not in confirmed]
-    if bad:
-        errors.append(f"read-back не подтвердил новый набор у {len(bad)} объявлений")
-    return len(confirmed & set(ok_ids)), errors
+        if aid > 0:
+            st = str((it or {}).get("subtype") or "TextAd")
+            if aid not in by_subtype.setdefault(st, []):
+                by_subtype[st].append(aid)
+    for st in [s for s in by_subtype if s not in _REBIND_SUBTYPE_FIELDS]:
+        errors.append(f"{len(by_subtype[st])} объявлений типа {st}: "
+                      "перепривязка набора быстрых ссылок через v5 не поддерживается")
+        by_subtype.pop(st)
+
+    updated_total = 0
+    for subtype, ad_ids in by_subtype.items():
+        ok_ids: list[int] = []
+        for chunk in [ad_ids[i:i + 500] for i in range(0, len(ad_ids), 500)]:
+            payload = {"Ads": [{"Id": aid, subtype: {"SitelinkSetId": new_set_id}} for aid in chunk]}
+            j = {}
+            for attempt in range(3):  # error 1000 «Сервис временно недоступен» — транзиент, ретраим
+                j = v5_call("ads", "update", token, login, payload)
+                code = (j.get("error") or {}).get("error_code")
+                if code not in (1000, 1001, 1002, 52, 500):
+                    break
+                time.sleep(5 * (attempt + 1))
+            if j.get("error"):
+                errors.append("ads.update: " + json.dumps(j["error"], ensure_ascii=False)[:160])
+                continue
+            results = (j.get("result") or {}).get("UpdateResults") or []
+            if len(results) != len(chunk):
+                errors.append(f"ads.update: получено {len(results)} результатов на {len(chunk)} объявлений")
+            for res in results:
+                if res.get("Errors"):
+                    msg = "; ".join((e.get("Message") or "") for e in res["Errors"])
+                    errors.append(f"объявление {res.get('Id')}: {msg[:120]}")
+                elif res.get("Id"):
+                    ok_ids.append(int(res["Id"]))
+                else:
+                    errors.append("ads.update: результат без Id и Errors: "
+                                  + json.dumps(res, ensure_ascii=False)[:100])
+        if not ok_ids:
+            continue
+        confirmed: set[int] = set()
+        rb_failed = False
+        for rb_chunk in [ok_ids[i:i + 10000] for i in range(0, len(ok_ids), 10000)]:
+            got, err = _v5_paginate(
+                v5_call, "ads", token, login,
+                {"SelectionCriteria": {"Ids": rb_chunk}, "FieldNames": ["Id"],
+                 _REBIND_SUBTYPE_FIELDS[subtype]: ["SitelinkSetId"]},
+                "Ads")
+            if err:
+                errors.append(f"read-back ads.get: {err}")
+                rb_failed = True
+                break
+            confirmed |= {
+                int(a.get("Id") or 0) for a in got
+                if int(((a.get(subtype) or {}).get("SitelinkSetId") or 0)) == int(new_set_id)
+            }
+        if rb_failed:
+            continue
+        bad = [aid for aid in ok_ids if aid not in confirmed]
+        if bad:
+            errors.append(f"read-back не подтвердил новый набор у {len(bad)} объявлений")
+        updated_total += len(confirmed & set(ok_ids))
+    return updated_total, errors
 
 
 def _replace_sitelink_text_grid(
@@ -1040,10 +1088,13 @@ def _replace_sitelink_text_grid(
             if cid > 0 and cid not in all_campaign_ids:
                 all_campaign_ids.append(cid)
     current_set_by_campaign: dict[int, int] = {}
+    unsupported_by_cid: dict[int, str] = {}
     if all_campaign_ids and hasattr(grid, "_read_unified_campaign_update_payloads"):
         try:
             payloads = grid._read_unified_campaign_update_payloads(all_campaign_ids)
             for cid, payload in payloads.items():
+                if payload.get("_unsupported_strategy"):
+                    unsupported_by_cid[int(cid)] = str(payload["_unsupported_strategy"])
                 raw_sid = (payload.get("inheritableSitelinkSet") or {}).get("sitelinkSetId")
                 try:
                     sid = int(raw_sid or 0)
@@ -1093,16 +1144,24 @@ def _replace_sitelink_text_grid(
             cid for cid in campaign_ids
             if current_set_by_campaign.get(cid) == source_set_id and cid not in touched_campaigns
         ]
+        # Кампании с неподдерживаемой стратегией отфильтровываем ДО мутации,
+        # чтобы одна такая не завалила весь батч (набор уже был бы создан).
+        for cid in [c for c in campaign_ids if c in unsupported_by_cid]:
+            errors.append(f"кампания {cid}: стратегия «{unsupported_by_cid[cid]}» "
+                          "не поддерживается — быстрая ссылка не заменена")
+        campaign_ids = [c for c in campaign_ids if c not in unsupported_by_cid]
         # Объявления с ad-level привязкой исходного набора (обычные ЕПК/текстовые аккаунты).
-        ad_ids: list[int] = []
-        for raw in target.get("ad_ids") or []:
+        ad_items: list[dict] = []
+        seen_ads: set[int] = set()
+        for raw in target.get("ad_items") or [{"ad_id": x} for x in (target.get("ad_ids") or [])]:
             try:
-                aid = int(raw)
+                aid = int((raw or {}).get("ad_id") or 0)
             except (TypeError, ValueError):
                 continue
-            if aid > 0 and aid not in touched_ads and aid not in ad_ids:
-                ad_ids.append(aid)
-        if not campaign_ids and not ad_ids:
+            if aid > 0 and aid not in touched_ads and aid not in seen_ads:
+                seen_ads.add(aid)
+                ad_items.append({"ad_id": aid, "subtype": (raw or {}).get("subtype") or "TextAd"})
+        if not campaign_ids and not ad_items:
             continue
         try:
             new_set_id = grid.add_sitelink_set(items)
@@ -1125,14 +1184,14 @@ def _replace_sitelink_text_grid(
                     touched_campaigns.update(updated_ids)
                 else:
                     errors.append(f"набор {target.get('set_id')}: Grid не подтвердил перепривязку кампаний")
-            if ad_ids:
+            if ad_items:
                 if not (token and v5_call):
                     errors.append(f"набор {target.get('set_id')}: нет v5-контекста для перепривязки объявлений")
                 else:
-                    ok_ads, ad_errs = _v5_rebind_ads_sitelink_set(v5_call, token, login, ad_ids, int(new_set_id))
+                    ok_ads, ad_errs = _v5_rebind_ads_sitelink_set(v5_call, token, login, ad_items, int(new_set_id))
                     replaced += ok_ads
                     if ok_ads:
-                        touched_ads.update(ad_ids)
+                        touched_ads.update(it["ad_id"] for it in ad_items)
                     errors.extend(ad_errs)
         except Exception as e:  # noqa: BLE001
             errors.append(f"набор {target.get('set_id')}: {str(e)[:180]}")
@@ -1212,6 +1271,31 @@ def _replace_callout_grid(
                 errors.append(f"кампания {cid}: Grid не подтвердил обновление")
         except Exception as e:  # noqa: BLE001
             errors.append(f"кампания {cid}: {str(e)[:160]}")
+    # Grid иногда отдаёт неполный inheritableCallouts.assetValue (часть кампаний без данных),
+    # из-за чего первый проход видит не все привязки. Перечитываем карту и добиваем хвост.
+    known_cids = [int(c) for c in campaign_callouts.keys() if str(c).isdigit()]
+    for _pass in range(2):
+        try:
+            fresh = _grid_campaign_callout_ids(login, known_cids, grid_client_factory=grid_client_factory)
+        except Exception:  # noqa: BLE001 - добивание best-effort, первый проход уже отработал
+            break
+        leftovers = {
+            cid: ids for cid, ids in fresh.items()
+            if any(old_id in (ids or []) for old_id in old_ids)
+        }
+        if not leftovers:
+            break
+        for cid, current_ids in leftovers.items():
+            next_ids = [co for co in current_ids if co not in old_ids]
+            if int(new_id) not in next_ids:
+                next_ids.append(int(new_id))
+            try:
+                if grid.set_campaign_callouts([cid], next_ids):
+                    replaced += 1
+                else:
+                    errors.append(f"кампания {cid}: Grid не подтвердил обновление (добивание)")
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"кампания {cid}: {str(e)[:160]}")
     return {"replaced": replaced, "errors": errors, "new_callout_id": int(new_id), "new_text": normalized_new}
 
 
@@ -1319,7 +1403,19 @@ def register_content_editor_routes(
 ) -> None:
     """Регистрирует изолированную страницу редактора контента и её API."""
     exclude_directologs = exclude_directologs or []
-    access_cfg_path = Path(__file__).resolve().parent / "content_editor_access.json"
+
+    def _resolve_access_cfg_path() -> Path:
+        """Файл доступа редактора контента = plaintext-пароли → живёт в .secret/ (вне git и
+        вне Mutagen; на LXC101 своя копия). Ищем .secret/ вверх по дереву (как loader.py).
+        Fallback — старое место рядом с модулем (совместимость на время переноса)."""
+        here = Path(__file__).resolve()
+        for parent in here.parents:
+            cand = parent / ".secret" / "content_editor_access.json"
+            if cand.exists():
+                return cand
+        return here.parent / "content_editor_access.json"
+
+    access_cfg_path = _resolve_access_cfg_path()
 
     def _access_cfg() -> dict:
         if not access_cfg_path.exists():
@@ -1451,22 +1547,29 @@ def register_content_editor_routes(
             return False, "Доступы не выданы"
         logins = [str((p or {}).get("login") or "").strip()
                   for p in (request.json or {}).get("pairs") or []]
-        logins = [x for x in logins if x]
+        logins = sorted({x for x in logins if x})
         if not logins:
             return True, ""
         conn = victory_conn()
         try:
             cur = conn.cursor()
             cur.execute(
-                "SELECT count(*) FROM public.local_gsheet_sites "
-                "WHERE login_key = ANY(%s) "
-                "AND (directologist IS NULL OR directologist <> ALL(%s))",
-                (logins, allowed),
+                "SELECT count(DISTINCT login_key), "
+                "count(DISTINCT login_key) FILTER "
+                "(WHERE directologist IS NULL OR directologist <> ALL(%s)) "
+                "FROM public.local_gsheet_sites "
+                "WHERE direction='Авто' AND login_key = ANY(%s)",
+                (allowed, logins),
             )
-            foreign = cur.fetchone()[0]
+            found, cnt_foreign = cur.fetchone()
         finally:
             conn.close()
-        return (foreign == 0), ("в запросе чужие аккаунты" if foreign else "")
+        if cnt_foreign:
+            return False, "в запросе чужие аккаунты"
+        if found < len(logins):
+            # неизвестный логин ≠ свой: иначе можно читать балансы любых аккаунтов агентств
+            return False, "в запросе неизвестные аккаунты"
+        return True, ""
 
     if balance_response is not None:
         @bp.route("/api/content-editor/balance", methods=["POST"])
@@ -1677,7 +1780,10 @@ def register_content_editor_routes(
         typ = (body.get("type") or "").strip()
         old_text = body.get("old_text") or ""
         new_text = body.get("new_text") or ""
-        campaign_count = int(body.get("campaign_count") or 0)
+        try:
+            campaign_count = int(body.get("campaign_count") or 0)
+        except (TypeError, ValueError):
+            campaign_count = 0
         if not login or not typ or not old_text.strip() or not new_text.strip():
             return jsonify({"error": "login, type, old_text и new_text обязательны"}), 400
         ok, scope_err = _login_allowed(login)
@@ -1690,7 +1796,7 @@ def register_content_editor_routes(
             return jsonify({"error": err}), 404
         day_cnt = _jobs_exec(
             f"SELECT count(*) AS c FROM {CE_JOBS_TABLE} "
-            f"WHERE login=%s AND status<>'cancelled' AND created_at >= {CE_MSK_DAY_SQL}",
+            f"WHERE login=%s AND status<>'cancelled' AND created_at >= {CE_EKB_DAY_SQL}",
             (login,), "one")["c"]
         if day_cnt >= CE_DAILY_JOB_CAP:
             return jsonify({"error": f"лимит {CE_DAILY_JOB_CAP} заданий на аккаунт в сутки "
@@ -1742,12 +1848,17 @@ def register_content_editor_routes(
         jobs.sort(key=lambda j: (order.get(j["status"], 9), -(j.get("created_at") or 0)))
         return jsonify({"jobs": jobs})
 
+    def _job_owned(row: dict) -> bool:
+        if _content_full_access():
+            return True
+        return (row.get("username") or "") == (session.get("username") or "").strip()
+
     @bp.route("/api/content-editor/status")
     @access
     def ce_job_status():
         job_id = (request.args.get("job_id") or "").strip()
         row = _jobs_exec(f"SELECT * FROM {CE_JOBS_TABLE} WHERE job_id=%s", (job_id,), "one")
-        if not row:
+        if not row or not _job_owned(row):
             return jsonify({"error": "job not found"}), 404
         out = _content_job_public(row)
         if out["status"] == "queued":
@@ -1758,9 +1869,11 @@ def register_content_editor_routes(
     @access
     def ce_job_cancel():
         job_id = ((request.json or {}).get("job_id") or "").strip()
-        row = _jobs_exec(f"SELECT status FROM {CE_JOBS_TABLE} WHERE job_id=%s", (job_id,), "one")
+        row = _jobs_exec(f"SELECT status, username FROM {CE_JOBS_TABLE} WHERE job_id=%s", (job_id,), "one")
         if not row:
             return jsonify({"ok": True, "removed": True})
+        if not _job_owned(row):
+            return jsonify({"error": "Forbidden"}), 403
         if row["status"] in ("done", "error", "cancelled"):
             _jobs_exec(f"UPDATE {CE_JOBS_TABLE} SET dismissed=true WHERE job_id=%s", (job_id,))
             return jsonify({"ok": True, "removed": True})
