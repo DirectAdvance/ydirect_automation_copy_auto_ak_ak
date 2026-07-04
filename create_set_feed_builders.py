@@ -14,23 +14,55 @@ def configure(deps: dict) -> None:
     globals().update(deps)
 
 
-def _common_sitelinks_fast(login, slepok, site_type, city, tp_code):
+# Детерминированный резерв сайтлинков (#7): когда БД-слепок пуст И LLM вернул пусто/упал —
+# всё равно прикрепляем осмысленный авто-кредитный набор, чтобы объявления НЕ оставались без
+# быстрых ссылок. LLM (_ai_common_sitelinks) флапает (у одного аккаунта 8 ссылок, у другого 0),
+# из-за чего #7 был недетерминирован — фиксированный фолбэк убирает эту недетерминированность.
+# frag — уникальный якорь: Grid AddSitelinkSets требует href на каждую ссылку и не любит дубли.
+_DEFAULT_SITELINKS_FALLBACK = [
+    {"title": "Автокредит от 9 000 ₽/мес", "description": "Одобрение за 15 минут онлайн", "frag": "#credit"},
+    {"title": "Первый взнос 0 ₽", "description": "Кредит без первоначального взноса", "frag": "#no-first-pay"},
+    {"title": "Кредит от 15 банков", "description": "Подберём лучшую ставку под вас", "frag": "#banks"},
+    {"title": "Трейд-ин с выгодой", "description": "Обмен вашего авто на новое", "frag": "#trade-in"},
+]
+
+
+def _sitelinks_fallback_with_href(href: str) -> list:
+    """Статический резерв с проставленным href (Grid требует href на каждую ссылку). Без href —
+    вернём как есть (add_sitelink_set просто пропустит: не хуже прежнего поведения)."""
+    base = (href or "").strip()
+    out = []
+    for s in _DEFAULT_SITELINKS_FALLBACK:
+        item = {"title": s["title"], "description": s["description"]}
+        if base:
+            item["href"] = base + s["frag"]
+        out.append(item)
+    return out
+
+
+def _common_sitelinks_fast(login, slepok, site_type, city, tp_code, href=""):
     """Сайтлинки БЕЗ баллов и БЕЗ зависания LLM (#7): сначала БД-библиотека слепка
-    (`_slepok_content_get`, мгновенно), потом AI-генерация как фолбэк. `_ai_common_sitelinks`
-    генерит полный контент через LLM (~50с и виснет на M3) → финализ tp5 не доходил до сайтлинков.
-    Возвращает list[dict{title,description}] или []."""
+    (`_slepok_content_get`, мгновенно), потом AI-генерация, и наконец детерминированный
+    статический резерв (с href сайта) — чтобы быстрые ссылки прикреплялись ВСЕГДА (не зависели от
+    флапающего LLM). Возвращает list[dict{title,href,description}] (никогда не пустой при наличии href)."""
     try:
         from .ai_content import _slepok_content_get
         _db = _slepok_content_get(slepok, site_type, "campaign")
         _sl = (_db or {}).get("sitelinks") if isinstance(_db, dict) else None
         if _sl:
-            return [s for s in _sl if isinstance(s, dict) and s.get("title")][:8]
+            picked = [s for s in _sl if isinstance(s, dict) and s.get("title")][:8]
+            if picked:
+                return picked
     except Exception:  # noqa: BLE001
         pass
     try:
-        return _ai_common_sitelinks(login, slepok, site_type, city, tp_code) or []
+        ai = _ai_common_sitelinks(login, slepok, site_type, city, tp_code) or []
+        if ai:
+            return ai
     except Exception:  # noqa: BLE001
-        return []
+        pass
+    # Последний резерв: никогда не оставляем объявление без быстрых ссылок (#7 → до идеала).
+    return _sitelinks_fallback_with_href(href)
 
 
 def _create_text_via_cookie(
@@ -104,7 +136,7 @@ def _create_text_via_cookie(
                     _gco = _grid_callout_ids(login, callout_texts or [])
                     if _gco:
                         _assets["callout_ids"] = _gco
-                _ai_sitelinks = _common_sitelinks_fast(login, slepok, site_type, city, tp_code)
+                _ai_sitelinks = _common_sitelinks_fast(login, slepok, site_type, city, tp_code, href=href)
                 # Sitelinks: Grid-первичный (БЕЗ баллов) — HAR23/entry262 AddSitelinkSets.
                 _asl = _norm_sitelinks_for_v501(_ai_sitelinks or (_assets.get("sitelinks") or []), href)
                 if _asl:
@@ -289,7 +321,7 @@ def _create_shopping_via_cookie(
                     _sh_assets["callout_ids"] = _prefer_callout_ids[:8]
                 # Sitelinks: если v5 ничего не дал (152/нет токена) — локальный фолбэк как в tp1/tp2-пути.
                 if not _sh_assets.get("sitelinks"):
-                    _ai_sl = _common_sitelinks_fast(login, slepok, site_type, city, tp_code)
+                    _ai_sl = _common_sitelinks_fast(login, slepok, site_type, city, tp_code, href=href)
                     if _ai_sl:
                         _sh_assets["sitelinks"] = _ai_sl
                 # Sitelinks: Grid-первичный (БЕЗ баллов) — HAR23/entry262 AddSitelinkSets.
@@ -515,7 +547,7 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
     # ── 4. Grid-докрутка: места показа (gallery + search), ассеты кампании, минус, инварианты ──
     _assets = _resolve_campaign_assets(
         token, login, href,
-        sitelinks=_common_sitelinks_fast(login, slepok, site_type, city, "tp5"),
+        sitelinks=_common_sitelinks_fast(login, slepok, site_type, city, "tp5", href=href),
         assets=data, slepok=slepok, site_type=site_type,
         grid_cookie=grid_cookie,
     )

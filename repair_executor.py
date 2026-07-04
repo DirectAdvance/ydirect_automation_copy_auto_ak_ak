@@ -17,6 +17,10 @@ from . import grid_finalize as gf
 
 # Порог идемпотентности: группа с ≥ этого числа ключей И корректным автотаргетом не трогается.
 _KEYWORDS_MIN = 1
+# Жёсткий лимит Яндекса: максимум 200 ключевых фраз на группу объявлений. Если отдать больше —
+# Grid AddKeywords отклоняет ВСЮ пачку (KeywordDefectIds.Keyword.MAX_KEYWORDS_PER_AD_GROUP_EXCEEDED),
+# и группа остаётся с 0 ключей (симптом NO_KEYWORDS_LIVE). Поэтому режем список до 200 на группу.
+_KW_MAX_PER_GROUP = 200
 _SEARCH_TPS = {2, 4, 5}
 _CT_RE = re.compile(r"ct\d{4}", re.IGNORECASE)
 _TP_RE = re.compile(r"^\s*tp(\d+)_", re.IGNORECASE)
@@ -647,6 +651,10 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
                     failed.append({"campaign_id": cid, "adgroup_id": gid,
                                    "error": f"пересчёт ключей: {str(e)[:180]}"})
                     continue
+            # Кап 200/группа (лимит Яндекса): иначе Grid AddKeywords отклонит всю пачку
+            # (MAX_KEYWORDS_PER_AD_GROUP_EXCEEDED) → группа останется без ключей (NO_KEYWORDS_LIVE).
+            if len(final_kw) > _KW_MAX_PER_GROUP:
+                final_kw = final_kw[:_KW_MAX_PER_GROUP]
             target_rm = {"isActive": True, "id": (rm or {}).get("id") if isinstance(rm, dict) else None,
                          "relevanceMatchCategories": ["EXACT_V2_MARK"],
                          "autotargetingBrandSettings": ["WITHOUT_BRAND"]}

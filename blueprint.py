@@ -1165,12 +1165,13 @@ def _run_delayed_content_repair(row: dict) -> None:
         lv = _create_set_live_verification(login, results_tree, agency=agency, use_v5=False)
         pl = (lv or {}).get("repair_plan") or {}
         summ = rgate.summarize_repair_gate(body, results_tree, pl)
-        cnt = (
-            int(summ.get("in_place_content_repairs") or 0)
-            + (1 if summ.get("promo_campaigns") else 0)
-            + (1 if summ.get("callout_campaigns") else 0)
-            + int(summ.get("rename_campaigns") or 0)
-        )
+        # ВСЕ in-place действия, которые реально исполняет execute_all_in_place (keywords_repair /
+        # adprice_repair / images_repair / images_forbidden / content / default_text / promo /
+        # callout / rename) = executable_now минус recreate-очередь (recreate/UAC-replace — НЕ in-place,
+        # уходят в _auto_queue_recreate_after_done). Раньше cnt считал только content+promo+callout+
+        # rename → keywords_repair и adprice_repair НЕ добивались авто (gate inplace_cnt<=0 → break,
+        # execute_all_in_place не вызывался) — «поисковые группы без ключей» оставались навсегда.
+        cnt = int(summ.get("executable_now") or 0) - int(summ.get("queued_recreate_items") or 0)
         return lv, pl, cnt
 
     all_executed: list[dict] = []
@@ -3110,9 +3111,11 @@ _SLEPOK_KEY = {"слепок_павлов": "pavlov", "слепок_щербак
                "слепок_крючкова": "kryuchkova", "слепок_терехов": "terehov",
                "слепок_караваев": "karavaev", "слепок_саламахин": "salamahin",
                "слепок_гордеева": "gordeeva", "слепок_зубакин": "zubakin",
-               "слепок_чепелев": "chepelev", "слепок_тумашенко": "tumashenko"}
+               "слепок_чепелев": "chepelev", "слепок_тумашенко": "tumashenko",
+               "слепок_кудерко": "kuderko"}
 _SLEPOK_CANONICAL = {"pavlov", "kryuchkova", "scherbakova", "terehov", "karavaev",
-                      "salamahin", "gordeeva", "zubakin", "chepelev", "tumashenko"}
+                      "salamahin", "gordeeva", "zubakin", "chepelev", "tumashenko",
+                      "kuderko"}
 
 
 def _slepok_key_from_text(raw: str) -> str:
@@ -3144,6 +3147,8 @@ def _slepok_key_from_text(raw: str) -> str:
         return "chepelev"
     if "тумашенко" in s:
         return "tumashenko"
+    if "кудерко" in s:
+        return "kuderko"
     return ""
 
 
