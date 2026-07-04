@@ -31,9 +31,15 @@
 - **+ `import os`** в `create_set_feeds` (был NameError, рушил цикл добивки картинок). `3aa51ae`.
 - **Удаление черновиков — только `GridCreateClient.delete_campaigns` (cookie, все типы, без баллов).**
   `delete_campaign` (UAC-only) для TEXT-РК = no-op (404→already_gone). `campaigns.delete` v5 нужны баллы.
-- **Пересоздание 2 РК (e8b45574e306 psm/b3175889ab2a ozge):** идёт на исправленном коде. ⚠️ Мешает ИНФРА:
-  M3-LLM периодически лежит (→ OpenRouter/DeepSeek), воркер рестартит SIGTERM (M3-автоматика?) → джобы
-  interrupted → resume. НЕ регресс кода. Живая проверка 8 дефектов — на созданных РК после завершения.
+- **🔧 ИНФРА-ФИКС контента (разблокировал шаг 3):** `OPENROUTER_LLM_MODEL` был `deepseek/deepseek-v4-flash`
+  — **20% пустых ответов** (замер: 1/5-6), + M3-72B перегружался фолбэком → контент падал, tp1 без объявлений.
+  Замер моделей: **`deepseek/deepseek-chat` (V3) = 6/6, 0 пустых** (gemini-2.0-flash недоступна). Поставил
+  через drop-in `Environment=OPENROUTER_LLM_MODEL=deepseek/deepseek-chat` для direct/-worker/-content
+  (`/etc/systemd/system/*.service.d/openrouter-model.conf` — НЕ в git/Mutagen, как NEURO_PACK_MOUNT).
+  Теперь контент через надёжный OpenRouter (M3 почти не грузится). Дёшево + надёжно.
+- **Чистое пересоздание (1533be40db61 psm / 2127aa9f2e10 ozge, 16:10Z):** аккаунты wiped (cancel+delete),
+  прогон на исправленном коде + надёжной модели + локальном контенте. Живая проверка 8 дефектов — после.
+- ⚠️ Прежние прогоны (e8b45574e306/b3175889ab2a) отменены — падали на flaky-модели + Grid-бэкпрешере (не код).
 - ⚠️ Осталось: дождаться пересоздания → проверить 8 дефектов live → мета: расширить live_verification
   (сейчас не чекает видео/кнопку/сайтлинки/каталог/порядок заголовков — эти есть в campaign_spec_audit,
   который гоняется в delayed-repair; после cmc-фикса он отрабатывает).
