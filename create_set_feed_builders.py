@@ -14,6 +14,25 @@ def configure(deps: dict) -> None:
     globals().update(deps)
 
 
+def _common_sitelinks_fast(login, slepok, site_type, city, tp_code):
+    """Сайтлинки БЕЗ баллов и БЕЗ зависания LLM (#7): сначала БД-библиотека слепка
+    (`_slepok_content_get`, мгновенно), потом AI-генерация как фолбэк. `_ai_common_sitelinks`
+    генерит полный контент через LLM (~50с и виснет на M3) → финализ tp5 не доходил до сайтлинков.
+    Возвращает list[dict{title,description}] или []."""
+    try:
+        from .ai_content import _slepok_content_get
+        _db = _slepok_content_get(slepok, site_type, "campaign")
+        _sl = (_db or {}).get("sitelinks") if isinstance(_db, dict) else None
+        if _sl:
+            return [s for s in _sl if isinstance(s, dict) and s.get("title")][:8]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return _ai_common_sitelinks(login, slepok, site_type, city, tp_code) or []
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _create_text_via_cookie(
     login: str, name: str, tp_code: str, counter_id: int, goal_id: int, cpa_rub: int,
     budget_rub: int, region_ids: list, href: str, slepok: str, site_type: str, r_code: str,
@@ -85,7 +104,7 @@ def _create_text_via_cookie(
                     _gco = _grid_callout_ids(login, callout_texts or [])
                     if _gco:
                         _assets["callout_ids"] = _gco
-                _ai_sitelinks = _ai_common_sitelinks(login, slepok, site_type, city, tp_code)
+                _ai_sitelinks = _common_sitelinks_fast(login, slepok, site_type, city, tp_code)
                 # Sitelinks: Grid-первичный (БЕЗ баллов) — HAR23/entry262 AddSitelinkSets.
                 _asl = _norm_sitelinks_for_v501(_ai_sitelinks or (_assets.get("sitelinks") or []), href)
                 if _asl:
@@ -270,7 +289,7 @@ def _create_shopping_via_cookie(
                     _sh_assets["callout_ids"] = _prefer_callout_ids[:8]
                 # Sitelinks: если v5 ничего не дал (152/нет токена) — локальный фолбэк как в tp1/tp2-пути.
                 if not _sh_assets.get("sitelinks"):
-                    _ai_sl = _ai_common_sitelinks(login, slepok, site_type, city, tp_code)
+                    _ai_sl = _common_sitelinks_fast(login, slepok, site_type, city, tp_code)
                     if _ai_sl:
                         _sh_assets["sitelinks"] = _ai_sl
                 # Sitelinks: Grid-первичный (БЕЗ баллов) — HAR23/entry262 AddSitelinkSets.
@@ -496,7 +515,7 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
     # ── 4. Grid-докрутка: места показа (gallery + search), ассеты кампании, минус, инварианты ──
     _assets = _resolve_campaign_assets(
         token, login, href,
-        sitelinks=_ai_common_sitelinks(login, slepok, site_type, city, "tp5"),
+        sitelinks=_common_sitelinks_fast(login, slepok, site_type, city, "tp5"),
         assets=data, slepok=slepok, site_type=site_type,
         grid_cookie=grid_cookie,
     )
