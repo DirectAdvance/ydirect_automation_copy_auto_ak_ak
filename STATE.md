@@ -9,6 +9,26 @@
 
 ## Сессия: 2026-07-04 (день) — вынос text_gen + ai_content (монолит −39%), прогон 2 РК
 
+### ⚡ Замер скорости + ФИКС переноса контента (item 8/9)
+
+- **Замер throughput контента:** локаль `/opt/neuro_content_local` **873 МБ/с** vs sshfs-тоннель M3
+  `/opt/neuro_kontent` **0.39 МБ/с** (≈**2240×**). Тоннель = тот самый боттлнек.
+- **🐞 НАЙДЕНО: перенос был ПОЛОВИНЧАТЫЙ.** Флип `NEURO_PACK_MOUNT` менял только `PACK_MOUNT`
+  (текст/индекс — `_read_lines`, PACK_ROOT). А **байты картинок/видео** идут через
+  `videos_for_login`/images → `M3_PACK_ROOT` (путь НА M3) → `_fetch_bytes` = **`ssh m3-relay cat`
+  с M3** в кэш `/opt/neuro_kontent_cache`. Локальная копия НЕ использовалась. Живое подтверждение:
+  за прогон **1483 файла** дотянуто по ssh с M3 (кэш 2ГБ). Т.е. перенос не ускорял медиа.
+- **✅ ФИКС (kontent_pack.py):** `_LOCAL_MIRROR_ROOT` = PACK_MOUNT (если не sshfs-дефолт) +
+  local-first в `_fetch_bytes`: маппим M3-путь (`M3_AGENCY_ROOT`→PACK_MOUNT), есть локально →
+  отдаём БЕЗ ssh. Тест: видео **2.968с (ssh) → 0.0000с (локаль)**; missing → фолбэк на ssh, None (без краха).
+  ⚠️ Воркер подхватит фикс на РЕСТАРТЕ — рестартить ТОЛЬКО после завершения текущих джоб (не рвать прогон).
+- **Прогон 2 РК (b0a18f96ed3b psm5h7q6 / c7860c9e0576 ozge4ntu):** идут; созданные РК верны —
+  **0 CPA** (no_cpa-фильтр pay=cpa), фид psm5h7q6=реальный yandex.xml (3537034), ozge4ntu=fallback-каталог
+  (аккаунт на лимите 50 фидов, добавить /yandex.xml нельзя). Медленно из-за ssh-fetch медиа + бэкпрешер
+  Yandex Grid-аплоада (Send-Q до 2МБ, `grid_finalize.py:1531` — requests-timeout не бьёт SEND).
+  OpenRouter (deepseek-v4-flash) primary, 4× пустой ответ → M3-фолбэк (штатно, дизайн Семёна 03.07).
+
+
 **✅ #6 text_gen.py (895) + #7 ai_content.py (261) ВЫНЕСЕНЫ — blueprint 7759 → 6785; за всю серию
 11198 → 6785 (−4413, ~39%, 9 модулей).** Метод: AST-экстрактор по списку символов (scratchpad/extract.py)
 → pyflakes = 0 undefined = точный DI-лист → ре-экспорт + configure → compile + import-smoke LXC101

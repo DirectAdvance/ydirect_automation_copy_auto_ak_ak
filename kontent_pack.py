@@ -38,6 +38,13 @@ M3_AGENCY_ROOT = "/Users/Shared/agency/нейродиректолог"
 M3_PACK_ROOT = M3_AGENCY_ROOT + "/kontent_oktyabr"
 M3_MANUAL_ROOT = "/Users/Shared/agency/creatives/Manual"
 
+# Локальная зеркальная копия пака (перенос на Proxmox, scripts/sync_content_m3.py). Если
+# NEURO_PACK_MOUNT указывает на ЛОКАЛЬНУЮ папку (не sshfs-монт /opt/neuro_kontent), маппим
+# M3-путь (_fetch_bytes) на неё и читаем байты БЕЗ ssh — в разы быстрее image/video-heavy
+# наборов. None (дефолтный sshfs) → прежнее поведение (ssh cat с M3). Байты картинок/видео
+# раньше шли ТОЛЬКО через ssh, минуя перенос — этот маппинг и делает перенос эффективным.
+_LOCAL_MIRROR_ROOT = PACK_MOUNT if (PACK_MOUNT != "/opt/neuro_kontent" and os.path.isdir(PACK_MOUNT)) else None
+
 # ── АНТИ-ЗАВИСАНИЕ sshfs: локальный ИНДЕКС (структура) + точечный фетч байтов ──
 # Корень зависаний — «слепой» обход каталогов по sshfs (os.listdir/find без таймаута):
 # когда Mac (m3-relay) загружен, FUSE-чтение стопорится навсегда и морозит весь воркер.
@@ -347,6 +354,15 @@ def _fetch_bytes(remote_abs: str) -> str | None:
     Возвращает локальный путь или None (при таймауте/сбое — НЕ зависает вечно)."""
     if not remote_abs:
         return None
+    # ЛОКАЛЬНАЯ КОПИЯ ПЕРВОЙ: пак перенесён на Proxmox → маппим M3-путь на локальную папку.
+    # Есть файл локально → отдаём его без ssh (isdir/isfile по локальному диску, НЕ по sshfs).
+    if _LOCAL_MIRROR_ROOT and remote_abs.startswith(M3_AGENCY_ROOT + "/"):
+        _lm = _LOCAL_MIRROR_ROOT + remote_abs[len(M3_AGENCY_ROOT):]
+        try:
+            if os.path.isfile(_lm) and os.path.getsize(_lm) > 0:
+                return _lm
+        except OSError:
+            pass
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
         h = hashlib.md5(remote_abs.encode("utf-8")).hexdigest()
