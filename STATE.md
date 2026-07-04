@@ -7,6 +7,27 @@
 > и для impact-анализа («что сломается, если тронуть X»). Правила «когда смотреть» —
 > в шапке того файла.
 
+## Сессия: 2026-07-04 (день) — вынос text_gen + ai_content (монолит −39%), прогон 2 РК
+
+**✅ #6 text_gen.py (895) + #7 ai_content.py (261) ВЫНЕСЕНЫ — blueprint 7759 → 6785; за всю серию
+11198 → 6785 (−4413, ~39%, 9 модулей).** Метод: AST-экстрактор по списку символов (scratchpad/extract.py)
+→ pyflakes = 0 undefined = точный DI-лист → ре-экспорт + configure → compile + import-smoke LXC101
+(object-identity: DI инъектирован, `_CONTENT_CACHE`/`_LOCK` ТОТ ЖЕ объект, ре-экспорты те же) → деплой
+(5 сервисов active, web 302).
+
+- **text_gen:** 46 символов. 7 DI (`_drop_used_car`/`_brand_canon`/`_ct_segment` + 4 константы-пула
+  `_GENERIC_TITLE_FILLERS`/`_GENERIC_AT_TITLES`/`_RA_TITLES_CAP`/`_RA_TEXTS_CAP`). Ловушка: `_title2_blocklist`
+  импортируется из campaign_naming (реальный), НЕ из city_morph (там DI-stub → стухло бы). `_bad_credit_payment_range`
+  переехал сюда (с `_CREDIT_PAYMENT_RANGE_RE`), blueprint ре-экспортит и инъектит его в text_norm.
+- **ai_content:** 11 символов. 4 DI (`_victory_conn(_rw)`, `_gc_ct`, `_cached_campaign_content`). Кэш
+  `_CONTENT_CACHE(_LOCK)` — единый объект, blueprint шарит через ре-экспорт (только мутация-словаря, 0
+  reassignment — проверено). `_aic.configure` — в КОНЦЕ модуля (после def `_cached_campaign_content`:6554,
+  иначе import-time NameError — поймано ревью).
+- **Код-ревью (2 агента, read-only):** wiring CLEAN (stale-binding/missing-DI/missing-reexport/ordering — все
+  4 класса чисто) + integrity CLEAN (5+4 функции byte-identical vs HEAD, 0 дублей def, shared-state без
+  reassignment). Фикс: убран мёртвый `import random` (ai_content). pyflakes 0.
+- ⏳ **Осталось 2 кластера: #8 queue_server (HIGHEST, последним) + #F yandex_api+db (foundation).**
+
 ## Сессия: 2026-07-04 (ночь) — 4 бага porg-psm5h7q6 + перенос контента + карта архитектуры
 
 **ЗАДЕПЛОЕНО (LXC101, воркер простаивал; все 5 direct-сервисов active, web 5020→302):**

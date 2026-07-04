@@ -182,8 +182,17 @@ campaign_naming; `_TITLE_PROMO_IDX`/бренд-кэши→text_gen; `_CONTENT_CA
 
 > **Статус извлечения (2026-07-04):**
 > - ✅ **#1 llm_providers** (351) · ✅ **#3 text_norm** (404) · ✅ **#2 city_morph** (190) ·
->   ✅ **#4 promo_gen** (267) · ✅ **#5 campaign_naming** (262) + **model_urls** (124) — ВЫНЕСЕНЫ,
->   ревью чисто, import-smoke зелёный, в проде. **blueprint 11198 → 9839 (−1359, ~12%).**
+>   ✅ **#4 promo_gen** (267) · ✅ **#5 campaign_naming** (262) + **model_urls** (124) · ✅ **copy_engine**
+>   (2229) · ✅ **#6 text_gen** (895) · ✅ **#7 ai_content** (261) — ВЫНЕСЕНЫ, import-smoke зелёный, в проде.
+>   **blueprint 11198 → 6785 (−4413, ~39%; 9 модулей).**
+> - ✅ **#6 text_gen** — пулы промо/текстов, ротация `_TITLE_PROMO_IDX`, дедуп/варьирование, дропы
+>   бренд/модель-ключей, когерентность скидок/платежей (вкл. `_bad_credit_payment_range` — источник
+>   инъекции в text_norm), фолбэк-заголовки. 7 DI (3 функции + 4 константы-пула). Ловушка stale-binding:
+>   `_title2_blocklist` берётся из campaign_naming (реальный), НЕ из city_morph (там DI-stub).
+> - ✅ **#7 ai_content** — `_ai_campaign_content_for_item`/`_ai_group_content`/`_gen_campaign_content`,
+>   `_slepok_content_ensure/get/save`, `_seed_slepok_content`, кэш `_CONTENT_CACHE(_LOCK)` (единый объект,
+>   blueprint шарит через ре-экспорт — только мутация-словаря, без reassignment). 4 DI (`_victory_conn(_rw)`,
+>   `_gc_ct`, `_cached_campaign_content`). `_aic.configure` — в КОНЦЕ модуля (после def `_cached_campaign_content`).
 > - ⏳ **#F yandex_api+db** — ОТЛОЖЕН: foundation-слой критически перемешан с `register_*_routes`,
 >   `configure`-вызовами и 5 оставляемыми (`_LIVE_V4`/`_do_balance`/`_STATE_ORDER`/`_TOKEN_ONLY_TYPES`/
 >   `_preflight_creds`) → ~20 pointwise-правок; `_bp.X`-доступ из 4 entrypoint (content_main/worker,
@@ -191,4 +200,5 @@ campaign_naming; `_TITLE_PROMO_IDX`/бренд-кэши→text_gen; `_CONTENT_CA
 >   корректность v5/v501/токен-путей подтверждает ТОЛЬКО живой create-set. Делать focused-шагом
 >   с прогоном РК, НЕ пачкой. `_preflight_creds` оставить (тянет grid `_block_bootstrap`);
 >   co-move `_is_units_exhausted` (re-import из create_set_units).
-> - ⏳ **#6 text_gen · #7 ai_content · #8 queue_server** — HIGH, по одному с живым create-set.
+> - ⏳ **#8 queue_server** (очередь/воркер/watchdog/deferred) — HIGHEST, переносить последним одним куском.
+>   ⏳ **#F yandex_api+db** — foundation, focused-шагом с прогоном РК (см. выше). Это последние два кластера.
