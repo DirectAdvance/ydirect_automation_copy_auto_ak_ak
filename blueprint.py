@@ -1972,7 +1972,7 @@ def _render_page():
         active_section="work", active_page="direct_automation",
         audiences=_load_audiences(),
         feeds_catalog=_json("feeds_catalog.json"),
-        slepki_structure=_json("slepki_structure.json"),
+        slepki_structure=_slepki_structure_for_ui(),   # фильтр по боевому профилю (донорские tp скрыты)
         model_cts=_model_cts(),                 # модельные ct (совместимость)
         ct_segments=_ct_segment_map(),          # ct → 'Модели'|'Марки'|'Общее' (единый источник для UI и плана)
         donor_tp4_models=_donor_tp4_models_map(),  # {slepok: [site_type]} — tp4 «Модели» от донора
@@ -3545,6 +3545,25 @@ def _slepok_profile_excludes_tp(slepok: str, site_type: str, tp: str) -> bool:
     if not st:
         return False
     return tp not in st
+
+
+def _slepki_structure_for_ui() -> dict:
+    """Копия slepki_structure для чекбоксов набора в UI с ФИЛЬТРОМ по боевому профилю:
+    у слепка, у которого есть targeting_profile для site_type, скрываем tp, которых в профиле
+    НЕТ (донорские tp — напр. scherbakova держит tp4 «Модели» как донор, но в СВОЙ аккаунт его
+    не ведёт; gate _slepok_profile_excludes_tp его всё равно молча режет → нельзя предлагать в UI).
+    Слепок без профиля (напр. Терехов) — не трогаем, tp остаются (он реально их создаёт).
+    ВАЖНО: донорская логика (_donor_tp4_models_map / _segment_donor / _struct_cts) читает
+    slepki_structure.json С ДИСКА напрямую — этот фильтр её НЕ затрагивает."""
+    import copy
+    out = copy.deepcopy(_json("slepki_structure.json"))
+    for d in out.get("directologists", []):
+        key = d.get("key") or ""
+        for st in d.get("site_types", []):
+            stype = st.get("name") or ""
+            st["tp"] = [t for t in st.get("tp", [])
+                        if not _slepok_profile_excludes_tp(key, stype, t.get("code") or "")]
+    return out
 
 
 def _donor_tp4_models_map() -> dict:
