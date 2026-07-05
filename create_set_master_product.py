@@ -74,6 +74,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     _tp67_keywords_for = deps['_tp67_keywords_for']
     _tp67_targeting_mode = deps['_tp67_targeting_mode']
     _tp7_product_feed_filters = deps['_tp7_product_feed_filters']
+    _tp7_listings_minus_filters = deps['_tp7_listings_minus_filters']
     _trim_to_word = deps['_trim_to_word']
     _variant_norm_key = deps['_variant_norm_key']
     results = []
@@ -471,6 +472,13 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
         if coll_id:
             it_lff = [{"conditions": [{"field": "collectionId", "operator": "CONTAINS",
                                        "value": f'["{coll_id}"]'}]}]
+    # Минус-марки на «Страницы каталога» (глобальные правила действуют и на каталог):
+    # если позитивного collectionId-фильтра нет (общая tp7 / марка без коллекции — каталог
+    # идёт ЦЕЛИКОМ), исключаем mark-коллекции включённых минус-марок (NOT_CONTAINS).
+    _lff_minus_applied = False
+    if is_product and it_listings and not it_lff:
+        it_lff = _tp7_listings_minus_filters(login, it_listings, _w_agency or "")
+        _lff_minus_applied = bool(it_lff)
     try:
         spec = cmc.MasterCampaignSpec(
             href=it_href, titles=it_titles, texts=it_texts, region_ids=region_ids,
@@ -499,7 +507,16 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             age_lower=("age_18" if targeting_mode == "autotarget"
                        else ("age_25" if (is_manual and not is_product) else "age_18")),
         )
-        cid = client.create_master_campaign(spec, launch=launch)
+        try:
+            cid = client.create_master_campaign(spec, launch=launch)
+        except Exception:
+            # Страховка: NOT_CONTAINS по collectionId на листингах мог не пройти
+            # валидацию UAC — ретрай БЕЗ минус-фильтра каталога (кампания важнее фильтра).
+            if not _lff_minus_applied:
+                raise
+            spec.listings_feed_filters = []
+            cid = client.create_master_campaign(spec, launch=launch)
+            it_warnings.append("tp7: минус-фильтр каталога отклонён API — создано без него")
         _res = {"name": disp_name, "ok": True, "id": cid, "launched": launch,
                 "images": len(it_images), "videos": len(it_videos),
                 "sitelinks": len(it_sitelinks),

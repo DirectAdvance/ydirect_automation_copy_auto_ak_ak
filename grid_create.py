@@ -612,8 +612,7 @@ def create_full(login: str, *, campaign_spec: dict, groups: list, region_ids: li
             except TypeError:                       # совместимость со старой 2-арг функцией
                 cur, old = brand_price_fn(price_map, g.get("brand") or g.get("name") or "")
             if cur:
-                # Если фид не дал старую цену, добиваем её выше текущей: UI должен показывать
-                # текущую и зачёркнутую цену, при этом Grid требует priceOld > price.
+                # Старая цена только из фида (old_safe=0 → поле пустое, без зачёркнутой).
                 old_safe = _safe_old_price(cur, old)
                 price = {"price": str(cur), "priceOld": (str(old_safe) if old_safe else ""),
                          "prefix": "FROM", "currency": "RUB"}   # «от X» (HAR 29)
@@ -876,6 +875,9 @@ def add_shopping_content_to_existing(login: str, *, campaign_id: int, groups: li
 
 
 def _safe_old_price(current, old=0) -> int:
+    """Старая цена ТОЛЬКО из фида (правило Семёна 2026-07-05, синхронно с
+    create_set_feeds._safe_old_price): нет old в фиде / old<=current → 0 (поле пустое).
+    Синтетика +12% убрана — цены не выдумываем."""
     try:
         cur = int(current or 0)
         old_i = int(old or 0)
@@ -883,10 +885,7 @@ def _safe_old_price(current, old=0) -> int:
         return 0
     if cur <= 0:
         return 0
-    if old_i > cur:
-        return old_i
-    import math
-    return int(math.ceil((cur * 1.12) / 10000.0) * 10000)
+    return old_i if old_i > cur else 0
 
 
 def _dedup_keep(seq, n, cut):
@@ -960,7 +959,11 @@ def build_ad(*, adgroup_id: int, href: str, titles: list, bodies: list,
         "href": href, "hrefParams": "", "domain": None,
         "titles": _dedup_keep(_fill_titles(titles), 7, 56),   # 7 заголовков (UI Директа «… из 7»)
         "bodies": _dedup_keep(_fill_bodies(bodies), 3, 81),
-        "imageHashes": list(image_hashes or []), "creativeIds": [],
+        # ДЕДУП хэшей ОБЯЗАТЕЛЕН: пул ct с одинаковыми файлами → один hash дважды →
+        # MUST_NOT_CONTAIN_DUPLICATED_ELEMENTS валит ВЕСЬ батч AddAdaptiveTextAds (150 групп,
+        # «0 ads») → partial-кампания удаляется. Живой кейс 2026-07-05: tp1 Модели-АТ падала
+        # 3 раза подряд на adAddItems[N].imageHashes[4] (в RMW-апдейтах дедуп был, тут — нет).
+        "imageHashes": list(dict.fromkeys(image_hashes or [])), "creativeIds": [],
         "permalinkId": None, "phoneId": None,
         "adPrice": ad_price,                              # {"price","priceOld","prefix","currency":"RUB"} | None
         "erirAdDescription": None,

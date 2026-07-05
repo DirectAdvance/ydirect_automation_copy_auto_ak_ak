@@ -521,11 +521,10 @@ def _ct_has_pool_video(ct: str) -> bool:
         ct_norm = (ct or "").strip().lower()
         if not ct_norm:
             return False
-        # Сначала быстрый pre-check по индексу: если ключа нет — файлов точно нет
-        ext = (kp_mod._load_index().get("external_assets") or {})
-        if not ext.get("Video|video|" + ct_norm):
-            return False
-        # Ключ есть → проверяем реальное наличие файлов (локальный _video_pool или кэш)
+        # БЕЗ pre-check по точному ключу индекса: у ct без СВОЕГО ключа (ct0026 Belgee X50)
+        # videos_pool_for_ct находит видео через brand-fallback — строгий pre-check
+        # `Video|video|<ct>` отсекал такие ct → VIDEO_MISSING не эмитился → видео не прикреплялось
+        # (живой кейс 2026-07-05, porg-psm5h7q6). videos_pool_for_ct сам делает чек exists+size.
         paths = kp_mod.videos_pool_for_ct(ct_norm, limit=1)
         return bool(paths)
     except Exception:  # noqa: BLE001

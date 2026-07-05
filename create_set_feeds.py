@@ -392,8 +392,10 @@ def _group_ad_price(prices: dict, brand: str, seg: str = "") -> tuple:
 
 
 def _safe_old_price(current: int, old: int = 0) -> int:
-    """Вернуть старую цену для adPrice. Если фид не дал old или old<=current,
-    создаём безопасную зачёркнутую цену выше текущей."""
+    """Вернуть старую цену для adPrice — ТОЛЬКО из фида (правило Семёна 2026-07-05:
+    цены берём только из фида аккаунта, ничего не выдумываем). Фид не дал old или
+    old<=current → 0 (поле «Старая цена» остаётся пустым, без зачёркнутой цены).
+    Раньше тут синтезировался +12% с округлением до 10к — «цена от болды», убрано."""
     try:
         cur = int(current or 0)
         old_i = int(old or 0)
@@ -401,11 +403,7 @@ def _safe_old_price(current: int, old: int = 0) -> int:
         return 0
     if cur <= 0:
         return 0
-    if old_i > cur:
-        return old_i
-    # +12%, округление вверх до 10 000 ₽: выглядит как нормальная старая цена и гарантирует old>cur.
-    import math
-    return int(math.ceil((cur * 1.12) / 10000.0) * 10000)
+    return old_i if old_i > cur else 0
 
 
 def _grid_ad_price_payload(current: int, old: int = 0) -> dict | None:
@@ -586,17 +584,19 @@ def _grid_set_ad_prices(login: str, items: list) -> int:
     быстрые ссылки/уточнения (проверено: без них ссылки сохраняются)."""
     upd = []
     for it in (items or []):
-        if not it.get("current"):
-            continue
-        _old = _safe_old_price(it.get("current"), it.get("old"))
-        _payload = _grid_ad_price_payload(it.get("current"), _old)
-        if not _payload:
-            continue
         _item = {"href": it.get("href") or "", "hrefParams": "",
                  "titles": it.get("titles") or [], "bodies": it.get("bodies") or [],
                  "imageHashes": it.get("image_hashes") or [], "creativeIds": [],
-                 "adPrice": _payload,
                  "id": str(it["id"])}
+        if it.get("current"):
+            _old = _safe_old_price(it.get("current"), it.get("old"))
+            _payload = _grid_ad_price_payload(it.get("current"), _old)
+            if _payload:
+                _item["adPrice"] = _payload
+        # current=0 (модели/марки НЕТ в фиде) → item БЕЗ adPrice: full-replace ОЧИЩАЕТ
+        # bannerPrice (verified live 2026-07-02 — апдейт без adPrice затирает цену).
+        # ПРАВИЛО СЕМЁНА 2026-07-05: цены из слепков НЕ берём НИКОГДА — только из фида;
+        # донорская цена (напр. 2 040 546 у BAIC X7 scherbakova) обязана затираться.
         upd.append(_item)   # КНОПКУ тут НЕ шлём — ставится отдельным апдейтом (см. _grid_update_adaptive_ads)
     if not upd:
         return 0
@@ -1292,3 +1292,25 @@ def _tp7_product_feed_filters(brand_model: str, ct: str,
     if not conditions:
         return []
     return [{"conditions": conditions}]
+
+
+def _tp7_listings_minus_filters(login: str, feed_id: int, agency: str = "") -> list[dict]:
+    """UAC listings_feed_filters «минус-марки» для «Страниц каталога» tp7 (правило Семёна:
+    глобальные минус-марки действуют и на каталог, не только на товарную часть).
+    Листинги фильтруются ТОЛЬКО по collectionId (campaign.py: по имени не фильтрует) →
+    маппим каждую включённую минус-марку на её mark-коллекцию фида (id НЕ 'model_*')
+    через _brand_level_collection_id. Марка без коллекции в фиде — пропускается
+    (её страниц в каталоге и так нет). Одно NOT_CONTAINS-условие на марку, AND."""
+    marks = _minus_marks_enabled()
+    if not marks or not feed_id:
+        return []
+    cols = _feed_collections(login, int(feed_id), agency)
+    if not cols:
+        return []
+    conditions: list[dict] = []
+    for m in marks:
+        cid = _brand_level_collection_id(m, cols)
+        if cid:
+            conditions.append({"field": "collectionId", "operator": "NOT_CONTAINS",
+                               "value": json.dumps([cid], ensure_ascii=False)})
+    return [{"conditions": conditions}] if conditions else []

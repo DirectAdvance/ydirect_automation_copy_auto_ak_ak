@@ -360,14 +360,22 @@ def _build_tp1_adgroups(
             for _rec in created_ad_meta:
                 ad_id, meta = _rec["id"], _rec["meta"]
                 cur, old = _group_ad_price(_pmap, meta.get("brand", ""), meta.get("seg", ""))
-                if cur:
-                    meta["ad_price_payload"] = _grid_ad_price_payload(cur, old)  # fix price-C: для видео
-                    _pitems.append({"id": ad_id, "href": meta["href"], "titles": meta["titles"],
-                                    "bodies": meta["bodies"], "image_hashes": meta["image_hashes"],
-                                    "current": cur, "old": old})
+                # ПРАВИЛО СЕМЁНА 2026-07-05: цены из слепков НЕ берём НИКОГДА. cur=0
+                # (модели нет в фиде) → item ВСЁ РАВНО шлём: _grid_set_ad_prices отправит
+                # его БЕЗ adPrice → full-replace ЗАТИРАЕТ донорскую цену слепка (2 040 546
+                # у BAIC X7 уцелела именно из-за старого пропуска `if cur:`).
+                meta["ad_price_payload"] = _grid_ad_price_payload(cur, old) if cur else None
+                _pitems.append({"id": ad_id, "href": meta["href"], "titles": meta["titles"],
+                                "bodies": meta["bodies"], "image_hashes": meta["image_hashes"],
+                                "current": cur, "old": old})
             rep["prices_set"] = _grid_set_ad_prices(login, _pitems)
             # ads_repaired_after_price убран (fix price-B): imageHashes уже в _grid_set_ad_prices,
             # повторный _grid_update_adaptive_ads без adPrice затирал цену.
+        elif created_ad_meta:
+            # FeedOffersPreview не дал НИ ОДНОЙ цены (сбой/пустой фид) — НЕ затираем и НЕ
+            # ставим ничего вслепую; явный warning вместо тихого skip (донор мог уцелеть).
+            rep.setdefault("warnings", []).append(
+                "adPrice: фид не дал цен (FeedOffersPreview пуст) — цены не проставлены")
     except Exception as _e:  # noqa: BLE001 — цена не критична, объявление уже создано
         rep.setdefault("warnings", []).append(f"adPrice: {str(_e)[:100]}")
 

@@ -7,6 +7,29 @@
 > и для impact-анализа («что сломается, если тронуть X»). Правила «когда смотреть» —
 > в шапке того файла.
 
+## Харвест zubakin 2026-07-05 — дополнение: картинки + callouts + neg shared sets
+
+**Три задачи выполнены, стейджинг готов для заливки на M3.**
+
+- **Картинки 200/200 привязаны к (tp, ct):** ошибка была в имени поля (`ImageHash` → `AdImageHash`)
+  и в том что ct-код в группе (не в кампании). Метод: `ads.get TextAdFieldNames=['AdImageHash']`
+  + `adgroups.get` → ct из имени группы вида `ct0076_aon_...`. Аккаунт `porg-fuko7yzw`, 47 уникальных
+  ct (ct0019..ct0300), tp1=61 / tp2=139.
+- **Callouts 32 уникальных:** раньше писали "0 callouts" — потому что использовали `callouts` endpoint
+  (404!) и `ImageHash`. Правильный метод: `adextensions.get SelectionCriteria.Types=['CALLOUT']` +
+  `CalloutFieldNames=['CalloutText']` (не `StatusArchived`!). Из 51 аккаунта: 38 с callouts, 5 с 8800.
+  Мультибренд: 22 текста; Монобренд: 4 текста. Staged: `m3_stage/zubakin/{сег}/tp1|tp2/ct0000/callouts/`.
+- **Neg shared sets: у Зубакина нет.** Правильный метод: `campaigns.get TextCampaignFieldNames=
+  ['NegativeKeywordSharedSetIds']` → `{'Items': [...]}` (не плоский список!) → `negativekeywordsharedsets.get
+  SelectionCriteria.Ids=[...]`. Из 51 аккаунта: 46 с кампаниями, 5 с 8800, 0 со shared sets.
+
+Грабли-закреплённые: `callouts` endpoint → 404 (верный — `adextensions`); `NegativeKeywordSharedSetIds`
+возвращает `{'Items': [...]}` как и `NegativeKeywords`; `AdImageHash` (не `ImageHash`) в TextAdFieldNames;
+ct — в имени ГРУППЫ, не кампании (у Зубакина кампании без ct-кода в имени).
+
+Файлы: `scratchpad/zubakin_fix_v2.py`, `scratchpad/zubakin_neg_sets.py`,
+`scratchpad/m3_stage/zubakin/images_manifest.json` (200 записей, все с tp+ct).
+
 ## Сессия: 2026-07-05 (код-ревью) — 6 находок ревью исправлены (коммит eb1688c)
 
 /code-review 3-х фиксов (4 finder-агента × 8 углов). Исправлено:
@@ -5245,3 +5268,31 @@ UI-ИТЕРАЦИИ по фидбеку Семёна (20:07–20:30): (1) мул
   (grid_finalize.update_ad_images / adaptive_ads_for_update) с inheritableSitelinkSet{policy,...} —
   схему policy узнать с живого примера (интроспекция Грида закрыта).
 - md5 routes 13ad080c… Mac==LXC101, direct-content + worker перезапущены, active.
+
+## 2026-07-05/06 (v15: 6 дефектов раунд-2 + «до нуля» + вкладка «Готовые логины»)
+- ФАКТ по кабинетам (live-верификация Grid): цены 0/514 несовпадений с фидом, 0 синтетических
+  priceOld; кнопки 750/750; ключи моделей в «Общих» 0; видео 39 ads (Belgee 4/6); тексты медиана
+  свободных 3-8 (2 оборванных «…за 30» — см. minor ниже). Карточки: psm 14/14, ozge 21/21, failed=0.
+- ЦЕНЫ ТОЛЬКО ИЗ ФИДА (правило Семёна): _safe_old_price БЕЗ синтетики +12% (create_set_feeds +
+  дубль в grid_create); _grid_set_ad_prices шлёт item и при cur=0 → full-replace ЗАТИРАЕТ донорскую
+  цену слепка (2 040 546 у BAIC X7 уцелела из-за старого `if cur:`); Фаза 3.5 tp1 шлёт ВСЕ ads.
+  Массовая in-place переустановка цен прошла: psm 228, ozge 222 (см. scratchpad reprice.py).
+- ГЛАВНЫЙ БАГ СОЗДАНИЯ: build_ad БЕЗ дедупа imageHashes → MUST_NOT_CONTAIN_DUPLICATED_ELEMENTS
+  валил ВЕСЬ батч AddAdaptiveTextAds (150 групп, «0 ads») → partial-кампания удалялась. tp1
+  «Модели-АТ» падала 3 раза подряд в обоих аккаунтах. Фикс: dict.fromkeys в build_ad (grid_create).
+- «ДО НУЛЯ»: (1) delayed repair partial → авто-reschedule той же строки (до 4 повторов);
+  (2) потерянные позиции → _requeue_missing_positions_once: доставка ТОЛЬКО missing по кабинету
+  (_position_live_in_names с UAC-нормализацией имён tp6/tp7 — «…/yandex.xml» → «… — yandex»,
+  иначе дубли, у ozge есть _v01/_v02 от старых раундов!); (3) _reconcile_parent_job_counters:
+  карточка → created=total/failed=0 ТОЛЬКО при live errors=0 + позиции все живы + recreate пуст.
+- Видео-гейт: _ct_has_pool_video без строгого pre-check индекса (brand-fallback ct0026 Belgee).
+- Тексты: короткие хвосты ≤10 симв в pad_tails (мёртвая зона 13-14 свободных).
+- tp7: минус-марки на «Страницы каталога» — _tp7_listings_minus_filters (NOT_CONTAINS по
+  collectionId mark-коллекций) + ретрай без фильтра при отказе API. ⚠️ Не верифицирован live
+  (в этом раунде tp7 создавались ДО активации? проверить на следующем создании tp7).
+- UI: кнопка «План добивки» удалена (авто-статус); вкладка «Готовые логины» (routes_ready_logins.py,
+  таблица direct_ready_logins, хук _ready_logins_track на done/delete_drafts, сортировка/CSV/очистка).
+- MINOR (открыто): 2 объявления с оборванным телом «{модель} в наличии в {город}. Одобрение за 30»
+  (55 симв = обрезка по TITLE-лимиту 56 попала в bodies) — psm ad 1914775275082924080/…297,
+  ozge …155924/…174728. Найти сборку строки. ListingAd-фильтры Grid НЕ читает (FieldUndefined) —
+  проверка только руками в UI.
