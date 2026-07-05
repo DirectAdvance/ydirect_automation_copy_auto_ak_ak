@@ -96,20 +96,26 @@ class GridReadClient:
         "{rowset{__typename ...on GdKeyword{id adGroupId}}}}}")
 
     def _show_condition_kw_counts(self, campaign_ids) -> dict[int, int] | None:
-        """{adgroup_id: keyword_count} по showConditions (реальные ключи). Пагинация по кампании
-        (лимит 10000/страница). Возвращает dict при успехе (0 у групп без ключей — их просто нет
-        в ответе) или None при сбое Grid → вызывающий откатывается на edit-view keyword_count."""
+        """{adgroup_id: keyword_count} по showConditions (реальные ключи). Возвращает dict при
+        успехе (0 у групп без ключей — их просто нет в ответе) или None при сбое Grid → вызывающий
+        откатывается на edit-view keyword_count.
+
+        ВАЖНО: читаем КАЖДУЮ кампанию ОТДЕЛЬНЫМ запросом. Grid showConditions отдаёт максимум
+        10000 строк на запрос, а offset-пагинация за 10000 НЕ работает. При чтении нескольких РК
+        одним запросом (campaignIdIn=список) combined-ответ обрезался на 10000, orderBy GROUP_ID DESC
+        оставлял в окне только поздние РК (больший group_id), а раньше созданные выпадали целиком →
+        их группы читались как 0 → ложный NO_KEYWORDS_LIVE (напр. tp2 «Марки» при живых 9677 ключей).
+        Одна РК ≤10000 ключей влезает в окно. TODO: РК с >10000 ключей потребует пагинации по
+        диапазонам GROUP_ID (пока усечётся — отдельная задача)."""
         cids = [int(c) for c in (campaign_ids or [])]
         if not cids:
             return {}
         self._bootstrap_csrf()
         out: dict[int, int] = defaultdict(int)
-        # Один запрос на все кампании (campaignIdIn — список), пагинация по offset (не N round-trip'ов).
-        offset = 0
-        for _page in range(50):   # bound: 50×10000 = 500k ключей — потолок аккаунта, защита от вечного цикла
+        for cid in cids:
             try:
                 j = self._post("KwCount", self._KW_COUNT_Q,
-                               {"login": self.login, "cid": cids, "off": offset})
+                               {"login": self.login, "cid": [cid], "off": 0})
             except GridReadError:
                 return None
             rows = ((((j.get("data") or {}).get("client") or {})
@@ -121,9 +127,6 @@ class GridReadClient:
                     out[int(r.get("adGroupId") or 0)] += 1
                 except (TypeError, ValueError):
                     pass
-            if len(rows) < 10000:
-                break
-            offset += 10000
         return out
 
     @staticmethod
