@@ -114,6 +114,12 @@ UAC «Мастер кампаний» (tp6) и «Товарка» (tp7) — пр
 - **tp6 сырое имя:** UAC берёт `it["name"]` дословно → regex-детект сырого слага + пересборка `_build_name`.
 - **Транзиент Яндекса 500** («Внутренняя ошибка сервера») на AddUnifiedAdGroups → group=0 → hard-fail.
   Фикс: retry+backoff в `grid_create._mutate` на top-level `errors` (НЕ на validationResult — детерминизм).
+- **Дубли ключей (двойной залив):** `create_full`/`add_text_content_to_existing` слали ключи И полем
+  `keywords` в `AddUnifiedAdGroups`, И отдельным `AddKeywords` → Grid создавал их ДВАЖДЫ для групп
+  <~140 фраз (крупные `AddUnifiedAdGroups` keywords игнорит — потому и не везде). ⚠️ **ИНВАРИАНТ:**
+  ключи ЕДИНСТВЕННЫМ путём — `AddKeywords`; в `build_adgroup(keywords=[])` всегда. Сбой `AddKeywords`
+  НЕ глушить (`except: pass`) — писать в `rep["errors"]` (это единственный путь; иначе кампания без
+  ключей молча). Живьём: 601==601/193==193 target vs source, дублей 0 (job 24a3652c40c1).
 
 ## ⚠️ Пост-проверка `run_create_set_postprocess` (blueprint.py:~12575)
 Запускается АВТО в конце `api_create_set`. Раньше `grid_read.campaign_content_counts` читал только

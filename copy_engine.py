@@ -1954,10 +1954,8 @@ def _copy_preseed_feed_maps(workdir: Path, feed_map: dict) -> None:
 
 
 def _copy_feeds_preview(source_login: str, target_login: str, selected_ids: set[int]) -> dict:
-    """Данные для секции «Замена фидов» в UI копирования: фиды ИСХОДНОГО аккаунта (что заменяем)
-    и фиды ЦЕЛЕВОГО (на что; только существующие). Grid-строки кампаний не несут feed-рефов до
-    полного pull, поэтому отдаём все фиды источника — пользователь маппит нужные, остальные идут
-    прежним путём (авто-пересоздание URL-фида). selected_ids пока не фильтрует — задел на будущее."""
+    """Данные для секции «Замена фидов»: фиды исходного аккаунта с кол-вом кампаний/групп
+    из выбранных (selected_ids), фиды целевого аккаунта. Grid-фиды без балловой стоимости."""
     def _feeds_for(login: str) -> list[dict]:
         agency = _resolve_agency_hint(login, "")
         rows = _grid_feeds(login, agency) or []
@@ -1966,15 +1964,109 @@ def _copy_feeds_preview(source_login: str, target_login: str, selected_ids: set[
             fid = f.get("id")
             if not str(fid or "").strip().isdigit():
                 continue
-            listings = f.get("listings") or []
             out.append({
                 "id": int(fid),
                 "name": (f.get("name") or "").strip() or f"feed {fid}",
-                "listings": len(listings) if isinstance(listings, list) else 0,
             })
         out.sort(key=lambda r: r["name"].lower())
         return out
-    return {"source_feeds": _feeds_for(source_login), "target_feeds": _feeds_for(target_login)}
+
+    # Task 2: подсчёт выбранных кампаний/групп, использующих каждый исходный фид (v5 adgroups.get)
+    feed_camps: dict[int, set] = {}   # feed_id → set of campaign_ids
+    feed_groups: dict[int, int] = {}  # feed_id → count of adgroups
+    if selected_ids:
+        try:
+            src_agency = _resolve_agency_hint(source_login, "")
+            src_token, _ = _token_for_login(source_login, src_agency, _direct_tokens())
+            if src_token:
+                params = {
+                    "SelectionCriteria": {"CampaignIds": list(selected_ids)},
+                    "FieldNames": ["Id", "CampaignId"],
+                    "TextAdGroupFeedParamFieldNames": ["FeedId"],
+                }
+                data = _v5_call("adgroups", "get", src_token, source_login, params)
+                for ag in ((data.get("result") or {}).get("AdGroups") or []):
+                    fp = ag.get("TextAdGroupFeedParams") or {}
+                    fid_raw = fp.get("FeedId")
+                    if not fid_raw:
+                        continue
+                    try:
+                        fid = int(fid_raw)
+                        cid = int(ag.get("CampaignId") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    feed_camps.setdefault(fid, set()).add(cid)
+                    feed_groups[fid] = feed_groups.get(fid, 0) + 1
+        except Exception:  # noqa: BLE001 — best-effort, не ломаем превью
+            pass
+
+    source_feeds = []
+    for f in _feeds_for(source_login):
+        fid = f["id"]
+        f["campaigns"] = len(feed_camps.get(fid) or set())
+        f["groups"] = feed_groups.get(fid) or 0
+        source_feeds.append(f)
+
+    return {"source_feeds": source_feeds, "target_feeds": _feeds_for(target_login)}
+
+
+def _copy_skip_unmapped_feed_campaigns(src_dir: Path, feed_map: dict, *, log=None) -> list[int]:
+    """Task 4: убрать из snapshot кампании, использующие фиды без замены в feed_map.
+
+    Читает campaigns.json и adgroups.json из уже отфильтрованного snapshot, определяет кампании,
+    у которых хотя бы одна группа ссылается на фид, не входящий в feed_map, и удаляет их вместе
+    со связанными сущностями. Возвращает список ID пропущенных кампаний."""
+    if not feed_map:
+        return []
+    _log = log or (lambda _m: None)
+
+    campaigns = _copy_read_json(src_dir / "campaigns.json")
+    adgroups = _copy_read_json(src_dir / "adgroups.json")
+
+    # feed_id → set campaign_ids (какие кампании используют этот фид)
+    feeds_by_campaign: dict[int, set] = {}
+    for g in adgroups:
+        cid = int(g.get("CampaignId") or 0)
+        fp = g.get("TextAdGroupFeedParams") or {}
+        fid = fp.get("FeedId")
+        if fid and cid:
+            feeds_by_campaign.setdefault(cid, set()).add(str(int(fid)))
+
+    mapped_feeds = {str(k) for k in feed_map}
+    skip_ids: set[int] = set()
+    for c in campaigns:
+        cid = int(c.get("Id") or 0)
+        unmapped = feeds_by_campaign.get(cid, set()) - mapped_feeds
+        if unmapped:
+            skip_ids.add(cid)
+            _log(f"пропуск кампании «{c.get('Name') or cid}»: фиды без замены: {', '.join(sorted(unmapped))}")
+
+    if not skip_ids:
+        return []
+
+    remaining_ids = {int(c.get("Id") or 0) for c in campaigns} - skip_ids
+    _copy_write_json(src_dir / "campaigns.json", [c for c in campaigns if int(c.get("Id") or 0) in remaining_ids])
+    _copy_write_json(src_dir / "campaigns_skipped.json", [
+        {"id": int(c.get("Id") or 0), "name": c.get("Name") or "", "reason": "feed_not_mapped"}
+        for c in campaigns if int(c.get("Id") or 0) in skip_ids
+    ])
+
+    remaining_ag_ids = {int(g.get("Id") or 0) for g in adgroups if int(g.get("CampaignId") or 0) in remaining_ids}
+    _copy_write_json(src_dir / "adgroups.json", [g for g in adgroups if int(g.get("CampaignId") or 0) in remaining_ids])
+
+    for fname in ("ads.json", "shopping_ads.json", "keywords.json", "bidmodifiers.json"):
+        path = src_dir / fname
+        if not path.exists():
+            continue
+        items = _copy_read_json(path)
+        _copy_write_json(path, [
+            x for x in items
+            if int(x.get("CampaignId") or 0) in remaining_ids
+            or int(x.get("AdGroupId") or 0) in remaining_ag_ids
+        ])
+
+    _log(f"feed-фильтрация: пропущено {len(skip_ids)} кампаний из {len(campaigns)}")
+    return list(skip_ids)
 
 
 def _copy_run_job(job_id: str, body: dict) -> None:
@@ -2055,6 +2147,13 @@ def _copy_run_job(job_id: str, body: dict) -> None:
                 f"snapshot неполный: выбрано {len(selected_ids)}, UAC/tp6/tp7 {len(selected_uac_rows)}, "
                 f"в v5 snapshot {meta.get('campaigns')} вместо {expected_snapshot}"
             )
+        # Task 4: пропустить кампании с фидами без замены (только если feed_map задан)
+        if feed_map_raw:
+            skipped_cids = _copy_skip_unmapped_feed_campaigns(
+                src_dir, feed_map_raw, log=lambda m: _copy_job_log(job_id, m))
+            if skipped_cids:
+                remaining = int(meta.get("campaigns") or 0) - len(skipped_cids)
+                _copy_job_upsert(job_id, total=max(0, remaining))
         target_feed_abs = dc.build_url_feed_url(target_domain, target_feed_url) if target_feed_url else ""
         audit = _copy_snapshot_preflight(
             src_dir,

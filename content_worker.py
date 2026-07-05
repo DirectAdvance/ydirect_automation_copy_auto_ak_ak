@@ -1,6 +1,6 @@
 """Воркер Postgres-очереди редактора контента (direct-content-worker.service).
 
-Забирает задания из direct_content_jobs (БД seoadvanced, LXC 101) и выполняет их:
+Забирает задания из direct_automation_content_jobs (БД seoadvanced, LXC 101) и выполняет их:
     python -m direct.content_worker
 
 Правила параллельности:
@@ -170,11 +170,47 @@ def _worker_loop(idx: int) -> None:
         if not job:
             time.sleep(POLL_SECONDS)
             continue
-        _run_one(job)
+        try:
+            _run_one(job)
+        except Exception as e:  # noqa: BLE001 — падение финализации (например БД) не должно убить поток
+            _log(f"run error (thread {idx}, job {job.get('job_id')}): {str(e)[:200]}")
+            time.sleep(5)
+
+
+def _acquire_singleton():
+    """Session-scoped advisory lock: второй процесс воркера не стартует.
+
+    Возвращает соединение (держим открытым весь срок жизни) или None.
+    """
+    conn = ce._jobs_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT pg_try_advisory_lock(hashtext('ce_worker_singleton'))")
+        if cur.fetchone()[0]:
+            return conn
+    except Exception as e:  # noqa: BLE001
+        _log(f"singleton lock error: {str(e)[:200]}")
+    conn.close()
+    return None
+
+
+def _requeue_stale() -> None:
+    """Watchdog: running старше 2 часов — задание зависло (поток умер/HTTP завис) → в очередь.
+    attempts не сбрасывается: CE_MAX_ATTEMPTS остановит вечный цикл."""
+    ce._jobs_exec(
+        f"UPDATE {T} SET status='queued', worker='' "
+        "WHERE status='running' AND started_at < now() - interval '2 hours'")
 
 
 def main() -> None:
-    ce.ensure_jobs_table()
+    guard = _acquire_singleton()
+    if guard is None:
+        _log("другой процесс воркера уже держит ce_worker_singleton — выходим")
+        return
+    try:
+        ce.ensure_jobs_table()
+    except Exception as e:  # noqa: BLE001 — гонка каталога при одновременном старте с flask
+        _log(f"ensure_jobs_table: {str(e)[:200]}")
     _requeue_orphans()
     _log(f"started: threads={WORKER_THREADS}, agency_parallel={AGENCY_PARALLEL}, "
          f"daily_cap={ce.CE_DAILY_JOB_CAP}, worker={WORKER_NAME}")
@@ -184,6 +220,10 @@ def main() -> None:
         t.start()
     while True:
         time.sleep(60)
+        try:
+            _requeue_stale()
+        except Exception as e:  # noqa: BLE001
+            _log(f"watchdog error: {str(e)[:150]}")
 
 
 if __name__ == "__main__":

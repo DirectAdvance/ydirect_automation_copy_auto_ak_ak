@@ -135,7 +135,7 @@ def _grid_client(login: str):
 # Задания лежат в таблице direct_content_jobs БД seoadvanced (LXC 101), выполняются
 # отдельным сервисом direct-content-worker.service. Переживают рестарты обоих сервисов.
 
-CE_JOBS_TABLE = "direct_content_jobs"
+CE_JOBS_TABLE = "direct_automation.content_jobs"
 CE_DAILY_JOB_CAP = int(os.environ.get("CE_DAILY_JOB_CAP") or 15)  # заданий на аккаунт в сутки (Екб)
 # начало текущих суток по Екатеринбургу (timestamptz)
 CE_EKB_DAY_SQL = "(date_trunc('day', now() AT TIME ZONE 'Asia/Yekaterinburg') AT TIME ZONE 'Asia/Yekaterinburg')"
@@ -970,6 +970,55 @@ def _replace_uac_texts(
 
 
 _REBIND_SUBTYPE_FIELDS = {"TextAd": "TextAdFieldNames", "DynamicTextAd": "DynamicTextAdFieldNames"}
+_SITELINK_READ_FIELDS = {"TextAd": "TextAdFieldNames", "DynamicTextAd": "DynamicTextAdFieldNames",
+                         "ResponsiveAd": "ResponsiveAdFieldNames"}
+
+
+def _confirm_ads_sitelink_text(v5_call: Callable, token: str, login: str,
+                               ad_items: list[dict], field: str,
+                               old: str, new: str) -> tuple[int, list[str]]:
+    """Read-back после Grid findAndReplaceText: у скольких объявлений набор ссылок
+    реально содержит новый текст (и не содержит старый). Grid может вернуть
+    successCount, ничего не изменив (проверено live на GdTextAd) — поэтому
+    доверяем только перечитке."""
+    by_subtype: dict[str, list[int]] = {}
+    for it in ad_items or []:
+        st = str((it or {}).get("subtype") or "ResponsiveAd")
+        if st in _SITELINK_READ_FIELDS:
+            by_subtype.setdefault(st, []).append(int(it["ad_id"]))
+    errors: list[str] = []
+    set_by_ad: dict[int, int] = {}
+    for st, ids in by_subtype.items():
+        got, err = _v5_paginate(
+            v5_call, "ads", token, login,
+            {"SelectionCriteria": {"Ids": ids[:10000]}, "FieldNames": ["Id"],
+             _SITELINK_READ_FIELDS[st]: ["SitelinkSetId"]},
+            "Ads")
+        if err:
+            errors.append(f"read-back ads.get: {err}")
+            continue
+        for a in got:
+            sid = (a.get(st) or {}).get("SitelinkSetId")
+            if sid:
+                set_by_ad[int(a.get("Id") or 0)] = int(sid)
+    set_ok: dict[int, bool] = {}
+    uniq_sets = sorted(set(set_by_ad.values()))
+    for chunk in [uniq_sets[i:i + 100] for i in range(0, len(uniq_sets), 100)]:
+        j = v5_call("sitelinks", "get", token, login,
+                    {"SelectionCriteria": {"Ids": chunk}, "FieldNames": ["Id", "Sitelinks"]})
+        if j.get("error"):
+            errors.append("read-back sitelinks.get: " + json.dumps(j["error"], ensure_ascii=False)[:120])
+            continue
+        for s in (j.get("result") or {}).get("SitelinksSets") or []:
+            key = "Description" if field == "description" else "Title"
+            vals = [(x.get(key) or "").strip() for x in s.get("Sitelinks") or []]
+            set_ok[int(s.get("Id") or 0)] = (new in vals) and (old not in vals)
+    confirmed = sum(1 for aid, sid in set_by_ad.items() if set_ok.get(sid))
+    unconfirmed = len(set_by_ad) - confirmed
+    if unconfirmed > 0:
+        errors.append(f"замена текста ссылки не подтвердилась у {unconfirmed} объявлений — "
+                      "Grid не применил изменение")
+    return confirmed, errors
 
 
 def _v5_rebind_ads_sitelink_set(v5_call: Callable, token: str, login: str,
@@ -1161,15 +1210,23 @@ def _replace_sitelink_text_grid(
             if aid > 0 and aid not in touched_ads and aid not in seen_ads:
                 seen_ads.add(aid)
                 ad_items.append({"ad_id": aid, "subtype": (raw or {}).get("subtype") or "TextAd"})
-        if not campaign_ids and not ad_items:
+        # TextAd/DynamicTextAd перепривязываются на новый набор через v5 ads.update;
+        # комбинаторные (ResponsiveAd) и прочие — через куки/Grid findAndReplaceText:
+        # правит тексты ссылок прямо в объявлениях, БЕЗ баллов v5.
+        v5_items = [it for it in ad_items if it.get("subtype") in ("TextAd", "DynamicTextAd")]
+        grid_fr_items = [it for it in ad_items if it.get("subtype") not in ("TextAd", "DynamicTextAd")]
+        if not campaign_ids and not v5_items and not grid_fr_items:
             continue
         try:
-            new_set_id = grid.add_sitelink_set(items)
-            if not new_set_id:
-                errors.append(f"набор {target.get('set_id')}: Grid не вернул id нового набора быстрых ссылок")
-                continue
-            created_sets.append(int(new_set_id))
-            if campaign_ids:
+            new_set_id = None
+            if campaign_ids or v5_items:
+                # новый набор нужен только campaign- и v5-веткам; findAndReplace создаёт свой сам
+                new_set_id = grid.add_sitelink_set(items)
+                if not new_set_id:
+                    errors.append(f"набор {target.get('set_id')}: Grid не вернул id нового набора быстрых ссылок")
+                else:
+                    created_sets.append(int(new_set_id))
+            if campaign_ids and new_set_id:
                 updated = grid.set_campaign_sitelink_set(campaign_ids, int(new_set_id))
                 if updated:
                     updated_ids = []
@@ -1184,15 +1241,35 @@ def _replace_sitelink_text_grid(
                     touched_campaigns.update(updated_ids)
                 else:
                     errors.append(f"набор {target.get('set_id')}: Grid не подтвердил перепривязку кампаний")
-            if ad_items:
+            if v5_items and new_set_id:
                 if not (token and v5_call):
                     errors.append(f"набор {target.get('set_id')}: нет v5-контекста для перепривязки объявлений")
                 else:
-                    ok_ads, ad_errs = _v5_rebind_ads_sitelink_set(v5_call, token, login, ad_items, int(new_set_id))
+                    ok_ads, ad_errs = _v5_rebind_ads_sitelink_set(v5_call, token, login, v5_items, int(new_set_id))
                     replaced += ok_ads
                     if ok_ads:
-                        touched_ads.update(it["ad_id"] for it in ad_items)
+                        touched_ads.update(it["ad_id"] for it in v5_items)
                     errors.extend(ad_errs)
+            if grid_fr_items:
+                fr_ids = [it["ad_id"] for it in grid_fr_items]
+                fr_target = "SITELINK_DESCRIPTION" if typ == "sitelink_description" else "SITELINK_TITLE"
+                fr = grid.find_and_replace_text(
+                    fr_ids, target_types=[fr_target],
+                    search=old, replace=new, case_sensitive=True)
+                missed = int(fr.get("total") or 0) - int(fr.get("replaced") or 0)
+                if missed > 0:
+                    errors.append(f"Grid findAndReplace (комбинаторные): не заменено у {missed} объявлений")
+                # successCount Грида не доказательство (может «успешно» ничего не менять) —
+                # считаем заменёнными только объявления, подтверждённые перечиткой наборов.
+                if not (token and v5_call):
+                    errors.append("нет v5-контекста для read-back комбинаторных объявлений")
+                else:
+                    confirmed, rb_errs = _confirm_ads_sitelink_text(
+                        v5_call, token, login, grid_fr_items, field, old, new)
+                    replaced += confirmed
+                    if confirmed:
+                        touched_ads.update(fr_ids)
+                    errors.extend(rb_errs)
         except Exception as e:  # noqa: BLE001
             errors.append(f"набор {target.get('set_id')}: {str(e)[:180]}")
     if not replaced and not errors:
