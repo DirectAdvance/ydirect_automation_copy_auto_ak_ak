@@ -13,7 +13,8 @@ import re
 
 from .text_norm import (
     _replace_emdash, _replace_sep_hyphen, _is_bad_start, _trim_to_word,
-    _strip_dangling_word_tail, _sanitize_content, _normalize_numeric_suffixes_bp,
+    _trim_clean, _sanitize_content,
+    _normalize_numeric_suffixes_bp,
     _strip_credit_rate, _cap_first, _sentence_case, _RSYA_TEXT_MAX, _split_utp,
     _has_stamp, _alternate_rhythm, _dedup_by_first_word, _has_number,
     _bad_ad_title, _bad_ad_text,
@@ -488,6 +489,9 @@ def _rsya_texts(incoming: list, site_type: str, city: str,
         p = _normalize_numeric_suffixes_bp(
             _sentence_case(_cap_first(_replace_sep_hyphen(_replace_emdash(_strip_credit_rate(p)))))
         )
+        # ⚠️ НЕ чистим числовой хвост у входящего контента: «Выгода до 300 000» без ₽ —
+        # валидное УТП донора, безусловная чистка его ампутирует (ревью 06.07). Обрыв
+        # НАШЕЙ обрезки лечится в _trim_clean на точках эмиссии; финал — _sanitize_content.
         # БАГ 8: предлог в начале / маленькая буква / слишком коротко -> выкидываем
         if len(p) < 15 or _is_bad_start(p):
             continue
@@ -778,7 +782,9 @@ def _fill_title(t: str, lo: int = 45, hi: int = 56) -> str:
     """Дотянуть заголовок до lo-hi симв., подклеивая УТП-хвосты «. …» БЕЗ обрезки слов и БЕЗ
     повтора уже упомянутого УТП. Если ни один хвост не влезает - оставляем как есть (но ≤hi).
     Разделитель — точка (правило Кудерко: дефис как разделитель частей фразы недопустим)."""
-    t = _strip_dangling_word_tail(_trim_to_word(str(t), hi)).rstrip(" -—·.,")
+    # _trim_clean: обрезка по слову + чистка оборванного хвоста («Одобрение за 30» —
+    # live-кейс psm/ozge); числовой хвост чистится ТОЛЬКО если обрезали сами (см. text_norm).
+    t = _trim_clean(t, hi)
     for f in _TITLE_TAILS:
         if len(t) >= hi - 8:          # правило Семёна: свободно ≤8 симв (hi-8 = 48 при hi=56)
             break
@@ -787,9 +793,7 @@ def _fill_title(t: str, lo: int = 45, hi: int = 56) -> str:
             continue                                 # не дублируем уже упомянутое (кредит/КАСКО/трейд-ин…)
         if len(t) + 2 + len(f) <= hi:
             t = f"{t}. {_cap_first(f)}"
-    return _normalize_numeric_suffixes_bp(
-        _strip_dangling_word_tail(_trim_to_word(t, hi)).rstrip(" -—·.,")
-    )
+    return _normalize_numeric_suffixes_bp(_trim_clean(t, hi))
 
 def _brand_title_set(brand: str, city: str) -> list:
     """≤7 ПОЛНЫХ «вкусных» заголовков для группы по МАРКЕ - КАЖДЫЙ содержит марку И УТП (кредит,

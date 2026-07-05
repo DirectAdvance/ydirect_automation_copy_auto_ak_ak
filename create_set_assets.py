@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from .text_norm import _trim_clean
+
 _DEPS: dict = {}
 
 MANUAL_CREATIVES_DIR = "/opt/creatives/Manual"
@@ -88,7 +90,8 @@ def _dedup_cap(items, maxlen: int, cap: int) -> list:
     out: list = []
     seen: set = set()
     for it in items or []:
-        s = (str(it) or "").strip()[:maxlen]
+        # Обрезка по слову + чистка оборванного хвоста (_trim_ad_line), а не жёсткий срез [:maxlen].
+        s = _trim_ad_line(it, maxlen)
         if not s:
             continue
         k = _variant_norm_key(s)
@@ -126,7 +129,7 @@ def _combo_fill_titles(items: list, cap: int = _RA_TITLES_CAP) -> list:
         if len(cand) > _RA_TITLE_MAX:
             cand = f"{anchor} {tail}"
         if len(cand) > _RA_TITLE_MAX:
-            cand = cand[:_RA_TITLE_MAX].rsplit(" ", 1)[0].rstrip(" ,.")
+            cand = _trim_clean(cand, _RA_TITLE_MAX)   # по слову + чистка хвоста («…за 30»)
         # Правило Семёна: свободно ≤8 симв. Если кандидат короче hi-8 — добиваем хвостами.
         if cand and len(cand) < _RA_TITLE_MAX - 8:
             cand = _fill_title(cand, _RA_TITLE_MAX - 8, _RA_TITLE_MAX)
@@ -219,10 +222,9 @@ def _trim_ad_line(s: str, maxlen: int) -> str:
     s = str(s or "").strip()
     if len(s) <= maxlen:
         return s
-    cut = s[:maxlen]
-    if " " in cut:
-        cut = cut.rsplit(" ", 1)[0]
-    return cut.rstrip(" ,.")
+    # _trim_clean: обрезка по слову + чистка оборванного хвоста («Одобрение за 30» —
+    # live-кейс psm/ozge 2026-07-05); единая реализация в text_norm.
+    return _trim_clean(s, maxlen)
 
 
 _DANGLING_TEXT_TAIL_RE = re.compile(
@@ -245,6 +247,8 @@ def _finalize_text_line(s: str, maxlen: int = _RA_TEXT_MAX, minlen: int = 73) ->
     if len(line) >= minlen:
         return line
     for tail in ("Звоните", "Звоните!", "Оставьте заявку.", "Узнайте условия."):
+        if re.search(r"(?i)(?<![а-яёa-z])" + re.escape(tail.rstrip("!.")), line):
+            continue      # дедуп по границе слова: иначе «Звоните. Звоните!» (тексты 53-63 симв)
         sep = " " if line.endswith((".", "!", "?")) else ". "
         cand = f"{line}{sep}{tail}".strip()
         if len(cand) <= maxlen:

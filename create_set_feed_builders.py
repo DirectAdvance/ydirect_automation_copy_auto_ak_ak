@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .text_norm import _trim_clean
+
 import json
 
 _DEPS: dict = {}
@@ -304,7 +306,7 @@ def _create_shopping_via_cookie(
         _grp_name = _text_group_name(ct, r_code, "Товарная галерея") if r_code else "Товарная галерея"
         rep = gc.create_shopping_full(login, campaign_spec=spec, group_names=[_grp_name],
                                       feed_id=fid, region_ids=region_ids, href=href,
-                                      body_text=(body_text or "")[:81], goal_id=goal_id or 0)
+                                      body_text=_trim_clean(body_text or "", 81), goal_id=goal_id or 0)
         cid = rep.get("campaign_id")
         ok = bool(cid) and not (rep.get("errors") and not rep.get("groups"))
         # БАГ-8 фикс: ListingAd «Страницы каталога» — by-shopping, без name-фильтра (Общее, автотаргет).
@@ -318,7 +320,7 @@ def _create_shopping_via_cookie(
                 from .create_set_tp1_builders import _grid_add_listings_with_name_filters
                 _lst_build: dict = {"listing_build_items": [], "listing_name_by_shop": {}}
                 _grid_add_listings_with_name_filters(
-                    gf.GridClient(login), _sh_ids, _lst_build, fid, (body_text or "")[:81])
+                    gf.GridClient(login), _sh_ids, _lst_build, fid, _trim_clean(body_text or "", 81))
                 rep["listing_ads"] = _lst_build.get("listing_ads", 0)
             except Exception as _le8:  # noqa: BLE001
                 rep.setdefault("errors", []).append(f"листинги(куки): {str(_le8)[:120]}")

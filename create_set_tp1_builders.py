@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .text_norm import _trim_clean
+
 import json
 import time
 
@@ -562,7 +564,7 @@ def _build_tp1_from_pack(
                     "defer": _pack_read_glitch(key, site_type, tp_code)}
         pack = {}
 
-    text0 = (texts[0] if texts else "")[:81] or "Официальный дилер. Тест-драйв и выгодные условия по кредиту. Авто в наличии."
+    text0 = _trim_clean(texts[0] if texts else "", 81) or "Официальный дилер. Тест-драйв и выгодные условия по кредиту. Авто в наличии."
     ct_model = kp.feeds_ct_model()            # фид-картиночный индекс (ct0020+, модели) — фолбэк
     ct_name = _ag_part1_map()                 # ct→имя из gsheet_naming (ag_part1, полное покрытие 318)
     _sc_titles = _slepok_campaign_content(slepok, site_type).get("titles") or []  # пул слепка — 1 раз на кампанию
@@ -940,7 +942,7 @@ def _create_tp1_single(
                                     + (f" ({'; '.join(_details)})" if _details else ""))
 
         # #6 Фикс пустого текста товарных объявлений (ShoppingAd) в tp1.
-        _tp1_default_text = ((texts[0] if texts else "")[:81]
+        _tp1_default_text = (_trim_clean(texts[0] if texts else "", 81)
                              or "Официальный дилер. Тест-драйв и выгодные условия по кредиту. Авто в наличии.")
         _shop_ids = tp1_build.get("shopping_ad_ids") or []
         if with_shopping and feed_id and not _shop_ids:
@@ -1193,7 +1195,7 @@ def _tp1_pack_groups(login: str, slepok: str, site_type: str, r_code: str, href:
     pack = kp.gather(key, site_type, _pack_tp)
     if not pack:
         return []
-    text0 = (texts[0] if texts else "")[:81] or "Официальный дилер. Тест-драйв и выгодные условия по кредиту. Авто в наличии."
+    text0 = _trim_clean(texts[0] if texts else "", 81) or "Официальный дилер. Тест-драйв и выгодные условия по кредиту. Авто в наличии."
     ct_model = kp.feeds_ct_model()
     ct_name = _ag_part1_map()
     _sc_titles = _slepok_campaign_content(slepok, site_type).get("titles") or []  # пул слепка — 1 раз
@@ -1440,7 +1442,7 @@ def _create_tp1_via_cookie(
                             if _raw and _ai < len(_shop_name_vals) and _shop_name_vals[_ai]:
                                 _name_by_shop[int(_raw)] = _shop_name_vals[_ai]
                         if _shop_ids:
-                            _default_text = ((texts[0] if texts else "")[:81]
+                            _default_text = (_trim_clean(texts[0] if texts else "", 81)
                                              or "Официальный дилер. Тест-драйв и выгодные условия по кредиту. Авто в наличии.")
                             _shop_filters = {}
                             for _sid, _src in zip(_shop_ids, [s for s in _grid_shop_items]):

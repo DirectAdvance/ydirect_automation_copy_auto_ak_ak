@@ -827,6 +827,7 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
         return rep
 
     from . import copy_geo_morph as cgm
+    from .text_norm import _trim_clean
     pairs = ctx.geo_pairs or []
     items: list[dict] = []
     for src_ad_id, comp in src_ads.items():
@@ -845,12 +846,14 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
         for t in titles:
             out, n = cgm.apply_replacements(t, pairs)
             n_geo += n
-            new_titles.append(out[:56])                # лимит заголовка ≤56
+            # гео-замена могла УДЛИНИТЬ строку (Москве→Нижневартовске) — обрезка по слову
+            # + чистка оборванного хвоста, а не жёсткий срез посреди слова (ревью 06.07)
+            new_titles.append(_trim_clean(out, 56))    # лимит заголовка ≤56
         new_bodies = []
         for b in bodies:
             out, n = cgm.apply_replacements(b, pairs)
             n_geo += n
-            new_bodies.append(out[:81])                # лимит текста ≤81
+            new_bodies.append(_trim_clean(out, 81))    # лимит текста ≤81
         if n_geo:
             rep["geo_applied"] += 1
         new_imgs = []

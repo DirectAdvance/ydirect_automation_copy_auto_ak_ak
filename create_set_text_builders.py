@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .text_norm import _trim_clean
+
 import re
 import time
 
@@ -312,7 +314,7 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
     pack = kp.gather(gather_key, site_type, tp_code)   # один ssh-вызов к M3
     if not pack:
         return {"skipped": "пак недоступен (мост M3?)"}
-    text0 = (texts[0] if texts else "")[:81]
+    text0 = _trim_clean(texts[0] if texts else "", 81)
     ct_name = _ag_part1_map()                   # ct→имя из gsheet_naming (полное покрытие 318) — кодер
     ct_model = kp.feeds_ct_model()              # фид-индекс (модельные ct) — фолбэк
     _sc_titles = _slepok_campaign_content(slepok, site_type).get("titles") or []  # пул слепка — 1 раз

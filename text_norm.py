@@ -116,6 +116,32 @@ def _strip_dangling_word_tail(s: str) -> str:
         s = head
 
 
+_SMALL_NUM_TAIL_RE = re.compile(r"(?i)(?:за|до|от)\s+\d{1,2}\s*$")
+
+
+def _trim_clean(s: str, max_len: int) -> str:
+    """ЕДИНАЯ обрезка строки объявления под лимит: по слову + чистка оборванных хвостов.
+
+    Числовой хвост («Одобрение за 30» без «минут» — live-кейс psm/ozge 2026-07-05) чистим
+    ТОЛЬКО если строку обрезали МЫ (len > max_len): у нетронутой строки хвост «до 300 000»
+    легитимен (валидное УТП без ₽) — безусловная чистка ампутировала бы его (ревью 06.07).
+    Словесный хвост (предлог в конце) чистим всегда — как исторически в _fill_title."""
+    s = str(s or "")
+    truncated = len(s) > max_len
+    s = _trim_to_word(s, max_len)
+    if truncated:
+        s = _strip_dangling_num_tail(s)
+        # Вторичный обрыв после первой чистки («…Одобрение за 30. Подбор от 15» → «…за 30»):
+        # дочищаем ТОЛЬКО малые числа (за 30/от 15/до 45 — время/банки/%), крупные суммы
+        # («до 300 000») не трогаем — это валидное УТП без ₽.
+        while _SMALL_NUM_TAIL_RE.search(s):
+            s2 = _strip_dangling_num_tail(s)
+            if s2 == s:
+                break
+            s = s2
+    return _strip_dangling_word_tail(s).rstrip(" -—·.,")
+
+
 def _sanitize_content(s: str, max_len: int = 0) -> str:
     """Единая пост-обработка: БАГ 4→исправлен (тире->точка), БАГ 8 (капитализация), БАГ 3 (обрезка по слову)."""
     s = _replace_emdash(str(s or ""))

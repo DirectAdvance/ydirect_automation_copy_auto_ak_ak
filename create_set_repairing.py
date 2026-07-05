@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .text_norm import _trim_clean
+
 _DEPS: dict = {}
 
 
@@ -137,7 +139,7 @@ def _repair_shopping_content_context(login: str, ctx: dict, action: dict) -> dic
         (body.get("site_type") or "").strip() or acc.get("site_type") or ""
     )
     texts = _lines(item.get("texts")) or tpl_texts
-    body_text = (texts[0] if texts else "")[:81]
+    body_text = _trim_clean(texts[0] if texts else "", 81)
     return {
         "groups": [{
             "name": group_name,

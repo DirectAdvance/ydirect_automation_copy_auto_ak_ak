@@ -19,6 +19,7 @@ from typing import Any
 import requests
 
 from . import campaign as cmc
+from .text_norm import _trim_clean
 
 GRID_URL = "https://direct.yandex.ru/web-api/grid/api"
 COMMON_IMAGE_CTS = {
@@ -817,7 +818,7 @@ def add_shopping_content_to_existing(login: str, *, campaign_id: int, groups: li
             rep["errors"].append("товарные объявления(куки): Grid вернул 0 ShoppingAd")
             return rep
 
-        text = str(body_text or "")[:81]
+        text = _trim_clean(str(body_text or ""), 81)
         if text:
             filters_by_ad_id = {}
             for sid, src in zip(shop_ids, shop_items):
@@ -896,7 +897,9 @@ def _dedup_keep(seq, n, cut):
         raw = str(x).strip()
         # Direct treats slash-separated chunks as one word for the max-word validator.
         raw = re.sub(r"\S{23,}", lambda m: m.group(0).replace("/", " "), raw)
-        s = raw[:cut].strip()
+        # Обрезка по слову + чистка оборванного хвоста («…Одобрение за 30» — live-кейс psm/ozge),
+        # а не жёсткий срез посреди слова; ≤cut строки _trim_clean не трогает (кроме word-tail).
+        s = (raw if len(raw) <= cut else _trim_clean(raw, cut)).strip()
         if s and s not in seen:
             seen.add(s)
             out.append(s)
@@ -929,7 +932,7 @@ def _fill_titles(seq, n=7, cut=56):
         if len(cand) > cut:
             cand = f"{anchor} {tail}"
         if len(cand) > cut:
-            cand = cand[:cut].rsplit(" ", 1)[0].rstrip(" ,.")
+            cand = _trim_clean(cand, cut)   # по слову + чистка хвоста («…Одобрение за 30»)
         if cand and cand not in out:
             out.append(cand)
     return out
@@ -946,7 +949,7 @@ def _fill_bodies(seq, n=3, cut=81):
     for cand in fillers:
         if len(out) >= n:
             break
-        cand = cand[:cut].rsplit(" ", 1)[0].rstrip(" ,.")
+        cand = _trim_clean(cand, cut).rstrip(" ,.")
         if cand and cand not in out:
             out.append(cand)
     return out
@@ -979,7 +982,7 @@ def build_shopping_ad(*, adgroup_id: int, feed_id: int, body: str = "") -> dict:
     return {
         "adGroupId": str(adgroup_id), "permalinkId": None, "phoneId": None,
         "fieldsToUseAsBody": None, "fieldsToUseAsName": None, "feedId": str(feed_id),
-        "bodies": [str(body)[:81]] if str(body or "").strip() else [],
+        "bodies": [_trim_clean(str(body), 81)] if str(body or "").strip() else [],
         "hrefParams": "",
         "inheritableCallouts": {"policy": "INHERIT"},
         "inheritableSitelinkSet": {"policy": "INHERIT"},
