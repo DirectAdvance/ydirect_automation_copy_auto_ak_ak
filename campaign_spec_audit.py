@@ -767,6 +767,24 @@ def _audit_uac_feed_filters(login: str, campaign_id: int, campaign_name: str,
 
 
 # ── public API ────────────────────────────────────────────────────────────────
+def _audit_sitelinks(grid: gf.GridClient, login: str, campaign_id: int,
+                     camp_name: str, tp_code: str) -> list[dict]:
+    """SITELINK_MISSING: у ЕПК-кампании нет прикреплённого набора быстрых ссылок
+    (inheritableSitelinkSet пуст). Быстрые ссылки — обязательный ассет (#7). Чинится
+    in-place (add_sitelink_set + set_campaign_sitelink_set, БЕЗ баллов) — см. fix_sitelinks_missing."""
+    try:
+        pl = (grid._read_unified_campaign_update_payloads([int(campaign_id)]) or {}).get(int(campaign_id)) or {}
+    except Exception:  # noqa: BLE001
+        return []
+    sl = pl.get("inheritableSitelinkSet") or {}
+    set_id = sl.get("sitelinkSetId") or sl.get("assetValue")
+    if set_id:
+        return []
+    return [{"severity": "warn", "code": "SITELINK_MISSING", "id": int(campaign_id),
+             "campaign_id": int(campaign_id), "name": camp_name, "tp_code": tp_code,
+             "transport": "grid"}]
+
+
 def audit_campaign(login: str, campaign_id: int, tp: int, ctx: dict,
                    *, grid: gf.GridClient | None = None,
                    read_client: gr.GridReadClient | None = None) -> list[dict]:
@@ -801,6 +819,7 @@ def audit_campaign(login: str, campaign_id: int, tp: int, ctx: dict,
             issues += _audit_search_keywords(groups, login, slepok, site_type, city, tp_code)
             rc = read_client or gr.GridReadClient(login)
             issues += _audit_search_images(rc, login, int(campaign_id), camp_name)
+            issues += _audit_sitelinks(g, login, int(campaign_id), camp_name, tp_code)   # #7 быстрые ссылки
             if tp == 5:   # tp5 = фид-кампания: листинги + фильтры + места показа
                 issues += _audit_no_listing(rc, login, int(campaign_id), camp_name)
                 issues += _audit_product_feed_filters(rc, login, int(campaign_id), camp_name, groups)
@@ -927,6 +946,50 @@ def fix_keywords_wrong_group(login: str, ctx: dict, issues: list[dict], deps=Non
     out, code = rex.execute_keywords_wrong_group_repair(login, ctx, items, deps)
     out["http_status"] = code
     return out
+
+
+# ── fixer (SITELINK_MISSING): доливка быстрых ссылок ЕПК in-place (#7) ────────────
+def fix_sitelinks_missing(login: str, ctx: dict, issues: list[dict]) -> dict:
+    """Прикрепить набор быстрых ссылок к ЕПК-кампаниям без сайтлинков (#7), in-place через Grid
+    (add_sitelink_set + set_campaign_sitelink_set, БЕЗ баллов). Один набор на аккаунт: собираем
+    ссылки через _common_sitelinks_fast (БД-слепок → LLM → детерминированный резерв с href)."""
+    sl_issues = [it for it in (issues or []) if it.get("code") == "SITELINK_MISSING"]
+    if not sl_issues:
+        return {"ok": True, "note": "нет SITELINK_MISSING", "campaigns_fixed": 0}
+    cids = sorted({int(it.get("campaign_id") or 0) for it in sl_issues if it.get("campaign_id")})
+    if not cids:
+        return {"ok": True, "campaigns_fixed": 0}
+    body = (ctx or {}).get("body") or {}
+    slepok = (body.get("agent") or "").strip()
+    _account_ctx = _DEPS.get("_account_ctx")
+    acc = {}
+    try:
+        acc = (_account_ctx(login) if _account_ctx else None) or {}
+    except Exception:  # noqa: BLE001
+        acc = {}
+    site_type = (body.get("site_type") or acc.get("site_type") or "").strip()
+    city = (acc.get("city") or "")
+    domain = (acc.get("domain") or "").strip()
+    href = ("https://" + domain) if domain else ""
+    try:
+        from .create_set_feed_builders import _common_sitelinks_fast
+        sitelinks = _common_sitelinks_fast(login, slepok, site_type, city, "tp5", href=href)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"сборка сайтлинков: {str(e)[:160]}", "campaigns_fixed": 0}
+    gcl = gf.GridClient(login)
+    try:
+        set_id = gcl.add_sitelink_set(sitelinks)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"add_sitelink_set: {str(e)[:160]}", "campaigns_fixed": 0}
+    if not set_id:
+        return {"ok": False, "error": "не создан SitelinkSet (нет href/пустые ссылки?)", "campaigns_fixed": 0}
+    errors: list[str] = []
+    try:
+        gcl.set_campaign_sitelink_set(cids, set_id)
+    except Exception as e:  # noqa: BLE001
+        errors.append(str(e)[:160])
+    return {"ok": not errors, "campaigns_fixed": (0 if errors else len(cids)),
+            "set_id": set_id, "campaigns": cids, "errors": errors[:5]}
 
 
 # ── fixer (SHORT_TITLES): добивка коротких заголовков Мастера in-place ───────────

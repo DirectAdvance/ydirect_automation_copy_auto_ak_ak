@@ -40,23 +40,43 @@ def _sitelinks_fallback_with_href(href: str) -> list:
     return out
 
 
+def _ensure_sitelink_hrefs(items: list, base_href: str) -> list:
+    """Гарантировать href на каждой быстрой ссылке (Grid AddSitelinkSets требует href, иначе
+    отбрасывает ссылку). БД/LLM часто дают только title+description (href=None) → backfill из
+    base_href с уникальным #якорем по индексу (Grid не любит дубли href)."""
+    base = (base_href or "").strip()
+    out = []
+    for i, s in enumerate(items or []):
+        if not isinstance(s, dict) or not (s.get("title") or s.get("Title")):
+            continue
+        cur = (s.get("href") or s.get("Href") or "").strip()
+        if not cur:
+            if not base:
+                continue   # нет ни href у ссылки, ни базового — пропускаем (add_sitelink_set её всё равно отбросит)
+            s = {**s, "href": (base + (f"#sl{i+1}" if i else ""))}
+        out.append(s)
+    return out
+
+
 def _common_sitelinks_fast(login, slepok, site_type, city, tp_code, href=""):
     """Сайтлинки БЕЗ баллов и БЕЗ зависания LLM (#7): сначала БД-библиотека слепка
     (`_slepok_content_get`, мгновенно), потом AI-генерация, и наконец детерминированный
-    статический резерв (с href сайта) — чтобы быстрые ссылки прикреплялись ВСЕГДА (не зависели от
-    флапающего LLM). Возвращает list[dict{title,href,description}] (никогда не пустой при наличии href)."""
+    статический резерв — чтобы быстрые ссылки прикреплялись ВСЕГДА (не зависели от флапающего LLM).
+    href backfill на всех источниках (БД/LLM часто без href → Grid отбрасывал ссылки → #7 не чинился).
+    Возвращает list[dict{title,href,description}]."""
     try:
         from .ai_content import _slepok_content_get
         _db = _slepok_content_get(slepok, site_type, "campaign")
         _sl = (_db or {}).get("sitelinks") if isinstance(_db, dict) else None
         if _sl:
-            picked = [s for s in _sl if isinstance(s, dict) and s.get("title")][:8]
+            picked = _ensure_sitelink_hrefs(
+                [s for s in _sl if isinstance(s, dict) and s.get("title")][:8], href)
             if picked:
                 return picked
     except Exception:  # noqa: BLE001
         pass
     try:
-        ai = _ai_common_sitelinks(login, slepok, site_type, city, tp_code) or []
+        ai = _ensure_sitelink_hrefs(_ai_common_sitelinks(login, slepok, site_type, city, tp_code) or [], href)
         if ai:
             return ai
     except Exception:  # noqa: BLE001

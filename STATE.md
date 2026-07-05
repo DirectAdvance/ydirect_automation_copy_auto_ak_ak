@@ -7,6 +7,22 @@
 > и для impact-анализа («что сломается, если тронуть X»). Правила «когда смотреть» —
 > в шапке того файла.
 
+## Сессия: 2026-07-05 (продолжение) — закрыты 3 остатка (2 ложных срабатывания + sitelink-самодобивка)
+
+- **✅ Остаток 1 — ложный `NO_KEYWORDS_LIVE`:** верификация читала `groups_for_edit.keyword_count`
+  (edit-view лаг → 0 при живых ключах). Фикс: `grid_read._show_condition_kw_counts` (реальные
+  GdKeyword через showConditions, пагинация, `$cid:[Long!]!`) + `_enrich_group_targeting` использует
+  его (фолбэк на edit-view при сбое). Пруф: psm cid712191112 zero=0/9677, ozge cid712191085 zero=0/3749.
+- **✅ Остаток 2 — ложный `UAC_PRODUCT_MODEL_FILTER_MISSING`:** `_tp7_requires_model_filter` требовал
+  модельный фильтр для любого ct≠{0000,0111}, включая ct-«Общее» (ct0006 Автокредит, ct0001 Прочие).
+  Фикс: `uac_verifier.configure(_ct_segment)` + требовать фильтр ТОЛЬКО для сегмента «Модели».
+  Пруф: ct0006/ct0001→False, ct0119(Модели)→True.
+- **✅ Остаток 3 — авто-добивка не детектила сайтлинки:** добавлен `campaign_spec_audit._audit_sitelinks`
+  (SITELINK_MISSING по inheritableSitelinkSet для ЕПК search) + `fix_sitelinks_missing` (in-place
+  add_sitelink_set+set_campaign_sitelink_set) + подключено в `_run_spec_audit_and_fix`. `_common_sitelinks_fast`
+  теперь backfill href на всех источниках (LLM давал href=None → Grid отбрасывал). Пруф: fix end-to-end
+  прикрепил набор 1491905725. Детект: есть набор→[], нет→SITELINK_MISSING.
+
 ## Сессия: 2026-07-05 — авто-добивка ключей РЕАЛЬНО заработала (2 корневых бага) + #7 детерминизм
 
 **Чистый прогон (c46c969e556c psm 17, e0d075a2cc84 ozge 23), БЕЗ рестартов в середине. Найдены и

@@ -9,6 +9,16 @@ _TP_PREFIX_RE = re.compile(r"^tp(?P<tp>\d+)_(?P<pay>cpc|cpa)_(?P<surface>site|kv
 _CPC_PRICING = {"PER_CLICK"}
 _CPA_PRICING = {"PER_CONVERSION", "PER_ACTION"}
 
+# callable(ct_code:str) -> 'Общее'|'Марки'|'Модели'|None — инъекция из blueprint (see configure).
+_SEGMENT_OF = None
+
+
+def configure(deps: dict) -> None:
+    """Инъекция зависимостей. Ждём `_ct_segment` — резолвер ct-кода в сегмент слепка,
+    чтобы модельный фильтр требовать ТОЛЬКО для сегмента «Модели» (см. _tp7_requires_model_filter)."""
+    global _SEGMENT_OF
+    _SEGMENT_OF = deps.get("_ct_segment") or _SEGMENT_OF
+
 
 def _campaign_pay_mode(name: str) -> str:
     m = _TP_PREFIX_RE.search(name or "")
@@ -16,13 +26,25 @@ def _campaign_pay_mode(name: str) -> str:
 
 
 def _tp7_requires_model_filter(name: str) -> bool:
-    """tp7 campaigns with concrete ct-model code must not run on the whole feed."""
+    """Модельный фильтр (mark_id/model) обязателен для товарки ТОЛЬКО сегмента «Модели» — она
+    должна крутиться по конкретной модели, а не по всему фиду. Сегменты «Общее» (Автокредит/кредит,
+    Прочие/Общие запросы, Автосалон, Дилер, Интересы) и «Марки» идут по всему фиду → фильтр НЕ нужен.
+    Раньше требовался для любого ct≠{0000,0111} → ложный UAC_PRODUCT_MODEL_FILTER_MISSING на ct-«Общее»
+    (ct0001/ct0006 = «Общее»). Резолвер сегмента инъектится через configure(); без него — прежний фолбэк."""
     if not re.search(r"^tp7_", name or "", re.I):
         return False
     m = re.search(r"_ct(\d{4})(?:_|\b)", name or "", re.I)
     if not m:
         return False
-    return m.group(1) not in {"0000", "0111"}
+    ct = m.group(1)
+    if ct in {"0000", "0111"}:
+        return False
+    if _SEGMENT_OF is not None:
+        try:
+            return str(_SEGMENT_OF(f"ct{ct}") or "").strip() == "Модели"
+        except Exception:  # noqa: BLE001
+            pass
+    return True   # фолбэк: deps не сконфигурены → прежнее поведение
 
 
 def _repair(name: str, cid: int | None) -> dict[str, Any]:

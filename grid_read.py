@@ -84,6 +84,48 @@ class GridReadClient:
         except GridReadError:
             pass
 
+    # Реальный счётчик ключей через Grid showConditions (сущности GdKeyword) — авторитетный,
+    # в отличие от groups_for_edit.keyword_count (edit-view, лагает → ложный NO_KEYWORDS_LIVE).
+    _KW_COUNT_Q = (
+        "query KwCount($login:String!,$cid:[Long!]!,$off:Int!){"
+        "client(searchBy:{login:$login}){"
+        "showConditions(input:{filter:{typeIn:[KEYWORD],campaignIdIn:$cid}"
+        "statRequirements:{preset:TODAY}"
+        "limitOffset:{limit:10000,offset:$off}"
+        "orderBy:[{order:DESC,field:GROUP_ID}]})"
+        "{rowset{__typename ...on GdKeyword{id adGroupId}}}}}")
+
+    def _show_condition_kw_counts(self, campaign_ids) -> dict[int, int] | None:
+        """{adgroup_id: keyword_count} по showConditions (реальные ключи). Пагинация по кампании
+        (лимит 10000/страница). Возвращает dict при успехе (0 у групп без ключей — их просто нет
+        в ответе) или None при сбое Grid → вызывающий откатывается на edit-view keyword_count."""
+        cids = [int(c) for c in (campaign_ids or [])]
+        if not cids:
+            return {}
+        self._bootstrap_csrf()
+        out: dict[int, int] = defaultdict(int)
+        for cid in cids:
+            offset = 0
+            while True:
+                try:
+                    j = self._post("KwCount", self._KW_COUNT_Q,
+                                   {"login": self.login, "cid": [cid], "off": offset})
+                except GridReadError:
+                    return None
+                rows = ((((j.get("data") or {}).get("client") or {})
+                         .get("showConditions") or {}).get("rowset") or [])
+                for r in rows:
+                    if (r.get("__typename") or "") != "GdKeyword":
+                        continue
+                    try:
+                        out[int(r.get("adGroupId") or 0)] += 1
+                    except (TypeError, ValueError):
+                        pass
+                if len(rows) < 10000:
+                    break
+                offset += 10000
+        return out
+
     @staticmethod
     def _bad_adgroup_name(name: Any) -> bool:
         text = str(name or "").strip()
@@ -148,10 +190,9 @@ class GridReadClient:
         _tp_re = _re.compile(r"^\s*tp(\d+)_", _re.IGNORECASE)
         grid = GridClient(self.login, cookie=self.cookie)
         rows = grid.groups_for_edit([int(s) for s in id_strings])
-        zero_kw: dict[int, int] = defaultdict(int)
-        wrong_at: dict[int, int] = defaultdict(int)
-        kw_total: dict[int, int] = defaultdict(int)   # для keywords_count
-        seen_search: set[int] = set()
+        # 1-й проход: отобрать поисковые группы (tp2/4/5, supported) и их кампании
+        search_groups: list[tuple[int, int, int, dict]] = []   # (cid, gid, edit_kw, rm)
+        search_cids: set[int] = set()
         for grp in rows:
             cid = grp.get("campaign_id")
             if cid not in counts:
@@ -160,16 +201,26 @@ class GridReadClient:
             tp = int(m.group(1)) if m else None
             if tp not in (2, 4, 5) or not grp.get("supported"):
                 continue
-            seen_search.add(int(cid))
-            grp_kw = int(grp.get("keyword_count") or 0)
-            kw_total[int(cid)] += grp_kw
+            gid = int(grp.get("adgroup_id") or 0)
+            search_groups.append((int(cid), gid, int(grp.get("keyword_count") or 0),
+                                  grp.get("relevance_match") or {}))
+            search_cids.add(int(cid))
+        # Авторитетный счётчик ключей (showConditions). None → откат на edit-view keyword_count.
+        real_kw = self._show_condition_kw_counts(search_cids)
+        zero_kw: dict[int, int] = defaultdict(int)
+        wrong_at: dict[int, int] = defaultdict(int)
+        kw_total: dict[int, int] = defaultdict(int)   # для keywords_count
+        seen_search: set[int] = set()
+        for cid, gid, edit_kw, rm in search_groups:
+            seen_search.add(cid)
+            grp_kw = int(real_kw.get(gid, 0)) if real_kw is not None else int(edit_kw)
+            kw_total[cid] += grp_kw
             if grp_kw == 0:
-                zero_kw[int(cid)] += 1
-            rm = grp.get("relevance_match") or {}
+                zero_kw[cid] += 1
             cats = {str(x).upper() for x in (rm.get("relevanceMatchCategories") or [])}
             brands = {str(x).upper() for x in (rm.get("autotargetingBrandSettings") or [])}
             if not (rm.get("isActive") and cats == {"EXACT_V2_MARK"} and brands == {"WITHOUT_BRAND"}):
-                wrong_at[int(cid)] += 1
+                wrong_at[cid] += 1
         for cid in counts:
             if cid in seen_search:
                 counts[cid]["search_zero_kw_groups"] = int(zero_kw.get(cid, 0))

@@ -4866,6 +4866,11 @@ def _is_brand_canon(*args, **kwargs):
 _cn.configure({"_victory_conn": _victory_conn, "_ct_segment": _ct_segment,
                "_is_brand_canon": _is_brand_canon, "_brand_canon": _brand_canon})
 
+# uac_verifier: резолвер ct-сегмента, чтобы модельный фильтр товарки требовать только для «Модели»
+# (иначе ложный UAC_PRODUCT_MODEL_FILTER_MISSING на ct-«Общее» вроде ct0001/ct0006).
+from . import uac_verifier as _uv  # noqa: E402
+_uv.configure({"_ct_segment": _ct_segment})
+
 
 def _vendor_value(*args, **kwargs):
     return _create_set_feeds_module()._vendor_value(*args, **kwargs)
@@ -6395,6 +6400,13 @@ def _run_spec_audit_and_fix(login: str, ctx: dict) -> dict:
         out["placements_wrong_fix"] = {
             "ok": fix_pw.get("ok"), "campaigns_fixed": fix_pw.get("campaigns_fixed"),
             "errors": (fix_pw.get("errors") or [])[:5],
+        }
+    slm = [it for it in (report.get("issues") or []) if it.get("code") == "SITELINK_MISSING"]
+    if slm:
+        fix_slm = csa.fix_sitelinks_missing(login, ctx, slm)
+        out["sitelinks_missing_fix"] = {
+            "ok": fix_slm.get("ok"), "campaigns_fixed": fix_slm.get("campaigns_fixed"),
+            "set_id": fix_slm.get("set_id"), "errors": (fix_slm.get("errors") or [])[:5],
         }
     return out
 
