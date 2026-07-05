@@ -913,6 +913,16 @@ class GridClient:
         that have v5 micros must divide by 1_000_000 before passing it here.
         Returns Grid ``addedItems`` rows.
         """
+        # Большие батчи режем на СЫРЫХ items ДО нормализации. Раньше рекурсия шла по уже
+        # нормализованным rows (ключ camelCase ``adGroupId``), а нормализатор ниже читает только
+        # ``adgroup_id``/``AdGroupId`` → gid=0 → все ключи тихо отбрасывались, add_keywords
+        # возвращал [] (баг NO_KEYWORDS_LIVE на tp2 «Поиск-Марки» с >1000 ключей). Резка сырых
+        # items сохраняет и adgroup_id, и price_context при повторной нормализации.
+        if items and len(items) > 1000:
+            out = []
+            for i in range(0, len(items), 1000):
+                out.extend(self.add_keywords(items[i:i + 1000]))
+            return out
         clean = []
         for it in items or []:
             phrase = str(it.get("keyword") or it.get("Keyword") or "").strip()
@@ -935,11 +945,6 @@ class GridClient:
             clean.append(row)
         if not clean:
             return []
-        if len(clean) > 1000:
-            out = []
-            for i in range(0, len(clean), 1000):
-                out.extend(self.add_keywords(clean[i:i + 1000]))
-            return out
         self._bootstrap_csrf()
         q = ("mutation AddKeywords($input:GdAddKeywordsInput!){"
              "addKeywords(input:$input){addedItems{adGroupId keywordId}"
