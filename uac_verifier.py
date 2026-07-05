@@ -39,12 +39,17 @@ def _tp7_requires_model_filter(name: str) -> bool:
     ct = m.group(1)
     if ct in {"0000", "0111"}:
         return False
+    # Субтрактивно: снимаем требование ТОЛЬКО с сегмента «Общее» (Автокредит/кредит, Прочие/Общие
+    # запросы — товарка по всему фиду). Всё остальное (в т.ч. «Модели» и не распознанные ct) —
+    # по-прежнему требует фильтр, как в исходном поведении. Так исправляем ложный позитив на ct-«Общее»
+    # (ct0001/ct0006), НЕ внося ложных негативов, если резолвер сегмента ошибётся на модели.
     if _SEGMENT_OF is not None:
         try:
-            return str(_SEGMENT_OF(f"ct{ct}") or "").strip() == "Модели"
+            if str(_SEGMENT_OF(f"ct{ct}") or "").strip() == "Общее":
+                return False
         except Exception:  # noqa: BLE001
             pass
-    return True   # фолбэк: deps не сконфигурены → прежнее поведение
+    return True
 
 
 def _repair(name: str, cid: int | None) -> dict[str, Any]:

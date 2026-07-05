@@ -654,6 +654,8 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
             # Кап 200/группа (лимит Яндекса): иначе Grid AddKeywords отклонит всю пачку
             # (MAX_KEYWORDS_PER_AD_GROUP_EXCEEDED) → группа останется без ключей (NO_KEYWORDS_LIVE).
             if len(final_kw) > _KW_MAX_PER_GROUP:
+                print(f"[keywords_repair] cid={cid} gid={gid}: усечено "
+                      f"{len(final_kw)}→{_KW_MAX_PER_GROUP} ключей (лимит Яндекса)", flush=True)
                 final_kw = final_kw[:_KW_MAX_PER_GROUP]
             target_rm = {"isActive": True, "id": (rm or {}).get("id") if isinstance(rm, dict) else None,
                          "relevanceMatchCategories": ["EXACT_V2_MARK"],

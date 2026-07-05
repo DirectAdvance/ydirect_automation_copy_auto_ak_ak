@@ -53,7 +53,7 @@ def _ensure_sitelink_hrefs(items: list, base_href: str) -> list:
         if not cur:
             if not base:
                 continue   # нет ни href у ссылки, ни базового — пропускаем (add_sitelink_set её всё равно отбросит)
-            s = {**s, "href": (base + (f"#sl{i+1}" if i else ""))}
+            s = {**s, "href": base + f"#sl{i + 1}"}   # всегда уникальный якорь (Grid не любит дубли href)
         out.append(s)
     return out
 
@@ -63,7 +63,9 @@ def _common_sitelinks_fast(login, slepok, site_type, city, tp_code, href=""):
     (`_slepok_content_get`, мгновенно), потом AI-генерация, и наконец детерминированный
     статический резерв — чтобы быстрые ссылки прикреплялись ВСЕГДА (не зависели от флапающего LLM).
     href backfill на всех источниках (БД/LLM часто без href → Grid отбрасывал ссылки → #7 не чинился).
-    Возвращает list[dict{title,href,description}]."""
+    Возвращает list[dict{title,href,description}] или [] (пусто → вызывающий сам решает: v5-ассеты
+    аккаунта на creation-пути ИЛИ детерминированный резерв в fix_sitelinks_missing). НЕ подставляет
+    статический резерв сам — иначе затенял бы реальные v5-сайтлинки (`_assets.get('sitelinks')`)."""
     try:
         from .ai_content import _slepok_content_get
         _db = _slepok_content_get(slepok, site_type, "campaign")
@@ -81,8 +83,7 @@ def _common_sitelinks_fast(login, slepok, site_type, city, tp_code, href=""):
             return ai
     except Exception:  # noqa: BLE001
         pass
-    # Последний резерв: никогда не оставляем объявление без быстрых ссылок (#7 → до идеала).
-    return _sitelinks_fallback_with_href(href)
+    return []
 
 
 def _create_text_via_cookie(
@@ -567,7 +568,8 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
     # ── 4. Grid-докрутка: места показа (gallery + search), ассеты кампании, минус, инварианты ──
     _assets = _resolve_campaign_assets(
         token, login, href,
-        sitelinks=_common_sitelinks_fast(login, slepok, site_type, city, "tp5", href=href),
+        sitelinks=(_common_sitelinks_fast(login, slepok, site_type, city, "tp5", href=href)
+                   or _sitelinks_fallback_with_href(href)),
         assets=data, slepok=slepok, site_type=site_type,
         grid_cookie=grid_cookie,
     )

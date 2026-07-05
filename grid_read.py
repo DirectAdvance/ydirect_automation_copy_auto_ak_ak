@@ -104,26 +104,26 @@ class GridReadClient:
             return {}
         self._bootstrap_csrf()
         out: dict[int, int] = defaultdict(int)
-        for cid in cids:
-            offset = 0
-            while True:
+        # Один запрос на все кампании (campaignIdIn — список), пагинация по offset (не N round-trip'ов).
+        offset = 0
+        for _page in range(50):   # bound: 50×10000 = 500k ключей — потолок аккаунта, защита от вечного цикла
+            try:
+                j = self._post("KwCount", self._KW_COUNT_Q,
+                               {"login": self.login, "cid": cids, "off": offset})
+            except GridReadError:
+                return None
+            rows = ((((j.get("data") or {}).get("client") or {})
+                     .get("showConditions") or {}).get("rowset") or [])
+            for r in rows:
+                if (r.get("__typename") or "") != "GdKeyword":
+                    continue
                 try:
-                    j = self._post("KwCount", self._KW_COUNT_Q,
-                                   {"login": self.login, "cid": [cid], "off": offset})
-                except GridReadError:
-                    return None
-                rows = ((((j.get("data") or {}).get("client") or {})
-                         .get("showConditions") or {}).get("rowset") or [])
-                for r in rows:
-                    if (r.get("__typename") or "") != "GdKeyword":
-                        continue
-                    try:
-                        out[int(r.get("adGroupId") or 0)] += 1
-                    except (TypeError, ValueError):
-                        pass
-                if len(rows) < 10000:
-                    break
-                offset += 10000
+                    out[int(r.get("adGroupId") or 0)] += 1
+                except (TypeError, ValueError):
+                    pass
+            if len(rows) < 10000:
+                break
+            offset += 10000
         return out
 
     @staticmethod
@@ -213,7 +213,11 @@ class GridReadClient:
         seen_search: set[int] = set()
         for cid, gid, edit_kw, rm in search_groups:
             seen_search.add(cid)
-            grp_kw = int(real_kw.get(gid, 0)) if real_kw is not None else int(edit_kw)
+            # max(showConditions, edit-view): группа считается пустой только если ОБА источника дали 0.
+            # showConditions авторитетен (живые GdKeyword), но при пустом/частичном/лаг-ответе edit-view
+            # страхует от ложного zero → ложного NO_KEYWORDS_LIVE. Оба источника только недосчитывают
+            # (лаг), поэтому max безопасен.
+            grp_kw = max(int(real_kw.get(gid, 0)), int(edit_kw)) if real_kw is not None else int(edit_kw)
             kw_total[cid] += grp_kw
             if grp_kw == 0:
                 zero_kw[cid] += 1

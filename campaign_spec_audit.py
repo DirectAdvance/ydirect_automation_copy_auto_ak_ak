@@ -776,6 +776,10 @@ def _audit_sitelinks(grid: gf.GridClient, login: str, campaign_id: int,
         pl = (grid._read_unified_campaign_update_payloads([int(campaign_id)]) or {}).get(int(campaign_id)) or {}
     except Exception:  # noqa: BLE001
         return []
+    if not pl:
+        # payload пуст → кампания не ЕПК/GdUnifiedCampaign (напр. legacy GdTextCampaign) ИЛИ не
+        # прочиталась. inheritableSitelinkSet к ней неприменим → НЕ флагаем (иначе ложный SITELINK_MISSING).
+        return []
     sl = pl.get("inheritableSitelinkSet") or {}
     set_id = sl.get("sitelinkSetId") or sl.get("assetValue")
     if set_id:
@@ -972,8 +976,11 @@ def fix_sitelinks_missing(login: str, ctx: dict, issues: list[dict]) -> dict:
     domain = (acc.get("domain") or "").strip()
     href = ("https://" + domain) if domain else ""
     try:
-        from .create_set_feed_builders import _common_sitelinks_fast
-        sitelinks = _common_sitelinks_fast(login, slepok, site_type, city, "tp5", href=href)
+        from .create_set_feed_builders import _common_sitelinks_fast, _sitelinks_fallback_with_href
+        # _common_sitelinks_fast не подставляет статик-резерв сам (чтобы не затенять v5-ассеты на
+        # creation-пути) → здесь, в самодобивке, резерв обязателен: БД-слепок → LLM → детерминированный.
+        sitelinks = _common_sitelinks_fast(login, slepok, site_type, city, "tp5", href=href) \
+            or _sitelinks_fallback_with_href(href)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"сборка сайтлинков: {str(e)[:160]}", "campaigns_fixed": 0}
     gcl = gf.GridClient(login)
