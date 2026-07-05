@@ -334,8 +334,10 @@ def _audit_search_images(rc: gr.GridReadClient, login: str, campaign_id: int,
 def _audit_product_feed_filters(rc: gr.GridReadClient, login: str, campaign_id: int,
                                 campaign_name: str, groups: list | None = None) -> list[dict]:
     """tp1/tp5 товарные (ShoppingAd) и каталожные (ListingAd) объявления: feedFilter не должен
-    быть null — минимум глобальные минус-марки («во всех кампаниях с фидами не показывать эти
-    марки»). Схема чтения подтверждена live 03.07.2026: feedFilter{tab conditions{field operator
+    быть null. ShoppingAd: флагаем только при включённых минус-марках. ListingAd «Страницы
+    каталога»: флагаем null feedFilter НЕЗАВИСИМО от минус-марок (ПРАВКА 3, DETECT ONLY —
+    фиксер для каталожного фильтра требуется отдельно; НЕ путать с минус-марками).
+    Схема чтения подтверждена live 03.07.2026: feedFilter{tab conditions{field operator
     stringValue}}; null видели на tp5-fallback «Товарная галерея» (скрин #91, camp 712120488).
     Флагаем ТОЛЬКО null/пустые conditions — позитивные фильтры сегментов не трогаем."""
     _minus = _DEPS.get("_enabled_minus_marks")
@@ -344,7 +346,7 @@ def _audit_product_feed_filters(rc: gr.GridReadClient, login: str, campaign_id: 
     except Exception:  # noqa: BLE001
         marks = []
     if not marks:
-        return []      # минус-марки выключены — ставить нечего, не флагаем
+        return []      # минус-марки выключены — ни ShoppingAd, ни ListingAd фиксить нечем, не флагаем
     q = ("query SpecPFF($login:String!,$inp:GdAdsContainerInput!){"
          "client(searchBy:{login:$login}){ads(input:$inp){rowset{id adGroupId __typename "
          "...on GdShoppingAd{bodies feed{id} feedFilter{tab conditions{field}}} "
@@ -370,10 +372,23 @@ def _audit_product_feed_filters(rc: gr.GridReadClient, login: str, campaign_id: 
             continue
         total_product += 1
         ff = r.get("feedFilter")
-        if ff and (ff.get("conditions") or []):
-            continue
-        if ff and str(ff.get("tab") or "") not in ("", "CONDITION"):
-            continue   # tree/категорийный фильтр: conditions=null легитимен — НЕ перезаписывать
+        if tn == "GdShoppingAd":
+            # ShoppingAd: детект только при включённых минус-марках (исходное поведение)
+            if not marks:
+                continue
+            if ff and (ff.get("conditions") or []):
+                continue
+            if ff and str(ff.get("tab") or "") not in ("", "CONDITION"):
+                continue   # tree/категорийный фильтр: conditions=null легитимен
+        else:
+            # GdListingAd «Страницы каталога»: null feedFilter — дефект, но фиксер
+            # fix_feed_filters_grid ставит фильтр по имени каталога ТОЛЬКО при включённых
+            # минус-марках (иначе early-return campaigns_fixed:0). Без марок ставить нечего →
+            # НЕ флагаем, иначе набор вечно висит в «нужна добивка» (ПРАВКА 3, согласовано с фиксером).
+            if not marks:
+                continue
+            if ff:
+                continue   # любой feedFilter → ok для ListingAd
         ads_missing.append({
             "ad_id": str(r.get("id")),
             "listing": tn == "GdListingAd",
@@ -493,15 +508,26 @@ def _audit_plan_vs_slepok(account_campaigns: list[dict], slepok: str, site_type:
 
 # ── tp1 combo-ads audit (BUTTON_MISSING + SHORT_TITLES grid) ─────────────────────
 def _ct_has_pool_video(ct: str) -> bool:
-    """Есть ли в M3-пуле видео для ct — ЛЁГКИЙ чек по локальному индексу (без fetch байтов).
-    Слепковые ролики (_videos_map) не учитываются — детект может слегка недофлагать, зато
-    не дёргает M3 на каждый ct; фиксер всё равно зовёт videos_for_ct (полный резолв)."""
+    """Есть ли в пуле РЕАЛЬНО СУЩЕСТВУЮЩЕЕ валидное видео для ct.
+
+    Проверяем через videos_pool_for_ct (резолв локального _video_pool, лёгкий чек exists+size,
+    без ffprobe). Возвращает True ТОЛЬКО если есть хотя бы один валидный ролик в сжатом пуле.
+    Это предотвращает эмиссию VIDEO_MISSING для ct без реально пригодного видео (бракованные
+    или отсутствующие файлы не попадут в добивку → нет вечного цикла и HTTP 400 от Яндекса)."""
     kp_mod = _DEPS.get("kp")
     if not kp_mod:
         return False
     try:
+        ct_norm = (ct or "").strip().lower()
+        if not ct_norm:
+            return False
+        # Сначала быстрый pre-check по индексу: если ключа нет — файлов точно нет
         ext = (kp_mod._load_index().get("external_assets") or {})
-        return bool(ext.get("Video|video|" + (ct or "").strip().lower()))
+        if not ext.get("Video|video|" + ct_norm):
+            return False
+        # Ключ есть → проверяем реальное наличие файлов (локальный _video_pool или кэш)
+        paths = kp_mod.videos_pool_for_ct(ct_norm, limit=1)
+        return bool(paths)
     except Exception:  # noqa: BLE001
         return False
 
@@ -1137,8 +1163,13 @@ def fix_button_missing(login: str, ctx: dict, issues: list[dict]) -> dict:
             after = [i for i in _audit_tp1_adaptive(rc, login, cid, str(it.get("name") or ""))
                      if i.get("code") == "BUTTON_MISSING"]
             still = len((after[0].get("ad_ids") or [])) if after else 0
-            fixed.append({"campaign_id": cid, "updated": n, "was_missing": len(ad_ids),
-                          "still_missing": still})
+            rec = {"campaign_id": cid, "updated": n, "was_missing": len(ad_ids),
+                   "still_missing": still}
+            if still == 0:
+                fixed.append(rec)
+            else:
+                # ПРАВКА 2/7: Grid read-back не подтвердил кнопку → не считать исправленной
+                errors.append(f"кампания {cid}: read-back still_missing={still}/{len(ad_ids)}")
         except Exception as e:  # noqa: BLE001
             errors.append(f"кампания {cid}: {str(e)[:180]}")
     return {"ok": not errors, "campaigns_fixed": len(fixed), "campaigns": fixed, "errors": errors}

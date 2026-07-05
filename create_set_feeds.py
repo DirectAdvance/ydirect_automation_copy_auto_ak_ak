@@ -336,9 +336,11 @@ def _feed_url_for_model(urls: dict, model: str) -> str | None:
     return urls.get(b.split()[0]) if b else None
 
 
-def _ad_price_for_brand(prices: dict, brand: str) -> tuple:
+def _ad_price_for_brand(prices: dict, brand: str, *, no_brand_fallback: bool = False) -> tuple:
     """(current, old) под бренд/модель группы из карты цен фида; (0,0) если нет совпадения.
-    Стрипаем год (20\\d\\d) из имени группы — ct вида «BAIC X35 2026» матчит ключ «baic x35»."""
+    Стрипаем год (20\\d\\d) из имени группы — ct вида «BAIC X35 2026» матчит ключ «baic x35».
+    no_brand_fallback=True (ПРАВКА 5, seg=='Модели'): нет точного ключа → (0,0), НЕ фолбэчить
+    на b.split()[0] — это цена ДРУГОГО оффера (BAIC X55→2500000 вместо 1960000 фида)."""
     b = (brand or "").strip().lower()
     if not b:
         return (0, 0)
@@ -347,6 +349,8 @@ def _ad_price_for_brand(prices: dict, brand: str) -> tuple:
     b_noyear = re.sub(r"\s*\b20\d\d\b", " ", b).strip()
     if b_noyear != b and b_noyear in prices:
         return prices[b_noyear]
+    if no_brand_fallback:
+        return (0, 0)                                      # Модели: нет точного ключа → пустая цена
     return prices.get(b.split()[0], (0, 0))               # по бренду (первое слово модели)
 
 
@@ -380,7 +384,7 @@ def _group_ad_price(prices: dict, brand: str, seg: str = "") -> tuple:
     if seg == "Марки":
         pr = prices.get(b.split()[0], prices.get(b, (0, 0)))     # МИН цена марки (ключ-бренд)
     else:                                                        # Модели
-        pr = _ad_price_for_brand(prices, brand)
+        pr = _ad_price_for_brand(prices, brand, no_brand_fallback=True)  # ПРАВКА 5: нет → (0,0)
     # Правило Семёна (2026-07-02): марки/модели НЕТ в фиде → цена ПУСТАЯ (тумблер выключен),
     # НЕ подставлять минимальную цену фида — «Tank от 789 900 ₽» вводит в заблуждение.
     # Фолбэк _min_offer_price остаётся только для Общее/аудиторных групп (выше, без марки).

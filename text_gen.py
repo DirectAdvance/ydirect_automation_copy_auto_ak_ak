@@ -324,10 +324,17 @@ _GENERAL_COMMON_STEMS = (
 def _keep_general_common(keywords: list) -> list:
     """Для ОБЩЕЙ группы: оставить только ключи, где есть ОБЩИЙ авто/финанс-термин. Чистый
     модель-запрос без общего слова («икс рей», «икс рей 2024») — не для общей группы, дропаем.
-    Ловит кириллический транслит моделей, который blacklist по лат-токенам пропускает (#6)."""
+    ПРАВКА 6: перед keep-по-стему дропать ключ, если он содержит токен известной марки/модели
+    (включая Кириллические транслиты «икс», «рей», «монжаро») — иначе «икс рей автосалон»
+    проходил через стем «автосалон» и попадал в ОБЩУЮ группу (#6-fix2)."""
+    model_toks = _auto_brand_tokens()
     out = []
     for kw in (keywords or []):
         low = str(kw).lower()
+        if model_toks:
+            kw_words = set(re.findall(r"[a-zа-яё0-9]+", low))
+            if kw_words & model_toks:
+                continue  # ключ содержит модельный/марочный токен → не для ОБЩЕЙ группы
         if any(s in low for s in _GENERAL_COMMON_STEMS):
             out.append(kw)
     return out
@@ -343,22 +350,34 @@ def _generic_common_keywords(city: str) -> list:
 
 _AUTO_BRAND_TOKEN_CACHE: set[str] | None = None
 
+# Кириллические транслиты токенов моделей — не выводимы из Latin имён фида автоматически.
+# «икс» + «рей» = Lada X-Ray, «монжаро» = Haval Monjaro / Changan Mongaro и т.п.
+_AUTO_BRAND_CYRILLIC_EXTRA: frozenset[str] = frozenset({
+    "икс", "рей", "монжаро", "бестарн", "кулун", "атлас", "туксон", "солярис",
+})
+
 def _auto_brand_tokens() -> set[str]:
-    """Канонические токены марок из фид-индекса + ручной минимум для фильтра чужих брендов в текстах."""
+    """Канонические токены марок И ВСЕХ токенов моделей из фид-индекса + Кириллические транслиты.
+    ПРАВКА 6: добавлены все токены feeds_ct_model() (не только первый) + _AUTO_BRAND_CYRILLIC_EXTRA,
+    чтобы «икс рей автосалон» отсекался в _keep_general_common по токену «икс»/«рей»."""
     global _AUTO_BRAND_TOKEN_CACHE
     if _AUTO_BRAND_TOKEN_CACHE is not None:
         return _AUTO_BRAND_TOKEN_CACHE
-    base = {
+    base: set[str] = {
         "lada", "лада", "baic", "belgee", "changan", "chery", "dongfeng", "exeed", "faw",
         "gac", "geely", "haval", "hyundai", "jac", "jaecoo", "kaiyi", "kia", "livan",
         "mazda", "moskvich", "москвич", "omoda", "renault", "skoda", "tank", "toyota",
         "voyah",
     }
+    base.update(_AUTO_BRAND_CYRILLIC_EXTRA)
+    _SKIP_GENERIC = {"pro", "max", "plus", "new", "sport", "auto", "авто", "car"}
     try:
         for model in kp.feeds_ct_model().values():
-            toks = re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", str(model or ""))
-            if toks:
-                base.add(toks[0].lower())
+            for t in re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", str(model or "")):
+                lt = t.lower()
+                # Все токены модели (не только первый): «Lada X-Ray» → «lada» + «ray»
+                if not lt.isdigit() and lt not in _SKIP_GENERIC:
+                    base.add(lt)
     except Exception:  # noqa: BLE001
         pass
     _AUTO_BRAND_TOKEN_CACHE = {x for x in base if len(x) >= 2}

@@ -37,6 +37,10 @@ M3_RELAY = "m3-relay"
 M3_AGENCY_ROOT = "/Users/Shared/agency/нейродиректолог"
 M3_PACK_ROOT = M3_AGENCY_ROOT + "/kontent_oktyabr"
 M3_MANUAL_ROOT = "/Users/Shared/agency/creatives/Manual"
+# Корень per-ct видео-пула на M3 (agency/Video/<ct>/*.mp4).
+# Локальная копия (сжатая, валидная) синкается компрессором sync_content_m3.py в
+# NEURO_LOCAL_DST/_video_pool/ под тем же деревом. Маппинг: M3_VIDEO_ROOT/<rel> → _video_pool/<rel>.
+M3_VIDEO_ROOT = "/Users/Shared/agency/Video"
 
 # Локальная зеркальная копия пака (перенос на Proxmox, scripts/sync_content_m3.py). Если
 # NEURO_PACK_MOUNT указывает на ЛОКАЛЬНУЮ папку (не sshfs-монт /opt/neuro_kontent), маппим
@@ -66,6 +70,7 @@ INDEX_MAX_AGE = 3600                  # сек: считаем индекс св
 CACHE_DIR = "/opt/neuro_kontent_cache"
 THUMB_CACHE_DIR = "/opt/neuro_kontent_thumb_cache"
 CACHE_CAP_MB = 2048                   # лимит LRU-кэша байтов (растёт ограниченно, а не как весь пак)
+YANDEX_VIDEO_MAX = int(9.9 * 1024 * 1024)  # лимит Яндекс.Директа на видео (9.9 МБ)
 # SSH-мультиплексирование (ControlMaster): первое соединение держится 5 мин и переиспользуется
 # всеми ssh cat → нет рукопожатия на КАЖДЫЙ файл (было ~3.5с/файл → станет ~0.1с). Критично для
 # пакетной выгрузки картинок/видео при создании РК.
@@ -358,6 +363,16 @@ def _fetch_bytes(remote_abs: str) -> str | None:
     # Есть файл локально → отдаём его без ssh (isdir/isfile по локальному диску, НЕ по sshfs).
     if _LOCAL_MIRROR_ROOT and remote_abs.startswith(M3_AGENCY_ROOT + "/"):
         _lm = _LOCAL_MIRROR_ROOT + remote_abs[len(M3_AGENCY_ROOT):]
+        try:
+            if os.path.isfile(_lm) and os.path.getsize(_lm) > 0:
+                return _lm
+        except OSError:
+            pass
+    # VIDEO-POOL: agency/Video/<ct>/*.mp4 синкается компрессором в _video_pool/<ct>/*.mp4.
+    # Возвращаем локальный путь ТОЛЬКО если файл существует и не пустой (лёгкий чек, без ffprobe —
+    # валидность кодека гарантирована компрессором). Нет в пуле → провалиться в ssh-фетч ниже.
+    if _LOCAL_MIRROR_ROOT and remote_abs.startswith(M3_VIDEO_ROOT + "/"):
+        _lm = os.path.join(_LOCAL_MIRROR_ROOT, "_video_pool") + remote_abs[len(M3_VIDEO_ROOT):]
         try:
             if os.path.isfile(_lm) and os.path.getsize(_lm) > 0:
                 return _lm
@@ -695,6 +710,12 @@ SLEPOK_LABELS = {
     "kryuchkova": "Слепок Крючкова",
     "terehov": "Слепок Терехов",
     "karavaev": "Слепок Караваев",
+    "salamahin": "Слепок Саламахин",
+    "gordeeva": "Слепок Гордеева",
+    "zubakin": "Слепок Зубакин",
+    "chepelev": "Слепок Чепелев",
+    "tumashenko": "Слепок Тумашенко",
+    "kuderko": "Слепок Кудерко",
 }
 
 
@@ -774,7 +795,9 @@ def content_tree(force_refresh: bool = False) -> dict:
             tps.append({"tp": tp, "cts": cts, "assets": sum(x["assets"] for x in cts)})
         out.append({"segment": segment, "tps": tps, "assets": sum(t["assets"] for t in tps)})
     slepki = []
-    order = {"common": 0, "pavlov": 1, "scherbakova": 2, "kryuchkova": 3, "terehov": 4, "karavaev": 5}
+    order = {"common": 0, "pavlov": 1, "scherbakova": 2, "kryuchkova": 3, "terehov": 4, "karavaev": 5,
+              "salamahin": 6, "gordeeva": 7, "zubakin": 8, "chepelev": 9, "tumashenko": 10,
+              "kuderko": 11}
     for slp in sorted(slepok_tree, key=lambda x: (order.get(x, 99), x)):
         segments = []
         for segment in sorted(slepok_tree[slp]):
@@ -856,11 +879,13 @@ def content_assets(segment: str, tp: str, ct: str, slepok: str = "") -> list[dic
     return rows
 
 SEGMENTS = ("Монобренд", "Мультибренд", "Квиз", "Мульти + БУ", "С пробегом")
-SLEPOK_KEYS = ("pavlov", "scherbakova", "kryuchkova", "terehov", "karavaev")
+SLEPOK_KEYS = ("pavlov", "scherbakova", "kryuchkova", "terehov", "karavaev",
+               "salamahin", "gordeeva", "zubakin", "chepelev", "tumashenko",
+               "kuderko")
 # БАГ-7: слепки директологов, у которых ЕСТЬ б/у-сайты («С пробегом», «Мульти+БУ»).
 # При создании РК для НЕ-б/у-сайта (Мультибренд/Монобренд/Квиз) картинки этих слепков
 # могут содержать б/у-авто — исключаем их через exclude_bu_slepoks=True.
-_BU_SLEPOKS: frozenset = frozenset({"terehov"})
+_BU_SLEPOKS: frozenset = frozenset({"terehov", "gordeeva"})
 GENERAL_CT = "ct0000"           # «полное отсутствие ключей» — общий мультибренд
 
 _CT_RE = re.compile(r"^ct\d{4}$")
@@ -1074,11 +1099,25 @@ def videos_for_ct(login: str, ct: str, limit: int = 2) -> list:
                     rels = [posixpath.join(M3_PACK_ROOT, "_slepki_data", folder, "videos", fn)
                             for fn in filenames[:limit]]
                     got = _fetch_many(rels)
-                    slepki = [got[r] for r in rels if got.get(r)]
+                    slepki = _filter_valid_videos([got[r] for r in rels if got.get(r)])
                     if slepki:
                         return slepki
                 break                                   # слепок найден, но ролика нет → пул по ct
     return videos_pool_for_ct(ct, limit)
+
+
+def _filter_valid_videos(paths: list) -> list:
+    """Лёгкий фильтр: exists + 0 < size ≤ YANDEX_VIDEO_MAX. БЕЗ ffprobe —
+    валидность кодека гарантирована компрессором (sync_content_m3 _video_pool)."""
+    out = []
+    for p in paths:
+        try:
+            sz = os.path.getsize(p)
+            if os.path.isfile(p) and 0 < sz <= YANDEX_VIDEO_MAX:
+                out.append(p)
+        except OSError:
+            pass
+    return out
 
 
 def videos_pool_for_ct(ct: str, limit: int = 2) -> list:
@@ -1099,7 +1138,7 @@ def videos_pool_for_ct(ct: str, limit: int = 2) -> list:
     rels = [r for r in rels if r][:_lim]
     if rels:
         got = _fetch_many(rels)
-        result = [got[r] for r in rels if got.get(r)]
+        result = _filter_valid_videos([got[r] for r in rels if got.get(r)])
         if result:
             return result
     # Brand-fallback: точного ct нет в пуле Video/ (брендовый ct без своей папки, напр. ct0111
@@ -1126,7 +1165,7 @@ def videos_pool_for_ct(ct: str, limit: int = 2) -> list:
         brand_rels = [r for r in brand_rels if r][:_lim]
         if brand_rels:
             got2 = _fetch_many(brand_rels)
-            return [got2[r] for r in brand_rels if got2.get(r)]
+            return _filter_valid_videos([got2[r] for r in brand_rels if got2.get(r)])
     return []
 
 

@@ -502,8 +502,15 @@ def auto_recreate_request(parent_job_id: str, job_snapshot: dict[str, Any]) -> d
 
 
 def delayed_content_repair_request(parent_job_id: str, job_snapshot: dict[str, Any]) -> dict[str, Any] | None:
-    """Return scheduling inputs for guarded delayed content repair."""
+    """Return scheduling inputs for guarded delayed content repair.
+
+    ПРАВКА A: для нерекрейт-оригинальных джоб всегда планирует один пост-create проход,
+    даже при inplace_actions==0 — spec_audit (кнопка/видео/короткие заголовки/фильтр каталога)
+    найдёт спек-дефекты независимо от repair_plan.status. Гейты plan.status/inplace_actions
+    сняты. Дедуп обеспечен ON CONFLICT (parent_job_id, kind) DO NOTHING в _delayed_content_repair_save.
+    """
     body = job_snapshot.get("body") if isinstance(job_snapshot.get("body"), dict) else {}
+    # Ранний пропуск: recreate/deferred/skip-флаги — сохранены без изменений (ПРАВКА A)
     if (
         body.get("_repair_parent_job_id")
         or body.get("_deferred_id")
@@ -516,17 +523,14 @@ def delayed_content_repair_request(parent_job_id: str, job_snapshot: dict[str, A
     if not result or result.get("error"):
         return None
 
+    # inplace_actions — метрика для лога, НЕ гейт планирования: добивка планируется ВСЕГДА,
+    # spec_audit найдёт спек-дефекты даже когда plan.status != 'actionable'.
     live = result.get("live_verification") if isinstance(result.get("live_verification"), dict) else {}
     plan = live.get("repair_plan") if isinstance(live.get("repair_plan"), dict) else {}
-    if not plan or plan.get("status") != "actionable":
-        return None
-
     try:
         summary = rgate.summarize_repair_gate(body, result.get("results") or [], plan)
     except Exception:  # noqa: BLE001
         summary = {}
-    # Schedule the delayed FULL in-place cycle whenever ANY in-place action is pending.
-    # Recreate/UAC-replace handled separately by _auto_queue_recreate_after_done, not counted here.
     inplace_actions = (
         int((summary or {}).get("in_place_content_repairs") or 0)
         + int((summary or {}).get("keyword_repair_campaigns") or 0)
@@ -538,8 +542,6 @@ def delayed_content_repair_request(parent_job_id: str, job_snapshot: dict[str, A
         + (1 if (summary or {}).get("callout_campaigns") else 0)
         + int((summary or {}).get("rename_campaigns") or 0)
     )
-    if inplace_actions <= 0:
-        return None
 
     login = (job_snapshot.get("login") or result.get("login") or "").strip()
     if not login:

@@ -886,6 +886,7 @@ _DELAYED_REPAIR_DAEMON = {"started": False}
 _DELAYED_REPAIR_POLL = 60
 _DELAYED_CONTENT_REPAIR_DELAY_SECONDS = 180
 _DELAYED_FULL_REPAIR_MAX_ITERATIONS = 2   # верифай→исполнить-всё→ре-верифай; защита от ping-pong
+_DELAYED_REPAIR_STUCK_TIMEOUT_SECONDS = 1800  # 30 мин: running→failed (watchdog ПРАВКА P2)
 
 
 def _next_units_reset_utc():
@@ -1245,9 +1246,16 @@ def _run_delayed_content_repair(row: dict) -> None:
         "live_verification": last_live,
         "uses_direct_units": False,
     }
+    # Собираем campaigns_fixed из всех sub-fix в spec_audit для правдивого note (ПРАВКА A)
+    _sa_fixed = sum(
+        int((spec_audit.get(k) or {}).get("campaigns_fixed") or 0)
+        for k in (spec_audit or {})
+        if isinstance((spec_audit or {}).get(k), dict)
+    )
     _delayed_repair_set_status(
         did, final_status,
-        f"авто-добивка: исполнено {len(all_executed)}, остаток {remaining}, итераций {iterations}",
+        (f"авто-добивка: исполнено {len(all_executed)}, остаток {remaining}, итераций {iterations}"
+         + (f", spec_audit={_sa_fixed}" if _sa_fixed else "")),
         out,
     )
     _record_delayed_content_repair(parent_job_id, {"id": did, "status": final_status, **out})
@@ -1257,6 +1265,26 @@ def _run_delayed_content_repair(row: dict) -> None:
 def _delayed_repair_daemon_loop(app) -> None:
     import psycopg2.extras
     while True:
+        # ПРАВКА P2: watchdog — строки в status='running' дольше порога → помечать failed.
+        # Только реально просроченные по updated_at (активная строка обновляется set_status).
+        try:
+            _wconn = _victory_conn_rw()
+            try:
+                _wcur = _wconn.cursor()
+                _wcur.execute("""
+                    UPDATE public.direct_delayed_repairs
+                       SET status='failed',
+                           note='watchdog: stuck running >' || %s || ' мин',
+                           updated_at=now()
+                     WHERE status='running'
+                       AND updated_at < now() - (%s || ' seconds')::interval
+                """, (str(_DELAYED_REPAIR_STUCK_TIMEOUT_SECONDS // 60),
+                      str(_DELAYED_REPAIR_STUCK_TIMEOUT_SECONDS)))
+                _wconn.commit()
+            finally:
+                _wconn.close()
+        except Exception:  # noqa: BLE001
+            pass
         rows = []
         try:
             conn = _victory_conn_rw()
