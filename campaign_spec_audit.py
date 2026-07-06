@@ -853,6 +853,16 @@ def audit_campaign(login: str, campaign_id: int, tp: int, ctx: dict,
                 issues += _audit_no_listing(rc, login, int(campaign_id), camp_name)
                 issues += _audit_product_feed_filters(rc, login, int(campaign_id), camp_name, groups)
                 issues += _audit_placements(rc, login, int(campaign_id), camp_name)
+            elif tp in (2, 4):
+                # tp2/Поиск и tp4/Поиск+Динамика используют те же GdAdaptiveTextAd, что и tp1 —
+                # кнопка «Получить скидку» (BUTTON_MISSING) там так же применима и её ставит
+                # _apply_combo_button при создании best-effort, но раньше никто не проверял и не
+                # добивал остаток (живой гэп 2026-07-06: ozge tp2 210/450, psm tp2 70/210 без
+                # кнопки). groups=None гасит VIDEO_MISSING (agid_to_ct пуст без groups); IMAGE_MISSING/
+                # SHORT_TITLES отфильтрованы — на поиске текстовые объявления без картинок/видео
+                # by design, добивать их images_repair/video не нужно.
+                issues += [i for i in _audit_tp1_adaptive(rc, login, int(campaign_id), camp_name, groups=None)
+                           if i.get("code") == "BUTTON_MISSING"]
     elif tp == 1:
         g = grid or gf.GridClient(login)
         try:
