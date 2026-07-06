@@ -393,7 +393,13 @@ def _set_plan_response():
                     continue
                 sel3 = _sel_labels(3)
                 if sel3 is not None:
-                    tp3_items = [pos for pos in tp3_items if pos.get("label") in sel3]
+                    # tp3 — НЕ-сегментный tp: фронт шлёт data-desc=posName с префиксом имени группы
+                    # ("ТГ · товары (фид) — из слепка - ТГ - Фид (товары)"), а pos["label"] = голый
+                    # item.t ("ТГ - Фид (товары)"). Точное равенство никогда не совпадало → tp3
+                    # молча выпадал из плана (живой баг 2026-07-06, porg-lzjk6p5m). label — всегда
+                    # суффикс posName, матчим по вхождению.
+                    tp3_items = [pos for pos in tp3_items
+                                 if any((pos.get("label") or "") in s for s in sel3)]
                 if not tp3_items:
                     continue
                 label = "ТГ - Фид (товары)" + (f" - {oblast}" if oblast else "")
