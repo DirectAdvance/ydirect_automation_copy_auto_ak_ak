@@ -71,6 +71,8 @@ CACHE_DIR = "/opt/neuro_kontent_cache"
 THUMB_CACHE_DIR = "/opt/neuro_kontent_thumb_cache"
 CACHE_CAP_MB = 2048                   # лимит LRU-кэша байтов (растёт ограниченно, а не как весь пак)
 YANDEX_VIDEO_MAX = int(9.9 * 1024 * 1024)  # лимит Яндекс.Директа на видео (9.9 МБ)
+YANDEX_VIDEO_MIN_DURATION = 5.0       # сек: короче Яндекс отклоняет upload HTTP 400 (живой кейс ct0024)
+_VIDEO_CANDIDATE_CAP = 8              # сколько кандидатов пробовать на выбор limit валидных (см. ниже)
 # SSH-мультиплексирование (ControlMaster): первое соединение держится 5 мин и переиспользуется
 # всеми ssh cat → нет рукопожатия на КАЖДЫЙ файл (было ~3.5с/файл → станет ~0.1с). Критично для
 # пакетной выгрузки картинок/видео при создании РК.
@@ -1096,25 +1098,63 @@ def videos_for_ct(login: str, ct: str, limit: int = 2) -> list:
                 vmap = sd[folder].get("videos_map") or {}
                 filenames = vmap.get(model_key, [])
                 if filenames:
+                    # Кандидатов берём БОЛЬШЕ чем limit (до _VIDEO_CANDIDATE_CAP) — иначе первые
+                    # limit битых/коротких роликов навсегда закрывают доступ к валидным дальше.
+                    cap = max(limit, min(len(filenames), _VIDEO_CANDIDATE_CAP))
                     rels = [posixpath.join(M3_PACK_ROOT, "_slepki_data", folder, "videos", fn)
-                            for fn in filenames[:limit]]
+                            for fn in filenames[:cap]]
                     got = _fetch_many(rels)
-                    slepki = _filter_valid_videos([got[r] for r in rels if got.get(r)])
+                    slepki = _filter_valid_videos([got[r] for r in rels if got.get(r)])[:limit]
                     if slepki:
                         return slepki
                 break                                   # слепок найден, но ролика нет → пул по ct
     return videos_pool_for_ct(ct, limit)
 
 
+_VIDEO_DURATION_CACHE: dict[tuple[str, float, int], float] = {}
+
+
+def _ffprobe_duration(path: str) -> float:
+    """Длительность видео в секундах (0.0 при сбое) — как в sync_content_m3._ffprobe_duration.
+    Кэш по (путь, mtime, size): подмена файла меняет ключ, повторный выбор того же файла — бесплатный."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return 0.0
+    key = (path, st.st_mtime, st.st_size)
+    cached = _VIDEO_DURATION_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=15,
+        )
+        dur = float((out.stdout or "0").strip() or 0.0)
+    except Exception:  # noqa: BLE001
+        dur = 0.0
+    _VIDEO_DURATION_CACHE[key] = dur
+    return dur
+
+
 def _filter_valid_videos(paths: list) -> list:
-    """Лёгкий фильтр: exists + 0 < size ≤ YANDEX_VIDEO_MAX. БЕЗ ffprobe —
-    валидность кодека гарантирована компрессором (sync_content_m3 _video_pool)."""
+    """Фильтр: exists + 0 < size ≤ YANDEX_VIDEO_MAX + длительность ≥ YANDEX_VIDEO_MIN_DURATION.
+
+    Живой кейс 06.07.2026: ct0024_01/02.mp4 (3.1с) проходили size-фильтр, но Яндекс отклонял
+    upload HTTP 400 (короче 5с) — а валидные ролики того же пула (_03…_06, 5.8-8.6с) не
+    выбирались вовсе, т.к. отбор шёл ДО фильтрации (см. videos_pool_for_ct/videos_for_ct).
+    ffprobe(0.0) при сбое чтения НЕ бракует файл (fail-open) — size-чек уже отсеял пустышки."""
     out = []
     for p in paths:
         try:
             sz = os.path.getsize(p)
-            if os.path.isfile(p) and 0 < sz <= YANDEX_VIDEO_MAX:
-                out.append(p)
+            if not (os.path.isfile(p) and 0 < sz <= YANDEX_VIDEO_MAX):
+                continue
+            dur = _ffprobe_duration(p)
+            if dur and dur < YANDEX_VIDEO_MIN_DURATION:
+                continue
+            out.append(p)
         except OSError:
             pass
     return out
@@ -1135,10 +1175,12 @@ def videos_pool_for_ct(ct: str, limit: int = 2) -> list:
     rows = ext_assets.get("Video|video|" + ct, []) or []
     rels = [str(r.get("remote") or "").strip() for r in rows
             if str(r.get("kind") or "") == "video_external"]
-    rels = [r for r in rels if r][:_lim]
+    # Кандидатов больше чем _lim (до _VIDEO_CANDIDATE_CAP) — фильтр (размер+длительность) идёт
+    # ПОСЛЕ отбора, иначе первые _lim битых/коротких роликов навсегда закрывают валидные дальше.
+    rels = [r for r in rels if r][:max(_lim, _VIDEO_CANDIDATE_CAP)]
     if rels:
         got = _fetch_many(rels)
-        result = _filter_valid_videos([got[r] for r in rels if got.get(r)])
+        result = _filter_valid_videos([got[r] for r in rels if got.get(r)])[:_lim]
         if result:
             return result
     # Brand-fallback: точного ct нет в пуле Video/ (брендовый ct без своей папки, напр. ct0111
@@ -1162,10 +1204,10 @@ def videos_pool_for_ct(ct: str, limit: int = 2) -> list:
                 for r in rows2
                 if str(r.get("kind") or "") == "video_external"
             )
-        brand_rels = [r for r in brand_rels if r][:_lim]
+        brand_rels = [r for r in brand_rels if r][:max(_lim, _VIDEO_CANDIDATE_CAP)]
         if brand_rels:
             got2 = _fetch_many(brand_rels)
-            return _filter_valid_videos([got2[r] for r in brand_rels if got2.get(r)])
+            return _filter_valid_videos([got2[r] for r in brand_rels if got2.get(r)])[:_lim]
     return []
 
 
