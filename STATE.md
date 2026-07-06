@@ -2,6 +2,40 @@
 
 > Читать ПЕРВЫМ в начале каждой сессии. Обновлять ПОСЛЕДНИМ перед выходом.
 
+## Сессия 2026-07-06 ~15:40 — Глоб.правила: убран role фидов + «Минус марки/модели» (дерево)
+
+**Задача 1 (готово, деплой):** вкладка «Фиды» — убран дропдаун роли «лендинг/каталог». Логика бинарная:
+галочка вкл = фид участвует полностью (в т.ч. tp1-товарка). `blueprint._catalog_feed_keys()` теперь
+= `_allowed_feed_keys()` (роль игнорируется). UI: `renderFeedRulesBlock`/`saveFeedRules` в
+`templates/direct/index.html` (это ЖИВОЙ файл, НЕ `direct/index.html` — тот untracked-дубль). Колонка
+`role` в БД осталась (безвредна), routes_settings POST её больше не пишет? — нет, оставил запись role
+опциональной; UI её не шлёт → role остаётся старой. Не критично.
+
+**Задача 2 (готово, деплой):** «Минус марки (фид)» → «Минус марки/модели (фид)», дерево марка→модели.
+- Справочник моделей: `direct/brand_models_catalog.json` (34 марки/190 моделей), парсится из
+  model-design XML-фидов 5 аккаунтов-источников (`feed_models.py` — новый, stdlib-only). Обновление —
+  ТОЛЬКО кнопкой «Обновить список моделей» → `POST /api/minus-models/refresh`. Модель из `<model>` минус
+  ценовой хвост (« от … Звоните»).
+- Выбор моделей: новая таблица `public.direct_global_minus_models(mark, model, enabled, PK(mark,model))`.
+  Марки — прежняя `direct_global_minus_marks`. `_enabled_minus_models()` (TTL-кэш 30с, blueprint).
+- Фильтр: `_minus_marks_grid_conditions(brand_field, model_field="model")` + `_minus_marks_uac_conditions`
+  теперь добавляют model-условия (`model NOT_CONTAINS[_ALL] [имя]`) К vendor-условиям. Марка целиком =
+  vendor как раньше. UAC tp7 передаёт resolved `model_field=_mf`. Grid-сайты (6 шт) — default "model".
+- API: `/api/minus-marks` GET теперь отдаёт `marks:[{mark(канон), label, enabled, models:[{model,enabled}]}]`
+  + `models_updated_at/models_sources`. `mark`=канон (для vendor-фильтра, не менять!). Новый POST
+  `/api/minus-models`. routes_settings + blueprint deps + UI (`loadMinusMarks`/`saveMinusMarks`/
+  `refreshMinusModels`, tree с раскрытием).
+
+**Верифицировано живьём (LXC101, test_client с admin-сессией):** GET дерево 43 марки (34 с моделями,
+9 без: chevrolet/datsun/ford/great/haima/mitsubishi/toyota/uaz/zotye — их нет в фидах источников).
+Save-round-trip марки+модели → `_enabled_minus_marks()=['uaz']`, `_enabled_minus_models()=['Tiggo 7 Pro']`
+→ восстановлено исходное (uaz, без моделей). Refresh 5 доменов = 34/190. Страница `/direct/automation`
+200, таб переименован, role-select убран. Рестарт direct/-worker/-content/-copy — all active, без ошибок.
+
+**НЕ трогал (по указанию):** guardrail `NO_BRAND_SEGMENTS_AVAILABLE` (create_set_gallery.py), детектор
+`GENERIC_FALLBACK_GROUP` (campaign_spec_audit.py) — tp5-Щербакова ждёт отдельного деплоя.
+
+
 > 🗺 **Карта пакета — `direct/ARCHITECTURE.md`**: слои, инвентарь модулей, граф
 > импортов, план разбиения `blueprint.py`. Смотреть ПЕРЕД правкой незнакомого места
 > и для impact-анализа («что сломается, если тронуть X»). Правила «когда смотреть» —
@@ -5558,3 +5592,25 @@ UI-ИТЕРАЦИИ по фидбеку Семёна (20:07–20:30): (1) мул
 - Возраст на tp6 (audience) — синхронизирован с кодером, задеплоено.
 - Марки/модели tp2/tp4 вперемешку — segment прокинут по цепочке, задеплоено. Существующий
   porg-lzjk6p5m решено не трогать.
+
+## 2026-07-06 (v23: финальная живая проверка кнопки на 5 аккаунтах + инфра анти-коллизий)
+
+- **Финальная проверка кнопки tp1/tp2/tp4 на всех 5 аккаунтах из /goal** (7bqj56f4, ozge4ntu,
+  asfbs7qe, psm5h7q6, lzjk6p5m) — 0 объявлений без кнопки везде. По ходу нашёл и живьём добил
+  ЕЩЁ один старый гэп: tp1 у ozge4ntu (182 объявл.) и psm5h7q6 (152 объявл.) — кнопка была
+  сломана и там, механизм tp1 уже существовал, но живьём никогда не докручивался. Итог: 0/0/0/0/0.
+- **Найден и решён инцидент координации**: пока я работал, Семён параллельно правил тот же
+  `direct/` в другом окне (Use-Operator-Units заголовки в v5-запросах, tp5 cookie-путь
+  NO_BRAND_SEGMENTS_AVAILABLE, ребрендинг «Баллы Директа»→«Баллы коммандера», CE_DAILY_JOB_CAP).
+  Mutagen смешал незакоммиченные правки в одном рабочем дереве (`git status` показал 9 файлов
+  правленых НЕ мной). Разобрал построчно (`git diff`+`git apply --cached` на конкретные хунки) —
+  свою правку (`_supersede_delayed_repairs_for_login`, была задеплоена, но не закоммичена)
+  выделил и закоммитил (`7ea1e91`) отдельно от правок Семёна, ничего чужого не тронул/не потерял.
+- **Причина**: `docs/WORKTREE_WORKFLOW.md` явно запрещает git worktree для `home/seoadvanced/
+  direct/` (вложенный gitignored-репо — Mutagen синкает одну папку, worktree туда не копируется).
+  Канон — `dev/CLAIMS.md` (уже существовал в `direct/`, но пустой — никто не застолбил файлы).
+  **Развернул `dev/CLAIMS.md` + `.gitignore` (dev/snapshots/) на ВСЕ вложенные репо проекта**
+  (home/, work/big_analytics_v5/ — через `director`, т.к. прямая правка запрещена, work/
+  leads_api_perform/, work/calculation_agency_commission/, work/slepki_direktologov/, work/
+  cookies/tampermonkey/, home/investments/bonds/), обновил `docs/WORKTREE_WORKFLOW.md`.
+  На будущее: перед параллельной правкой любого проекта — сначала заглянуть в его `dev/CLAIMS.md`.
