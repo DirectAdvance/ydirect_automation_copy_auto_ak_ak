@@ -82,6 +82,7 @@ def _repair_text_content_context(login: str, ctx: dict, action: dict) -> dict:
         href,
         titles,
         texts,
+        segment=item.get("tp4_segment"),   # тот же ключ плана для tp2 И tp4, см. create_set_plan.py
         city=(acc.get("city") or ""),
         tp_code=tp_code,
         image_map={},

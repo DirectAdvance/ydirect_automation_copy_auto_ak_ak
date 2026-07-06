@@ -49,6 +49,12 @@ def run_create_set_text(*, it: dict[str, Any], name: str, tp_code: str,
         r_code=r_code, titles=(lines(it.get("titles")) or tpl_titles),
         texts=(lines(it.get("texts")) or tpl_texts),
         pay=_it_pay, city=(city or ""), autotarget=bool(it.get("autotarget")),
+        # Сегмент (Марки/Модели/Общее) плана хранится под ключом "tp4_segment" для ОБОИХ tp2/tp4
+        # (create_set_plan.py:413,475) — раньше здесь терялся (не читался из it вообще), из-за чего
+        # _pack_groups_with_retry строил группы БЕЗ фильтра по сегменту → марки и модели попадали
+        # в ОДНУ и ту же кампанию вперемешку (живой баг 2026-07-06, porg-lzjk6p5m/terehov; у tp1 тот
+        # же segment корректно прокидывается через _create_tp1_via_cookie, см. create_set_tp1_builders.py).
+        segment=it.get("tp4_segment"),
         corr=corr, ret_map=ret_map,
         token=(st_token or ""), callout_texts=callouts,
         callout_ids=callout_ids,

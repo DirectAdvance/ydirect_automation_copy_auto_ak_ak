@@ -92,6 +92,7 @@ def _create_text_via_cookie(
     login: str, name: str, tp_code: str, counter_id: int, goal_id: int, cpa_rub: int,
     budget_rub: int, region_ids: list, href: str, slepok: str, site_type: str, r_code: str,
     titles: list | None, texts: list, pay: str = "cpa", city: str = "", autotarget: bool = False,
+    segment: str | None = None,
     corr: dict | None = None, ret_map: dict | None = None,
     token: str = "", callout_texts: list | None = None,
     callout_ids: list | None = None,
@@ -101,12 +102,14 @@ def _create_text_via_cookie(
     Кампания (search) + группы (ключи+минуса) + комбинаторные объявления через grid_create.
     Корректировки «Глобальных правил» — через Grid (HAR21) прямо в AddCampaigns (без баллов).
     БАГ-11 фикс: Grid-финализация инвариантов (#3/#4/#5/#6) + ассеты (sitelinks/callouts/promo)
-    через _finalize_rsya (ПОИСК-режим: _PLATFORMS_SEARCH вместо РСЯ-платформ)."""
+    через _finalize_rsya (ПОИСК-режим: _PLATFORMS_SEARCH вместо РСЯ-платформ).
+    segment (Марки/Модели/Общее): без него _pack_groups_with_retry строит ВСЕ ct пака без разреза —
+    марки и модели попадали в одну кампанию вперемешку (живой баг 2026-07-06, porg-lzjk6p5m/terehov)."""
     import datetime as _dt
     _img_map = _grid_account_image_hashes(login)
     groups, _m3_alive = _pack_groups_with_retry(login, slepok, site_type, r_code, href, titles, texts,
-                                                city=city, tp_code=tp_code, image_map=_img_map,
-                                                autotarget=bool(autotarget))
+                                                segment=segment, city=city, tp_code=tp_code,
+                                                image_map=_img_map, autotarget=bool(autotarget))
     if not groups:
         # Пак пуст после ретраев → defer (отложенная докрутка), НЕ permanent-fail.
         return {"ok": False, "defer": True, "name": name,
