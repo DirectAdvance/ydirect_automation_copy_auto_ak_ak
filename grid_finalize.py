@@ -1169,11 +1169,11 @@ class GridClient:
                 # ShoppingAd не создаётся). brand_fld — CONTAINS_ANY (строка), collectionId — EQUALS_ANY.
                 conds.append({"field": "collectionId", "operator": "EQUALS_ANY",
                               "stringValue": json.dumps([str(it["collection_id"])], ensure_ascii=False)})
-            # Глобальные минус-марки: «марка НЕ содержит <марка>» — используем ТОТ ЖЕ brand_fld.
+            # Глобальные минус-марки: «марка/модель НЕ содержит …» — используем ТОТ ЖЕ brand_fld/model_fld.
             # Добавляем ПОСЛЕ brand/model/collectionId, в т.ч. для ct0000 (тогда — к всей витрине).
             try:
                 from . import create_set_feeds as _csf
-                conds.extend(_csf._minus_marks_grid_conditions(brand_field=_brand_fld))
+                conds.extend(_csf._minus_marks_grid_conditions(brand_field=_brand_fld, model_field=_model_fld))
             except Exception:  # noqa: BLE001 — минус-марки best-effort
                 pass
             if conds:

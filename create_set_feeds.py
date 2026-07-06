@@ -597,7 +597,7 @@ def _grid_set_ad_prices(login: str, items: list) -> int:
         # bannerPrice (verified live 2026-07-02 — апдейт без adPrice затирает цену).
         # ПРАВИЛО СЕМЁНА 2026-07-05: цены из слепков НЕ берём НИКОГДА — только из фида;
         # донорская цена (напр. 2 040 546 у BAIC X7 scherbakova) обязана затираться.
-        upd.append(_item)   # КНОПКУ тут НЕ шлём — ставится отдельным апдейтом (см. _grid_update_adaptive_ads)
+        upd.append(_item)
     if not upd:
         return 0
     try:
@@ -614,6 +614,7 @@ def _grid_set_ad_prices(login: str, items: list) -> int:
             import logging as _lg
             _lg.getLogger("direct.feeds").warning(
                 "adPrice UpdateAdaptiveTextAds warns login=%s: %s", login, str(_vr["warnings"])[:400])
+        _apply_combo_button(gc, upd)   # price-phase wiping fix (2026-07-06): full-replace цены стирал кнопку → переставляем её после
         return len(_mut.get("updatedAds") or [])
     except Exception:  # noqa: BLE001
         return 0
@@ -1174,23 +1175,42 @@ def _minus_marks_enabled() -> list[str]:
         return []
 
 
-def _minus_marks_grid_conditions(brand_field: str = "vendor") -> list[dict]:
-    """Grid feedFilter-условия «Марка НЕ содержит <марка>» для КАЖДОЙ включённой минус-марки.
-    brand_field: разрешённое имя поля для этого фида ('vendor', 'mark_id', и т.п.) — берётся из
-    _resolve_feed_field(login, feed_id, 'brand'). Default 'vendor' для обратной совместимости.
-    Одно условие на марку, AND → offer исключается если марка совпала с любой.
-    Добавляется К brand/model-conditions товарки, НЕ заменяет их."""
-    return [{"field": brand_field, "operator": "NOT_CONTAINS_ALL",
-             "stringValue": json.dumps([m], ensure_ascii=False)} for m in _minus_marks_enabled()]
+def _minus_models_enabled() -> list[str]:
+    """Включённые глобальные минус-МОДЕЛИ (через инъекцию blueprint._enabled_minus_models).
+    Имя модели («Tiggo 7 Pro») — подстрока фидового <model> «Tiggo 7 Pro от … Звоните».
+    Fail-safe: [] если configure ещё не отработал / БД недоступна."""
+    fn = globals().get("_enabled_minus_models")
+    if not callable(fn):
+        return []
+    try:
+        return [str(m).strip() for m in (fn() or []) if str(m).strip()]
+    except Exception:  # noqa: BLE001 — минус-модели best-effort, не валят создание
+        return []
 
 
-def _minus_marks_uac_conditions(brand_field: str = "vendor") -> list[dict]:
-    """UAC feed_filters-условия (формат с value, не stringValue) для минус-марок tp7:
-    «Производитель НЕ содержит <марка>». Добавляется К conditions товарного фильтра мастера.
-    brand_field: разрешённое имя поля для фида ('vendor', 'mark_id', и т.п.) — берётся из
-    _resolve_feed_field(login, feed_id, 'brand'). Default 'vendor' для обратной совместимости."""
-    return [{"field": brand_field, "operator": "NOT_CONTAINS",
-             "value": json.dumps([m], ensure_ascii=False)} for m in _minus_marks_enabled()]
+def _minus_marks_grid_conditions(brand_field: str = "vendor", model_field: str = "model") -> list[dict]:
+    """Grid feedFilter-условия «НЕ содержит …» для включённых минус-марок И минус-моделей.
+    brand_field / model_field: разрешённые имена полей фида ('vendor'/'model', 'mark_id'/'folder_id')
+    — берутся из _resolve_feed_field(login, feed_id, 'brand'|'model'). Default для обратной совместимости.
+    Марка → исключает ВСЕ её модели (по vendor); модель → исключает конкретную модель (по model).
+    Одно условие на элемент, AND → offer исключается если совпал с любым. Добавляется К brand/model-
+    conditions товарки, НЕ заменяет их. UNKNOWN_FIELD (AUTO_RU без 'model') — авто-стрип в create."""
+    out = [{"field": brand_field, "operator": "NOT_CONTAINS_ALL",
+            "stringValue": json.dumps([m], ensure_ascii=False)} for m in _minus_marks_enabled()]
+    out += [{"field": model_field, "operator": "NOT_CONTAINS_ALL",
+             "stringValue": json.dumps([md], ensure_ascii=False)} for md in _minus_models_enabled()]
+    return out
+
+
+def _minus_marks_uac_conditions(brand_field: str = "vendor", model_field: str = "model") -> list[dict]:
+    """UAC feed_filters-условия (формат с value, не stringValue) для минус-марок И минус-моделей tp7:
+    «Производитель/Модель НЕ содержит …». Добавляется К conditions товарного фильтра мастера.
+    brand_field / model_field: имена полей фида из _resolve_feed_field. Default для обратной совместимости."""
+    out = [{"field": brand_field, "operator": "NOT_CONTAINS",
+            "value": json.dumps([m], ensure_ascii=False)} for m in _minus_marks_enabled()]
+    out += [{"field": model_field, "operator": "NOT_CONTAINS",
+             "value": json.dumps([md], ensure_ascii=False)} for md in _minus_models_enabled()]
+    return out
 
 
 # ── Динамическое разрешение полей фида (Bug A/B fix 2026-07-02) ──────────────────
@@ -1274,7 +1294,7 @@ def _tp7_product_feed_filters(brand_model: str, ct: str,
         _bf, _mf = "vendor", "model"
     # Глобальные минус-марки применяются ДАЖЕ к товарке по всему фиду (ct0000/общий ст) —
     # это и есть «во всех кампаниях с фидами не показывать эти марки».
-    minus = _minus_marks_uac_conditions(brand_field=_bf)
+    minus = _minus_marks_uac_conditions(brand_field=_bf, model_field=_mf)
     base = (brand_model or "").strip()
     real_brand = bool(base) and bool(ct) and ct not in ("ct0000", "ct0111") and _coder_name_real_brand(base)
     conditions: list[dict] = []

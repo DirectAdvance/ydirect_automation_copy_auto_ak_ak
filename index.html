@@ -2208,7 +2208,7 @@ async function loadUnits(){
     const empty=j.rest < j.per_campaign;     // на кампанию уже не хватает (фактически исчерпаны)
     el.style.color = low?'#ffb454':'#7ec8e3';
     el.style.borderColor = low?'rgba(255,180,84,.4)':'var(--border)';
-    el.innerHTML='💎 Баллы Директа: <b>'+j.rest.toLocaleString('ru')+'</b> из '+j.limit.toLocaleString('ru')+
+    el.innerHTML='💎 Баллы коммандера: <b>'+j.rest.toLocaleString('ru')+'</b> из '+j.limit.toLocaleString('ru')+
       ' <small style="color:var(--text-muted)">(агентство '+esc(j.agency||'?')+')</small>'+
       ' · хватит примерно на <b>'+(j.est_campaigns)+'</b> кампаний'+
       (empty?' <b style="color:#ffb454">— баллы исчерпаны: ВСЕ типы (tp1–tp7) создаются по кукам без баллов через попап «создать по куки» (товарной галерее нужен URL-фид)</b>'
@@ -2228,7 +2228,7 @@ function renderUnitsChoice(data){
   m.setAttribute('role','dialog'); m.setAttribute('aria-modal','true');
   const body=document.createElement('div'); body.className='da-modal-body';
   const t=document.createElement('div'); t.className='da-modal-title';
-  t.innerHTML='<span style="color:#ffb454">⛔ Баллы Директа исчерпаны (error 152)</span>'; body.appendChild(t);
+  t.innerHTML='<span style="color:#ffb454">⛔ Баллы коммандера исчерпаны (error 152)</span>'; body.appendChild(t);
   const msg=document.createElement('div'); msg.style.whiteSpace='normal';
   if(data.deferred_id){
     msg.innerHTML='Создано кампаний: <b>'+(data.created!=null?data.created:'?')+'</b>. Остаток <b>'+(data.units_pending||0)+

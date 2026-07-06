@@ -484,13 +484,13 @@ def step_prices(ctx: CopyCtx) -> dict:
     (мин цена); пусто → фолбэк account_offer_prices (мердж всех фидов target); (3) tgt_ad → бренд по
     снапшоту (maps['ads']→ads.json.AdGroupId→adgroups.json.Name); (4) читаем созданные адаптивные
     объявления target через Grid adaptive_ads_for_update (id/href/titles/bodies/imageHashes);
-    (5) цена = group_ad_price(prices, brand, 'Модели'); нет марки/модели в фиде → фолбэк минимальная
-    цена группы group_ad_price(prices,'','') (как в create-set для Общее); (6) _grid_set_ad_prices.
+    (5) цена = group_ad_price(prices, brand, 'Модели'); нет марки/модели в фиде → цена ПУСТАЯ (тумблер
+    выключен), adPrice не выставляется; (6) _grid_set_ad_prices.
 
     Идемпотентно/безопасно: нет grid/хелперов/прайса/адаптивных ads → пропуск с отчётом, job не падает.
     ShoppingAd тут не трогаем — товарные берут цену из фида нативно; adPrice применим к адаптивным."""
     rep = {"feeds": [], "ads_scanned": 0, "priced": 0, "by_brand": 0,
-           "by_min_fallback": 0, "no_price": 0, "errors": []}
+           "no_price": 0, "errors": []}
     if ctx.grid is None:
         rep["errors"].append("нет grid-клиента — adPrice пропущены")
         return rep
@@ -567,7 +567,7 @@ def step_prices(ctx: CopyCtx) -> dict:
         rep["errors"].append(f"read adaptive ads: {str(e)[:180]}")
         return rep
 
-    # 5) Маппинг ad→бренд→цена (+ фолбэк на минимум группы), собираем payload.
+    # 5) Маппинг ad→бренд→цена (нет марки/модели в фиде → цена пустая), собираем payload.
     items: list[dict] = []
     for aid, st in live_ads.items():
         if not (st.get("titles") and st.get("bodies")):
@@ -582,13 +582,6 @@ def step_prices(ctx: CopyCtx) -> dict:
                 cur, old = 0, 0
             if cur:
                 mode = "by_brand"
-        if not cur:                                    # марки/модели нет в фиде → минимум группы (как create-set Общее)
-            try:
-                cur, old = ctx.group_ad_price(prices, "", "")
-            except Exception:  # noqa: BLE001
-                cur, old = 0, 0
-            if cur:
-                mode = "by_min_fallback"
         if not cur:
             rep["no_price"] += 1
             continue
@@ -605,8 +598,7 @@ def step_prices(ctx: CopyCtx) -> dict:
         except Exception as e:  # noqa: BLE001
             rep["errors"].append(f"set prices: {str(e)[:180]}")
     ctx.log(f"adPrice из target-фида: проставлено {rep['priced']}/{len(items)} адаптивных "
-            f"(по марке {rep['by_brand']}, фолбэк-минимум {rep['by_min_fallback']}, "
-            f"без цены {rep['no_price']}; фидов {len(rep['feeds'])})")
+            f"(по марке {rep['by_brand']}, без цены {rep['no_price']}; фидов {len(rep['feeds'])})")
     return rep
 
 

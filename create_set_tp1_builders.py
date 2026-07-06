@@ -496,7 +496,7 @@ def _build_tp1_adgroups(
                                        "stringValue": json.dumps([str(_src["collection_id"])], ensure_ascii=False)})
                     try:                                 # глобальные минус-марки: используем тот же brand_field
                         from . import create_set_feeds as _csf
-                        _conds.extend(_csf._minus_marks_grid_conditions(brand_field=_bf))
+                        _conds.extend(_csf._minus_marks_grid_conditions(brand_field=_bf, model_field=_mf))
                     except Exception:  # noqa: BLE001
                         pass
                     if _conds:
@@ -747,12 +747,13 @@ def _grid_add_listings_with_name_filters(gcl, shop_ids: list, build: dict,
         _agid_to_nv = {str(it["adgroup_id"]): it.get("name_value")
                        for it in (build.get("listing_build_items") or [])
                        if it.get("adgroup_id") and it.get("name_value")}
-        # Глобальные минус-марки для ListingAd — тот же brand_field что у ShoppingAd (lines ~487-491).
+        # Глобальные минус-марки для ListingAd — тот же brand_field/model_field что у ShoppingAd.
         _lad_minus_conds: list = []
         try:
             from . import create_set_feeds as _csf
             _lad_bf = _csf._resolve_feed_field(gcl.login, feed_id, "brand") or "vendor"
-            _lad_minus_conds = _csf._minus_marks_grid_conditions(brand_field=_lad_bf)
+            _lad_mf = _csf._resolve_feed_field(gcl.login, feed_id, "model") or "model"
+            _lad_minus_conds = _csf._minus_marks_grid_conditions(brand_field=_lad_bf, model_field=_lad_mf)
         except Exception:  # noqa: BLE001
             pass
         _lf_items = []
@@ -1458,9 +1459,9 @@ def _create_tp1_via_cookie(
                                     if _mvals:
                                         _conds.append({"field": _mf2, "operator": "CONTAINS_ANY",
                                                        "stringValue": json.dumps(_mvals, ensure_ascii=False)})
-                                try:                     # глобальные минус-марки: используем тот же brand_field
+                                try:                     # глобальные минус-марки: используем тот же brand_field/model_field
                                     from . import create_set_feeds as _csf
-                                    _conds.extend(_csf._minus_marks_grid_conditions(brand_field=_bf2))
+                                    _conds.extend(_csf._minus_marks_grid_conditions(brand_field=_bf2, model_field=_mf2))
                                 except Exception:  # noqa: BLE001
                                     pass
                                 if _conds:

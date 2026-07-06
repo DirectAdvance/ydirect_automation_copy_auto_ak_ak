@@ -1049,8 +1049,16 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
                 for old_gid in src_group_ids:
                     new_gid = maps["adgroups"].get(str(old_gid))
                     if new_gid and old_gid in shopping_groups:
-                        shop_items.append({"adgroup_id": int(new_gid), "feed_id": int(target_feed_id),
-                                           "vendor": group_vendor_by_gid.get(old_gid) or "Haval"})
+                        _si = {"adgroup_id": int(new_gid), "feed_id": int(target_feed_id),
+                               "vendor": group_vendor_by_gid.get(old_gid) or "Haval"}
+                        try:
+                            from . import create_set_feeds as _csf_ff
+                            _si["brand_field"] = _csf_ff._resolve_feed_field(target_login, int(target_feed_id), "brand") or "vendor"
+                            _si["model_field"] = _csf_ff._resolve_feed_field(target_login, int(target_feed_id), "model") or "model"
+                        except Exception:  # noqa: BLE001
+                            _si["brand_field"] = "vendor"
+                            _si["model_field"] = "model"
+                        shop_items.append(_si)
                 if shop_items:
                     grid = gf.GridClient(target_login)
                     shop_ids = [int(x) for x in (grid.add_shopping_ads(shop_items) or []) if x]
@@ -1785,6 +1793,13 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                 item["vendor"] = str(args[0])
             elif op == "model" and args:
                 item["model"] = [str(x) for x in args]
+        try:
+            from . import create_set_feeds as _csf_ff
+            item["brand_field"] = _csf_ff._resolve_feed_field(target_login, int(fid), "brand") or "vendor"
+            item["model_field"] = _csf_ff._resolve_feed_field(target_login, int(fid), "model") or "model"
+        except Exception:  # noqa: BLE001
+            item["brand_field"] = "vendor"
+            item["model_field"] = "model"
         shop_items.append(item)
         shop_sources.append(src_ad_id)
     if shop_items:

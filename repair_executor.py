@@ -771,7 +771,8 @@ def _v5_keywords_delete(token: str, login: str, keyword_ids: list[int]) -> int:
     if not keyword_ids:
         return 0
     h = {"Authorization": f"Bearer {token}", "Client-Login": login,
-         "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8"}
+         "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8",
+         "Use-Operator-Units": "true"}
     deleted = 0
     for i in range(0, len(keyword_ids), 10000):
         chunk = keyword_ids[i:i + 10000]

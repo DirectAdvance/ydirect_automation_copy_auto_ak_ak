@@ -461,6 +461,41 @@ def _audit_placements(rc: gr.GridReadClient, login: str, campaign_id: int,
     }]
 
 
+# ── tp5 generic fallback group audit (GENERIC_FALLBACK_GROUP) ────────────────────
+def _audit_generic_fallback_group(groups: list, campaign_id: int, campaign_name: str) -> list[dict]:
+    """tp5: одна generic ct0000-группа «Товарная галерея» вместо бренд-сегментных групп.
+
+    Признак: ровно 1 группа, имя содержит «Товарная галерея» и _ct_of_name → ct0000,
+    при этом имя КАМПАНИИ содержит сегментный маркер (Марки/Модели/Общее) —
+    значит кампания должна была получить бренд-группы из M3, но получила пустышку.
+
+    Инцидент 2026-07-06: 5 tp5 porg-psm5h7q6 Щербакова созданы через
+    _create_shopping_via_cookie без поддержки segment → у каждой 1 группа ct0000.
+    НЕ флагаем: tp5-Фиды/products_only (сегмента нет в имени), корректные multi-group."""
+    if len(groups) != 1:
+        return []
+    g = groups[0]
+    ag_name = (g.get("adgroup_name") or "").strip()
+    if _ct_of_name(ag_name) != "ct0000" or "Товарная галерея" not in ag_name:
+        return []
+    camp_seg = next((s for s in ("Марки", "Модели", "Общее") if s in campaign_name), "")
+    if not camp_seg:
+        return []   # несегментная tp5 (Фиды/Автотаргет) — одна generic-группа нормальна
+    return [{
+        "code": "GENERIC_FALLBACK_GROUP",
+        "id": campaign_id,
+        "campaign_id": campaign_id,
+        "name": campaign_name,
+        "severity": "high",
+        "segment": camp_seg,
+        "group_name": ag_name,
+        "detail": (f"tp5 сегмент «{camp_seg}»: 1 generic ct0000-группа «{ag_name}» "
+                   "вместо бренд-сегментных групп из M3-пака — "
+                   "кампания создана без поддержки сегментации (cookie-путь); "
+                   "требует пересоздания с API-токеном"),
+    }]
+
+
 # ── plan ⊆ slepok audit (EXTRA_TP_NOT_IN_SLEPOK) ─────────────────────────────────
 def _audit_plan_vs_slepok(account_campaigns: list[dict], slepok: str, site_type: str) -> list[dict]:
     """Типы кампаний аккаунта ⊆ структуре слепка. Лишний tp (напр. tp6 у слепка без tp6) → issue.
@@ -850,6 +885,7 @@ def audit_campaign(login: str, campaign_id: int, tp: int, ctx: dict,
             issues += _audit_search_images(rc, login, int(campaign_id), camp_name)
             issues += _audit_sitelinks(g, login, int(campaign_id), camp_name, tp_code)   # #7 быстрые ссылки
             if tp == 5:   # tp5 = фид-кампания: листинги + фильтры + места показа
+                issues += _audit_generic_fallback_group(groups, int(campaign_id), camp_name)
                 issues += _audit_no_listing(rc, login, int(campaign_id), camp_name)
                 issues += _audit_product_feed_filters(rc, login, int(campaign_id), camp_name, groups)
                 issues += _audit_placements(rc, login, int(campaign_id), camp_name)
@@ -1390,6 +1426,7 @@ def fix_feed_filters_grid(login: str, ctx: dict, issues: list[dict]) -> dict:
     rc = gr.GridReadClient(login)
     fixed, errors = [], []
     _brand_field_cache: dict[str, str | None] = {}
+    _model_field_cache: dict[str, str | None] = {}
     for it in ff_issues:
         try:
             cid = int(it.get("campaign_id") or 0)
@@ -1412,9 +1449,16 @@ def fix_feed_filters_grid(login: str, ctx: dict, issues: list[dict]) -> dict:
                                 login, int(fid), "brand")
                         except Exception:  # noqa: BLE001
                             _brand_field_cache[fid] = None
+                    if fid not in _model_field_cache:
+                        try:
+                            _model_field_cache[fid] = _csf._resolve_feed_field(
+                                login, int(fid), "model")
+                        except Exception:  # noqa: BLE001
+                            _model_field_cache[fid] = None
                     # ЛИСТИНГИ фильтруются ТОЛЬКО по имени каталога: поле бренда для них
                     # UNAVAILABLE_FIELD (live 03.07, все 6 кампаний) — как в set_listing_name_filters.
                     bf = "name" if listing_flag else _brand_field_cache[fid]
+                    mf = _model_field_cache[fid] or "model"
                     if not bf:
                         skipped_no_field += 1
                         continue          # у фида нет поля бренда — пропускаем (не ошибка)
@@ -1423,7 +1467,7 @@ def fix_feed_filters_grid(login: str, ctx: dict, issues: list[dict]) -> dict:
                         # Канон create-пути: одно условие НА КАЖДУЮ марку (AND → исключить,
                         # если совпала любая). ОДНО условие со всеми марками имело бы другую
                         # семантику NOT_CONTAINS_ALL (ревью 03.07, 3 угла сошлись).
-                        "conditions": _csf._minus_marks_grid_conditions(brand_field=bf),
+                        "conditions": _csf._minus_marks_grid_conditions(brand_field=bf, model_field=mf),
                         "bodies": a.get("bodies") or [],
                     })
                 if items:

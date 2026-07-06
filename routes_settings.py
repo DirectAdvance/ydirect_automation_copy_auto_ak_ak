@@ -20,6 +20,9 @@ def register_settings_routes(
     global_minus_marks: Callable[[], list[dict]],
     minus_marks_ensure: Callable,
     known_brand_canons: Callable[[], list[str]],
+    global_minus_models: Callable[[], list[dict]],
+    minus_models_ensure: Callable,
+    load_brand_models_catalog: Callable[[], dict],
     victory_conn: Callable,
     victory_conn_rw: Callable,
 ) -> None:
@@ -323,8 +326,10 @@ def register_settings_routes(
     @bp.route("/api/minus-marks")
     @access
     def api_minus_marks_get():
-        """Минус-марки (фид): полный список марок из фидов + состояние галочек.
-        По умолчанию все сняты (в БД строк нет → enabled=false). → {marks:[{mark,enabled}]}."""
+        """Минус марки/модели (фид): дерево «марка → модели» + состояние галочек.
+        Марки-каталог из known_brand_canons; модели на марку — из справочника brand_models_catalog.json
+        (парсится по кнопке «обновить»). По умолчанию всё снято (в БД строк нет → enabled=false).
+        → {marks:[{mark, enabled, models:[{model, enabled}]}], models_updated_at, models_sources}."""
         try:
             saved = {str(r.get("mark") or "").strip().lower(): bool(r.get("enabled"))
                      for r in (global_minus_marks() or [])}
@@ -334,17 +339,43 @@ def register_settings_routes(
             catalog = [str(m).strip() for m in (known_brand_canons() or []) if str(m).strip()]
         except Exception:  # noqa: BLE001
             catalog = []
-        # Полный список = марки-каталог ∪ ранее сохранённые (на случай марки не из каталога).
+        try:
+            bm = load_brand_models_catalog() or {}
+        except Exception:  # noqa: BLE001
+            bm = {}
+        brands_cat = bm.get("brands") or {}
+        # Сохранённые минус-модели: {mark_lower: {model_lower: enabled}}.
+        saved_models: dict[str, dict[str, bool]] = {}
+        try:
+            for r in (global_minus_models() or []):
+                mk = str(r.get("mark") or "").strip().lower()
+                md = str(r.get("model") or "").strip()
+                if mk and md:
+                    saved_models.setdefault(mk, {})[md.lower()] = bool(r.get("enabled"))
+        except Exception:  # noqa: BLE001
+            saved_models = {}
+
+        # Полный список = марки-каталог ∪ марки справочника моделей ∪ ранее сохранённые.
         seen: set[str] = set()
         marks: list[dict] = []
-        for m in catalog + list(saved.keys()):
-            key = m.lower()
-            if not m or key in seen:
+        for m in catalog + list(brands_cat.keys()) + list(saved.keys()):
+            key = str(m).strip().lower()
+            if not key or key in seen:
                 continue
             seen.add(key)
-            marks.append({"mark": m, "enabled": saved.get(key, False)})
+            info = brands_cat.get(key) or {}
+            label = str(info.get("label") or m).strip()
+            model_sel = saved_models.get(key, {})
+            models = [{"model": md, "enabled": model_sel.get(str(md).strip().lower(), False)}
+                      for md in (info.get("models") or [])]
+            # mark — КАНОН (lowercase) для vendor-фильтра (обратная совместимость с текущей БД);
+            # label — для показа в UI. НЕ менять mark на label: сломается NOT_CONTAINS_ALL.
+            marks.append({"mark": key, "label": label,
+                          "enabled": saved.get(key, False), "models": models})
         marks.sort(key=lambda x: x["mark"].lower())
-        return jsonify({"marks": marks})
+        return jsonify({"marks": marks,
+                        "models_updated_at": bm.get("updated_at"),
+                        "models_sources": bm.get("sources") or []})
 
     @bp.route("/api/minus-marks", methods=["POST"])
     @access
@@ -379,6 +410,48 @@ def register_settings_routes(
                     "VALUES(%s, true, now()) ON CONFLICT(mark) DO UPDATE SET enabled=true, "
                     "updated_at=now()",
                     (mark,),
+                )
+            conn.commit()
+        except Exception:  # noqa: BLE001
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return jsonify({"ok": True, "saved": len(items)})
+
+    @bp.route("/api/minus-models", methods=["POST"])
+    @access
+    def api_minus_models_post():
+        """Сохранить минус-МОДЕЛИ (replace-all). Пишем ТОЛЬКО отмеченные (enabled=true).
+        Body: {models:[{mark, model, enabled}]}. mark — канон марки (как в /api/minus-marks)."""
+        body = request.json or {}
+        raw = body.get("models") if isinstance(body, dict) else body
+        if not isinstance(raw, list):
+            return jsonify({"ok": False, "error": "models должен быть массивом"}), 400
+        seen: set[tuple] = set()
+        items: list[tuple[str, str]] = []
+        for r in raw:
+            if not isinstance(r, dict):
+                continue
+            mark = str(r.get("mark") or "").strip()
+            model = str(r.get("model") or "").strip()
+            enabled = bool(r.get("enabled", True))
+            key = (mark.lower(), model.lower())
+            if not mark or not model or not enabled or key in seen:
+                continue
+            seen.add(key)
+            items.append((mark, model))
+        conn = victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            minus_models_ensure(cur)
+            cur.execute("DELETE FROM public.direct_global_minus_models")
+            for mark, model in items:
+                cur.execute(
+                    "INSERT INTO public.direct_global_minus_models(mark, model, enabled, updated_at) "
+                    "VALUES(%s, %s, true, now()) ON CONFLICT(mark, model) DO UPDATE SET enabled=true, "
+                    "updated_at=now()",
+                    (mark, model),
                 )
             conn.commit()
         except Exception:  # noqa: BLE001

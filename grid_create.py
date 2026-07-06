@@ -840,12 +840,13 @@ def add_shopping_content_to_existing(login: str, *, campaign_id: int, groups: li
                     import json
                     conds.append({"field": "collectionId", "operator": "EQUALS_ANY",
                                   "stringValue": json.dumps([str(src["collection_id"])], ensure_ascii=False)})
-                try:                                     # глобальные минус-марки (фид): производитель НЕ содержит
+                try:                                     # глобальные минус-марки (фид): производитель/модель НЕ содержит
                     from . import create_set_feeds as _csf
-                    # per-feed поле бренда: yandex.xml = mark_id, YML = vendor — дефолт 'vendor'
-                    # на AUTO_RU-фиде давал UNKNOWN_FIELD и фильтр не вставал (ревью 03.07)
+                    # per-feed поля: yandex.xml = mark_id/folder_id, YML = vendor/model — дефолт 'vendor'/'model'
+                    # на AUTO_RU-фиде 'vendor'/'model' давал UNKNOWN_FIELD и фильтр не вставал (ревью 03.07)
                     _bf = _csf._resolve_feed_field(login, fid, "brand") or "vendor"
-                    conds.extend(_csf._minus_marks_grid_conditions(brand_field=_bf))
+                    _mf = _csf._resolve_feed_field(login, fid, "model") or "model"
+                    conds.extend(_csf._minus_marks_grid_conditions(brand_field=_bf, model_field=_mf))
                 except Exception:  # noqa: BLE001
                     pass
                 if conds:
@@ -976,10 +977,11 @@ def build_ad(*, adgroup_id: int, href: str, titles: list, bodies: list,
     }
 
 
-def build_shopping_ad(*, adgroup_id: int, feed_id: int, body: str = "") -> dict:
+def build_shopping_ad(*, adgroup_id: int, feed_id: int, body: str = "", login: str = "") -> dict:
     """Собрать GdAddShoppingAdItem (Товарная галерея tp3/tp5) — реверс из HAR17. feed_id обязателен;
-    body — единый текст объявления (товары тянутся из фида). fieldsToUseAs* = None (дефолт фида)."""
-    return {
+    body — единый текст объявления (товары тянутся из фида). fieldsToUseAs* = None (дефолт фида).
+    login: если передан — добавляет feedFilter с глобальными минус-марками/моделями."""
+    item: dict = {
         "adGroupId": str(adgroup_id), "permalinkId": None, "phoneId": None,
         "fieldsToUseAsBody": None, "fieldsToUseAsName": None, "feedId": str(feed_id),
         "bodies": [_trim_clean(str(body), 81)] if str(body or "").strip() else [],
@@ -987,6 +989,17 @@ def build_shopping_ad(*, adgroup_id: int, feed_id: int, body: str = "") -> dict:
         "inheritableCallouts": {"policy": "INHERIT"},
         "inheritableSitelinkSet": {"policy": "INHERIT"},
     }
+    if login:
+        try:
+            from . import create_set_feeds as _csf
+            _bf = _csf._resolve_feed_field(login, feed_id, "brand") or "vendor"
+            _mf = _csf._resolve_feed_field(login, feed_id, "model") or "model"
+            conds = _csf._minus_marks_grid_conditions(brand_field=_bf, model_field=_mf)
+            if conds:
+                item["feedFilter"] = {"tab": "CONDITION", "conditions": conds}
+        except Exception:  # noqa: BLE001
+            pass
+    return item
 
 
 def create_shopping_full(login: str, *, campaign_spec: dict, group_names: list, feed_id: int,
@@ -1022,7 +1035,7 @@ def create_shopping_full(login: str, *, campaign_spec: dict, group_names: list, 
         rep["errors"].append(f"группы(куки): {str(e)[:200]}")
         return rep
     rep["groups"] = sum(1 for x in ag_ids if x)
-    ad_items = [build_shopping_ad(adgroup_id=agid, feed_id=feed_id, body=body_text)
+    ad_items = [build_shopping_ad(adgroup_id=agid, feed_id=feed_id, body=body_text, login=login)
                 for agid in ag_ids if agid]
     try:
         a_ids = cl.add_shopping_ads(ad_items)

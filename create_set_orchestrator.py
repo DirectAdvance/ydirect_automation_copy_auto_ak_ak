@@ -725,7 +725,7 @@ def create_set_response(deps: dict):
                     if deferred_id:
                         deferred_at = _next_units_reset_utc().isoformat()
             if _auto_cookie_jid:
-                units_note = (f"⛔ Баллы Директа исчерпаны (error 152). Создано: {created}{_tail}. "
+                units_note = (f"⛔ Баллы коммандера исчерпаны (error 152). Создано: {created}{_tail}. "
                               f"Остаток ({_pend} пунктов) автоматически поставлен в очередь по куке "
                               f"(джоба {_auto_cookie_jid}) — ничего делать не нужно. Дублей не будет.")
             elif deferred_id:
@@ -735,10 +735,10 @@ def create_set_response(deps: dict):
             else:
                 _no_rem = ("нет несозданного остатка — всё создано или добито" if not _pend
                            else f"не создано {_pend} пунктов; повторите после сброса баллов (полночь МСК)")
-                units_note = f"⛔ Баллы Директа исчерпаны (error 152). Создано: {created}. {_no_rem}."
+                units_note = f"⛔ Баллы коммандера исчерпаны (error 152). Создано: {created}. {_no_rem}."
         elif _units_switched and not units_note:
             # 152 случился в середине набора → остаток БЕСШОВНО создан по куке (без баллов).
-            units_note = (f"Баллы Директа исчерпаны (error 152) во время набора — остаток автоматически "
+            units_note = (f"Баллы коммандера исчерпаны (error 152) во время набора — остаток автоматически "
                           f"создан по куке (Grid/UAC, без баллов). Создано кампаний: {created}.")
         # Если это была ДОКРУТКА осиротевшего остатка (resume по куке): помечаем родительскую строку
         # direct_deferred_creates терминально, чтобы рестарт не реанимировал её повторно (анти-цикл).

@@ -94,7 +94,8 @@ def _grid_post(cookie: str, op: str, query: str, variables: dict) -> dict:
 def _v5_keywords_get(token: str, login: str, campaign_id: int) -> list[dict]:
     """v5 keywords.get → [{Id, AdGroupId, Keyword}, ...]."""
     h = {"Authorization": f"Bearer {token}", "Client-Login": login,
-         "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8"}
+         "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8",
+         "Use-Operator-Units": "true"}
     r = requests.post(V5_URL + "keywords", headers=h, json={
         "method": "get",
         "params": {
@@ -112,7 +113,8 @@ def _v5_keywords_get(token: str, login: str, campaign_id: int) -> list[dict]:
 def _v5_keywords_delete(token: str, login: str, keyword_ids: list[int]) -> int:
     """v5 keywords.delete → число удалённых."""
     h = {"Authorization": f"Bearer {token}", "Client-Login": login,
-         "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8"}
+         "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8",
+         "Use-Operator-Units": "true"}
     r = requests.post(V5_URL + "keywords", headers=h, json={
         "method": "delete",
         "params": {"SelectionCriteria": {"Ids": keyword_ids}},

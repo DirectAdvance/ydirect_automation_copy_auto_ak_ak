@@ -62,6 +62,24 @@ def run_create_set_gallery(*, kind: str, it: dict[str, Any], name: str,
 
     # Согласие через попап (152) → товарная галерея по куке (HAR17).
     if via_cookie or not st_token:
+        # tp5 с сегментом (Марки/Модели/Общее) требует бренд-групп из M3-пака.
+        # _create_shopping_via_cookie не принимает segment и создаёт одну generic
+        # ct0000-группу «Товарная галерея» для ВСЕХ сегментов — тихий fallback маскирует
+        # ошибку как «успех» (инцидент 2026-07-06: 5 одинаковых tp5 porg-psm5h7q6).
+        # → явный провал NO_BRAND_SEGMENTS_AVAILABLE; retry нужен с API-токеном.
+        _seg5 = it.get("tp5_segment") if kind == "tp5" else None
+        if _seg5:
+            res = {"ok": False, "name": name,
+                   "error": (f"NO_BRAND_SEGMENTS_AVAILABLE: tp5 сегмент «{_seg5}» "
+                              "требует M3-пак — cookie-путь не поддерживает сегментацию; "
+                              "переключитесь на API-токен (error 152 → retry позже)")}
+            results.append(res)
+            add_job_err(job, res)
+            bump_job(job, False)
+            if job:
+                job_db_progress(job)
+            bump_item(job)
+            return results
         res = create_shopping_via_cookie(**cookie_kwargs)
         results.append(res)
         if not res.get("ok") and not res.get("defer"):   # defer (M3-пуст) — НЕ ошибка
@@ -94,10 +112,16 @@ def run_create_set_gallery(*, kind: str, it: dict[str, Any], name: str,
                 region_ids=region_ids, href=href, slepok=slepok,
                 site_type=site_type, r_code=r_code, corr=corr, ret_map=ret_map,
                 job=job, no_cpa=no_cpa, single_feed=single_feed, agency=(w_agency or ""))
-        if (not res.get("ok")) and units_in_result(res):
+        _seg5 = it.get("tp5_segment") if kind == "tp5" else None
+        if (not res.get("ok")) and units_in_result(res) and not _seg5:
+            # tp5 без сегмента (products_only/Фиды) — обычный fallback на cookie.
             res = create_shopping_via_cookie(**cookie_kwargs)
             if res.get("ok"):
                 res.setdefault("warnings", []).append("api->cookie fallback after 152")
+        elif (not res.get("ok")) and units_in_result(res) and _seg5:
+            # сегментная tp5 (Марки/Модели/Общее): fallback на cookie создал бы
+            # ct0000-пустышку — НЕ делаем. 152 propagates as-is; retry с API-токеном.
+            pass
         # FAN-OUT: разворачиваем под-кампании в плоский список (счётчики/промо/«K из N» консистентны)
         results.extend(res.get("campaigns") or [res])
     except Exception as e:  # noqa: BLE001

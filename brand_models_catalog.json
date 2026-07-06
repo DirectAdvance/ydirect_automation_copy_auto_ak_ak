@@ -1,0 +1,470 @@
+{
+  "updated_at": "2026-07-06T16:13:54+05:00",
+  "sources": [
+    "autopark-152.site",
+    "autoshop-23.ru",
+    "carsklad-126.site",
+    "autodealer-nsk.ru",
+    "autos-kemerovo.site"
+  ],
+  "diag": [
+    {
+      "domain": "autopark-152.site",
+      "path": "/yandex-catalog-model-design-custom-name.xml",
+      "http": 200,
+      "vendors": 34,
+      "models": 190
+    },
+    {
+      "domain": "autoshop-23.ru",
+      "path": "/yandex-catalog-model-design-custom-name.xml",
+      "http": 200,
+      "vendors": 34,
+      "models": 190
+    },
+    {
+      "domain": "carsklad-126.site",
+      "path": "/yandex-catalog-model-design-custom-name.xml",
+      "http": 200,
+      "vendors": 34,
+      "models": 190
+    },
+    {
+      "domain": "autodealer-nsk.ru",
+      "path": "/yandex-catalog-model-design-custom-name.xml",
+      "http": 200,
+      "vendors": 34,
+      "models": 190
+    },
+    {
+      "domain": "autos-kemerovo.site",
+      "path": "/yandex-catalog-model-design-custom-name.xml",
+      "http": 200,
+      "vendors": 34,
+      "models": 190
+    }
+  ],
+  "brands": {
+    "baic": {
+      "label": "Baic",
+      "models": [
+        "BJ40",
+        "BJ60",
+        "U5 Plus",
+        "U5 Plus CNG",
+        "X35",
+        "X50",
+        "X55",
+        "X7",
+        "X75"
+      ]
+    },
+    "belgee": {
+      "label": "Belgee",
+      "models": [
+        "S50",
+        "S50+",
+        "X50",
+        "X50+",
+        "X70",
+        "X70 Новый"
+      ]
+    },
+    "changan": {
+      "label": "Changan",
+      "models": [
+        "Alsvin",
+        "CS35 MAX",
+        "CS35Plus",
+        "CS35Plus Новый",
+        "CS55",
+        "CS75 FL",
+        "CS75 PRO",
+        "CS75Plus",
+        "CS85 Coupe",
+        "CS95",
+        "EADO Plus",
+        "EADOPlus",
+        "Lamore",
+        "UNI-K",
+        "UNI-S/CS55Plus",
+        "UNI-T",
+        "UNI-V"
+      ]
+    },
+    "chery": {
+      "label": "Chery",
+      "models": [
+        "Arrizo 8",
+        "CS35 Coupe",
+        "CS35 MAX",
+        "CS55",
+        "CS75 FL",
+        "CS75Plus Новый",
+        "CS95 Новый",
+        "Tiggo 4",
+        "Tiggo 4 Pro 18 YEARS EDITION",
+        "Tiggo 4 Pro 18 YR",
+        "Tiggo 4 Pro MAX",
+        "Tiggo 4 Новый",
+        "Tiggo 7 Pro",
+        "Tiggo 7 Pro MAX",
+        "Tiggo 7L",
+        "Tiggo 8",
+        "Tiggo 8 Pro",
+        "Tiggo 8 Pro MAX",
+        "Tiggo 9"
+      ]
+    },
+    "chevrolet": {
+      "label": "Chevrolet",
+      "models": [
+        "Cobalt",
+        "Nexia"
+      ]
+    },
+    "dongfeng": {
+      "label": "Dongfeng",
+      "models": [
+        "580",
+        "DFSK 500",
+        "DFSK ix5",
+        "DFSK ix7",
+        "Huge",
+        "Mage",
+        "Shine Max"
+      ]
+    },
+    "exeed": {
+      "label": "Exeed",
+      "models": [
+        "LX",
+        "LX Новый",
+        "RX",
+        "TXL",
+        "TXL Новый",
+        "VX",
+        "VX Новый"
+      ]
+    },
+    "faw": {
+      "label": "Faw",
+      "models": [
+        "Bestune B70",
+        "Bestune B70 FL",
+        "Bestune T55",
+        "Bestune T77",
+        "Bestune T90",
+        "Bestune T99"
+      ]
+    },
+    "gac": {
+      "label": "Gac",
+      "models": [
+        "Empow",
+        "GS3",
+        "GS4",
+        "GS8"
+      ]
+    },
+    "geely": {
+      "label": "Geely",
+      "models": [
+        "Atlas",
+        "Atlas Pro",
+        "Atlas Новый",
+        "Cityray",
+        "Coolray",
+        "Coolray Новый",
+        "Emgrand",
+        "Monjaro",
+        "Monjaro Новый",
+        "Okavango",
+        "Preface",
+        "Preface Новый",
+        "Tugella"
+      ]
+    },
+    "haval": {
+      "label": "Haval",
+      "models": [
+        "Dargo",
+        "Dargo X",
+        "F7",
+        "F7 Новый",
+        "F7X",
+        "F7X Новый",
+        "H3",
+        "H5",
+        "H5 Новый",
+        "H7",
+        "H9",
+        "H9 Новый",
+        "Jolion",
+        "M6"
+      ]
+    },
+    "hyundai": {
+      "label": "Hyundai",
+      "models": [
+        "Creta",
+        "Elantra",
+        "Santa Fe",
+        "Solaris",
+        "Sonata Седан",
+        "Tucson"
+      ]
+    },
+    "jac": {
+      "label": "Jac",
+      "models": [
+        "J7",
+        "JS3",
+        "JS6",
+        "S5",
+        "S7"
+      ]
+    },
+    "jaecoo": {
+      "label": "Jaecoo",
+      "models": [
+        "J6",
+        "J7",
+        "J7 LE",
+        "J8"
+      ]
+    },
+    "jetour": {
+      "label": "Jetour",
+      "models": [
+        "Dashing",
+        "T1",
+        "T2",
+        "X50",
+        "X70",
+        "X70 Plus",
+        "X90 Plus"
+      ]
+    },
+    "jetta": {
+      "label": "Jetta",
+      "models": [
+        "VA3",
+        "VS5",
+        "VS7"
+      ]
+    },
+    "kaiyi": {
+      "label": "Kaiyi",
+      "models": [
+        "E5",
+        "X3",
+        "X3 Pro",
+        "X7 Kunlun"
+      ]
+    },
+    "kgm": {
+      "label": "Kgm",
+      "models": [
+        "Korando",
+        "Tivoli",
+        "Torres"
+      ]
+    },
+    "kia": {
+      "label": "Kia",
+      "models": [
+        "Ceed",
+        "Ceed SW",
+        "Cerato",
+        "K5",
+        "K9",
+        "Picanto",
+        "Rio",
+        "Rio X",
+        "Seltos",
+        "Sorento",
+        "Soul",
+        "Sportage"
+      ]
+    },
+    "knewstar": {
+      "label": "Knewstar",
+      "models": [
+        "001"
+      ]
+    },
+    "lada": {
+      "label": "Lada",
+      "models": [
+        "Azimut",
+        "Granta Active Cross",
+        "Granta Active SW",
+        "Granta Cross",
+        "Granta Drive Active",
+        "Granta Sport Cross",
+        "Granta Sport Лифтбек",
+        "Granta Sport Седан",
+        "Granta Sportline",
+        "Granta Sportline Лифтбек",
+        "Granta Лифтбек",
+        "Granta Седан",
+        "Granta Спорт Лифтбек",
+        "Granta Универсал",
+        "Granta Хэтчбек",
+        "Iskra SW",
+        "Iskra SW Cross",
+        "Iskra Седан",
+        "Largus",
+        "Largus Cross",
+        "Niva Cross",
+        "Niva Legend 3д",
+        "Niva Legend Bronto",
+        "Niva SW Cross",
+        "Niva SW Sportline",
+        "Niva Travel",
+        "Vesta CNG",
+        "Vesta Cross",
+        "Vesta Drive Active",
+        "Vesta Sportline",
+        "Vesta SW",
+        "Vesta SW Cross",
+        "Vesta SW Sportline",
+        "Vesta Седан",
+        "Vesta Хэтчбек",
+        "Xray",
+        "Xray Cross"
+      ]
+    },
+    "livan": {
+      "label": "Livan",
+      "models": [
+        "S6Pro",
+        "X3Pro",
+        "X6Pro"
+      ]
+    },
+    "mg": {
+      "label": "Mg",
+      "models": [
+        "5",
+        "6",
+        "7",
+        "HS",
+        "RX5",
+        "RX8",
+        "RX9",
+        "ZS"
+      ]
+    },
+    "moskvich": {
+      "label": "Москвич",
+      "models": [
+        "3",
+        "6",
+        "8"
+      ]
+    },
+    "nissan": {
+      "label": "Nissan",
+      "models": [
+        "Qashqai",
+        "Terrano",
+        "X-Trail"
+      ]
+    },
+    "omoda": {
+      "label": "Omoda",
+      "models": [
+        "C5",
+        "C5 Новый",
+        "C7",
+        "S5"
+      ]
+    },
+    "renault": {
+      "label": "Renault",
+      "models": [
+        "Arkana",
+        "Duster",
+        "Kaptur",
+        "Logan",
+        "Logan Stepway",
+        "Sandero",
+        "Sandero Stepway"
+      ]
+    },
+    "skoda": {
+      "label": "Skoda",
+      "models": [
+        "Karoq",
+        "Kodiaq",
+        "Octavia",
+        "Rapid",
+        "Superb"
+      ]
+    },
+    "solaris": {
+      "label": "Solaris",
+      "models": [
+        "HC",
+        "HS",
+        "KRS",
+        "KRX"
+      ]
+    },
+    "soueast": {
+      "label": "Soueast",
+      "models": [
+        "S07",
+        "S09"
+      ]
+    },
+    "swm": {
+      "label": "Swm",
+      "models": [
+        "G01",
+        "G01F",
+        "G05 Pro"
+      ]
+    },
+    "tank": {
+      "label": "Tank",
+      "models": [
+        "300",
+        "400",
+        "500"
+      ]
+    },
+    "tenet": {
+      "label": "Tenet",
+      "models": [
+        "T4",
+        "T4L",
+        "T7",
+        "T8"
+      ]
+    },
+    "uaz": {
+      "label": "Уаз",
+      "models": [
+        "Patriot"
+      ]
+    },
+    "volkswagen": {
+      "label": "Volkswagen",
+      "models": [
+        "Golf",
+        "Jetta",
+        "Polo"
+      ]
+    },
+    "xcite": {
+      "label": "Xcite",
+      "models": [
+        "X-CROSS 7",
+        "X-CROSS 8"
+      ]
+    }
+  }
+}

@@ -220,6 +220,7 @@ class DirectV501Client:
             "Client-Login": client_login,
             "Content-Type": "application/json",
             "Accept-Language": "ru",
+            "Use-Operator-Units": "true",
         })
 
     # -- низкий уровень --

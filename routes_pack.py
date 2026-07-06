@@ -17,6 +17,7 @@ def register_pack_routes(
     m3_content_status: Callable,
     m3_status_response: Callable,
     pack_preview_response: Callable,
+    slepok_segment_counts_response: Callable | None = None,
     cookies_status_response: Callable | None = None,
 ) -> None:
     @bp.route("/api/slepok_callouts")
@@ -70,3 +71,12 @@ def register_pack_routes(
     def api_pack_preview():
         """Предпросмотр M3-пака для слепка и типа сайта."""
         return pack_preview_response()
+
+    @bp.route("/api/slepok_segment_counts")
+    @access
+    def api_slepok_segment_counts():
+        """Фактические счётчики групп по сегментам для слепка×типа сайта из живого M3-пака.
+        ?slepok=<key>&site_type=<name> → {counts: {tp1: {Марки: N, Модели: M, ...}, ...}}"""
+        if slepok_segment_counts_response is None:
+            return jsonify({"error": "not configured"})
+        return slepok_segment_counts_response()

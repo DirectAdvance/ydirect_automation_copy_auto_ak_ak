@@ -136,7 +136,7 @@ def _grid_client(login: str):
 # отдельным сервисом direct-content-worker.service. Переживают рестарты обоих сервисов.
 
 CE_JOBS_TABLE = "direct_automation.content_jobs"
-CE_DAILY_JOB_CAP = int(os.environ.get("CE_DAILY_JOB_CAP") or 15)  # заданий на аккаунт в сутки (Екб)
+CE_DAILY_JOB_CAP = int(os.environ.get("CE_DAILY_JOB_CAP") or 50)  # заданий на аккаунт в сутки (Екб)
 # начало текущих суток по Екатеринбургу (timestamptz)
 CE_EKB_DAY_SQL = "(date_trunc('day', now() AT TIME ZONE 'Asia/Yekaterinburg') AT TIME ZONE 'Asia/Yekaterinburg')"
 

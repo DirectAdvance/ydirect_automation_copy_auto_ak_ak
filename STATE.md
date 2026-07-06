@@ -12,10 +12,13 @@
 опциональной; UI её не шлёт → role остаётся старой. Не критично.
 
 **Задача 2 (готово, деплой):** «Минус марки (фид)» → «Минус марки/модели (фид)», дерево марка→модели.
-- Справочник моделей: `direct/brand_models_catalog.json` (34 марки/190 моделей), парсится из
-  model-design XML-фидов 5 аккаунтов-источников (`feed_models.py` — новый, stdlib-only). Обновление —
-  ТОЛЬКО кнопкой «Обновить список моделей» → `POST /api/minus-models/refresh`. Модель из `<model>` минус
-  ценовой хвост (« от … Звоните»).
+- Справочник моделей: `direct/brand_models_catalog.json` — статический JSON (36 марок/244 модели),
+  правится вручную в коде. Изначально собран из model-design XML-фидов 5 аккаунтов (`feed_models.py`)
+  + ручного справочника Семёна (Москвич/УАЗ/Chevrolet/Lada/Kia и др., смёржено 2026-07-06 ~16:12).
+  2026-07-06 ~16:30: кнопка «Обновить список моделей» и `POST /api/minus-models/refresh` УДАЛЕНЫ по
+  просьбе Семёна — список марок/моделей конечен, обновляется только правкой JSON в коде, не рантайм-
+  парсингом фидов. `_refresh_brand_models_catalog()` в blueprint.py и DI-параметр в routes_settings.py
+  убраны; `_load_brand_models_catalog()` (read-only, GET /api/minus-marks) остался.
 - Выбор моделей: новая таблица `public.direct_global_minus_models(mark, model, enabled, PK(mark,model))`.
   Марки — прежняя `direct_global_minus_marks`. `_enabled_minus_models()` (TTL-кэш 30с, blueprint).
 - Фильтр: `_minus_marks_grid_conditions(brand_field, model_field="model")` + `_minus_marks_uac_conditions`

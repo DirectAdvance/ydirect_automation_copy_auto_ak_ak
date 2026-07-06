@@ -2415,17 +2415,11 @@ def _allowed_feed_keys() -> set[str]:
 
 
 def _catalog_feed_keys() -> set[str]:
-    """feed_key всех enabled-фидов с role='catalog' в Глобальных правилах (лендинги role='landing'
-    исключены). Нужно для tp1-товарки: множить фид-фан-аут ТОЛЬКО по каталог-фидам с реальными
-    модельными листингами — лендинг-фиды дают пустой model-ListingAd и валили создание кампании."""
-    try:
-        rows = _global_feed_rules()
-        return {_feed_key(r.get("url") or r.get("name") or r.get("feed_key") or "")
-                for r in rows if r.get("enabled") and (r.get("role") or "landing") == "catalog"}
-    except Exception:  # noqa: BLE001
-        # Victory недоступна: не валим создание — берём ТОЧНЫЙ список каталог-фидов (тот же, что
-        # backfill role='catalog' в _feed_rules_ensure). Матч по точному feed_key, не по подстроке.
-        return {_feed_key(f) for f in _CATALOG_FEED_KEYS}
+    """feed_key ВСЕХ enabled-фидов Глобальных правил. Роль «каталог/лендинг» удалена (Семён 2026-07-06):
+    логика бинарная — галочка включена = фид участвует полностью, в т.ч. в товарке tp1 (модельные
+    листинги). Ответственность «не включать пустой оффер-лендинг-фид» на операторе. Технически равно
+    _allowed_feed_keys(); оставлено отдельной функцией ради стабильного catalog_only-контракта call-site."""
+    return _allowed_feed_keys()
 
 
 def _feed_row_allowed(feed: dict, allowed: set[str] | None = None) -> bool:
@@ -2570,6 +2564,77 @@ def _enabled_minus_marks() -> list[str]:
         return out
     except Exception:  # noqa: BLE001 — недоступность БД не валит создание
         return list(_MINUS_MARKS_CACHE["val"])
+
+
+# ── Минус-МОДЕЛИ (фид): второй уровень «Минус марки/модели» — исключение отдельной модели ──────────
+# Справочник «марка → модели» — статический JSON brand_models_catalog.json, конечный список,
+# правится вручную в коде (НЕ парсится из фидов в рантайме); выбор моделей (что минусовать) — в БД
+# direct_global_minus_models.
+_MODELS_CATALOG_PATH = _HERE / "brand_models_catalog.json"
+_MINUS_MODELS_ENSURED = False
+_MINUS_MODELS_CACHE: dict = {"ts": 0.0, "val": []}
+_MINUS_MODELS_TTL = 30.0
+
+
+def _load_brand_models_catalog() -> dict:
+    """Постоянный справочник {mark_canon: {label, models[]}} из brand_models_catalog.json.
+    → {"updated_at", "sources", "brands"}. Файла нет / битый → пустой каркас (UI покажет только марки)."""
+    try:
+        data = json.loads(_MODELS_CATALOG_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("brands"), dict):
+            return data
+    except Exception:  # noqa: BLE001 — нет файла/битый JSON → пустой справочник, не валим страницу
+        pass
+    return {"updated_at": None, "sources": [], "brands": {}}
+
+
+def _minus_models_ensure(cur) -> None:
+    global _MINUS_MODELS_ENSURED
+    if _MINUS_MODELS_ENSURED:
+        return
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS public.direct_global_minus_models ("
+        "mark text NOT NULL, model text NOT NULL, enabled boolean NOT NULL DEFAULT true, "
+        "updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(mark, model))"
+    )
+    _MINUS_MODELS_ENSURED = True
+
+
+def _global_minus_models() -> list[dict]:
+    """Сохранённые минус-модели: [{mark, model, enabled}] (только СОХРАНЁННЫЕ строки)."""
+    import psycopg2.extras
+    conn = _victory_conn_rw()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        _minus_models_ensure(cur)
+        conn.commit()
+        cur.execute("SELECT mark, model, enabled FROM public.direct_global_minus_models ORDER BY mark, model")
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _enabled_minus_models() -> list[str]:
+    """Имена включённых минус-моделей (чистые, как в справочнике: «Tiggo 7 Pro») для feedFilter по полю
+    model (NOT_CONTAINS[_ALL] — модель это подстрока фидового <model> «Tiggo 7 Pro от … Звоните»).
+    TTL-кэш 30с — зовётся в циклах товарных групп. [] при сбое/пустом."""
+    now = time.time()
+    if now - _MINUS_MODELS_CACHE["ts"] < _MINUS_MODELS_TTL:
+        return list(_MINUS_MODELS_CACHE["val"])
+    try:
+        out: list[str] = []
+        seen: set[str] = set()
+        for r in _global_minus_models():
+            if not r.get("enabled"):
+                continue
+            m = str(r.get("model") or "").strip()
+            if m and m.lower() not in seen:
+                seen.add(m.lower())
+                out.append(m)
+        _MINUS_MODELS_CACHE.update({"ts": now, "val": list(out)})
+        return out
+    except Exception:  # noqa: BLE001 — недоступность БД не валит создание
+        return list(_MINUS_MODELS_CACHE["val"])
 
 
 def _content_rules_ensure(cur) -> None:
@@ -2928,6 +2993,9 @@ register_settings_routes(
     global_minus_marks=_global_minus_marks,
     minus_marks_ensure=_minus_marks_ensure,
     known_brand_canons=lambda: sorted(_known_brand_canons()),
+    global_minus_models=_global_minus_models,
+    minus_models_ensure=_minus_models_ensure,
+    load_brand_models_catalog=_load_brand_models_catalog,
     victory_conn=_victory_conn,
     victory_conn_rw=_victory_conn_rw,
 )
@@ -3091,7 +3159,8 @@ def _v5_get(svc: str, token: str, login: str, fieldnames: list[str], criteria=No
     extra — дополнительные type-specific params (напр. {"UrlFeedFieldNames": ["Url"]})."""
     import requests as _rqs
     h = {"Authorization": "Bearer " + token, "Client-Login": login,
-         "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8"}
+         "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8",
+         "Use-Operator-Units": "true"}
     params: dict = {"FieldNames": fieldnames}
     if criteria is not None:
         params["SelectionCriteria"] = criteria
@@ -3114,7 +3183,8 @@ def _v5_units(token: str, login: str) -> dict | None:
     Формат заголовка Яндекса: ``Spent/Available/DailyLimit``. → {spent, rest, limit} или None."""
     import requests as _rqs
     h = {"Authorization": "Bearer " + token, "Client-Login": login,
-         "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8"}
+         "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8",
+         "Use-Operator-Units": "true"}
     body = {"method": "get", "params": {"FieldNames": ["Id"],
                                         "SelectionCriteria": {}, "Page": {"Limit": 1}}}
     try:
@@ -3132,7 +3202,8 @@ def _v5_call(svc: str, method: str, token: str, login: str, params: dict) -> dic
     """Универсальный вызов v5 (get/suspend/…). Возвращает распарсенный JSON."""
     import requests as _rqs
     h = {"Authorization": "Bearer " + token, "Client-Login": login,
-         "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8"}
+         "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8",
+         "Use-Operator-Units": "true"}
     try:
         return _rqs.post(_V5 + svc, headers=h, json={"method": method, "params": params}, timeout=60).json()
     except Exception as e:  # noqa: BLE001
@@ -3143,7 +3214,8 @@ def _v501_call(method: str, token: str, login: str, params: dict) -> dict:
     """Вызов v501 (campaigns.update и т.д.). Возвращает распарсенный JSON."""
     import requests as _rqs
     h = {"Authorization": "Bearer " + token, "Client-Login": login,
-         "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8"}
+         "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8",
+         "Use-Operator-Units": "true"}
     try:
         return _rqs.post(_V501 + "campaigns", headers=h,
                          json={"method": method, "params": params}, timeout=60).json()
@@ -3156,7 +3228,8 @@ def _v501_svc(svc: str, method: str, token: str, login: str, params: dict) -> di
     обязателен v501 — v5 отвечает «не поддерживается, используйте v501»."""
     import requests as _rqs
     h = {"Authorization": "Bearer " + token, "Client-Login": login,
-         "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8"}
+         "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8",
+         "Use-Operator-Units": "true"}
     try:
         return _rqs.post(_V501 + svc, headers=h,
                          json={"method": method, "params": params}, timeout=60).json()
@@ -4011,6 +4084,46 @@ def _pack_preview_response():
     return jsonify(out)
 
 
+def _slepok_segment_counts_response():
+    """Фактические счётчики групп по сегментам из живого M3-пака для слепка×типа сайта.
+    ?slepok=<key>&site_type=<name>. Критерий совпадает с реальным созданием: считаем только
+    ct у которых есть непустые positive-ключи в паке — ct без ключей пропускаем (как
+    create_set_tp1_builders строка «if not data.get(positive): continue»)."""
+    raw = (request.args.get("slepok") or "").strip()
+    slepok = _SLEPOK_KEY.get(raw.lower(), raw.lower())
+    site_type = (request.args.get("site_type") or "").strip()
+    if not slepok or not site_type:
+        return jsonify({"error": "slepok и site_type обязательны"})
+    struct = _json("slepki_structure.json").get("directologists", [])
+    dirr = next((d for d in struct if d.get("key") == slepok), None)
+    if not dirr:
+        return jsonify({"error": f"слепок '{slepok}' не найден"})
+    st = next((s for s in dirr.get("site_types", []) if s.get("name") == site_type), None)
+    if not st:
+        return jsonify({"error": f"тип сайта '{site_type}' нет у слепка"})
+    seg_map = _ct_segment_map()
+    counts: dict = {}
+    for tp_entry in st.get("tp", []):
+        tp_code = tp_entry.get("code", "")
+        m = re.match(r"^tp(\d+)$", tp_code)
+        if not m:
+            continue
+        tpn = int(m.group(1))
+        if tpn not in (1, 2, 4, 5):   # только сегментные tp (как _isSegmentTp в UI)
+            continue
+        pack = kp.gather(slepok, site_type, tp_code)
+        seg_counts: dict = {}
+        for ct, data in pack.items():
+            if not data.get("positive"):
+                continue               # тот же пропуск что при реальном создании
+            seg = seg_map.get(ct, "Марки")
+            seg_counts[seg] = seg_counts.get(seg, 0) + 1
+        # pack_ok=False означает что gather вернул пустой результат (M3 недоступен или пак пуст).
+        # Фронт использует это для защиты: при pack_ok=False не патчит счётчики → остаётся статика.
+        counts[tp_code] = {"segs": seg_counts, "pack_ok": bool(pack)}
+    return jsonify({"slepok": slepok, "site_type": site_type, "counts": counts})
+
+
 register_pack_routes(
     bp,
     _direct_access,
@@ -4024,6 +4137,7 @@ register_pack_routes(
     m3_content_status=_m3_content_status,
     m3_status_response=_m3_status_response,
     pack_preview_response=_pack_preview_response,
+    slepok_segment_counts_response=_slepok_segment_counts_response,
     cookies_status_response=_cookies_status_response,
 )
 
@@ -5158,6 +5272,7 @@ def _create_set_feeds_deps() -> dict:
         "_coder_name_real_brand": _coder_name_real_brand,
         "_ct_segment_map": _ct_segment_map,
         "_enabled_minus_marks": _enabled_minus_marks,
+        "_enabled_minus_models": _enabled_minus_models,
         "_feed_row_allowed": _feed_row_allowed,
         "_filter_allowed_feed_rows": _filter_allowed_feed_rows,
         "_gc_ct": _gc_ct,
