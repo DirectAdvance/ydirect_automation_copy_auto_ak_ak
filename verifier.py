@@ -31,7 +31,17 @@ def _created_result(r: dict[str, Any]) -> bool:
 def _item_matches_result(item_name: str, result_name: str) -> bool:
     if not item_name or not result_name:
         return False
-    return result_name == item_name or result_name.startswith(item_name + " - ") or result_name.startswith(item_name + " — ")
+    if result_name == item_name or result_name.startswith(item_name + " - ") or result_name.startswith(item_name + " — "):
+        return True
+    # UAC tp6/tp7 при создании переименовывают фид-суффикс («…/имя-фида.xml» → «… — имя-фида»),
+    # полное имя позиции не матчится → ложный ITEM_NOT_PROCESSED (живой кейс porg-asfbs7qe 06.07:
+    # кастомный фид yandex-catalog-model-design-custom-name.xml, «ошибок 3» при created 21/21).
+    # Та же нормализация, что в blueprint._position_live_in_names: без последнего « — сегмента»,
+    # только tp6/tp7 с ≥2 сепараторами (иначе усечение сматчило бы любую tp).
+    if item_name.startswith(("tp6_", "tp7_")) and item_name.count(" — ") >= 2:
+        base = item_name.rsplit(" — ", 1)[0].strip()
+        return bool(base) and (result_name == base or result_name.startswith(base + " — "))
+    return False
 
 
 def _content_counts(item: dict[str, Any]) -> tuple[int, int, int]:

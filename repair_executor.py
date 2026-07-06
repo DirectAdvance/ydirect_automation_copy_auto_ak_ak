@@ -651,6 +651,18 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
                     failed.append({"campaign_id": cid, "adgroup_id": gid,
                                    "error": f"пересчёт ключей: {str(e)[:180]}"})
                     continue
+            # Реально заливаемые ключи: спецключ "---autotargeting" НЕ заливается через Grid
+            # (фильтруется ниже) — группа только с ним эквивалентна группе без источника.
+            writable_kw = [k for k in final_kw if str(k).strip() and not str(k).startswith("---")]
+            if need_kw and not writable_kw and not need_at:
+                # Источник контента не даёт ключей для этого ct (живой кейс ct0217 Skoda Kodiaq,
+                # porg-asfbs7qe 06.07): группа живёт на активном автотаргете — чинить НЕЧЕМ.
+                # Раньше уходило в failed («группа не подтверждена AddKeywords») → job partial →
+                # карточка вечно «нужна добивка». Ключи не выдумываем (аналог «цены только из фида»).
+                results.append({"ok": True, "skipped": "нет источника ключей (автотаргет активен)",
+                                "campaign_id": cid, "adgroup_id": gid})
+                skipped += 1
+                continue
             # Кап 200/группа (лимит Яндекса): иначе Grid AddKeywords отклонит всю пачку
             # (MAX_KEYWORDS_PER_AD_GROUP_EXCEEDED) → группа останется без ключей (NO_KEYWORDS_LIVE).
             if len(final_kw) > _KW_MAX_PER_GROUP:

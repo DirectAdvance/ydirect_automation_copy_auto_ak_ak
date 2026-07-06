@@ -196,14 +196,21 @@ class GridReadClient:
         # 1-й проход: отобрать поисковые группы (tp2/4/5, supported) и их кампании
         search_groups: list[tuple[int, int, int, dict]] = []   # (cid, gid, edit_kw, rm)
         search_cids: set[int] = set()
+        at_by_design: set[int] = set()   # АТ-кампании: группы живут на relevanceMatch, 0 ключей — норма
         for grp in rows:
             cid = grp.get("campaign_id")
             if cid not in counts:
                 continue
-            m = _tp_re.match(str(grp.get("campaign_name") or ""))
+            camp_name = str(grp.get("campaign_name") or "")
+            m = _tp_re.match(camp_name)
             tp = int(m.group(1)) if m else None
             if tp not in (2, 4, 5) or not grp.get("supported"):
                 continue
+            # «… - Автотаргетинг - …» (нейминг набора): группы БЕЗ ключей по дизайну →
+            # zero-kw для них не дефект (живой ложняк NO_KEYWORDS_LIVE: tp5 «Марки - Автотаргетинг»
+            # porg-7bqj56f4 06.07 — добивка вечно «нужна», починить нечем).
+            if "автотаргетинг" in camp_name.lower():
+                at_by_design.add(int(cid))
             gid = int(grp.get("adgroup_id") or 0)
             search_groups.append((int(cid), gid, int(grp.get("keyword_count") or 0),
                                   grp.get("relevance_match") or {}))
@@ -222,7 +229,7 @@ class GridReadClient:
             # (лаг), поэтому max безопасен.
             grp_kw = max(int(real_kw.get(gid, 0)), int(edit_kw)) if real_kw is not None else int(edit_kw)
             kw_total[cid] += grp_kw
-            if grp_kw == 0:
+            if grp_kw == 0 and cid not in at_by_design:
                 zero_kw[cid] += 1
             cats = {str(x).upper() for x in (rm.get("relevanceMatchCategories") or [])}
             brands = {str(x).upper() for x in (rm.get("autotargetingBrandSettings") or [])}
