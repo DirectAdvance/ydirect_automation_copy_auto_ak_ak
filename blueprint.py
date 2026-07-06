@@ -1063,6 +1063,31 @@ def _delayed_content_repair_save(parent_job_id: str, login: str, agency: str,
         return None
 
 
+def _supersede_delayed_repairs_for_login(login: str) -> None:
+    """При пользовательском ПЕРЕЗАПУСКЕ набора на тот же login (dedup_login=True, старая джоба
+    уже terminal → дедуп не сработал → новая джоба пересоздаёт кампании под новыми campaign_id) —
+    старые waiting/running добивки от ПРЕДЫДУЩЕГО прогона гоняют удалённые campaign_id и падают
+    с CAMPAIGN_NOT_FOUND, жгут попытки впустую (живой кейс 06.07.2026, porg-7bqj56f4). Best-effort,
+    fail-open: сбой БД НЕ должен блокировать постановку новой джобы."""
+    login = (login or "").strip()
+    if not login:
+        return
+    try:
+        conn = _victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE public.direct_delayed_repairs
+                   SET status='superseded', note='login пересоздан новым набором', updated_at=now()
+                 WHERE login=%s AND status IN ('waiting','running')
+            """, (login,))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 _DELAYED_REPAIR_MAX_RESCHEDULES = 4   # partial-повторы «до нуля»; кап от вечного цикла
 
 
@@ -1784,6 +1809,8 @@ def _job_new_web(total: int, login: str, body: dict, saved_session: dict,
            "step": None, "_id": jid, "body": body,
            "session": None, "agency": (body or {}).get("agency")}
     _job_db_save(jid, job)                                # INSERT: пишет body (с session+маркерами)+agency
+    if dedup_login:   # дедуп не сработал (старая джоба уже terminal) → это ПЕРЕЗАПУСК на тот же login
+        _supersede_delayed_repairs_for_login(login)
     return jid
 
 
@@ -1836,6 +1863,8 @@ def _job_new(total: int, login: str, body: dict, saved_session: dict,
                 _JOB_DB_LAST.pop(old, None)
         _CREATE_COND.notify()
     _job_db_save(jid, job)                                # серверная персистентность (видна с любого устройства)
+    if dedup_login:   # дедуп не сработал (старая джоба уже terminal) → это ПЕРЕЗАПУСК на тот же login
+        _supersede_delayed_repairs_for_login(login)
     return jid
 
 
