@@ -504,8 +504,13 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             alternative_texts_enabled=False,   # #3 персонализация (адаптивные тексты) ВЫКЛ
             # tcpa = оплата за клики (PER_CLICK), cpa = оплата за конверсии (PER_CONVERSION)
             pricing="PER_CONVERSION" if it.get("pay") == "cpa" else "PER_CLICK",
-            age_lower=("age_18" if targeting_mode == "autotarget"
-                       else ("age_25" if (is_manual and not is_product) else "age_18")),
+            # Возраст 25+ (age_25) — для ВСЕХ ручных режимов tp6/Мастер (keywords И audience),
+            # кроме автотаргетинга (#7 выше — там полный socdem по дизайну) и товарки tp7.
+            # РАНЬШЕ audience-режим молча попадал в финальный else → age_18 («Все») — Семён:
+            # «в tp6 не проставляется аудитория-корректировка на возраст» (живой баг 2026-07-06,
+            # porg-lzjk6p5m/terehov). ag_part6 в имени синхронизирован тем же условием, см.
+            # create_set_plan.py (age = "ag011" при том же targeting_mode/is_product).
+            age_lower=("age_18" if (targeting_mode == "autotarget" or is_product) else "age_25"),
         )
         try:
             cid = client.create_master_campaign(spec, launch=launch)

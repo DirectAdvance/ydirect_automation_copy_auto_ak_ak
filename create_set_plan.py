@@ -58,7 +58,7 @@ def _resolve_region(city: str | None):
     finally:
         conn.close()
 
-def _build_name(is_master: bool, is_auto: bool, pay: str, r_code: str, oblast: str,
+def _build_name(is_master: bool, is_autotarget: bool, pay: str, r_code: str, oblast: str,
                 sq: str = "site", cat: str | None = None, ct: str = "ct0000") -> str:
     """Имя кампании по спеке: {коды} — {МК|ТК}_{AT|RA}_{pay}[_kviz][ - {категория}] - {область}.
     sq: 'site' (посадка = домен) | 'kviz' (посадка = домен/quiz).
@@ -72,8 +72,13 @@ def _build_name(is_master: bool, is_auto: bool, pay: str, r_code: str, oblast: s
     # ListingAd по каталогу + ShoppingAd по фиду + товарное ТГО) → ct010, НЕ ct009 (ct009 = товарное
     # БЕЗ ТГО). Правило пользователя: tp7 нейминг = ct010.
     fmt = "ct001" if is_master else "ct010"              # формат: ТГО / Каталог+ТГО+Фид
-    # возраст 24-55+ есть ТОЛЬКО у мастер-ручной; у товарных возраст не настраивается → всегда «Все»
-    age = "ag011" if (is_master and not is_auto) else "ag001"
+    # Возраст 24-55+ (ag011) — tp6/Мастер в РУЧНЫХ режимах (keywords И audience), кроме
+    # автотаргетинга (там полный socdem age_18/ag001 по дизайну, #7 в create_set_master_product.py)
+    # и товарки tp7 (возраст не настраивается → всегда «Все»). is_autotarget=True ТОЛЬКО для
+    # targeting_mode=='autotarget' — раньше сюда приходил is_auto=(targeting_mode!='keywords'),
+    # из-за чего audience тоже попадал в ag001 (живой баг 2026-07-06, porg-lzjk6p5m/terehov) —
+    # рассинхрон с age_lower в create_set_master_product.py, который чинился той же логикой.
+    age = "ag001" if (not is_master or is_autotarget) else "ag011"
     codes = f"{tp}_{paycode}_{sqcode}_{ct or 'ct0000'}_aon_n000_{r_code}_{fmt}_{age}_g00"
     tp_label = "Мастер кампаний" if is_master else "Товарка"  # #6: канон CODER.md (было МК_AT_tcpa)
     cat_part = f" - {cat}" if cat else ""                 # категория аудитории в человекочитаемое имя (как в слепках)
@@ -543,7 +548,7 @@ def _set_plan_response():
                 continue
             cat = g["name"]
             targeting_mode = _tp67_targeting_mode(g)
-            is_auto_name = targeting_mode != "keywords"
+            is_autotarget_name = targeting_mode == "autotarget"
             cat_base = (g.get("group") or cat or "").strip()
             interest_cat = g.get("group") or cat
             ints, ints_source = (_slepok_interest_for_struct(agent, site_type, tp_code, g)
@@ -558,7 +563,7 @@ def _set_plan_response():
                                for f in feeds])
             for f_id, f_name, f_url in feed_list:
                 for pay in pays:
-                    base_nm = _build_name(is_master, is_auto_name, pay, r_code, oblast, g["sq"], cat, ct=cat_ct)
+                    base_nm = _build_name(is_master, is_autotarget_name, pay, r_code, oblast, g["sq"], cat, ct=cat_ct)
                     # Bug D fix: используем URL фида (без https://) вместо короткого имени из кабинета.
                     import re as _re_plan
                     _f_lbl = (_re_plan.sub(r'^https?://', '', f_url) if f_url else f_name)
