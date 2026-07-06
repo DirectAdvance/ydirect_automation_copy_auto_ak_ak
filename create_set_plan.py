@@ -15,12 +15,36 @@ def configure(deps: dict) -> None:
 
 
 def _resolve_region(city: str | None):
-    """город → (r_code, область словами). Не нашлось → ('r0000', область|'Россия')."""
+    """город → (r_code, область словами). Не нашлось → ('r0000', область|'Россия').
+
+    Мультигородская строка (city с запятой — комбо-аккаунты вроде cardealer-rus.ru, 10 аккаунтов
+    с одной и той же строкой из 6 городов) резолвится ПО-ДРУГОМУ: каждый город → своя область,
+    множество областей ищется в `local_gsheet_naming` (type='ag_part4') среди готовых комбо-кодов
+    (r0131/r0134/r0135 — уже существующий механизм для наборов из нескольких областей), матч —
+    ТОЧНОЕ совпадение множества (без него было: одиночный exact-match всей строки целиком не
+    находил ничего → всегда r0000/«Россия», живой баг 2026-07-06, porg-lzjk6p5m и 9 других)."""
     if not city or not city.strip():
         return "r0000", "Россия"
+    cities = [c.strip() for c in city.split(",") if c.strip()]
     conn = _victory_conn()
     try:
         cur = conn.cursor()
+        if len(cities) > 1:
+            oblasts: set[str] = set()
+            for c in cities:
+                cur.execute('SELECT "Область" FROM public.local_gsheet_yandex_direct_id_location '
+                            "WHERE \"GeoRegionType\"='City' AND lower(btrim(location))=lower(btrim(%s)) LIMIT 1", (c,))
+                row = cur.fetchone()
+                if row and row[0]:
+                    oblasts.add(row[0].strip().lower())
+            if oblasts:
+                cur.execute("SELECT code, name FROM public.local_gsheet_naming "
+                            "WHERE type='ag_part4' AND name LIKE '%,%'")
+                for code, name in cur.fetchall() or []:
+                    combo = {p.strip().lower() for p in (name or "").split(",") if p.strip()}
+                    if combo == oblasts:
+                        return code, name
+            return "r0000", "Россия"
         cur.execute('SELECT "Область" FROM public.local_gsheet_yandex_direct_id_location '
                     "WHERE \"GeoRegionType\"='City' AND lower(btrim(location))=lower(btrim(%s)) LIMIT 1", (city,))
         row = cur.fetchone()
