@@ -1477,6 +1477,7 @@ def register_content_editor_routes(
     exclude_directologs: list[str] | None = None,
     balance_response: Callable | None = None,
     check_blocks_response: Callable | None = None,
+    victory_conn_rw: Callable | None = None,
 ) -> None:
     """Регистрирует изолированную страницу редактора контента и её API."""
     exclude_directologs = exclude_directologs or []
@@ -1596,11 +1597,15 @@ def register_content_editor_routes(
     @access
     def ce_me():
         username = (session.get("username") or "").strip()
+        # is_admin — РЕАЛЬНЫЙ админ (не content_admin): для фич уровня «только is_admin»
+        # (сверка цен). full_access = is_admin OR content_admin — для остальной админки.
+        is_admin = bool(session.get("is_admin"))
         if _content_full_access():
             return jsonify({
                 "username": username or "admin",
                 "fio": "Администратор",
                 "full_access": True,
+                "is_admin": is_admin,
                 "directologists": None,
             })
         row = _content_user_record() or {}
@@ -1608,6 +1613,7 @@ def register_content_editor_routes(
             "username": username,
             "fio": str(row.get("fio") or "").strip(),
             "full_access": False,
+            "is_admin": is_admin,
             "directologists": [
                 str(x).strip()
                 for x in (row.get("directologists") or [])
@@ -1727,21 +1733,187 @@ def register_content_editor_routes(
         _save_access_cfg({"users": users})
         return jsonify({"ok": True, "users": users})
 
+    # ── Сверка цен (admin-only): Direct ↔ фиды → расхождения → заливка ─────────
+    if victory_conn_rw is not None:
+        from . import price_check as pc
+
+        try:
+            pc.ensure_price_check_tables(victory_conn_rw)
+            # На старте сервиса: джобы, застрявшие в 'running' (рестарт в середине) → 'interrupted'.
+            pc.reconcile_stuck_jobs(victory_conn_rw)
+        except Exception as e:  # noqa: BLE001
+            print(f"[price-check] ensure_price_check_tables failed: {e}", flush=True)
+
+        _pc_deps = {
+            "victory_conn": victory_conn,
+            "victory_conn_rw": victory_conn_rw,
+            "token_for_login": token_for_login,
+            "direct_tokens": direct_tokens,
+            "v5_call": v5_call,
+        }
+
+        @bp.route("/api/content-editor/admin/pricecheck/run", methods=["POST"])
+        @access
+        def ce_pc_run():
+            if not _admin_allowed():
+                return jsonify({"error": "Forbidden"}), 403
+            body = request.json or {}
+            logins = [str(x).strip() for x in (body.get("logins") or []) if str(x).strip()]
+            directologist = (body.get("directologist") or "").strip() or None
+            status = (body.get("status") or default_status).strip()
+            all_active = bool(body.get("all_active"))
+            if all_active:
+                items = pc.active_logins(victory_conn, status=status, exclude=exclude_directologs)
+            else:
+                if not logins and not directologist:
+                    return jsonify({"error": "укажите логины или директолога"}), 400
+                items = pc.logins_for(victory_conn, logins=logins or None,
+                                      directologist=directologist, status=status,
+                                      exclude=exclude_directologs)
+            if not items:
+                return jsonify({"error": "по фильтру не найдено ни одного аккаунта"}), 404
+            job_id = pc.new_job_id()
+            try:
+                pc._job_insert(victory_conn_rw, job_id, "check",
+                               (session.get("username") or "").strip(),
+                               [it["login"] for it in items], {"directologist": directologist},
+                               len(items))
+            except Exception as e:  # noqa: BLE001
+                return jsonify({"error": f"не удалось создать задание: {e}"}), 500
+            pc.launch_background(pc.run_check_job, _pc_deps, job_id, items)
+            return jsonify({"ok": True, "job_id": job_id, "total": len(items)})
+
+        @bp.route("/api/content-editor/admin/pricecheck/status")
+        @access
+        def ce_pc_status():
+            if not _admin_allowed():
+                return jsonify({"error": "Forbidden"}), 403
+            pc.reconcile_stuck_jobs(victory_conn_rw)   # зависшие running → interrupted
+            job_id = (request.args.get("job_id") or "").strip()
+            row = pc.job_public(victory_conn, job_id)
+            if not row:
+                return jsonify({"error": "job not found"}), 404
+            return jsonify(row)
+
+        @bp.route("/api/content-editor/admin/pricecheck/jobs")
+        @access
+        def ce_pc_jobs():
+            if not _admin_allowed():
+                return jsonify({"error": "Forbidden"}), 403
+            return jsonify({"jobs": pc.jobs_recent(victory_conn, 30)})
+
+        @bp.route("/api/content-editor/admin/pricecheck/results")
+        @access
+        def ce_pc_results():
+            if not _admin_allowed():
+                return jsonify({"error": "Forbidden"}), 403
+            directologist = (request.args.get("directologist") or "").strip() or None
+            login = (request.args.get("login") or "").strip() or None
+            only_mismatch = (request.args.get("only_mismatch") or "1").strip() not in ("0", "false", "")
+            rows = pc.diff_rows(victory_conn, directologist=directologist, login=login,
+                                only_mismatch=only_mismatch)
+            try:
+                last_run = pc.last_check_run(victory_conn)
+            except Exception:  # noqa: BLE001
+                last_run = None
+            return jsonify({"rows": rows, "count": len(rows), "last_run": last_run})
+
+        @bp.route("/api/content-editor/admin/pricecheck/apply", methods=["POST"])
+        @access
+        def ce_pc_apply():
+            if not _admin_allowed():
+                return jsonify({"error": "Forbidden"}), 403
+            body = request.json or {}
+            raw = body.get("items") or []
+            items = []
+            for r in raw:
+                login = str((r or {}).get("login") or "").strip()
+                url = str((r or {}).get("url") or "").strip()
+                if not login or not url:
+                    continue
+
+                def _num(v):
+                    try:
+                        return float(v) if v not in (None, "") else None
+                    except (TypeError, ValueError):
+                        return None
+
+                items.append({
+                    "login": login, "url": url, "agency": (r or {}).get("agency") or "",
+                    "price_direct": _num((r or {}).get("price_direct")),
+                    "oldprice_direct": _num((r or {}).get("oldprice_direct")),
+                    "price_feed": _num((r or {}).get("price_feed")),
+                    "oldprice_feed": _num((r or {}).get("oldprice_feed")),
+                })
+            if not items:
+                return jsonify({"error": "не выбрано ни одной строки для заливки"}), 400
+            # Ставим в ОЧЕРЕДЬ (status='queued'); реальный ads.update — крон 20:00 Екб.
+            try:
+                job_id = pc.enqueue_apply(victory_conn_rw,
+                                          (session.get("username") or "").strip(), items)
+            except Exception as e:  # noqa: BLE001
+                return jsonify({"error": f"не удалось поставить в очередь: {e}"}), 500
+            return jsonify({"ok": True, "job_id": job_id, "total": len(items), "queued": True})
+
+        @bp.route("/api/content-editor/admin/pricecheck/queue")
+        @access
+        def ce_pc_queue():
+            if not _admin_allowed():
+                return jsonify({"error": "Forbidden"}), 403
+            pc.reconcile_stuck_jobs(victory_conn_rw)   # зависшие running → interrupted
+            return jsonify({"jobs": pc.apply_queue_for_ui(victory_conn, 100)})
+
+        # ── Управление заданием очереди: пауза / старт / удаление ─────────────
+        @bp.route("/api/content-editor/admin/pricecheck/pause", methods=["POST"])
+        @access
+        def ce_pc_pause():
+            if not _admin_allowed():
+                return jsonify({"error": "Forbidden"}), 403
+            job_id = ((request.json or {}).get("job_id") or "").strip()
+            if not job_id:
+                return jsonify({"error": "job_id обязателен"}), 400
+            ok = pc.request_pause(victory_conn_rw, job_id)
+            if not ok:
+                return jsonify({"error": "задание не активно (уже завершено/на паузе)"}), 409
+            return jsonify({"ok": True})
+
+        @bp.route("/api/content-editor/admin/pricecheck/resume", methods=["POST"])
+        @access
+        def ce_pc_resume():
+            if not _admin_allowed():
+                return jsonify({"error": "Forbidden"}), 403
+            job_id = ((request.json or {}).get("job_id") or "").strip()
+            if not job_id:
+                return jsonify({"error": "job_id обязателен"}), 400
+            ok = pc.request_resume(victory_conn_rw, job_id)
+            if not ok:
+                return jsonify({"error": "задание не на паузе"}), 409
+            return jsonify({"ok": True})
+
+        @bp.route("/api/content-editor/admin/pricecheck/delete", methods=["POST"])
+        @access
+        def ce_pc_delete():
+            if not _admin_allowed():
+                return jsonify({"error": "Forbidden"}), 403
+            job_id = ((request.json or {}).get("job_id") or "").strip()
+            if not job_id:
+                return jsonify({"error": "job_id обязателен"}), 400
+            ok = pc.request_delete(victory_conn_rw, job_id)
+            if not ok:
+                # нельзя удалить активное — сначала пауза
+                return jsonify({"error": "удалить можно только задание на паузе"}), 409
+            return jsonify({"ok": True, "removed": True})
+
     # ── Аккаунты для умного поиска ─────────────────────────────────────────────
     @bp.route("/api/content-editor/accounts")
     @access
     def ce_accounts():
         import psycopg2.extras
 
+        from .account_filters import base_account_where
         status = (request.args.get("status") or default_status).strip()
         q = (request.args.get("q") or "").strip()
-        where = [
-            "direction='Авто'",
-            "login_key IS NOT NULL",
-            "login_key<>''",
-            "lower(btrim(login_key)) NOT IN ('нет', 'авито')",
-            "btrim(login_key) !~ '^-+$'",
-        ]
+        where = list(base_account_where())
         params: list = []
         if exclude_directologs:
             where.append("(directologist IS NULL OR directologist <> ALL(%s))")

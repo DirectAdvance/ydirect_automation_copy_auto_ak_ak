@@ -101,7 +101,8 @@ routes_create_set · routes_deferred · routes_pack · routes_campaigns · route
 | `repair_planner · repair_gate · repair_auto · repair_executor` | 493/478/710/929 | планирование → gate → авто → исполнение починки |
 
 ### Копировщик
-`copy_main · copy_steps(972) · copy_geo_morph(283)` — копирование кабинетов 1:1 + морф-гео-замена.
+`copy_main · copy_steps(1084) · copy_geo_morph(283)` — копирование кабинетов 1:1 + морф-гео-замена
+(+ ремап r-кода кодера, sitelinks, set_default_text фидов, доменно-агностичный URL — см. ERRORS_JOURNAL `COPY_LOGIN2LOGIN_GRID_BRANCH_GAPS`).
 
 ### Скрипты
 `restore_shift_keywords.py`(359) · `seed_slepok_content.py`(33) — разовые/восстановление.

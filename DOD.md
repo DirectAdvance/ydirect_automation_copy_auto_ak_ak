@@ -28,7 +28,7 @@
 | 1.3 | Все поисковые группы С ключами | `NO_KEYWORDS_LIVE` | Grid: `keyword_count` группы | keyword_repair (докрутка); корень — Phase 2 при создании | ⬜ |
 | 1.4 | Глоб. минус-слова («отзывы») на уровне КАМПАНИИ (tp2/tp4/tp5) | `GLOBAL_MINUS_CAMPAIGN_MISSING` | Grid unified-payload → `minusKeywords`+`libraryMinusKeywordsIds` | `_enabled_minus_words` в deps (create) + **пост-аудит** `_audit_global_minus_campaign` → `fix_global_minus_campaign` (Grid `set_campaign_minus_keywords`, in-place, D6 2026-07-09) | ✅ |
 | 1.5 | Каталог tp7 (ct0000) подхватывает страницы (не 0) | — (визуально в кабинете) | UI «Страницы каталога» / фид | `it_lff=[]` для ct0000 (сделано) | ✅ |
-| 1.6 | Быстрые ссылки = 8, без смысловых дублей | — | объявление в кабинете | source-order + topic-дедуп; **R2-4 (в1) 2026-07-10: UAC-путь (tp6/tp7) теперь тоже гонит `_dedup_sitelinks(diversify_…)` ВСЕГДА** (был под гейтом `<8` → кредит-дубль «Платеж от 9 000»+«Автокредит от 9 000» проскакивал). Опц. reuse ОДНОГО набора на аккаунт — флаг `DIRECT_SITELINK_REUSE_ACCOUNT` (дефолт OFF) | 🟡 (UAC-дедуп — live не проверено) |
+| 1.6 | Быстрые ссылки = 8, без смысловых дублей | — | объявление в кабинете | source-order + topic-дедуп; **R2-4 (в1) 2026-07-10: UAC-путь (tp6/tp7) теперь тоже гонит `_dedup_sitelinks(diversify_…)` ВСЕГДА** (был под гейтом `<8` → кредит-дубль «Платеж от 9 000»+«Автокредит от 9 000» проскакивал). Опц. reuse ОДНОГО набора на аккаунт — флаг `DIRECT_SITELINK_REUSE_ACCOUNT` (дефолт OFF). **R2-6 2026-07-10 (корень 6/8 у tp7):** при `%` в заголовке фильтр `_sitelink_has_pct` выбрасывал 2 из 8 филлеров с «%» → оставалось 6 → `UAC_SITELINK_MISSING`. Добавлены 2 backup-филлера БЕЗ «%» (`_GENERIC_SITELINK_FILLERS` поз.9-10: «Рассрочка без переплат», «Гарантия на автомобиль») → при `_title_has_pct=True` из 10 отсеиваются 2, остаётся 8 | 🟡 (UAC-дедуп + %-backup — live не проверено) |
 | 1.7 | Видео на видео-марках (BAIC/Belgee/Haval/Москвич) | `VIDEO_MISSING` | докрутка read-back `hasVideo` | brand-fallback + докрутка (сделано, 155/16 верно) | ✅ |
 | 1.8 | adPrice на фидовых группах | `NO_ADPRICE_LIVE` | Grid | adprice_repair (докрутка) | 🟡 |
 | 1.9 | Нет `adGroupId not defined` (listing) | — (лог воркера) | `journalctl direct-worker` | shoppingAdId→lid (сделано) | ✅ |
@@ -167,7 +167,7 @@
 | `IMAGE_MISSING` | medium | нет картинки у объявления (spec) | :817 | ✅ `fix_image_missing` (:1675) |
 | `SHORT_TITLES` | low | заголовок <48/56 (tp1/tp2/tp4 адаптив / UAC) | :837, :943 | ✅ `fix_short_titles` — **LLM-РЕГЕНЕРАЦИЯ** (`content_quality.regen_titles`, тот же `_llm_pair_for`), НЕ суффикс; до 4 попыток |
 | `SHORT_TITLES_UNFIXABLE` | error | регенерация не дала заголовок ≥48 после 4 попыток (или слепок не восстановлен) | fix_short_titles | ⬜ (`fixable:False`, терминальный hard-fail вместо тихого суффикса) |
-| `BRAND_NOT_FIRST` | low | марка/модель группы НЕ до первой точки заголовка (tp1/tp2/tp4) | `_audit_brand_not_first` | ✅ `fix_brand_not_first` (`regen_titles need_brand_first=True`) |
+| `BRAND_NOT_FIRST` | low | марка/модель группы НЕ до первой точки заголовка (tp1/tp2/tp4/tp5). **R2-6 2026-07-10: ТОЛЬКО сегменты Марки/Модели** (фильтр `_ct_segment(ct) in (Марки,Модели)`); «Общее» (ct0000 И тема-cts ct0010/ct0014) исключены — иначе ложный UNFIXABLE | `_audit_brand_not_first` | ✅ `fix_brand_not_first` (`regen_titles need_brand_first=True`) |
 | `BRAND_NOT_FIRST_UNFIXABLE` | error | brand-first регенерация не удалась после 4 попыток | fix_brand_not_first | ⬜ (`fixable:False`, терминальный hard-fail) |
 | `UTP_RELEVANCE_FAILED` | warn | LLM-судья не одобрил дубли УТП/релевантность после 4 регенераций (маркер в `warnings`/`utp_judge` генерации) | `content_quality.audit_and_regen_utp` (на генерации) | ⬜ (на генерации — warn-маркер, не блок черновика) |
 | `NO_LISTING` | medium | фидовая tp5/tp7 без ListingAd | :885 | ✅ `fix_no_listing` (:1643) |
@@ -223,6 +223,13 @@
   (`UAC_VIDEO_MISSING` → recreate); D9 `CONTENT_TEXTS_LOW` (<3 текстов → `fix_texts_low` regen);
   D10 `GROUP_COUNT_BELOW_SLEPOK` (агрегатное покрытие модель-ct, **report-only**); D5
   `CT_SLEPOK_IMAGES_EMPTY` (брендовый ct без картинок в слепке, **report-only**).
+- **R2-6 2026-07-10 — закрыт рассинхрон audit↔repair (`KEYWORD_REPAIR_NO_PACK_SILENTLY_OK`):**
+  `repair_executor.execute_keywords_repair` при КС-группе без ключей + пустом паке молча возвращал
+  `ok=True, skipped` (одна ветка путала «автотаргет by-design» и «КС с пустым паком») → добивка писала
+  «нет групп для keyword-repair» вместо ошибки, хотя аудит рядом флагал `NO_KEYWORDS_LIVE`. Фикс:
+  `_at_by_design = "автотаргетинг" in camp_name` → AT-группа=`ok`-skip; иначе КС → `failed` («нет ключей
+  от pack для этого ct»). Теперь audit и repair согласованы (пустой пак = честный failed, а не тихий ok).
+  ⚠️ САМИ ключи зальются только когда пак дозаполнен (данные слепка, §5.2) — код чинит лишь диагностику.
 - **P1 (остаётся):** #2 UTM-на-группах (`TrackingParams`) — не покрыт (группо-уровень, риск ложных
   детектов). `IMAGES_FORBIDDEN` не подключён в `_run_spec_audit_and_fix` (только repair_plan); live-fix
   `WRONG_AUTOTARGET`/`NO_KEYWORDS_LIVE` через `UpdateUnifiedAdGroups` хрупок (edit-view lag) —
@@ -339,7 +346,8 @@
 
 | # | Критерий | Автопроверка в коде | Статус |
 |---|---|---|---|
-| 2.1 | Марка/модель — ДО первой точки заголовка | Генерация: усилен промпт (жёсткое brand-first, `ai_agents.build_titles_messages`) + reorder (`text_gen.py:913`). **Live-аудит ЕСТЬ**: `BRAND_NOT_FIRST` (`campaign_spec_audit._audit_brand_not_first`, **tp1/tp2/tp4 И tp5** — D2 2026-07-09: tp5 несёт TextAd, аудит добавлен) → фикс `fix_brand_not_first` = LLM-регенерация `need_brand_first=True` → 4 попытки → hard-fail `BRAND_NOT_FIRST_UNFIXABLE`. | 🟡 (код есть, **live не проверено**) |
+| 2.1 | Марка/модель — ДО первой точки заголовка | Генерация: усилен промпт (жёсткое brand-first, `ai_agents.build_titles_messages`) + reorder (`text_gen.py:913`). **Live-аудит ЕСТЬ**: `BRAND_NOT_FIRST` (`campaign_spec_audit._audit_brand_not_first`, **tp1/tp2/tp4 И tp5** — D2 2026-07-09: tp5 несёт TextAd, аудит добавлен) → фикс `fix_brand_not_first` = LLM-регенерация `need_brand_first=True` → 4 попытки → hard-fail `BRAND_NOT_FIRST_UNFIXABLE`. **ОПРЕДЕЛЕНИЕ brand-first (Семён 2026-07-10):** бренд/модель В НАЧАЛЕ, **до первой точки** — НЕ обязательно первое слово. Проверка = `content_quality.brand_head_ok` = `_brand_in_text(title.split(".")[0], brand)`. Поэтому «Купить {brand} в кредит.» ВАЛИДЕН (brand до первой точки). **Сегмент-фильтр (R2-6 2026-07-10):** аудит применяется ТОЛЬКО к сегментам Марки/Модели; «Общее» (ct0000 И тема-cts ct0010 Дром/ct0014 Авто) исключены — бренда нет, ставить в начало нечего (был ложный `BRAND_NOT_FIRST_UNFIXABLE` на 712665480/712666720). | 🟡 (код есть, **live не проверено**) |
+| 2.1b | **Вариативность захода** заголовков (R2-6 2026-07-10) — первые ~18 символов НЕ совпадают у всех 7 (одинаковый префикс `{Бренд} в {Город}.`×7 убивает комбинации Яндекса) | `create_set_assets._upgrade_credit_titles`: варианты смешаны — `{anchor}` (brand+город) / `{brand}` (без города) / «Купить {brand}» / «{brand} в кредит». Все brand-first (бренд до первой точки). Live-аудита НЕТ (только генерация). | 🟡 (генерация есть, **live не проверено**; чинит только будущие прогоны, не созданные) |
 | 2.2 | Мало свободных символов (заголовки плотные, ≥48/56) | Промпт: жёсткий минимум 48 симв. **Live-аудит** `SHORT_TITLES` (**tp1/tp2/tp4/tp5** адаптив `:837`, UAC `:943`; D2 2026-07-09: tp5 TextAd добавлен — ShoppingAd/ListingAd без titles не трогаются) → фикс = **LLM-регенерация** (`content_quality.regen_titles`, тот же `_llm_pair_for`), НЕ суффикс; 4 попытки → hard-fail `SHORT_TITLES_UNFIXABLE`. | 🟡 (код есть, регенерация+hard-fail; **live не проверено**) |
 | 2.4 | ≥3 текста на объявлении (адаптив/поиск) | **Live-аудит** `CONTENT_TEXTS_LOW` (`_audit_tp1_adaptive`, читает `bodies` GdAdaptiveTextAd, tp1/tp2/tp4/tp5; D9 2026-07-09) → фикс `fix_texts_low` = LLM-регенерация текстов (`content_quality._regen_texts`) + Grid RMW `UpdateAdaptiveTextAds` (bodies; видео/цена сохраняются). UAC (tp6/tp7 texts<3) — `UAC_TEXTS_MISSING`→recreate. Fail-safe: `bodies` не прочитан → не флагаем. | 🟡 (код есть, **live не проверено**) |
 | 2.3 | УТП не дублируются, тексты релевантны сайту | Промпт: усилены запрет дублей УТП + релевантность (titles/texts). Дедуп-генерация (`_dedup_*`+`_variant_norm_key`) сохранён. **LLM-судья** (`content_quality.audit_and_regen_utp`, на генерации, +1 короткий вызов/РК): дубли+релевантность → регенерация по претензиям судьи → 4 попытки → warn-маркер `UTP_RELEVANCE_FAILED`. Fail-open при недоступности судьи. | 🟡 (код есть, судья на генерации; **live не проверено**) |
@@ -379,6 +387,14 @@
 применяется ко ВСЕМ объявлениям (той же атомарной заменой `text_gen._apply_payment_amount`). Флаг
 `DIRECT_PAY_CANON_ACCOUNT` (дефолт **ON**). Wired в orchestrator (tp1/tp2/tp5) + master_product (tp6/tp7).
 🟡 live не проверено.
+
+**«Текст по умолчанию» ShoppingAd/динамики (R2-6 2026-07-10):** по решению Семёна — ОДИН общий
+заполненный под лимит текст, переиспользуемый (НЕ генерить per-group и не оставлять недозаполненным —
+был `«Авто в кредит на выгодных условиях. Оставьте заявку!»` с 31 своб. символом). Константа
+`create_set_assets.SHOPPING_DEFAULT_TEXT` = `«Авто в кредит от 9 000 ₽/мес. Первый взнос 0 ₽. Одобрение
+за 30 минут.»` (70 симв, кредит-угол), используется в `create_set_gallery` с fail-safe на `texts[0]`.
+Live-код `EMPTY_DEFAULT_TEXT_LIVE` (§1.b.3) чинит пустой; недозаполнение (мало символов) чинит только
+будущий прогон (`_campaign_default_text_repair` — STUB). 🟡 live не проверено.
 
 **UAC (tp6/tp7) — бюджет/pricing/период** (`uac_verifier.py`, все → пересоздание при нарушении):
 - `pricing`: `cpc`→**PER_CLICK**, `cpa`→**PER_CONVERSION**; иначе `UAC_PRICING_MISMATCH` (error, :79/:83).
@@ -679,8 +695,8 @@ brand_hint прокинут (иначе «Марки»-ct давал пусто�
 
 | # | Критерий | Статус |
 |---|---|---|
-| 4.1 | Время создания приемлемое (НЕ 1+ час на 14 РК) | ⬜ (ускорение: пред-заливка картинок, кэш repair) |
-| 4.2 | Набор ДОЖИМАЕТСЯ — не зависает / не прерывается | ⬜ (сейчас треды застревают на больших кампаниях) |
+| 4.1 | Время создания приемлемое (НЕ 1+ час на 14 РК) | 🟡 (замер 59581fdd9f9d 2026-07-10: **41 мин** создание 14 РК + ~час хвост добивки [починен, см. 4.2]. Инфра уже оптимизирована: батч add, parallel-заливка картинок [воркеры 8→10 `DIRECT_IMG_UPLOAD_WORKERS`], units-probe раз-на-набор. **Главный оставшийся рычаг = LLM-генерация контента per-РК**) |
+| 4.2 | Набор ДОЖИМАЕТСЯ — не зависает / не прерывается | 🟡 (R2-6 2026-07-10: «добивка держит родителя `running` ~час» ПОЧИНЕНА — dcr content_repair больше не absorb'ится в родителя, флаг `DIRECT_DCR_DETACH_PARENT`=ON: карточка → `done` сразу после создания+аудита, content_repair крутится демоном асинхронно. Реальные докрутки [recreate/UAC/finalize] не тронуты. Live не проверено) |
 
 ---
 
@@ -689,9 +705,18 @@ brand_hint прокинут (иначе «Марки»-ct давал пусто�
 | # | Критерий | Как проверить |
 |---|---|---|
 | 5.1 | Появляется + выбирается в селекторе /direct/automation | `/api/ai/agents` содержит слепок |
-| 5.2 | Есть ключи в паке (`read_keywords` не пусто) | `read_keywords(segment,tp,ct,slepok)` |
+| 5.2 | Есть ключи в паке для **КАЖДОГО ct** (вкл. модельные) — не пусто и не seed-only | `read_keywords(segment,tp,ct,slepok)` для ВСЕХ ct слепка, вкл. tp2 И tp5. **R2-6 2026-07-10:** ОДИН отсутствующий/тонкий `keywords/{slepok}.txt` ломает свою кампанию (не «есть на уровне марки → значит ок»). Пример: scherbakova/ct0032 Changan CS55 — `tp2` файла НЕ было (0 ключей), `tp5` = 2 seed-строки. Ориентир объёма у здоровых ct: 66–788. Корень «ключи пропали» = ЭТО (данные), не регрессия кода |
 | 5.3 | Есть тексты (`direct_slepok_content`) / voice (`AGENTS`) | запись в БД + `get_agent(slepok)` |
 | 5.4 | Реально СОЗДАЁТ РК с контентом слепка (не generic) | прогон на аккаунте директолога |
+
+**Известные пробелы данных слепка `scherbakova × Мультибренд` (диагностика 2026-07-10, дозаполняется
+харвестом с реальных аккаунтов Щербаковой):**
+- **Ключи:** `tp2/ct0032/keywords/scherbakova.txt` отсутствовал (Changan CS55), `tp5/ct0032` = 2 seed-строки
+  (единственный дырявый ct из 31). → сбор с живых аккаунтов Щербаковой + запись в пак (LXC 101 `/opt/neuro_content_local` И M3-мастер).
+- **Видео (`VIDEO_NO_POOL`×5, info):** в `_video_pool/` нет ct аккаунта (BAIC/Belgee/Changan) — 16 ct в пуле,
+  марок Щербаковой среди них нет. Реальная пустота, НЕ фолс аудита. → наполнить пул ИЛИ принять как норму.
+- **Картинки (`CT_SLEPOK_IMAGES_EMPTY`×4, warn):** scherbakova не внесена в `image_slepki.txt` ни для одного
+  ct tp1/Мультибренд → работает фолбэк `read_any_slepok_images` (картинки ЕСТЬ, но не щербаковские). → дозаполнить теги.
 
 ---
 

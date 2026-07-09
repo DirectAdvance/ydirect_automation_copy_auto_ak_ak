@@ -3,6 +3,47 @@
 > Читать ПЕРВЫМ в начале каждой сессии. Обновлять ПОСЛЕДНИМ перед выходом.
 > Ошибки создания РК: сигнатуры/решения/что-помогло — **ERRORS_JOURNAL.md** (обязателен к заполнению при фиксах).
 
+## Сессия 2026-07-10 — ТРЕК A (родитель висит ~час на dcr) + ТРЕК C (аудит инфра-скорости)
+- **ТРЕК A (главное, фикс):** прогон 59581fdd9f9d — 14 РК за 41 мин, потом ~час `running` done=14/14 →
+  interrupted. Корень: воркер СВОБОДЕН, висел только СТАТУС. `_schedule_delayed_content_repair_after_done`
+  флипал уже-`done` родителя обратно в `running` через `_parent_absorb_child_start(f"dcr:{did}")`;
+  watchdog щадит `_active_children`; dcr застревал в `partial` (keywords_repair не дозаливал ключи →
+  reschedule) → родитель висел. Фикс (детач, флаг `DIRECT_DCR_DETACH_PARENT` дефолт ON): под детачем dcr
+  НЕ вливается как active_child → родитель остаётся терминальным `done` после создания+аудита, dcr
+  крутится демоном отдельно. `_parent_absorb_child_progress` — ранний no-op для `dcr:` (не воскрешает
+  терминал). Реальные recreate/UAC/finalize (не-`dcr:` child_jid) и K1/F watchdog'и НЕ тронуты.
+  `blueprint.py`: py_compile OK, pyflakes 0 undefined. ERRORS_JOURNAL: `DCR_CONTENT_REPAIR_HOLDS_PARENT_RUNNING` 🟡.
+- **ТРЕК C (аудит, вывод — инфра УЖЕ оптимизирована):**
+  - #1 Батч campaigns.add: tp1/tp2-билдеры УЖЕ батчат adgroups/keywords/ads чанк-массивами
+    (`_AC_CHUNK_AG=100`/`_KW=1000`/`_AD=100`, throttle `_AC_BATCH_SLEEP=0.4`). Товарка = Grid.
+    Резать sleep/дробить сильнее — риск бана. Безопасного выигрыша НЕТ.
+  - #2 Reuse v5-сессии: `DirectV501Client` уже держит `requests.Session` keep-alive внутри инстанса;
+    шаринг между инстансами = маргинал (~10с/проход) + threading-риск. НЕ делал.
+  - #3 Units-probe: `_units_alive_for_login` УЖЕ раз-на-набор (preflight orchestrator:247); остальные
+    вызовы event-driven (152-путь/recreate) — нужны для R2-2. Кэшировать `_v5_units` рискованно
+    (rest падает по ходу, стале-True ломает 152-логику R2-2). НЕ кэшировал.
+  - #4 Картинки: `_parallel_upload_images` УЖЕ parallel-8 + account-cache + set-level pre-upload
+    (`_preupload_tp1_images` грузит ВСЕ картинки набора одним батчем). Премиса «по одной» устарела.
+    Сделал: пул воркеров env-tunable `DIRECT_IMG_UPLOAD_WORKERS` дефолт **10** (было 8; картинки =
+    Grid/куки, не v5 → лимит 2 потока не относится). `create_set_feeds.py`, py_compile OK.
+  - **Реальные оставшиеся рычаги 41-мин (НЕ инфра / вне моей зоны):** LLM-генерация контента per-РК
+    (зона copywriter) + Grid-финализ lag-sleeps (edit-view репликация, резать нельзя — сломает finalize).
+- **Проверено:** py_compile blueprint+create_set_feeds OK, pyflakes 0 НОВЫХ undefined. НЕ деплоено (по
+  заданию), live НЕ проверено. Тронуто: `blueprint.py`, `create_set_feeds.py`, ERRORS_JOURNAL, STATE.
+- **Для copywriter/главной сессии:** ускорение per-РК LLM-генерации — единственный крупный оставшийся
+  рычаг времени набора, но это контент-файлы (text_gen/create_content/…), не трогал.
+
+## Сессия 2026-07-10 — R2-5: delete_drafts не заходит в create-постпроцесс (фикс фриза воркера)
+- **Сделано:** `blueprint.py:_create_worker_loop` — `_is_delete_drafts` флаг, done-блок гейт
+  `if final_status == "done" and not _is_delete_drafts:`. delete_drafts после `_delete_drafts_core` +
+  терминального `_job_db_save` идёт сразу в finally, минуя auto-recreate/delayed-repair/finalize
+  (Grid-сетевые вызовы морозили воркер на несуществующей РК). Create (`kind=set`) не тронут.
+- **UI-лейбл:** follow-up (не фикшу): фронт УЖЕ ветвит по `j.kind==='delete_drafts'` («удалено черновиков»),
+  баннер (index.html:3757) предпочитает `result.deleted`; `created=deleted` в result — конвенция, на которую
+  фронт-delete-ветка опирается → менять бэкенд-поле нельзя. `deleted` уже отдельным полем.
+- **Проверено:** py_compile OK, pyflakes 0 undefined. НЕ деплоено, live не проверено. Коммит `5c89c4b`.
+- **Осталось:** живой прогон delete_drafts (флип в done сразу, воркер не морозится); ERRORS_JOURNAL обновлён.
+
 ## Сессия 2026-07-10 — R2-4: бандл качества (Э-ключи + каталог позитив + UAC-сайтлинки + суммы)
 - **Сделано (4 дефекта прогона e05fbc86e8ca):**
   - (а) `text_gen._AUTO_BRAND_CYRILLIC_EXTRA` += «ситирэй»/«кулрэй»/«рэй» (Э, U+044D) рядом с Е-вариантами

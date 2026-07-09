@@ -6,10 +6,15 @@ from typing import Any
 
 
 _TP_RE = re.compile(r"^\s*tp(\d+)_", re.IGNORECASE)
+_PAY_RE = re.compile(r"^\s*tp\d+_(cpc|cpa)_", re.IGNORECASE)
 
 
 def _repair(name: str, cid: int | None) -> dict[str, Any]:
     return {"kind": "rebuild_missing_content", "name": name, "id": cid}
+
+
+def _invariant_repair(name: str, cid: int | None) -> dict[str, Any]:
+    return {"kind": "campaign_invariant_repair", "name": name, "id": cid}
 
 
 def _keywords_repair(name: str, cid: int | None) -> dict[str, Any]:
@@ -167,5 +172,57 @@ def verify_grid_content(name: str, campaign_id: int | None,
                        "actual": shop_no_bodies,
                        "note": f"{shop_no_bodies} ShoppingAd без bodies (in-place: default_text_repair)"})
         repair.append(_default_text_repair(nm, cid))
+
+    # ── Кампанийные инвариант-галочки tp1–tp5 (P0, закрытие дыры DOD §1.c) ───────
+    # Читаются на уровне КАМПАНИИ (edit-view CampaignsEditData → grid_read._enrich_campaign_invariants).
+    # Fail-safe: флагаем ТОЛЬКО если поле реально прочитано (campaign_invariants_read=True) И имеет
+    # явный неверный булев (None=не прочитано → тишина, чтобы Grid-лаг/FieldUndefined не породил ложный
+    # детект и ложный ремонт, журнал I). Все нарушения чинит ОДИН идемпотентный campaign_invariant_repair
+    # (re-apply инвариант-блока финализации через UpdateCampaigns, БЕЗ баллов, РК всегда DRAFT — блик-
+    # радиус ложняка = безвредный повторный UpdateCampaigns, НЕ удаление). #4 (мониторинг сайта) в
+    # read-схеме Grid отсутствует → отдельно не детектируется, лишь переставляется ремонтом.
+    if tp in (1, 2, 3, 4, 5) and counts.get("campaign_invariants_read"):
+        _needs_invariant_fix = False
+        # (флаг, ожидание, issue-code, severity) — каждый булев tri-state; None пропускается.
+        _toggle_checks = (
+            ("is_alternative_texts_enabled", True, "ALT_TEXTS_ENABLED_LIVE",
+             "персонализация (адаптивные тексты) включена — должна быть ВЫКЛ (#3)"),
+            ("has_extended_geo_targeting", True, "EXTENDED_GEO_ENABLED_LIVE",
+             "расширенный географический таргетинг включён — должен быть ВЫКЛ (#5)"),
+            ("is_recommendations_management_enabled", True, "RECOMMENDATIONS_ENABLED_LIVE",
+             "«Директ помогает» включён — должен быть ВЫКЛ (#6)"),
+            ("is_price_recommendations_management_enabled", True, "PRICE_RECOMMENDATIONS_ENABLED_LIVE",
+             "ценовые рекомендации включены — должны быть ВЫКЛ"),
+            ("enable_company_info", True, "COMPANY_INFO_ENABLED_LIVE",
+             "Карты / список организаций (enableCompanyInfo) включены — должны быть ВЫКЛ"),
+            ("yandex_maps_enabled", True, "MAPS_ENABLED_LIVE",
+             "площадка «Карты» (yandexMaps) включена — должна быть ВЫКЛ"),
+            ("serp_geo_wizard_enabled", True, "ORG_LIST_ENABLED_LIVE",
+             "список организаций / гео-колдунщик (serpGeoWizard) включён — должен быть ВЫКЛ"),
+        )
+        for field, bad_value, code, note in _toggle_checks:
+            val = counts.get(field)
+            if isinstance(val, bool) and val is bad_value:
+                issues.append({"severity": "error", "code": code, "name": nm, "id": cid,
+                               "actual": val, "note": note})
+                _needs_invariant_fix = True
+        if _needs_invariant_fix:
+            repair.append(_invariant_repair(nm, cid))
+        # STRATEGY_MISMATCH_LIVE (warn, report-only): пара cpc→AVERAGE_CPA (payForConversion=False) /
+        # cpa→PAY_FOR_CONVERSION (payForConversion=True). Ожидание — из pay-mode КОДЕРА в имени
+        # (tp{N}_cpc/cpa_…, авторитетно, не догадка). Report-only: авто-правка стратегии in-place
+        # рискованна (нужны avgCpa/недельный лимит; неверный pay-mode = баг создания → recreate, не
+        # in-place) → без repair-кандидата, не раздувает inplace_cnt и не зацикливает «до нуля».
+        pfc = counts.get("pay_for_conversion")
+        _pm = _PAY_RE.match(nm)
+        if isinstance(pfc, bool) and _pm:
+            pay_mode = _pm.group(1).lower()
+            expected_pfc = (pay_mode == "cpa")
+            if pfc is not expected_pfc:
+                issues.append({"severity": "warn", "code": "STRATEGY_MISMATCH_LIVE",
+                               "name": nm, "id": cid, "actual": pfc, "expected": expected_pfc,
+                               "note": (f"стратегия {pay_mode}: payForConversion={pfc}, "
+                                        f"ожидалось {expected_pfc} "
+                                        f"(cpc→AVERAGE_CPA / cpa→PAY_FOR_CONVERSION); report-only")})
 
     return issues, repair

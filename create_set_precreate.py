@@ -13,9 +13,10 @@ def run_create_set_precreate(*, login: str, body: dict[str, Any], items: list[di
                              dedup_callouts: Callable[[list[str]], list[str]],
                              callout_cap: int, grid_client_factory: Any,
                              v5_get: Callable[..., dict[str, Any]],
-                             promo_usable_for_content: Callable[..., tuple[bool, str]],
-                             create_account_promo_from_slepok: Callable[..., tuple[int | None, str]],
-                             selected_slepok_key: Callable[[str], str]) -> dict[str, Any]:
+                             v5_call: Any = None,
+                             promo_usable_for_content: Callable[..., tuple[bool, str]] = None,
+                             create_account_promo_from_slepok: Callable[..., tuple[int | None, str]] = None,
+                             selected_slepok_key: Callable[[str], str] = None) -> dict[str, Any]:
     """Build and execute precreate assets without letting failures break create_set."""
     try:
         report = pcreate.build_precreate_report(
@@ -50,6 +51,7 @@ def run_create_set_precreate(*, login: str, body: dict[str, Any], items: list[di
             dedup_callouts=dedup_callouts,
             callout_cap=callout_cap,
             grid_client_factory=grid_client_factory,
+            v5_call=v5_call,
             v5_get=v5_get,
             promo_usable_for_content=promo_usable_for_content,
             create_account_promo_from_slepok=create_account_promo_from_slepok,

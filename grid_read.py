@@ -175,6 +175,29 @@ class GridReadClient:
             # promo_extension_id: поле promoExtensionId FieldUndefined в Grid → остаётся None
             counts[cid]["settings_read"] = True
 
+    def _enrich_campaign_invariants(self, id_strings: list[str], counts: dict[int, dict[str, Any]]) -> None:
+        """Fill campaign-level DoD invariant галочки tp1–tp5 (P0 — закрытие дыры DOD §1.c).
+
+        Читает через ``GridClient.read_campaign_invariants`` (edit-view CampaignsEditData — единственная
+        Grid read-схема, где эти поля есть; live rowset их не отдаёт). Тот же валидированный cookie, что
+        у прочих enrichment-ов. Заполняет tri-state поля + ``campaign_invariants_read=True`` только для
+        РЕАЛЬНО прочитанных кампаний. Fail-safe: непрочитанная кампания остаётся с None-полями и
+        ``campaign_invariants_read=False`` → verifier по ней НЕ выдаёт кампанийных инвариант-issue
+        (Grid-лаг/ошибка/FieldUndefined не порождают ложный детект, журнал I). Guarded извне
+        (campaign_content_counts) — исключение уходит в enrich_errors, поля остаются None."""
+        from .grid_finalize import GridClient
+        grid = GridClient(self.login, cookie=self.cookie)
+        inv = grid.read_campaign_invariants([int(s) for s in id_strings])
+        for cid, row in (inv or {}).items():
+            if cid not in counts:
+                continue
+            for key in ("is_alternative_texts_enabled", "has_extended_geo_targeting",
+                        "enable_company_info", "is_recommendations_management_enabled",
+                        "is_price_recommendations_management_enabled", "yandex_maps_enabled",
+                        "serp_geo_wizard_enabled", "pay_for_conversion"):
+                counts[cid][key] = row.get(key)
+            counts[cid]["campaign_invariants_read"] = True
+
     def _enrich_keyword_counts(self, id_strings: list[str], counts: dict[int, dict[str, Any]]) -> None:
         """keywords_count вычисляется в _enrich_group_targeting (из groups_for_edit).
         GdKeywordsContainerInput (UnknownType) недоступен в текущей Grid-схеме (2026-07-03).
@@ -317,6 +340,13 @@ class GridReadClient:
                 "adaptive_total": None, "no_images_ads": None, "adaptive_images_read": False,
                 # Shopping bodies enrichment (EMPTY_DEFAULT_TEXT_LIVE detect)
                 "shopping_no_bodies_ads": None, "shopping_bodies_read": False,
+                # Campaign-level invariant галочки tp1–tp5 (P0, edit-view CampaignsEditData).
+                # Все булевы — tri-state (None=не прочитано → verifier не флагает, fail-safe).
+                "is_alternative_texts_enabled": None, "has_extended_geo_targeting": None,
+                "enable_company_info": None, "is_recommendations_management_enabled": None,
+                "is_price_recommendations_management_enabled": None,
+                "yandex_maps_enabled": None, "serp_geo_wizard_enabled": None,
+                "pay_for_conversion": None, "campaign_invariants_read": False,
                 "enrich_errors": [],
             }
 
@@ -374,6 +404,7 @@ class GridReadClient:
                 ("group_targeting", self._enrich_group_targeting),   # also fills keywords_count
                 ("adaptive_images", self._enrich_adaptive_images),
                 ("shopping_bodies", self._enrich_shopping_bodies),
+                ("campaign_invariants", self._enrich_campaign_invariants),
             ):
                 try:
                     fn(id_strings, counts)

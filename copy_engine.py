@@ -28,6 +28,7 @@ _HERE = Path(__file__).resolve().parent
 # ── DI из blueprint (инъектятся configure; None до инъекции — заглушки для статики) ──
 _v5_call = _v501_svc = _v5_err = _token_for_login = _direct_tokens = None
 _resolve_agency_hint = _victory_conn_rw = None
+_resolve_region = None   # город → (r_code, oblast); ремап r-сегмента кодера при копировании
 _grid_list_campaigns = _grid_feeds = _grid_feed_offer_prices = _group_ad_price = None
 _grid_set_ad_prices = _grid_update_adaptive_ads = _account_offer_prices = _account_ctx = None
 _geo_id = _enabled_minus_places = _filter_allowed_feed_rows = _feed_key = None
@@ -327,12 +328,52 @@ def _copy_apply_geo_replacements(text: str | None, replacements: list[tuple[str,
     return out
 
 
-def _copy_normalize_campaign_name(name: str | None, replacements: list[tuple[str, str]]) -> str:
+_COPY_R_CODE_RE = re.compile(r"(?<=_)r\d{4}(?=_)")
+
+
+def _copy_target_region_code(target_city: str, target_region: str) -> str:
+    """Целевой r-код кодера (ag_part4) по гео target-аккаунта. Один источник для кампаний и групп.
+
+    Использует DI'd _resolve_region(city) -> (r_code, oblast) (create_set_plan). Возвращает валидный
+    r#### ТОЛЬКО если он определён и не плейсхолдер r0000 — иначе '' (ремап пропускается, чтобы не
+    затирать исходный код неопределённым плейсхолдером). None-DI (standalone без wiring) → ''."""
+    if not _resolve_region:
+        return ""
+    for probe in (target_city, target_region):
+        probe = (probe or "").strip()
+        if not probe:
+            continue
+        try:
+            r_code, _oblast = _resolve_region(probe)
+        except Exception:  # noqa: BLE001 — резолв региона best-effort, ремап не критичен для create
+            r_code = ""
+        r_code = str(r_code or "").strip()
+        if re.fullmatch(r"r\d{4}", r_code) and r_code != "r0000":
+            return r_code
+    return ""
+
+
+def _copy_remap_region_code(name: str | None, target_r_code: str) -> str:
+    """Перекодировать r-сегмент кодера (`_r0300_` → `_<target_r_code>_`) в имени кампании/группы.
+
+    Баги 1/4: гео-морфология меняет только словоформы (\\b), но регион в кодере зашит КОДОМ
+    (`ag_part4`, напр. r0300=Краснодарский край) — код словами не задеть. Здесь ремапим сам код на
+    r-код target-региона. target_r_code пуст/невалиден → имя без изменений (безопасно)."""
+    text = str(name or "")
+    if not text or not re.fullmatch(r"r\d{4}", str(target_r_code or "")):
+        return text
+    return _COPY_R_CODE_RE.sub(target_r_code, text)
+
+
+def _copy_normalize_campaign_name(name: str | None, replacements: list[tuple[str, str]],
+                                  target_r_code: str = "") -> str:
     out = _copy_apply_geo_replacements(name, replacements).strip()
     out = re.sub(r"^\s*Копия\s+ХАВАЛ\s+", "Haval ", out, flags=re.I)
     out = re.sub(r"^\s*Копия\s+", "", out, flags=re.I)
     out = out.replace("Башкортостан, республика", "Республика Башкортостан")
     out = out.replace("ХАВАЛ", "Haval")
+    # Баг 4: r-сегмент кодера в ИМЕНИ кампании (tp6/tp7 — весь кодер в имени) → target r-код.
+    out = _copy_remap_region_code(out, target_r_code)
     return out.strip()
 
 
@@ -613,18 +654,39 @@ def _copy_rewrite_snapshot_context(src_dir: Path, source_ctx: dict, target_ctx: 
 
 
 def _copy_target_href(href: str | None, source_domain: str, target_domain: str) -> str:
+    """Доменно-агностичная трансформация URL объявления/ссылки в целевой домен (баг 3).
+
+    Раньше: наивный ``href.replace(source_domain, target)`` по ОДНОМУ инференс-домену — если href
+    указывал на ДРУГОЙ хост (quiz-поддомен, турбо-страница, яндексовая «Подборка», маркетплейс), он
+    уезжал в target без замены. Теперь заменяем ЛЮБОЙ хост, не равный target, на target-хост:
+      • хост источника или его ПОДДОМЕН (тот же бизнес, сменил домен) → target-хост + path/query/fragment;
+      • ЧУЖОЙ хост (Яндекс-«Подборка»/турбо/маркетплейс — path на клиентском домене не существует) →
+        голый target (без мусорного пути, иначе 404).
+    Относительный URL (без хоста) и пустой target — не трогаем."""
+    from urllib.parse import urlsplit, urlunsplit
     href = str(href or "").strip()
-    target = str(target_domain or "").strip().strip("/")
-    if target and not target.startswith(("http://", "https://")):
-        target_abs = "https://" + target
-    else:
-        target_abs = target
+    target = str(target_domain or "").strip()
+    # target-хост: срезаем возможную схему/путь, берём чистый netloc.
+    t_split = urlsplit(target if "://" in target else "https://" + target)
+    target_host = (t_split.netloc or t_split.path.strip("/").split("/", 1)[0]).strip().strip("/")
+    target_abs = ("https://" + target_host) if target_host else ""
     if not href:
         return target_abs
-    src = str(source_domain or "").strip()
-    if src and target:
-        return href.replace(src, target)
-    return href
+    if not target_host:
+        return href
+    parts = urlsplit(href)
+    if not parts.netloc:            # относительный URL (нет хоста) — оставляем как есть
+        return href
+    host = parts.netloc.lower()
+    if host == target_host.lower():
+        return href                 # уже целевой хост
+    scheme = parts.scheme or "https"
+    src = str(source_domain or "").strip().lower().lstrip(".")
+    # свой домен/поддомен источника → перенос пути; чужой (подборка/турбо/маркетплейс) → голый target.
+    same_business = bool(src) and (host == src or host.endswith("." + src))
+    if src and not same_business:
+        return target_abs
+    return urlunsplit((scheme, target_host, parts.path, parts.query, parts.fragment))
 
 
 def _copy_snapshot_preflight(src_dir: Path, *, target_feed_url: str, target_city: str, target_region: str) -> dict:
@@ -863,6 +925,10 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
     if not local_gid:
         raise RuntimeError(f"не найден GeoRegionId для целевого гео: city={target_city!r}, region={target_region!r}")
     region_ids = [int(local_gid)]
+    # Баги 1/4: r-код target-региона для ремапа кодера (один источник — имена кампаний И групп).
+    target_r_code = _copy_target_region_code(target_city, target_region)
+    if target_r_code:
+        _copy_job_log(job_id, f"кодер: r-сегмент региона → {target_r_code}")
     source_ctx = _copy_ctx(source_login)
     replacements = _copy_geo_replacements(
         source_ctx, target_city, target_region, log=(lambda m: _copy_job_log(job_id, m))
@@ -922,7 +988,7 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
 
     results = []
     maps = {"campaigns": {}, "adgroups": {}, "ads": {}, "feeds": {}, "callouts": {},
-            "images": {}, "promotions": {}}
+            "images": {}, "promotions": {}, "sitelinks": {}}
     # feed_map: заносим ВСЕ выбранные target-фиды в maps["feeds"] (step_prices читает их значения).
     for _sid, _tid in (feed_map_valid or {}).items():
         maps["feeds"][str(_sid)] = int(_tid)
@@ -950,7 +1016,7 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
     for idx, camp in enumerate(campaigns, start=1):
         old_cid = int(camp["id"])
         old_name = str(camp.get("name") or "")
-        new_name = _copy_normalize_campaign_name(old_name, replacements)
+        new_name = _copy_normalize_campaign_name(old_name, replacements, target_r_code)
         base_href = _copy_target_href(((camp.get("additionalData") or {}).get("href")), src_domain, target_domain)
         src_groups = groups_by_campaign.get(old_cid) or []
         if not src_groups:
@@ -985,7 +1051,10 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
             titles = [_copy_apply_geo_replacements(t, replacements) for t in titles if str(t or "").strip()]
             bodies = [_copy_apply_geo_replacements(t, replacements) for t in bodies if str(t or "").strip()]
             group_specs.append({
-                "name": _copy_apply_geo_replacements(grp.get("adgroup_name") or "группа", replacements),
+                # Баг 1: гео-словоформы + ремап r-сегмента кодера группы (r-код словами не задеть).
+                "name": _copy_remap_region_code(
+                    _copy_apply_geo_replacements(grp.get("adgroup_name") or "группа", replacements),
+                    target_r_code),
                 "keywords": [_copy_apply_geo_replacements(k, replacements) for k in (grp.get("keywords") or [])],
                 "minus": list(grp.get("minus_keywords") or []),
                 "titles": titles,
@@ -1061,8 +1130,54 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
                         shop_items.append(_si)
                 if shop_items:
                     grid = gf.GridClient(target_login)
-                    shop_ids = [int(x) for x in (grid.add_shopping_ads(shop_items) or []) if x]
+                    # add_shopping_ads возвращает ПОЗИЦИОННЫЙ list[int|None] (None = не создан). Спариваем
+                    # id↔item ДО отбрасывания None — иначе schлопывание сдвинет vendor-фильтр на чужой товар.
+                    _shop_pairs = [(int(x), _si) for x, _si in zip(grid.add_shopping_ads(shop_items) or [], shop_items) if x]
+                    shop_ids = [_sid for _sid, _ in _shop_pairs]
                     shopping_added = len(shop_ids)
+                    # Баг 5: «текст по умолчанию» товарных объявлений (у ShoppingAd нет текста
+                    # без явного set_default_text). Берём тело ТГО группы (уже гео-морфнутое) →
+                    # фолбэк на бренд. Фильтры по vendor + глобальные минус-марки (как create_shopping_content).
+                    if shop_ids:
+                        try:
+                            default_text = ""
+                            for gs in group_specs:
+                                for _t in (gs.get("texts") or []):
+                                    if str(_t or "").strip():
+                                        default_text = str(_t).strip()
+                                        break
+                                if default_text:
+                                    break
+                            if not default_text:
+                                _brand0 = (group_specs[0].get("brand") if group_specs else "") or "Haval"
+                                default_text = f"{_brand0} в наличии. Успей купить по выгодной цене"
+                            from .text_norm import _trim_clean as _tc
+                            default_text = _tc(default_text, 81)
+                            filters_by_ad_id = {}
+                            for _sid, _src in _shop_pairs:
+                                conds = []
+                                _vv = str(_src.get("vendor") or "").strip()
+                                if _vv:
+                                    _variants = list(dict.fromkeys([_vv, _vv.lower(), _vv.title()]))
+                                    conds.append({"field": _src.get("brand_field") or "vendor",
+                                                  "operator": "CONTAINS_ANY",
+                                                  "stringValue": json.dumps(_variants, ensure_ascii=False)})
+                                try:
+                                    from . import create_set_feeds as _csf_dt
+                                    conds.extend(_csf_dt._minus_marks_grid_conditions(
+                                        brand_field=_src.get("brand_field") or "vendor",
+                                        model_field=_src.get("model_field") or "model"))
+                                except Exception:  # noqa: BLE001
+                                    pass
+                                if conds:
+                                    filters_by_ad_id[int(_sid)] = {"tab": "CONDITION", "conditions": conds}
+                            if default_text:
+                                grid.set_default_text(shop_ids, int(target_feed_id), default_text,
+                                                      filters_by_ad_id=filters_by_ad_id)
+                                _copy_job_log(job_id, f"grid-cookie {new_name}: текст по умолчанию "
+                                                      f"проставлен на {len(shop_ids)} товарных")
+                        except Exception as _e_dt:  # noqa: BLE001 — товарные созданы; текст по умолчанию не критичен для сборки
+                            _copy_job_log(job_id, f"grid-cookie {new_name}: текст по умолчанию не проставлен ({str(_e_dt)[:160]})")
                     if shop_ids and any(g in listing_groups for g in src_group_ids):
                         listing_rows = grid.add_listing_ads_by_shopping_ads(shop_ids) or []
                         listing_added = len([x for x in listing_rows if (x.get("id") if isinstance(x, dict) else x)])
@@ -1171,14 +1286,21 @@ def _copy_grid_bridge_callouts(source_grid, target_grid, src_dir: Path, maps: di
 
     Связь campaign→callout_ids даёт campaign_callouts.json (pull_source_campaign_assets), а тексты —
     source_grid.get_callouts() ({текст: id}, инвертируем в {id: текст}). Затем target_grid.add_callouts
-    создаёт (с дедупом) те же тексты на target. Без source/target grid или без исходных id — no-op."""
-    if source_grid is None or target_grid is None:
-        return
+    создаёт (с дедупом) те же тексты на target.
+
+    Баг 2b: раньше при source_grid=None (сбой куки источника) — ТИХИЙ no-op, уточнения молча терялись.
+    Теперь: если исходные callout-id ЕСТЬ, а source/target grid недоступен — поднимаем ошибку (caller
+    вынесет её в rep['errors']). Нет исходных id — реально нечего переносить, тихо ок."""
     links = _copy_read_json(src_dir / "campaign_callouts.json")
     links = links if isinstance(links, dict) else {}
     wanted_ids = {str(x) for co_ids in links.values() for x in (co_ids or []) if str(x).strip()}
     if not wanted_ids:
         return
+    if target_grid is None:
+        raise RuntimeError("нет target grid-клиента — уточнения не перенесены")
+    if source_grid is None:
+        raise RuntimeError(
+            f"нет source grid-клиента (куки источника) — {len(wanted_ids)} уточнений не перенесены")
     src_text_by_id: dict[str, str] = {}
     try:
         for text, cid in (source_grid.get_callouts() or {}).items():
@@ -1228,6 +1350,9 @@ def _copy_grid_unified_steps(job_id: str, body: dict, target_login: str, target_
     rep: dict = {"skipped": ["keywords (create_full уже залил)",
                              "adaptive_creatives (create_full собрал 1:1)"], "errors": []}
     source_login = (body.get("source_login") or "").strip()
+    # Баг 2a/3: source-домен для доменной трансформации href быстрых ссылок (step_attach_sitelinks).
+    if src_domain and not body.get("_copy_source_domain"):
+        body["_copy_source_domain"] = src_domain
     try:
         tgt_uac = cmc.build_client(target_login, account=(target_agency or None))
         tgt_cookie = tgt_uac.sess.headers.get("Cookie") or ""
@@ -1288,6 +1413,8 @@ def _copy_grid_unified_steps(job_id: str, body: dict, target_login: str, target_
         ("age_bidmods", lambda: csteps.step_age_bidmods(ctx)),
         ("disabled_places", lambda: csteps.step_disabled_places(ctx)),
         ("attach_callouts", lambda: csteps.step_attach_callouts(ctx, per_campaign_cap=_CALLOUT_PER_CAMPAIGN_CAP)),
+        # Баг 2a: быстрые ссылки по исходной связи campaign→sitelinkSet (source-grid read → target set).
+        ("attach_sitelinks", lambda: csteps.step_attach_sitelinks(ctx)),
         # step_attach_promos: source-promo-def reader отсутствует → created_promo_ids=[] → безопасный no-op.
         ("attach_promos", lambda: csteps.step_attach_promos(ctx, [])),
         ("prices", lambda: csteps.step_prices(ctx)),

@@ -24,6 +24,170 @@
 
 ## Активные / недавние ошибки
 
+### KEYWORD_REPAIR_NO_PACK_SILENTLY_OK — КС-группа без ключей пака засчитывалась как «ok» в keyword-repair (P0, 2026-07-10)
+- Симптом (прогон 59581fdd9f9d, delayed_repair 0210a981b2b0): `keywords_repair` пишет «нет групп для
+  keyword-repair (всё уже корректно/идемпотентно), skipped_groups=73» — хотя `campaign_spec_audit`
+  флагует `NO_KEYWORDS_LIVE`. tp2 712665661 Модели-КС — 0 ключей; tp5 ct0032 Changan CS55 — 1 seed-ключ.
+  Рассинхрон audit↔repair: одно видит проблему, другое говорит «всё ок».
+- Где: **`repair_executor.py:execute_keywords_repair`** строки ~720-728 (блок `need_kw and not
+  writable_kw and not need_at`).
+- Root-cause: когда `need_kw=True` (группа без ключей по showConditions) + `writable_kw=[]` (пак M3
+  недоступен или ct нет в паке → `kp.gather(...)={}` → `pos=[]`) + `need_at=False` (КС-кампания) —
+  вся группа клалась в `results` как `ok=True, skipped="нет источника ключей (автотаргет активен)"`.
+  `write_items=[]` → `failed=[]` → функция возвращала «нет групп для keyword-repair» вместо ошибки.
+  Корень: одна ветка покрывала и AT-by-design (правильный skip) и КС-без-пака (должен быть failed).
+- Решение (2026-07-10, repair_executor.py строки 719-737):
+  - Ветка `need_kw and not writable_kw and not need_at` теперь ветвится:
+    `"автотаргетинг" in (camp_name or "").lower()` → AT-by-design → `ok=True, skipped` (как раньше);
+    иначе (КС-кампания без пак-данных) → `failed.append(error="нет ключей от pack для этого ct
+    (pack недоступен/пуст; поисковая группа без ключей)")`.
+  - Итог: честный статус — КС с пустым паком → failed → audit↔repair консистентны.
+- Чинит ли delayed content_repair уже созданные РК (712665661, ct0032): ЧАСТИЧНО. Новый код
+  теперь **правильно сообщает failed** вместо «всё ок», но ключи всё равно не зальются, пока
+  `kp.gather(slepok, site_type, tp_code)` не вернёт данные (M3-пак). Если M3 недоступен или ct
+  отсутствует в паке — ключи невозможны физически. Когда пак появится — delayed-repair на следующей
+  итерации добьёт. Только для будущих прогонов: если корень в данных пака — нужна сверка
+  `direct_slepki_master` (ct0032 Changan CS55 в паке psm5h7q6).
+- Статус: 🟡 код на Mac (py_compile OK; pyflakes 0 новых undefined). НЕ деплоено. live не
+  проверено — проверит следующий прогон: КС-без-пака больше не маскируется под «ok».
+- НЕ помогло ранее: —
+
+### TITLE_MONOTONE_PREFIX_ALL_BRAND_CITY — все 7 заголовков с одинаковым 18-сим. зачином (Fix 1, 2026-07-10)
+- Симптом (прогон 59581fdd9f9d, tp1 Belgee 712664560): ВСЕ 7 заголовков — «Belgee в Кемерово.
+  {УТП}»; первые 18 символов идентичны. Дефект вариативности захода (DOD §2.1.с).
+- Где: **`create_set_assets.py:_upgrade_credit_titles`** (~строки 284-320), TOKEN-финал tp1/tp2/tp4.
+  Список `variants` для `brand_real=True` содержал 9 шаблонов, ВСЕ начинались с `f"{anchor}. …"`,
+  где `anchor = f"{brand} в {city}"` — т.е. «Belgee в Кемерово.» всегда первые 18+ символов.
+- Root-cause: вариативность подхода R2-3 (brand-first детерминированный реордер) добавила бренд
+  в начало, но НЕ добавила разнообразие начальных конструкций — все варианты были {anchor}.{УТП}.
+  Городской якорь склеен с брендом в КАЖДОМ варианте → первые ~18 символов одинаковые.
+- Решение (2026-07-10, create_set_assets.py строки 292-310):
+  Variants смешаны: `{anchor}` (brand+город), `{brand}` (без города), `"Купить {brand} …"`,
+  `"{brand} в кредит …"` — 5 уникальных 18-символьных префиксов из 7 заголовков.
+  Smoke-test: «Belgee в Кемерово.», «Belgee.», «Купить Belgee», «Belgee в кредит.» + «Belgee.» —
+  5 различных зачинов, все brand-first, все кредитный угол.
+- Чинит ли delayed content_repair уже созданные РК (712664560): НЕТ. `_upgrade_credit_titles`
+  исполняется только при TOKEN-создании. Delayed-repair может вызвать `fix_brand_not_first` (regen
+  LLM), но специальной логики «дозаливки вариативности» нет — существующие РК остаются как есть.
+  Фикс только для будущих прогонов.
+- Статус: 🟡 код на Mac (py_compile OK; pyflakes 0 новых undefined; smoke 5/5 уникальных
+  префиксов из 7 заголовков). НЕ деплоено. live не проверено.
+- НЕ помогло ранее: R2-3 — добавил brand-first реордер, но варианты остались все {anchor}-based.
+
+### SHOPPING_DEFAULT_TEXT_UNDERFILLED — default_text ShoppingAd = 31 свободный символ (Fix 4, 2026-07-10)
+- Симптом (прогон 59581fdd9f9d, tp5 712665815): «Текст по умолчанию» = «Авто в кредит на выгодных
+  условиях. Оставьте заявку!» — 50 символов, 31 свободный (допустимо ≤81). Мало содержательных УТП.
+- Где: **`create_set_gallery.py`** (~строка 49) — `body_text` брался из `it.get("texts")[0]` или
+  `tpl_texts[0]`; при деградации AI → короткий аварийный fallback из `ai_agents.py`.
+  **`create_set_assets.py`** — константа `SHOPPING_DEFAULT_TEXT` отсутствовала.
+- Root-cause: D7 (ERRORS_JOURNAL K4_CONTENT_STYLE_WEAK_STATIC_RESERVES) задокументировал проблему
+  коротких аварийных текстов. Уплотнение аварийных текстов в `ai_agents.py` (🟡 ждёт деплоя) ПОМОГАЕТ
+  для LLM-fallback, но per-group texts[0] мог по-прежнему давать короткий текст при любом degraded
+  контексте. ShoppingAd нужен ОДИН общий переиспользуемый текст, заполненный под лимит (DOD §2.4).
+- Решение (2026-07-10):
+  - `create_set_assets.py`: добавлена константа `SHOPPING_DEFAULT_TEXT = "Авто в кредит от 9 000 ₽/мес.
+    Первый взнос 0 ₽. Одобрение за 30 минут."` (70 символов, ≤81, кредитный угол).
+  - `create_set_gallery.py` (~строка 49): `body_text = SHOPPING_DEFAULT_TEXT` (import from
+    create_set_assets), с fail-safe на `texts[0]`/`tpl_texts[0]` если импорт упал.
+- Чинит ли delayed content_repair уже созданные РК (712665815): НЕТ. Нет механизма обновления
+  default_text существующих ShoppingAd в delayed-repair цикле. `_campaign_default_text_repair`
+  в `create_set_repairing.py` — STUB. Фикс только для будущих прогонов.
+- Статус: 🟡 код на Mac (py_compile OK; pyflakes 0 новых undefined). НЕ деплоено. live не
+  проверено — проверит следующий прогон: default_text tp5/ShoppingAd = 70 символов, кредитный угол.
+- НЕ помогло ранее: D7 (K4) уплотнение аварийных ai_agents-текстов — ОБЩЕЕ улучшение, но не
+  гарантировало ОДИН конкретный текст под лимит для ShoppingAd по DOD.
+
+### UAC_SITELINKS_PCT_FILTER_STARVES_6OF8 — при _title_has_pct=True 2 из 8 backup-филлеров
+                                             отфильтровывались → 6 сайтлинков вместо 8 (Fix 2, 2026-07-10)
+- Симптом (прогон 59581fdd9f9d): tp7 712664634 и 712664590 — `UAC_SITELINKS_MISSING actual=6
+  expected=8`. При `_title_has_pct=True` (заголовки содержат %) из 8 генерик-филлеров 2 содержат
+  «%» (позиции 5-6 «Выгода до 45% при покупке» и «Господдержка до 20%») → фильтр
+  `_sitelink_has_pct` выбрасывает оба → остаётся 6.
+- Где: **`blueprint.py:_GENERIC_SITELINK_FILLERS`** (~строка 5960) и
+  **`create_set_master_product.py`** (~строки 256-291) цикл сборки с `_title_has_pct and
+  _sitelink_has_pct` фильтром.
+- Root-cause: `_GENERIC_SITELINK_FILLERS` содержал 8 филлеров, из которых 2 (позиции 5 и 6)
+  содержат «%». При `_title_has_pct=True` → после фильтра остаётся 6. Недостаточный запас.
+  Архитектура: K4/D1 исправил тексты, но не добавил резервный буфер без-% для этого сценария.
+- Решение (2026-07-10, blueprint.py после строки 6073):
+  Добавлены 2 backup-филлера без «%» с явным комментарием «позиции 9-10, используются когда
+  _title_has_pct=True фильтрует позиции 5-6»:
+  `{"title": "Рассрочка без переплат", "description": "Оформим рассрочку без скрытых платежей и комиссий"}`
+  `{"title": "Гарантия на автомобиль", "description": "Расширенная гарантия при покупке нового автомобиля"}`
+  title 22 chars ≤30, desc 49-50 chars ≤60. Оба без «%».
+  При `_title_has_pct=True`: из 10 фильтруется 2 (поз.5+6) → остаётся 8 валидных.
+- Чинит ли delayed content_repair уже созданные РК (712664634, 712664590): НЕТ. `UAC_SITELINKS_MISSING`
+  по DOD §1.b = warn (fixable:False). Delayed-repair не перезаписывает UAC-сайтлинки существующих РК.
+  Фикс только для будущих прогонов (при создании новых UAC tp7).
+- Статус: 🟡 код на Mac (py_compile OK; pyflakes 0 новых undefined). НЕ деплоено. live не
+  проверено — проверит следующий tp7-прогон: `sitelinks_count=8` при `_title_has_pct=True`.
+- НЕ помогло ранее: K4/D1 заменил тексты 8 филлеров — не решал проблему нехватки при фильтрации.
+
+### BRAND_NOT_FIRST_FALSE_POSITIVE_OBSHEE — BRAND_NOT_FIRST на «Общее»-кампаниях → UNFIXABLE (Fix 5, 2026-07-10)
+- Симптом (прогон 59581fdd9f9d): `BRAND_NOT_FIRST×2` на кампаниях 712665480 и 712666720 (типа
+  «Общее»-КС). 4 попытки fix_brand_not_first → `UNFIXABLE`. Заголовки не содержат бренд — потому что
+  для «Общее» (`ct0000`) бренда быть НЕ должно. Ложный детект.
+- Где: **`campaign_spec_audit.py:_audit_brand_not_first`** (~строки 1052-1118), loop по группам.
+- Root-cause: функция фильтровала только `ct == "ct0000"` (skip). Но «Общее»-кампании имеют группы
+  с ct0010 (Дром), ct0014 (Авто/Автомобили) — НЕ ct0000. Эти ct есть в `_ag_part1_map` (тема-агрегаты
+  из gsheet_naming), которая для них возвращает «Дром», «Авто» и т.п. → `agid_to_brand["gid"] = "Дром"`.
+  Заголовки группы (ct0010/ct0014) не начинаются с «Дром» → `brand_head_ok=False` → `BRAND_NOT_FIRST`.
+  Фиксер `fix_brand_not_first` пытается переписать заголовки под «Дром в начале» — невалидно (Дром не
+  марка). 4 попытки провала → `UNFIXABLE`.
+- Решение (2026-07-10, campaign_spec_audit.py строки ~1058-1075):
+  Добавлен фильтр по `_ct_segment`: перед добавлением группы в `agid_to_brand` — проверяем
+  `_ct_segment_fn(ct) in ("Марки", "Модели")`. Если «Общее» — `continue` (пропустить).
+  Fail-safe: если `_ct_segment` недоступен в `_DEPS` — пропускаем фильтр (ведём себя как раньше).
+  Smoke-test (изолированный): ct0010-«Дром» → пропущен; ct0000 → пропущен (гейт ct0000); ct0031
+  «Changan» (Марки) → агрегирован. `agid_to_brand = {"333": "Changan"}` — правильно.
+- Чинит ли delayed content_repair уже созданные РК (712665480, 712666720): ДА (частично).
+  Следующий audit-цикл delayed_repair вызовет `_audit_brand_not_first` с новым кодом — ложный
+  `BRAND_NOT_FIRST` не сгенерируется → `UNFIXABLE`-статус не возникнет → delayed-repair перестанет
+  тратить попытки впустую. Уже имеющийся `UNFIXABLE` в result не отзывается ретроактивно, но
+  следующий delayed-repair цикл будет чист.
+- Статус: 🟡 код на Mac (py_compile OK; pyflakes 0 новых undefined; smoke-test PASS). НЕ деплоено.
+  live не проверено — проверит следующий прогон/delayed-repair: BRAND_NOT_FIRST не должен появляться
+  на «Общее»-кампаниях (ct0010/ct0014 не в проверке).
+- НЕ помогло ранее: —
+
+### DCR_CONTENT_REPAIR_HOLDS_PARENT_RUNNING — родитель висит running ~час на фоновой добивке dcr (ТРЕК A, 2026-07-10)
+- Симптом (прогон 59581fdd9f9d): 14 РК созданы за 41 мин, потом джоба ещё ~час висела `status=running`
+  с `done=14/14`, пока не стала `interrupted` (рестарт сервиса). НЕ finalize-freeze (#17/R2-1 тут ни
+  при чём — воркер СВОБОДЕН, блокирован только СТАТУС карточки).
+- Где: `blueprint.py:_schedule_delayed_content_repair_after_done` (~1822) → `_parent_absorb_child_start
+  (parent_job_id, f"dcr:{did}", 0)`; watchdog `_create_watchdog_tick` (~868 `if _active_children:
+  continue`); терминал dcr `_run_delayed_content_repair` (~2046) + K1-watchdog (~2168).
+- Root-cause: после создания+аудита джоба УЖЕ `done`. Done-блок воркера планирует delayed
+  content_repair (dcr) и `_parent_absorb_child_start` ФЛИПАЛ родителя обратно в `running` +
+  `_active_children=["dcr:…"]`. Watchdog ЛЕГИТИМНО щадит такую джобу (для реальных recreate/UAC/finalize
+  так и надо), но dcr — это ОТЛОЖЕННАЯ фоновая добивка (run_at + свой демон-исполнитель), а НЕ дочерний
+  воркер. dcr застревал в `partial` (keywords_repair не мог дозалить ключи → reschedule до кап
+  `_DELAYED_REPAIR_MAX_RESCHEDULES`), каждый reschedule оставлял родителя `running` → карточка висела
+  ~час. Дизайн-конфликт: фаза «докрутка» в UI ВЫКЛючена (F async-finalize OFF), но dcr всё равно держал
+  родителя не-терминальным.
+- Решение (2026-07-10, ТРЕК A — вариант 1 «детач», обоснование: минимальнее и согласуется с «докрутка
+  не в UI» — родитель доходит до ТЕРМИНАЛА после создания+аудита, dcr крутится демоном асинхронно):
+  - Флаг `_DCR_DETACH_PARENT` (env `DIRECT_DCR_DETACH_PARENT`, дефолт **ON**; реверс=0).
+  - `_schedule_delayed_content_repair_after_done`: под детачем НЕ зовём `_parent_absorb_child_start` для
+    dcr → родитель остаётся `done`; в result `delayed_content_repair_scheduled.parent_detached=True`.
+    dcr-строка сохраняется и исполняется демоном как раньше (reschedule/«до нуля» не тронуты).
+  - `_parent_absorb_child_progress`: ранний no-op при `child_jid.startswith("dcr:")` → терминальные
+    absorb-вызовы dcr (успех/ошибка/K1-watchdog) НЕ двигают бар и НЕ ВОСКРЕШАЮТ уже-терминального
+    родителя (done/cancelled/error/interrupted) в `done`.
+- Не сломано: реальные дочерние докрутки (recreate/UAC-replace/resume — child_jid=job_id, absorb_start
+  на старте воркера ~2591) и finalize (`fin:…`, ~2669) — child_jid НЕ начинается с `dcr:` → guard их не
+  трогает, ими рулят K1/F watchdog'и как прежде. Watchdog done>=total-таймаут (R2-1) и done<total
+  (`_CREATE_RUNNING_TIMEOUT`) без изменений. `_reconcile_parent_job_counters` (счётчики) не трогает
+  статус → под детачем работает штатно. `_job_db_progress` (line 644) — только для реальных child-джоб.
+- Статус: 🟡 код на Mac (py_compile OK; pyflakes 0 undefined в blueprint). НЕ деплоено. **live не
+  проверено** — проверит прогон: набор после создания+аудита флипается в `done` СРАЗУ (не висит ~час);
+  content_repair виден в result как `delayed_content_repair_scheduled` и дожимается демоном отдельно;
+  реальные recreate/finalize по-прежнему держат карточку running до завершения.
+- НЕ помогло ранее: R2-1 (finalize-таймбокс) и #17 (постпроцесс-таймбокс) чинили ФАЗУ финализации
+  СОЗДАНИЯ (воркер блокирован на сокете) — здесь воркер СВОБОДЕН, висел только СТАТУС из-за dcr-absorb.
+  K1-watchdog (dcr running>30мин→failed) закрывал СТРОКУ dcr, но при `partial`+reschedule строка
+  жива/не-running → K1 её не трогает, родитель оставался running.
+
 ### DELETE_DRAFTS_FREEZE_IN_CREATE_POSTPROCESS — джоба удаления заходила в create-done-блок → морозила воркер (R2-5, 2026-07-10)
 - Симптом: джоба `kind=delete_drafts` после «удалено 14/14» висит `running` 2+ мин (воркер CPU 0.3%,
   лог молчит) — тот же постпроцесс-фриз, что у создания. Для УДАЛЕНИЯ постпроцесс бессмыслен —

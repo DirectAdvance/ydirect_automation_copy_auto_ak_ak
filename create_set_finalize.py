@@ -33,7 +33,7 @@ def _finalize_rsya(login: str, campaign_id: int, *, name: str, goal_id: int,
     ORGANIC_PLACEMENT_TYPES_INVALID_COMBINATION (проверено live на porg-psm5h7q6, 2026-06-22).
     grid_finalize.py не трогаем — берём только его примитивы (_TEMPLATE/_MUTATION/CSRF/post)."""
     import datetime as _dt
-    gc = gf.GridClient(login, cookie=grid_cookie)
+    gc = gf.get_grid_client(login, cookie=grid_cookie)
     gc._bootstrap_csrf()
     uc = json.loads(json.dumps(gf._TEMPLATE))            # deepcopy HAR-шаблона
     uc["id"] = str(campaign_id)
@@ -117,7 +117,7 @@ def _grid_minus_pack_id(login: str, name_marker: str = "Минуса общие"
     if hit and (time.time() - hit[1]) < _GRID_ACCOUNT_TTL:
         return hit[0]
     try:
-        gc = gf.GridClient(login)
+        gc = gf.get_grid_client(login)
         gc._bootstrap_csrf()
         r = gc._post("MinusPhraseLibrary", _MINUS_LIB_Q, {"input": {}})
         if r.status_code == 403:
@@ -142,7 +142,7 @@ def _grid_callout_ids(login: str, texts: list | None = None, limit: int = 4) -> 
         if _hit and (time.time() - _hit[1]) < _GRID_ACCOUNT_TTL:
             by_text = _hit[0]
         else:
-            gc = gf.GridClient(login)
+            gc = gf.get_grid_client(login)
             gc._bootstrap_csrf()
             r = gc._post("Callouts", _CALLOUTS_Q, {"login": login})
             if r.status_code == 403:
@@ -180,7 +180,7 @@ def _finalize_search_via_grid(login: str, campaign_id: int, *, name: str, goal_i
     дефолт (None) = `gf.PLATFORMS_SEARCH` (старое поведение, gallery=True — для совместимости).
     placementTypes=["SEARCH_PAGE"]. Не ставим isOrganicSearchEnabled=False/placementTypes=[] (это РСЯ)."""
     import datetime as _dt
-    gc_fin = gf.GridClient(login)
+    gc_fin = gf.get_grid_client(login)
     gc_fin._bootstrap_csrf()
     uc = json.loads(json.dumps(gf._TEMPLATE))
     uc["id"] = str(campaign_id)

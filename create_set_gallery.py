@@ -33,6 +33,9 @@ def run_create_set_gallery(*, kind: str, it: dict[str, Any], name: str,
                            bump_job: Callable[..., Any],
                            job_db_progress: Callable[[dict[str, Any]], Any],
                            bump_item: Callable[..., Any],
+                           deferred_save: Optional[Callable[..., Optional[str]]] = None,
+                           next_units_reset_utc: Optional[Callable[[], Any]] = None,
+                           units_alive: Optional[Callable[..., Any]] = None,
                            ) -> list[dict[str, Any]]:
     """Создать tp5 (search_gallery) или tp3 (rsya_gallery). kind ∈ {'tp5','tp3'}."""
     results: list[dict[str, Any]] = []
@@ -43,8 +46,16 @@ def run_create_set_gallery(*, kind: str, it: dict[str, Any], name: str,
     else:  # tp3
         cpa_val = num(it.get("cpa"), rs["cpc_cpa"])
         budget_val = num(it.get("budget"), rs.get("cpc_budget") or 0)
-    body_text = ((lines(it.get("texts")) or tpl_texts or [""])[0]
-                 if (it.get("texts") or tpl_texts) else "")
+    # «Текст по умолчанию» ShoppingAd/ListingAd: единый переиспользуемый, заполненный под лимит.
+    # НЕ берём texts[0] — там может быть аварийный короткий fallback (дефект psm5h7q6 2026-07-10).
+    # Источник правды — SHOPPING_DEFAULT_TEXT (create_set_assets.py). Fail-safe: texts[0] если
+    # константа по какой-то причине не импортируется (граница DI; на практике всегда импортируется).
+    try:
+        from .create_set_assets import SHOPPING_DEFAULT_TEXT as _SDT
+        body_text = _SDT
+    except Exception:  # noqa: BLE001
+        body_text = ((lines(it.get("texts")) or tpl_texts or [""])[0]
+                     if (it.get("texts") or tpl_texts) else "")
     cookie_kwargs = dict(
         login=login, name=name, tp_code=kind, counter_id=counter_id, goal_id=goal_id,
         cpa_rub=cpa_val, budget_rub=budget_val,
@@ -69,10 +80,74 @@ def run_create_set_gallery(*, kind: str, it: dict[str, Any], name: str,
         # → явный провал NO_BRAND_SEGMENTS_AVAILABLE; retry нужен с API-токеном.
         _seg5 = it.get("tp5_segment") if kind == "tp5" else None
         if _seg5:
+            # РЕЗЮМ ТОКЕНОМ, но мы оказались на cookie-пути (пустой st_token или units-152 форсили
+            # via_cookie). Куку НЕ пробуем (сегменты она не умеет → NO_BRAND повторялся бы вечно) и
+            # deferred НЕ перепланируем: self-reference — дедуп в _deferred_save нашёл бы ЭТУ же
+            # резюмящуюся строку (status='resumed', то же имя позиции) и вернул её id → финал джобы
+            # пометил бы её done → сегментный tp5 теряется молча (инцидент 08.07: deferred
+            # 721641cad7c1 / job 23677e1473d1, porg-psm5h7q6, сегменты Марки+Общее). Явный «отложено»
+            # + флаг defer_keep → finalizer оставит строку waiting, демон повторит ТОКЕНОМ, когда
+            # появятся агентский токен и баллы.
+            if (job or {}).get("body", {}).get("_resume_via_token"):
+                res = {"ok": False, "name": name, "defer_keep": True,
+                       "error": (f"TOKEN_NOT_READY: сегментный tp5 «{_seg5}» ждёт агентский "
+                                 "токен+баллы — докрутка отложена (куку не пробуем: сегменты "
+                                 "требуют M3/API-токен)")}
+                results.append(res)
+                add_job_err(job, res)
+                bump_job(job, False)
+                if job:
+                    job_db_progress(job)
+                bump_item(job)
+                return results
+            # Первичный 152 в ОСНОВНОМ прогоне (в body ещё нет _resume_via_token) → планируем ПЕРВЫЙ
+            # токен-ретрай: создаём новый deferred с _resume_via_token=True на сброс баллов.
             res = {"ok": False, "name": name,
                    "error": (f"NO_BRAND_SEGMENTS_AVAILABLE: tp5 сегмент «{_seg5}» "
                               "требует M3-пак — cookie-путь не поддерживает сегментацию; "
                               "переключитесь на API-токен (error 152 → retry позже)")}
+            # Планируем retry ТОКЕНОМ на сброс суточного лимита баллов вместо бесконечного
+            # повтора по куке (она сегменты не умеет, NO_BRAND_SEGMENTS_AVAILABLE повторится
+            # вечно — Семён 2026-07-06). НЕ требуем st_token здесь (фикс 2026-07-06: в
+            # добивочном контексте st_token бывал пуст → деферред НЕ создавался ВООБЩЕ, tp5
+            # терялся молча — прогон 12:24Z df7f70e7605f/d342e768ae87): resume-демон сам
+            # резолвит токен через _token_for_login на момент докрутки.
+            if deferred_save and job and job.get("body"):
+                try:
+                    _def_body = dict(job["body"])
+                    _def_body["items"] = [it]
+                    _def_body["_resume_via_token"] = True   # резюм пойдёт ТОКЕНОМ, не по куке
+                    _def_body.pop("via_cookie", None)       # иначе резюм опять форсит куку
+                    # Токен-ретрай — НОВАЯ цепочка: не наследуем указатель на родительскую (cookie)
+                    # deferred-строку, иначе финал той джобы пометил бы уже НАШУ строку done.
+                    _cur_did = _def_body.pop("_deferred_id", None)   # id текущей резюмящейся строки (если резюм)
+                    # Семён 2026-07-07 (никаких ночных отложек): «баллы первичны» — если баллы ЖИВЫ,
+                    # добиваем сегментный tp5 ТОКЕНОМ СРАЗУ (resume_at=None → now(), демон ~2 мин).
+                    # Реальный 152 (баллы исчерпаны) — только тогда ждём сброс (физич. невозможность).
+                    _alive = units_alive(login, (w_agency or "")) if units_alive else None
+                    if _alive:
+                        _resume_at = None
+                    else:
+                        _resume_at = next_units_reset_utc().isoformat() if next_units_reset_utc else None
+                    # resume_count НАСЛЕДУЕМ (ревью 06.07): хардкод 0 обнулял счётчик на каждом
+                    # цикле → _RESUME_MAX никогда не срабатывал → вечный суточный цикл деферредов
+                    # у аккаунтов, где токен так и не находится.
+                    _rc_gr = int(_def_body.get("_resume_count") or 0)
+                    _rid = deferred_save(login, (w_agency or _def_body.get("agency") or ""),
+                                         _def_body, [it], job.get("_id") or job.get("job_id"),
+                                         resume_count=_rc_gr, resume_at=_resume_at,
+                                         exclude_id=_cur_did)   # не self-reference на резюмящуюся строку
+                    if _rid:
+                        res["error"] += f" — докрутка токеном запланирована ({_rid})"
+                        res["deferred_no_cookie"] = _rid
+                    else:
+                        # deferred_save вернул None (ошибка БД проглочена внутри) — НЕ молчим:
+                        # иначе tp5 теряется без следа (инцидент 2026-07-06).
+                        res["error"] += " — ⚠️ деферред НЕ создан (deferred_save=None), пункт потерян"
+                except Exception as _de:  # noqa: BLE001 — планирование best-effort, отказ уже записан
+                    res["error"] += f" — ⚠️ деферред НЕ создан ({str(_de)[:80]})"
+            else:
+                res["error"] += " — ⚠️ деферред НЕ создан (нет job/body в контексте)"
             results.append(res)
             add_job_err(job, res)
             bump_job(job, False)

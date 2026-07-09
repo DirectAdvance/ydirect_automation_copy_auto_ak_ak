@@ -194,10 +194,11 @@ def execute_precreate_assets(
     dedup_callouts,
     callout_cap: int,
     grid_client_factory,
-    v5_get,
-    promo_usable_for_content,
-    create_account_promo_from_slepok,
-    selected_slepok_key,
+    v5_call=None,
+    v5_get=None,
+    promo_usable_for_content=None,
+    create_account_promo_from_slepok=None,
+    selected_slepok_key=None,
 ) -> dict[str, Any]:
     """Create assets that should exist before campaign upload.
 
@@ -211,15 +212,22 @@ def execute_precreate_assets(
     callouts_note = None
 
     try:
-        if callouts:
+        if callouts and v5_call and token:
+            # v5 adextensions.add: дедуп с существующими (case-insensitive),
+            # создаём недостающие батчем, частичные ошибки пропускаем.
+            # Grid AddCallouts не работает (GdAddCalloutsInput Unknown).
             clean_callouts = dedup_callouts(callouts, cap=callout_cap)
             if clean_callouts:
-                callout_ids = list(
-                    grid_client_factory(login).add_callouts(clean_callouts).values()
-                )[:callout_cap]
+                from .create_set_assets import v5_ensure_callout_pool
+                callout_ids = v5_ensure_callout_pool(
+                    token, login, clean_callouts, v5_call, cap=callout_cap)
                 callouts_note = (
-                    f"precreate: уточнения подготовлены через Grid: {len(callout_ids)}/{len(clean_callouts)}"
+                    f"precreate: уточнения через v5: {len(callout_ids)}/{len(clean_callouts)}"
+                    if callout_ids else
+                    f"precreate: v5 не вернул ids ({len(clean_callouts)} текстов)"
                 )
+        elif callouts and not token:
+            callouts_note = "precreate: нет токена — уточнения пропущены"
     except Exception as exc:  # noqa: BLE001 - callouts must not block campaign upload
         callouts_note = f"precreate: уточнения не подготовлены: {str(exc)[:160]}"
 
@@ -240,7 +248,9 @@ def execute_precreate_assets(
 
     try:
         all_content_ready = bool(items) and all((it.get("titles") and it.get("texts")) for it in items)
-        if token and agent and all_content_ready and not stream_content:
+        if (token and agent and all_content_ready and not stream_content
+                and v5_get and promo_usable_for_content
+                and create_account_promo_from_slepok and selected_slepok_key):
             content_lines = promo_content_lines(items)
             jp = v5_get(
                 "promotions",

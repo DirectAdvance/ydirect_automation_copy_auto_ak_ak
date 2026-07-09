@@ -48,6 +48,10 @@
 ### ЕПК tp5 (гибрид v501 + Grid): `blueprint.py::_create_tp5_campaign`
 Реализовано 2026-06-22. Порядок строгий: v501 каркас → Grid-докрутка → v5-корректировки.
 
+> **Состав объявлений:** ShoppingAd + ListingAd, **без TextAd/адаптивного** — указание Семёна
+> 2026-07-07, отменяет прежний эталон «TextAd+ShoppingAd+ListingAd» (канон 2026-06-22).
+> Поисковая часть: ключевые слова + relevanceMatch. Кодер группы: `ct009_ag001`.
+
 - #1 Метрика — `counter_ids` через `UnifiedCampaignSpec.counter_ids`; GoalId — внутри стратегии ✅
 - #2 UTM групп — `TrackingParams` на группах (`_build_tp1_adgroups`) ✅
 - #3 Персонализация — `isAlternativeTextsEnabled=False` в Grid-мутации (`grid_finalize.py`) ✅

@@ -42,6 +42,7 @@ def register_job_routes(
     job_db_web_resolve_feed: Callable | None = None,
     job_db_active_by_login: Callable | None = None,
     job_db_list_recent: Callable | None = None,
+    cancel_children: Callable | None = None,
 ) -> None:
     def _launch_prefetch(job_id: str, login: str, body: dict) -> None:
         """Фаза 1: греем queued-джобу в фоне. is_cancelled смотрит статус в
@@ -178,15 +179,31 @@ def register_job_routes(
                 except (TypeError, ValueError):
                     _fd = None
             _res = row.get("result") if _status in job_terminal else None
-            _el = (row.get("result") or {}).get("elapsed_seconds") if isinstance(row.get("result"), dict) else None
+            # elapsed (таймер очереди): terminal → точное result.elapsed_seconds; running →
+            # серверное now - created_at. Считаем на СЕРВЕРЕ, чтобы таймер стартовал с создания и
+            # переживал обновление страницы (клиент якорит runningFrom от этого значения). (Семён 2026-07-08)
+            if _status in job_terminal:
+                _el = (row.get("result") or {}).get("elapsed_seconds") if isinstance(row.get("result"), dict) else None
+            elif _status in ("running", "awaiting_feed_decision"):
+                _ca = row.get("created_at")
+                try:
+                    _el = max(0, int(_time.time() - _ca.timestamp())) if _ca else None
+                except Exception:  # noqa: BLE001
+                    _el = None
+            else:
+                _el = None
+            _skipped_ex = (row.get("result") or {}).get("skipped_existing", 0) if isinstance(row.get("result"), dict) else 0
+            _active_ch = (row.get("result") or {}).get("_active_children") if isinstance(row.get("result"), dict) else None
             return jsonify({"status": _status, "login": row.get("login") or "",
                             "agency": row.get("agency") or "",
                             "done": int(row.get("done") or 0), "total": _total,
                             "created": int(row.get("created") or 0), "failed": int(row.get("failed") or 0),
+                            "skipped_existing": int(_skipped_ex or 0),
                             "set_done": int(row.get("done") or 0), "set_total": _total,
                             "ahead": job_db_ahead(jid) if (job_db_ahead and _status == "queued") else 0,
                             "error": row.get("error"), "elapsed": _el,
                             "step": None, "stream_content": bool(body_row.get("stream_content")),
+                            "repairing": bool(_active_ch),
                             "result": _res, "feed_deadline": _fd,
                             "seconds_left": max(0, int(_fd - _time.time())) if _fd else None})
         ensure_create_worker(current_app._get_current_object())
@@ -197,13 +214,16 @@ def register_job_routes(
                 return jsonify({"error": "job не найдена (возможно, устарела)"}), 404
             ahead = create_jobs_ahead(jid) if j["status"] == "queued" else 0
             _fd = j.get("feed_deadline")
+            _j_result = j.get("result") or {}
             return jsonify({"status": j["status"], "login": j.get("login", ""),
                             "agency": job_agency(j), "done": j["done"], "total": j["total"],
                             "created": j["created"], "failed": j["failed"],
+                            "skipped_existing": int((_j_result.get("skipped_existing") if isinstance(_j_result, dict) else 0) or 0),
                             "set_done": j.get("set_done", 0), "set_total": j.get("set_total", j["total"]),
                             "ahead": ahead, "error": j["error"], "elapsed": j.get("elapsed"),
                             "step": j.get("step"),
                             "stream_content": bool(j.get("stream_content")),
+                            "repairing": bool(_j_result.get("_active_children") if isinstance(_j_result, dict) else False),
                             "result": j["result"] if j["status"] in job_terminal else None,
                             "feed_deadline": _fd,
                             "seconds_left": max(0, int(_fd - _time.time())) if _fd else None})
@@ -279,7 +299,20 @@ def register_job_routes(
                 if active_only and st in job_terminal:
                     continue
                 _body = r.get("body") or {}
+                # Любая дочерняя джоба (докрутка 152/резерв, доставка недостающих, recreate-починка)
+                # НЕ рисует своей карточки — её прогресс вливается в РОДИТЕЛЬСКУЮ (Семён 2026-07-07).
+                if (_body.get("_resume_of") or _body.get("_requeue_of")
+                        or _body.get("_repair_parent_job_id")):
+                    continue
                 _total = int(r.get("total") or 0)
+                # elapsed для running = серверное now - created_at (таймер переживает reload; см. create_set_status)
+                _el_list = None
+                if st in ("running", "awaiting_feed_decision"):
+                    _ca = r.get("created_at")
+                    try:
+                        _el_list = max(0, int(_time.time() - _ca.timestamp())) if _ca else None
+                    except Exception:  # noqa: BLE001
+                        _el_list = None
                 out.append({"job_id": r.get("job_id"), "status": st, "login": r.get("login") or "",
                             "agency": r.get("agency") or "",
                             "done": int(r.get("done") or 0), "total": _total,
@@ -287,7 +320,7 @@ def register_job_routes(
                             "set_done": int(r.get("done") or 0), "set_total": _total,
                             "kind": r.get("kind") or "set", "publish": bool(r.get("publish")),
                             "ahead": job_db_ahead(r.get("job_id")) if (job_db_ahead and st == "queued") else 0,
-                            "error": r.get("error"), "elapsed": None,
+                            "error": r.get("error"), "elapsed": _el_list,
                             "step": None, "stream_content": bool(_body.get("stream_content")),
                             "result": r.get("result") if st in job_terminal else None})
             order = {"running": 0, "queued": 1}
@@ -300,6 +333,10 @@ def register_job_routes(
         with create_jobs_lock:
             for jid, j in create_jobs.items():
                 if active_only and j["status"] in job_terminal:
+                    continue
+                _jb = j.get("body") or {}   # дочерняя (докрутка/доставка/recreate) → без карточки, вливается в родителя
+                if (_jb.get("_resume_of") or _jb.get("_requeue_of")
+                        or _jb.get("_repair_parent_job_id")):
                     continue
                 ahead = create_jobs_ahead(jid) if j["status"] == "queued" else 0
                 out.append({"job_id": jid, "status": j["status"], "login": j.get("login", ""),
@@ -328,15 +365,19 @@ def register_job_routes(
             if not row:
                 return jsonify({"error": "job не найдена"}), 404
             st = row.get("status")
+            # Каскад: отмена родителя гасит и его активные дочерние джобы (докрутка/доставка/recreate).
+            _kids = cancel_children(jid) if cancel_children else 0
             if st in job_terminal:
                 job_db_last.pop(jid, None)
                 job_db_delete(jid)
-                return jsonify({"ok": True, "status": st, "removed": True, "note": "убрана из очереди"})
+                return jsonify({"ok": True, "status": st, "removed": True,
+                                "cancelled_children": _kids, "note": "убрана из очереди"})
             if st in ("queued", "claimed", "awaiting_feed_decision"):
                 job_db_set_status(jid, "cancelled", "отменено пользователем")
-                return jsonify({"ok": True, "status": "cancelled"})
+                return jsonify({"ok": True, "status": "cancelled", "cancelled_children": _kids})
             job_control_set(jid, "cancel")               # running → остановка после текущей кампании
-            return jsonify({"ok": True, "status": st, "note": "остановка после текущей кампании"})
+            return jsonify({"ok": True, "status": st, "cancelled_children": _kids,
+                            "note": "остановка после текущей кампании"})
         with create_jobs_lock:
             j = create_jobs.get(jid)
             if not j:
@@ -345,14 +386,17 @@ def register_job_routes(
                 create_jobs.pop(jid, None)
                 job_db_last.pop(jid, None)
                 job_db_delete(jid)
-                return jsonify({"ok": True, "status": j["status"], "removed": True, "note": "убрана из очереди"})
+                _kids = cancel_children(jid) if cancel_children else 0
+                return jsonify({"ok": True, "status": j["status"], "removed": True,
+                                "cancelled_children": _kids, "note": "убрана из очереди"})
             j["cancel"] = True
             if j["status"] == "queued" and jid in create_queue:
                 create_queue.remove(jid)
                 j["status"] = "cancelled"
             snap = dict(j)
         job_db_save(jid, snap, full=True)
-        return jsonify({"ok": True, "status": snap["status"]})
+        _kids = cancel_children(jid) if cancel_children else 0   # каскад: гасим активные дочерние
+        return jsonify({"ok": True, "status": snap["status"], "cancelled_children": _kids})
 
     @bp.route("/api/jobs/<job_id>/resume", methods=["POST"])
     @access

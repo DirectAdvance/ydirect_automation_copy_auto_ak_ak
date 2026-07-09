@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .text_norm import _trim_clean
+from .text_gen import _fill_title
 
 import re
 import time
@@ -46,47 +47,59 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
     # такой: ResponsiveAd создаём сразу, а image hashes добиваем post-create через Grid/куки
     # (_grid_update_adaptive_ads + GridClient.upload_image) по фактическим ad_id.
 
-    # ── Фаза 1: adgroups.add пачками; ag_ids[i] выровнен по индексу группы (AddResults в порядке входа)
-    specs = []
+    # ── Фаза 1: adgroups — АТОМАРНОЕ создание через Grid AddUnifiedAdGroups с relevanceMatch
+    # профиля search_tp2 (EXACT_V2_MARK + WITHOUT_BRAND). Это token-путь tp2/tp4 (DIRECT_API_FIRST).
+    # v5 adgroups.add НЕ ставит relevanceMatchCategories → Яндекс дефолт (все 5 категорий + 3 бренда),
+    # а пост-патч через groups_for_edit (edit-view) ловит ЛАГ реплики → свежие группы не видны → тихий
+    # return 0 → WRONG_AUTOTARGET (журнал TP5_AUTOTARGET v2 «не помогло»; I/J — тот же корень edit-view).
+    # Grid профиль ставится при СОЗДАНИИ — lag-проблемы нет (эталон v3: _build_tp1_adgroups tp5 и
+    # cookie-путь create_full). Ключи — ТОЛЬКО через Фазу 2 (AddKeywords v5), keywords=[] в build_adgroup
+    # (иначе Grid дублирует их для групп <~140 ключей). UTM (trackingParams) и групповой минус
+    # (adGroupMinusKeywords) проставляет сам build_adgroup — как в куки-пути.
+    _gcl2 = gc.GridCreateClient(login)
+    _g2_items = []
     for g in groups:
-        ag = {"Name": (g.get("name") or "группа")[:255], "CampaignId": int(campaign_id), "RegionIds": rids,
-              "TrackingParams": _UTM_TEMPLATE_TP1}      # #2 UTM на уровне группы (tp2/tp5 Поиск, v5 — проверено LIVE)
-        if apply_group_minus:
-            # Групповые минусы: обрезка по символьному бюджету 4096 (≤4096 симв. без пробелов/группу,
-            # как у terehov — полный список без cap=100). Для campaign/shared_set слепков apply_group_minus=False.
-            minus = _minus_char_budget(g.get("minus") or [], _MINUS_SHARED_SET_CHAR_BUDGET)
-            if minus:
-                ag["NegativeKeywords"] = {"Items": minus}
-        specs.append(ag)
-    ag_ids = [None] * len(groups)
-    idx = 0
-    for chunk in _chunks(specs, _AC_CHUNK_AG):
-        ja = _v5_call("adgroups", "add", token, login, {"AdGroups": chunk})
-        if "error" in ja:
-            rep["errors"].append(f"adgroups.add {_v5_err(ja)}")
-            idx += len(chunk)
-            time.sleep(_AC_BATCH_SLEEP)
-            continue
-        for r in (ja.get("result") or {}).get("AddResults", []):
-            errs = r.get("Errors") or []
-            if r.get("Id") and not errs:
-                ag_ids[idx] = r["Id"]
-                rep["adgroups"] += 1
+        # Групповые минусы (group-режим): бюджет 4096 симв.; build_adgroup доп. кап 100 фраз (как
+        # куки-путь create_full). Для campaign/shared_set (apply_group_minus=False) минус — на кампании.
+        _gm = (_minus_char_budget(g.get("minus") or [], _MINUS_SHARED_SET_CHAR_BUDGET)
+               if apply_group_minus else [])
+        _g2_items.append(gc.build_adgroup(
+            campaign_id=int(campaign_id),
+            name=(g.get("name") or "группа")[:255],
+            region_ids=rids,
+            keywords=[],                          # ключи — ТОЛЬКО через Фазу 2, без дублей
+            minus_keywords=_gm,
+            autotargeting_profile="search_tp2",   # EXACT_V2_MARK + WITHOUT_BRAND атомарно
+        ))
+    try:
+        ag_ids = _gcl2.add_adgroups(_g2_items)
+        # Позиционный сдвиг: Grid пропускает упавшие группы (без null-заглушки) → список короче
+        # входного → выравниваем строго по имени (аналог create_full:615 / _build_tp1_adgroups:238).
+        if len(ag_ids) != len(groups):
+            _n2id2 = _gcl2._read_adgroup_name_to_id(int(campaign_id))
+            if _n2id2:
+                ag_ids = [_n2id2.get(g.get("name") or "") for g in groups]
             else:
-                nm = groups[idx].get("name", "?") if idx < len(groups) else "?"
-                rep["errors"].append(f"{nm}: adgroup " + ("; ".join(e.get("Message", "") for e in errs) or "нет Id"))
-            idx += 1
-        time.sleep(_AC_BATCH_SLEEP)
+                ag_ids = list(ag_ids) + [None] * (len(groups) - len(ag_ids))
+                rep["errors"].append("tp2/tp4 Grid: позиционный сдвиг групп — ключи могут быть смещены")
+        rep["adgroups"] = sum(1 for x in ag_ids if x)
+        rep["relevance_match_set"] = rep["adgroups"]   # relevanceMatch атомарно при создании
+    except gc.GridCreateError as _g2e:
+        # Grid-группы не создались → rep без adgroups → вызывающий (_create_text_via_token) удалит
+        # недоделанную РК и уйдёт в defer/фолбэк. ok:True без корректного автотаргета невозможен.
+        rep["errors"].append(f"adgroups(Grid tp2/tp4): {str(_g2e)[:200]}")
+        return rep
 
     # ── Фаза 2: keywords.add пачками (≤200/группу, до _AC_CHUNK_KW items за вызов)
-    # autotarget=True → вместо реальных ключей вешаем спецключ "---autotargeting" (1 на группу) —
-    # это и есть автотаргетинг в v5 (проверено live на боевом аккаунте porg-36k7btt7).
+    # autotarget=True → реальных ключей нет; таргетинг = relevanceMatch, УЖЕ активный атомарно из
+    # Grid build_adgroup(search_tp2) (Фаза 1). v501-спецключ "---autotargeting" НЕ добавляем: он
+    # повторно включил бы автотаргет с ДЕФОЛТными категориями (все 5 + 3 бренда) → WRONG_AUTOTARGET
+    # (та же грабля, что чинили для tp5 — журнал TP5_AUTOTARGET; _build_tp1_adgroups:296 tp_code!=tp5).
     kw_items = []
     for i, g in enumerate(groups):
         if not ag_ids[i]:
             continue
         if autotarget:
-            kw_items.append({"Keyword": _AUTOTARGET_KW, "AdGroupId": int(ag_ids[i])})
             continue
         for k in _kw_clean(g.get("keywords") or [], 200):
             kw_items.append({"Keyword": k, "AdGroupId": int(ag_ids[i])})
@@ -160,8 +173,12 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
     if created_ad_meta:
         try:
             import os as _os3
-            _gc_img = gf.GridClient(login)
-            _uploaded_by_name: dict[str, str] = {}
+            _gc_img = gf.get_grid_client(login)
+            # ── Параллельная заливка картинок ──────────────────────────────
+            # Собираем все уникальные пути ПЕРЕД циклом, заливаем 8 потоками.
+            _all_img_paths = [_pth for _ad_id2, _meta2 in created_ad_meta
+                              for _pth in (_meta2.get("image_paths") or [])]
+            _uploaded_by_name: dict[str, str] = _parallel_upload_images(_gc_img, login, _all_img_paths)
             _upd_items = []
             for ad_id, meta in created_ad_meta:
                 _hashes = list(dict.fromkeys(meta.get("image_hashes") or []))
@@ -172,10 +189,6 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
                         continue
                     _bn = _os3.path.basename(_pth)
                     _h = _uploaded_by_name.get(_bn)
-                    if not _h:
-                        _h = _cached_upload_image(_gc_img, login, _pth)
-                        if _h:
-                            _uploaded_by_name[_bn] = _h
                     if _h and _h not in _hashes:
                         _hashes.append(_h)
                 if _hashes:
@@ -284,7 +297,8 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
                           r_code: str = "", segment: str | None = None,
                           ai_title2: str = "",
                           apply_group_minus: bool = True,
-                          city: str = "", autotarget: bool = False) -> dict:
+                          city: str = "", autotarget: bool = False,
+                          only_cts: list[str] | None = None) -> dict:
     """Наполнить текстовую кампанию (tp1/tp2/tp5): структура→модель-ct→ключи/минус/уточнения
     из пака M3 (по tp_code)→группы+объявления+callouts. Тексты — из titles/texts. Всё черновиком.
 
@@ -295,7 +309,16 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
     (TEXT_AD + ключи). Фид-объявления (LISTING_AD «динамика» / SHOPPING_AD «товарная») —
     автогенерация Яндекса из фида, НЕ через v5 ads.add; добавятся отдельным шагом."""
     cts = _struct_cts(slepok, site_type, tp_code)
-    if segment:
+    # only_cts (split-driven слепки, напр. dmp/tp2): EXPLICIT override — наполняем ТОЛЬКО ct-кодами
+    # этого split-блока (create_set_plan "tp2_split_cts"). Приоритетнее segment-фильтра. Для splits-
+    # формата _struct_cts даёт [] (читает лишь top-level tp.groups) → доверяем ct-кодам плана
+    # (порядок — как в плане/split). Если структура «модельная» (terehov) — пересекаем со _struct_cts.
+    if only_cts:
+        _oc = [c for c in only_cts if c]
+        cts = ([ct for ct in cts if ct in set(_oc)] if cts else list(_oc))
+        if not cts:
+            return {"skipped": "only_cts не пересёкся со структурой слепка"}
+    elif segment:
         cts = [ct for ct in cts if _ct_segment(ct) == segment]
     key = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
     gather_key = key
@@ -335,8 +358,10 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
                           else _strip_url_query(_raw_feed_url))
         else:
             model_href = _model_page_href(href, site_type, model)
-        # Title: шаблон «Новые {model} в {город}. {акция}» (≤35 симв.) — фолбэк model[:56].
-        title = _title_from_template(model or "Авто", city) if (not ai_title2 and model) else (model or "Авто")[:56]
+        # Title: шаблон «Новые {model} в {город}. {акция}» (≤35 симв.) — фолбэк model[:56]
+        # с добивкой до ≥54 через _fill_title (иначе «BAIC» 4 симв. отбрасывается gate-ом <48).
+        title = (_title_from_template(model or "Авто", city) if (not ai_title2 and model)
+                 else _fill_title((model or "Авто")[:56]))
         ttl2 = (ai_title2[:30] if ai_title2 else _next_title2())   # ИИ-title2 или round-robin из пула
         # В боевом create_set контент генерим ОДИН РАЗ на кампанию/item. Делать M3-вызов на
         # КАЖДУЮ ct-группу нельзя: tp1/tp5 содержат десятки групп, и создание зависает на минуты
@@ -352,8 +377,8 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
         groups.append({
             "name": _text_group_name(ct, r_code, model),
             # БАГ-13: для «Марки» — убрать ключи «марка+модель» (напр. «Chery Tiggo 8 Pro»)
-            "keywords": _filter_group_keywords(data.get("positive", []), _ct_segment(ct), model, city, site_type),
-            "minus": data.get("minus", []),
+            "keywords": _filter_group_keywords(data.get("positive", []), _ct_segment(ct), model, city, site_type, model=model),
+            "minus": _enabled_minus_words(),   # ЕДИНЫЙ источник минус-фраз — вкладка «Минус-слова»
             "ct": ct,                            # баг #5: нужен для _ct_segment→seg→adPrice по Марке
             "brand": model,                      # модель/бренд группы — для adPrice из фида (#2)
             "titles": g_titles,                  # ← Комбинаторное: список заголовков

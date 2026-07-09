@@ -106,6 +106,7 @@ def create_app() -> Flask:
         exclude_directologs=direct_legacy._EXCLUDE_DIRECTOLOGS,
         balance_response=_balance_response,
         check_blocks_response=direct_legacy._check_blocks_response,
+        victory_conn_rw=direct_legacy._victory_conn_rw,
     )
     app.register_blueprint(bp)
     return app

@@ -17,6 +17,8 @@ def register_settings_routes(
     global_minus_places: Callable[[], list[dict]],
     minus_places_ensure: Callable,
     place_host: Callable[[str], str],
+    minus_words_slice: Callable,
+    minus_words_ensure: Callable,
     global_minus_marks: Callable[[], list[dict]],
     minus_marks_ensure: Callable,
     known_brand_canons: Callable[[], list[str]],
@@ -322,6 +324,82 @@ def register_settings_routes(
         finally:
             conn.close()
         return jsonify({"ok": True, "saved": len(items)})
+
+    @bp.route("/api/minus-words")
+    @access
+    def api_minus_words_get():
+        """Минус-слова конкретного среза → {words:[{word,enabled,sort}], geo, ct}.
+        ?geo=<город|*>&ct=<ct-код|*> — дефолт '*'/'*' (глобальный срез, прежнее поведение)."""
+        geo = (request.args.get("geo") or "*").strip() or "*"
+        ct = (request.args.get("ct") or "*").strip() or "*"
+        return jsonify({"words": minus_words_slice(geo, ct), "geo": geo, "ct": ct})
+
+    @bp.route("/api/minus-words", methods=["POST"])
+    @access
+    def api_minus_words_post():
+        """Сохранить минус-слова — replace-all В ПРЕДЕЛАХ среза (geo, ct).
+        geo/ct из body (дефолт '*'); confirm_clear-гейт считает только текущий срез."""
+        body = request.json or {}
+        geo = (body.get("geo") or "*").strip() or "*"
+        ct = (body.get("ct") or "*").strip() or "*"
+        if "words" not in body:
+            return jsonify({"ok": False, "error": "нет ключа 'words' — replace-all не выполняется"}), 400
+        raw = body.get("words")
+        if not isinstance(raw, list):
+            return jsonify({"ok": False, "error": "words должен быть массивом"}), 400
+        if not raw and not bool(body.get("confirm_clear")):
+            try:
+                cur_cnt = len(minus_words_slice(geo, ct))
+            except Exception:  # noqa: BLE001
+                cur_cnt = 0
+            if cur_cnt:
+                return jsonify({
+                    "ok": False,
+                    "needs_confirm": True,
+                    "error": (
+                        f"список пуст — для полной очистки {cur_cnt} минус-слов среза "
+                        f"geo={geo!r} ct={ct!r} передай confirm_clear=true"
+                    ),
+                }), 409
+
+        import re as _re
+        seen: set[str] = set()
+        items: list[str] = []
+        for r in raw:
+            word = (r.get("word") if isinstance(r, dict) else r) or ""
+            word = _re.sub(r"\s+", " ", str(word).strip())
+            if not word:
+                continue
+            key = word.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(word)
+
+        conn = victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            minus_words_ensure(cur)
+            # replace-all только в пределах среза (geo, ct) — другие срезы не затрагиваем:
+            cur.execute(
+                "DELETE FROM public.direct_global_minus_words WHERE geo=%s AND ct=%s",
+                (geo, ct),
+            )
+            for i, word in enumerate(items, 1):
+                cur.execute(
+                    "INSERT INTO public.direct_global_minus_words(word, geo, ct, enabled, sort, updated_at) "
+                    "VALUES(%s, %s, %s, true, %s, now()) "
+                    "ON CONFLICT(word, geo, ct) DO UPDATE SET enabled=true, "
+                    "sort=EXCLUDED.sort, updated_at=now()",
+                    (word, geo, ct, i),
+                )
+            conn.commit()
+        except Exception:  # noqa: BLE001
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return jsonify({"ok": True, "saved": len(items), "geo": geo, "ct": ct})
 
     @bp.route("/api/minus-marks")
     @access

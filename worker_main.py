@@ -74,12 +74,19 @@ def main() -> int:
     while not _STOP["on"]:
         time.sleep(1)
 
-    # drain: дать воркерам завершить текущий item; выйти как только running=0 либо по дедлайну.
+    # drain: дать воркерам завершить текущий item; выйти как только in-flight=0 либо по дедлайну.
+    # ВАЖНО (2026-07-08): считаем РЕАЛЬНУЮ занятость воркеров через _CREATE_ACTIVE_AGENCIES
+    # (инкремент при claim blueprint.py:2356, декремент в finally воркера :2475), а НЕ
+    # status=="running" в _CREATE_JOBS. status="running" перегружен — он ставится на
+    # РОДИТЕЛЬСКУЮ карточку как UI-флаг фоновой добивки (delayed-repair в daemon-треде, вне
+    # пула воркеров: _parent_absorb_child_start blueprint.py:1569). Из-за этого drain видел
+    # фантомный running≥1 и досиживал весь дедлайн 540с при КАЖДОМ рестарте с активной
+    # добивкой. Прерывание фоновой добивки безопасно by design (persist в
+    # direct_delayed_repairs/deferred, running→interrupted на recover).
     t0 = time.time()
     while time.time() - t0 < _DRAIN_DEADLINE_SEC:
         try:
-            running = sum(1 for j in list(_bp._CREATE_JOBS.values())
-                          if j.get("status") == "running")
+            running = sum(_bp._CREATE_ACTIVE_AGENCIES.values())
         except Exception:  # noqa: BLE001
             running = 0
         if running == 0:

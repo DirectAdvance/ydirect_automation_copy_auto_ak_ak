@@ -1,0 +1,12 @@
+[Unit]
+Description=Run M3 mlx health-watchdog every 60s
+
+[Timer]
+# Первый запуск через 30с после буста, далее каждые 60с от завершения предыдущего.
+OnBootSec=30
+OnUnitActiveSec=60
+AccuracySec=5s
+Unit=mlx-watchdog.service
+
+[Install]
+WantedBy=timers.target

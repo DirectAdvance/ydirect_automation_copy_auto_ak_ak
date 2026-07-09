@@ -16,7 +16,21 @@ def prepare_create_set_account(*, login: str, body: dict[str, Any],
     """Load account context and derive site/templates/href/region ids."""
     ctx = account_ctx(login)
     if not ctx:
-        return {"ok": False, "status": 404, "error": f"аккаунт {login} не найден в БД"}
+        # Мягкая деградация: аккаунт не найден в local_gsheet_sites (новый, ещё не занесён).
+        # Собираем минимальный ctx из тела запроса (из формы).
+        domain = (body.get("domain") or "").strip()
+        if not domain:
+            return {"ok": False, "status": 400,
+                    "error": f"аккаунт {login} не найден в БД — укажите домен вручную в форме"}
+        ctx = {
+            "domain": domain,
+            "site_type": (body.get("site_type") or "").strip(),
+            "agency": (body.get("agency") or "").strip(),
+            "geoid": 225,
+            "oblast": None,
+            "city": (body.get("city") or "").strip(),
+            "directologist": "",
+        }
     if not ctx.get("domain"):
         return {"ok": False, "status": 400, "error": "у аккаунта нет домена в БД"}
 

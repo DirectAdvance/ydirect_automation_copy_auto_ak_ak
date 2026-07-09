@@ -379,6 +379,12 @@ def executable_default_text_repairs(plan: dict[str, Any]) -> tuple[list[int], li
     return _executable_cid_actions(plan, "default_text_repair")
 
 
+def executable_campaign_invariant_repairs(plan: dict[str, Any]) -> tuple[list[int], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Pick campaign ids for campaign_invariant_repair actions (tp1–tp5 галочки: персонализация/
+    расш.гео/«Директ помогает»/Карты/организации OFF, мониторинг ON). Grid-only, idempotent, no units."""
+    return _executable_cid_actions(plan, "campaign_invariant_repair")
+
+
 def executable_images_forbidden_repairs(plan: dict[str, Any]) -> tuple[list[int], list[dict[str, Any]], list[dict[str, Any]]]:
     """Pick campaign ids for images_forbidden_repair actions (search tp2/tp4 ads with imageHashes)."""
     return _executable_cid_actions(plan, "images_forbidden_repair")
@@ -422,6 +428,7 @@ def summarize_repair_gate(body: dict[str, Any], results: list[Any], plan: dict[s
     img_forbidden_ids, img_forbidden_actions, _ = executable_images_forbidden_repairs(plan or {})
     adprice_ids, adprice_actions, _ = executable_adprice_repairs(plan or {})
     default_text_ids, default_text_actions, _ = executable_default_text_repairs(plan or {})
+    invariant_ids, invariant_actions, _ = executable_campaign_invariant_repairs(plan or {})
     promo_ids, promo_actions, _ = executable_promo_campaign_ids(results or [], plan or {})
     callout_ids, callout_actions, _ = executable_callout_campaign_ids(results or [], plan or {})
     rename_names, rename_actions, _ = executable_rename_campaigns(plan or {})
@@ -435,6 +442,7 @@ def summarize_repair_gate(body: dict[str, Any], results: list[Any], plan: dict[s
         + len(img_forbidden_ids)
         + len(adprice_ids)
         + len(default_text_ids)
+        + len(invariant_ids)
         + (1 if promo_ids and promo_actions else 0)
         + (1 if callout_ids and callout_actions else 0)
         + len(rename_names)
@@ -452,6 +460,7 @@ def summarize_repair_gate(body: dict[str, Any], results: list[Any], plan: dict[s
         "images_forbidden_repair_campaigns": len(img_forbidden_ids),
         "adprice_repair_campaigns": len(adprice_ids),
         "default_text_repair_campaigns": len(default_text_ids),
+        "campaign_invariant_repair_campaigns": len(invariant_ids),
         "promo_campaigns": len(promo_ids) if promo_actions else 0,
         "callout_campaigns": len(callout_ids) if callout_actions else 0,
         "rename_campaigns": len(rename_names),

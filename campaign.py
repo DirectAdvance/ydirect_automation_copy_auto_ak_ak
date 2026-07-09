@@ -1352,10 +1352,12 @@ class UacClient:
         # Тот же фикс, что у картинок (_upload_image_result, fh.read()).
         _file_bytes = p.read_bytes()
         resp = None
-        # Timeout НЕ ретраим (решение Семёна 03.07): сервер уже жевал запрос 180с — повтор
-        # редко помогает и заливает канал (3×180с растягивали item на 9 мин/ролик).
-        # Видео добивается аудитом позже. ConnectionError (мгновенный обрыв) — 1 повтор.
-        for attempt in range(2):
+        # 2 ретрая при таймауте с бэкоффом (решение Семёна 2026-07-08, отменяет прежнее
+        # «Timeout НЕ ретраим — решение Семёна 03.07»). Per-ct circuit-breaker гарантирует
+        # изоляцию: другие ct не блокируются если этот таймаутит 3× подряд.
+        # Бэкофф: 3с после 1-го таймаута, 6с после 2-го. ConnectionError — 1 повтор без паузы.
+        _timeout_cnt = 0
+        for attempt in range(5):
             try:
                 files = {"upload": (p.name, _file_bytes, "video/mp4")}
                 resp = self.sess.post(
@@ -1365,8 +1367,11 @@ class UacClient:
                 )
                 break
             except requests.exceptions.Timeout:
-                raise UacApiError(f"content-video:{p.name}", 0,
-                                  "video-upload timeout 180s — добьётся аудитом позже")
+                _timeout_cnt += 1
+                if _timeout_cnt >= 3:
+                    raise UacApiError(f"content-video:{p.name}", 0,
+                                      "video-upload timeout 180s ×3 — ct помечается failed")
+                time.sleep(3 * _timeout_cnt)  # 3с после 1-го таймаута, 6с после 2-го
             except requests.exceptions.ConnectionError:
                 if attempt >= 1:
                     raise

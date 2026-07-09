@@ -1066,12 +1066,28 @@ def _audit_brand_not_first(rc: gr.GridReadClient, login: str, campaign_id: int,
         ct_name = {}
     if not ct_name:
         return []
+    # BRAND_NOT_FIRST применимо ТОЛЬКО к «Марки»/«Модели»-сегментам.
+    # Сегмент «Общее» (ct0000 и тема-cts типа ct0010 Дром, ct0014 Авто…) — brand-first неприменим,
+    # нечего ставить в начало (инвариант DOD §2, 2026-07-10). Без этого фильтра
+    # «Дром»/«Авто» из _ag_part1_map попадали в agid_to_brand → ложный BRAND_NOT_FIRST на
+    # Общее-кампаниях → UNFIXABLE после 4 попыток LLM (712665480/712666720, psm5h7q6).
+    _ct_segment_fn = _DEPS.get("_ct_segment")
     agid_to_brand: dict[str, str] = {}
     for g in groups:
         gid = str(g.get("adgroup_id") or "")
         ct = _ct_of_name(g.get("adgroup_name"))
         if not gid or not ct or ct == "ct0000":
             continue
+        # Проверяем сегмент ct: только Марки/Модели → brand-first обязателен.
+        # Общее/тема (ct0010-Дром, ct0014-Авто, …) → пропускаем, бренда нет.
+        # Fail-safe: если _ct_segment недоступен — не фильтруем по сегменту (старое поведение).
+        if callable(_ct_segment_fn):
+            try:
+                seg = _ct_segment_fn(ct) or ""
+            except Exception:  # noqa: BLE001
+                seg = "Марки"
+            if seg not in ("Марки", "Модели"):
+                continue
         nm = str(ct_name.get(ct.strip().lower()) or "").strip()
         if nm:
             agid_to_brand[gid] = nm

@@ -19,6 +19,8 @@ from typing import Any
 import requests
 
 from . import campaign as cmc
+from .ai_agents import extend_title_to_max
+from .create_set_minus import _minus_char_budget as _cm_minus_char_budget  # единый бюджет 20 000 симв.
 from .text_norm import _trim_clean
 
 GRID_URL = "https://direct.yandex.ru/web-api/grid/api"
@@ -87,6 +89,14 @@ class GridCreateClient:
         self.csrf = None
         self.sess = requests.Session()
         self.sess.verify = False
+        # Сбрасываем кэш get_grid_client для этого логина: после смены куки
+        # закэшированные GridClient-инстансы держат протухший cookie/csrf и будут
+        # получать 403 до принудительной инвалидации.
+        try:
+            from . import grid_finalize as _gf_ref
+            _gf_ref.reset_grid_client_cache(self.login)
+        except Exception:  # noqa: BLE001 — best-effort, кэш-инвалидация не критична
+            pass
 
     # ── низкий уровень ───────────────────────────────────────────────────────
     def _post(self, op: str, query: str, variables: dict) -> dict:
@@ -177,9 +187,20 @@ class GridCreateClient:
                 out.extend(self.add_adgroups(items[i:i + _GRID_MUTATION_CHUNK]))
                 time.sleep(0.15)
             return out
-        j = self._mutate("AddUnifiedAdGroups", _ADD_GROUPS_Q, {"unifiedAddInput": items})
-        res = (j.get("data") or {}).get("addUnifiedAdGroups") or {}
-        vr = res.get("validationResult") or {}
+        # Grid eventual-consistency: только что созданная (addCampaigns / token v501) кампания ещё
+        # не видна валидатору AddUnifiedAdGroups (читает отставшую реплику) → CAMPAIGN_NOT_FOUND.
+        # Реплика догоняет за <~2с — ретраим с бэкоффом (2026-07-06 группа D: porg-7bqj56f4 ×3,
+        # porg-psm5h7q6 ×1). Прочие ошибки валидации не транзиентны → отдаём сразу.
+        vr = {}
+        for _ag_try in range(3):
+            j = self._mutate("AddUnifiedAdGroups", _ADD_GROUPS_Q, {"unifiedAddInput": items})
+            res = (j.get("data") or {}).get("addUnifiedAdGroups") or {}
+            vr = res.get("validationResult") or {}
+            _errs = vr.get("errors") or []
+            if _errs and any("CAMPAIGN_NOT_FOUND" in str(e) for e in _errs) and _ag_try < 2:
+                time.sleep(1.2 * (_ag_try + 1))
+                continue
+            break
         if vr.get("errors"):
             raise GridCreateError(f"AddUnifiedAdGroups validation: {str(vr['errors'])[:240]}")
         out: list[int | None] = []
@@ -371,12 +392,15 @@ def build_unified_campaign(*, name: str, counter_id: int, goal_id: int, cpa: int
                            pay_for_conversion: bool = False, time_zone: str = "130",
                            email: str = "", bid_modifiers: dict | None = None,
                            placement_types: list | None = None,
-                           disabled_places: list | None = None) -> dict:
+                           disabled_places: list | None = None,
+                           minus_keywords: list | None = None) -> dict:
     """Собрать ПОЛНЫЙ GdUnifiedCampaign (48 полей) для AddCampaigns (реверс из HAR14).
     network=True → РСЯ (tp1); search=True → Поиск; gallery+organic → Товарная галерея (tp3/tp5, HAR17).
     Стратегия AUTOBUDGET_AVG_CPA (целевой CPA).
     bid_modifiers — корректировки ставок (HAR21): ставятся прямо в AddCampaigns (campaignId-плейсхолдер
-    «9999999» в объекте). Так корректировки попадают на куки-пути БЕЗ баллов для ВСЕХ tp1–tp5."""
+    «9999999» в объекте). Так корректировки попадают на куки-пути БЕЗ баллов для ВСЕХ tp1–tp5.
+    minus_keywords — глобальные минус-слова кампании (direct_global_minus_words); проставляются
+    на ВСЕХ cookie-типах tp1–tp5/tp3. Обрезаются до 20 000 симв. без пробелов (_campaign_minus_kw)."""
     platforms = dict(_PLATFORMS_OFF)
     platforms["network"] = bool(network)
     platforms["search"] = bool(search)
@@ -413,7 +437,7 @@ def build_unified_campaign(*, name: str, counter_id: int, goal_id: int, cpa: int
         "isRecommendationsManagementEnabled": False, "isS2sTrackingEnabled": False,
         "isUniversalCamp": False, "libraryMinusKeywordsIds": [], "meaningfulGoals": [],
         "metrikaCounters": [int(counter_id)] if counter_id else [],
-        "minusKeywords": [], "name": name[:255],
+        "minusKeywords": _campaign_minus_kw(minus_keywords), "name": name[:255],
         "notification": {
             "smsSettings": {"smsTime": {"startTime": {"hour": 9, "minute": 0},
                                         "endTime": {"hour": 21, "minute": 0}}, "enableEvents": []},
@@ -487,7 +511,16 @@ def build_adgroup(*, campaign_id: int, name: str, region_ids: list, keywords: li
 _AC_GROUP_CAP = 150        # макс. групп на кампанию за проход (как в v501-пути)
 _GRID_MUTATION_CHUNK = 50  # приватный Grid нестабилен на пачках ~150: режем bulk-мутации
 _KW_BUDGET = 9800          # консервативный лимит ключей/кампанию (Яндекс: 10 000)
-_KW_MAX_PER_GROUP = 200    # верхний предохранитель на группу
+_KW_MAX_PER_GROUP = 200    # верхний предохранитель на группу (Яндекс лимит API)
+
+
+def _campaign_minus_kw(words) -> list:
+    """Обрезать список минус-фраз по символьному бюджету кампании (20 000 симв. без пробелов).
+    Применяется к 'minusKeywords' в AddCampaigns; лимит — официальная дока Яндекса.
+    Нормализует входной список (str→strip→пропуск пустых), затем делегирует в
+    create_set_minus._minus_char_budget — единственный источник правды по бюджету (20 000 симв.)."""
+    normalized = [s for w in (words or []) for s in [str(w).strip()] if s]
+    return _cm_minus_char_budget(normalized)  # _MINUS_CAMPAIGN_CHAR_BUDGET=20_000 из create_set_minus
 
 
 def _alloc_kw_caps(groups: list) -> list[int]:
@@ -497,11 +530,13 @@ def _alloc_kw_caps(groups: list) -> list[int]:
     Pass-2: остаток бюджета (от групп, не дошедших до base_cap) перераспределяется между
             «плотными» группами (len > base_cap), увеличивая их cap.
     Гарантирует sum(caps[i]) ≤ 9800 при любом наборе групп.
+    Гарантирует caps[i] ≤ _KW_MAX_PER_GROUP (200) — жёсткий per-group потолок (Яндекс API лимит).
 
     Примеры:
       150 × 200 kw  → base_cap=65, sum=9800 (50 групп по 66, 100 по 65).
-      149×3 + 1×3000 → base_cap=65, крупная получает min(3000, 9288+65)=3000, sum=3447.
+      149×3 + 1×3000 → base_cap=65, крупная получает min(3000, 65+extra), но ≤200.
       10 × любые   → base_cap=200, урезания нет.
+      1 × 500 kw   → base_cap=200, остаток 9600 НЕ раздаётся (>200 запрещено API).
     """
     n = len(groups)
     if n == 0:
@@ -516,9 +551,12 @@ def _alloc_kw_caps(groups: list) -> list[int]:
             extra = remainder // len(capped_idxs)
             leftover = remainder - extra * len(capped_idxs)
             for i in capped_idxs:
-                caps[i] = min(kw_counts[i], base_cap + extra)
+                # FIX-Q4: клип по _KW_MAX_PER_GROUP — API Яндекса не принимает >200 ключей/группу.
+                # До фикса pass-2 мог давать cap=500 при n=1 (extra=9600, base_cap=200),
+                # что приводило к keywords_repair post-create (лишние ~380с добивки, cid 712408001/712406901).
+                caps[i] = min(kw_counts[i], min(base_cap + extra, _KW_MAX_PER_GROUP))
             for i in capped_idxs[:leftover]:
-                caps[i] = min(kw_counts[i], caps[i] + 1)
+                caps[i] = min(kw_counts[i], min(caps[i] + 1, _KW_MAX_PER_GROUP))
     return caps
 
 
@@ -809,7 +847,8 @@ def add_shopping_content_to_existing(login: str, *, campaign_id: int, groups: li
     try:
         from . import grid_finalize as gf
 
-        grid = gf.GridClient(login)
+        # A3: grid_create = чистый cookie-путь (кампания/группы созданы Grid'ом), token→Grid lag нет.
+        grid = gf.get_grid_client(login, cookie_only=True)
         raw_shop_ids = grid.add_shopping_ads(shop_items) or []
         shop_ids = [int(x) for x in raw_shop_ids if x]
         rep["shopping_ad_ids"] = shop_ids
@@ -911,6 +950,11 @@ def _dedup_keep(seq, n, cut):
 
 def _fill_titles(seq, n=7, cut=56):
     src = [str(x or "").strip() for x in (seq or []) if str(x or "").strip()]
+    # Добиваем короткие входящие заголовки суффиксом-УТП до целевых 48–56 символов.
+    # idx ротирует банк суффиксов; used — предотвращает повторы суффикса внутри набора.
+    _ext_used: set[str] = set()
+    src = [extend_title_to_max(t, idx, max_len=cut, used=_ext_used)
+           for idx, t in enumerate(src)]
     out = list(src)
     anchor = (src[0].split(".")[0].strip() if src else "Авто в кредит").rstrip(" ,.")
     if len(anchor) > 34:
@@ -934,6 +978,9 @@ def _fill_titles(seq, n=7, cut=56):
             cand = f"{anchor} {tail}"
         if len(cand) > cut:
             cand = _trim_clean(cand, cut)   # по слову + чистка хвоста («…Одобрение за 30»)
+        # Добиваем сгенерированный кандидат до целевой длины (≤2 свободных символов).
+        if cand:
+            cand = extend_title_to_max(cand, len(out), max_len=cut, used=_ext_used)
         if cand and cand not in out:
             out.append(cand)
     return out

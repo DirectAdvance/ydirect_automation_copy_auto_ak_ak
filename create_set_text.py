@@ -37,8 +37,17 @@ def run_create_set_text(*, it: dict[str, Any], name: str, tp_code: str,
                         job_db_progress: Callable[[dict[str, Any]], Any],
                         bump_item: Callable[..., Any],
                         precreated_promo_id: Optional[int] = None,
+                        create_text_via_token: Optional[Callable[..., dict[str, Any]]] = None,
+                        api_first: bool = False,
+                        via_cookie: bool = False,
                         ) -> list[dict[str, Any]]:
-    """Создать tp2 (search_test) / tp4 (search_dynamic) по cookie. tp_code ∈ {'tp2','tp4'}."""
+    """Создать tp2 (search_test) / tp4 (search_dynamic). tp_code ∈ {'tp2','tp4'}.
+
+    Маршрут (Решение #B, DIRECT_API_FIRST):
+    - OFF (api_first=False) ИЛИ via_cookie ИЛИ нет токена → cookie/Grid (без баллов) — прежнее поведение.
+    - ON (api_first=True) + не-via_cookie + есть токен → ТОКЕН/API (баллы) через create_text_via_token;
+      на реальном 152 / сбое API токен-путь возвращает ok=False (+удаляет недоделанную РК) → грациозный
+      фолбэк на _create_text_via_cookie (набор не валим)."""
     results: list[dict[str, Any]] = []
     _it_pay = it.get("pay") or "cpa"
     cookie_kwargs = dict(
@@ -55,24 +64,38 @@ def run_create_set_text(*, it: dict[str, Any], name: str, tp_code: str,
         # в ОДНУ и ту же кампанию вперемешку (живой баг 2026-07-06, porg-lzjk6p5m/terehov; у tp1 тот
         # же segment корректно прокидывается через _create_tp1_via_cookie, см. create_set_tp1_builders.py).
         segment=it.get("tp4_segment"),
+        # only_cts (split-driven слепки, напр. dmp/tp2): ct-коды ИМЕННО этого split-блока из плана
+        # (create_set_plan: "tp2_split_cts"). None для авто-слепков → поведение сегмент-пути неизменно.
+        # Без него cookie-путь (_tp1_pack_groups) брал весь пул слепка (34 ct) в КАЖДУЮ из 4 кампаний.
+        only_cts=it.get("tp2_split_cts"),
         corr=corr, ret_map=ret_map,
         token=(st_token or ""), callout_texts=callouts,
         callout_ids=callout_ids,
         precreated_promo_id=precreated_promo_id,
     )
-    res = create_text_via_cookie(**cookie_kwargs)
-    # #8: cookie-путь ставит ГРУППОВЫЕ минуса (через пак). Для слепков с режимом campaign-direct
-    # (pavlov/kryuchkova) / shared-set (scherbakova) восстанавливаем привязку минусов УРОВНЯ
-    # КАМПАНИИ/общего набора (v5; работает при наличии баллов). Best-effort: на 152 деградирует
-    # до групповых минусов, кампанию не валит.
+    # Роутинг token-vs-cookie. token_kwargs == cookie_kwargs (одинаковая сигнатура функций).
+    _use_token = bool(api_first and not via_cookie and st_token and callable(create_text_via_token))
+    if _use_token:
+        res = create_text_via_token(**cookie_kwargs)
+        if not res.get("ok"):
+            # token 152 / сбой API → грациозный фолбэк на куку (недоделанная РК уже удалена token-путём).
+            from .create_set_units import is_units_exhausted as _is_units
+            _tok_units = bool(res.get("defer") or _is_units(res.get("error")))
+            res = create_text_via_cookie(**cookie_kwargs)
+            if _tok_units:
+                # Метка для orchestrator: token упёрся в баллы (даже если кука добила ok) — считается
+                # в строгий 152-streak (после N подряд весь остаток набора уходит на куку без token-попыток).
+                res["token_units_fallback"] = True
+    else:
+        res = create_text_via_cookie(**cookie_kwargs)
+    # #8: cookie-путь ставит минуса УРОВНЯ КАМПАНИИ через spec (create_set_feed_builders:
+    # "minus_keywords" ВСЕГДА = _enabled_minus_words(), Grid-cookie без баллов).
+    # campaign-mode: v5 _apply_campaign_direct_minus УБРАН (дубль поверх spec → против бюджета 20k).
+    # shared-set (scherbakova): Grid libraryMinusKeywordsIds — привязка через _finalize_search_via_grid.
     if res.get("ok") and res.get("campaign_id") and st_token:
         _mm = slepok_minus_mode.get(slepok, "group")
         try:
-            if _mm == "campaign":
-                _cd = apply_campaign_direct_minus(
-                    st_token, login, res["campaign_id"], slepok, site_type, tp_code)
-                res["minus_campaign_note"] = f"campaign-direct: {_cd}" if _cd else "campaign-direct OK"
-            elif _mm == "shared_set":
+            if _mm == "shared_set":
                 # Grid-путь (libraryMinusKeywordsIds) уже выполнен внутри _create_text_via_cookie
                 # через _finalize_search_via_grid. v5 NegativeKeywordSharedSetIds отклоняется
                 # для ЕПК-кампаний («неизвестный параметр») — пропускаем если Grid уже сработал.

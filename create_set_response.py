@@ -17,11 +17,13 @@ def build_create_set_response(*, created: int, failed: int, launch: bool,
                               live_verification: dict[str, Any] | None = None,
                               precreate_report: dict[str, Any] | None = None,
                               repair_gate_summary: dict[str, Any] | None = None,
-                              auto_repair: dict[str, Any] | None = None) -> dict[str, Any]:
+                              auto_repair: dict[str, Any] | None = None,
+                              skipped_existing: int = 0) -> dict[str, Any]:
     """Return the public create_set JSON payload."""
     return {
         "created": created,
         "failed": failed,
+        "skipped_existing": skipped_existing,
         "launched": launch,
         "results": results,
         "promo": promo_note,

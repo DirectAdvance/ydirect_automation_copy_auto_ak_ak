@@ -222,6 +222,7 @@ def execute_safe_post_create(login: str, ctx: dict, plan: dict[str, Any], deps: 
             "images_repair",
             "adprice_repair",
             "default_text_repair",
+            "campaign_invariant_repair",   # отложено на delayed-цикл (Grid-лаг кампанийных полей после create)
         ],
         "uses_direct_units": False,
     }
@@ -334,6 +335,18 @@ def execute_all_in_place(login: str, ctx: dict, plan: dict[str, Any], deps: rex.
                 executed.extend([{k: v for k, v in a.items()} for a in dt_actions])
             else:
                 failed.append({"action": "default_text_repair", "status": status, "result": out})
+
+    inv_ids, inv_actions, _ = rgate.executable_campaign_invariant_repairs(plan or {})
+    if inv_ids and inv_actions:
+        if _actions_use_units(inv_actions):
+            units_gated.append({"action": "campaign_invariant_repair", "reason": "uses_direct_units"})
+        else:
+            out, status = rex.execute_campaign_invariant_repair(login, ctx, inv_ids, deps)
+            outputs.append({"action": "campaign_invariant_repair", "status": status, "result": out})
+            if 200 <= int(status) < 300 and out.get("ok"):
+                executed.extend([{k: v for k, v in a.items()} for a in inv_actions])
+            else:
+                failed.append({"action": "campaign_invariant_repair", "status": status, "result": out})
 
     promo_ids, promo_actions, _ = rgate.executable_promo_campaign_ids(results, plan or {})
     if promo_ids and promo_actions:
@@ -510,14 +523,17 @@ def delayed_content_repair_request(parent_job_id: str, job_snapshot: dict[str, A
     сняты. Дедуп обеспечен ON CONFLICT (parent_job_id, kind) DO NOTHING в _delayed_content_repair_save.
     """
     body = job_snapshot.get("body") if isinstance(job_snapshot.get("body"), dict) else {}
-    # Ранний пропуск: recreate/deferred/skip-флаги — сохранены без изменений (ПРАВКА A)
+    # Ранний пропуск: deferred/skip-флаги — сохранены без изменений (ПРАВКА A).
+    # _repair_parent_job_id (recreate-джобы) — РАЗРЕШЁН: планируем ОДИН ре-аудит
+    # (kind='content_repair_post_recreate') чтобы подтвердить фикс. fix_generic_fallback_group
+    # при этом пропускается (skip_recreate=True в _run_delayed_content_repair) — антицикл.
     if (
-        body.get("_repair_parent_job_id")
-        or body.get("_deferred_id")
+        body.get("_deferred_id")
         or body.get("_skip_auto_post_repair")
         or body.get("_skip_delayed_content_repair")
     ):
         return None
+    is_post_recreate = bool(body.get("_repair_parent_job_id"))
 
     result = job_snapshot.get("result") if isinstance(job_snapshot.get("result"), dict) else {}
     if not result or result.get("error"):
@@ -560,6 +576,7 @@ def delayed_content_repair_request(parent_job_id: str, job_snapshot: dict[str, A
         "content_repairs": int((summary or {}).get("in_place_content_repairs") or 0),
         "inplace_actions": inplace_actions,
         "summary": summary,
+        "post_recreate": is_post_recreate,
         "uses_direct_units": False,
     }
 
@@ -568,8 +585,11 @@ def queue_recreate_repair_job(login: str, ctx: dict[str, Any], plan: dict[str, A
                               parent_job_id: str, saved_session: dict[str, Any],
                               delete_uac: DeleteUac, create_job: CreateJob,
                               jobs_ahead: JobsAhead, dedup_login: bool = True,
-                              delete_search_draft: "DeleteSearchDraft | None" = None) -> dict[str, Any]:
-    """Queue resume/recreate repair items without Direct API units."""
+                              delete_search_draft: "DeleteSearchDraft | None" = None,
+                              units_alive: "Callable[..., Any] | None" = None) -> dict[str, Any]:
+    """Queue resume/recreate repair items. Транспорт (Семён 2026-07-07, «баллы первичны»):
+    если баллы ЖИВЫ — recreate идёт ТОКЕНОМ (via_cookie снимается; на 152 сам упадёт в cookie),
+    иначе (реальный 152 / токен не читается) — по куке, как раньше."""
     body = ctx.get("body") or {}
     items, unsupported = rgate.executable_recreate_items(body, plan or {})
     if not items:
@@ -629,14 +649,25 @@ def queue_recreate_repair_job(login: str, ctx: dict[str, Any], plan: dict[str, A
         parent_job_id=parent_job_id,
         search_deletions=search_deletions if (search_deletions and delete_search_draft) else None,
     )
+    # «Баллы первичны» (Семён 2026-07-07): при живых баллах recreate идёт ТОКЕНОМ — снимаем
+    # принудительный via_cookie (build_recreate_queue_body ставит его по умолчанию). На 152
+    # оркестратор сам переключит остаток на куку. None/False (реальный 152 / нет токена) → по куке.
+    _alive = None
+    try:
+        _alive = units_alive(login, (ctx.get("agency") or body.get("agency") or "")) if units_alive else None
+    except Exception:  # noqa: BLE001
+        _alive = None
+    if _alive:
+        repair_body.pop("via_cookie", None)
+    _transport = "token_v501" if _alive else "cookie_grid"
     new_job_id = create_job(len(items), login, repair_body, saved_session, dedup_login)
     return {
         "queued": True,
         "new_job_id": new_job_id,
         "queued_items": len(items),
         "ahead": jobs_ahead(new_job_id),
-        "transport": "cookie_grid",
-        "uses_direct_units": False,
+        "transport": _transport,
+        "uses_direct_units": bool(_alive),
         "deleted_uac_campaigns": deleted_uac.get("deleted")[:40],
         "deleted_search_campaigns": (deleted_search.get("deleted") or [])[:40],
         "unsupported_actions": unsupported[:40],

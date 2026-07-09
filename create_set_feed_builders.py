@@ -93,6 +93,7 @@ def _create_text_via_cookie(
     budget_rub: int, region_ids: list, href: str, slepok: str, site_type: str, r_code: str,
     titles: list | None, texts: list, pay: str = "cpa", city: str = "", autotarget: bool = False,
     segment: str | None = None,
+    only_cts: list[str] | None = None,
     corr: dict | None = None, ret_map: dict | None = None,
     token: str = "", callout_texts: list | None = None,
     callout_ids: list | None = None,
@@ -109,7 +110,8 @@ def _create_text_via_cookie(
     _img_map = _grid_account_image_hashes(login)
     groups, _m3_alive = _pack_groups_with_retry(login, slepok, site_type, r_code, href, titles, texts,
                                                 segment=segment, city=city, tp_code=tp_code,
-                                                image_map=_img_map, autotarget=bool(autotarget))
+                                                image_map=_img_map, autotarget=bool(autotarget),
+                                                only_cts=only_cts)
     if not groups:
         # Пак пуст после ретраев → defer (отложенная докрутка), НЕ permanent-fail.
         return {"ok": False, "defer": True, "name": name,
@@ -125,7 +127,13 @@ def _create_text_via_cookie(
             # #11: tp2/tp4 — только страница поиска (['SEARCH_PAGE']), без «динамических мест на поиске».
             # Динамика tp4 идёт через organic (platforms), не через placementTypes. Ставим на СОЗДАНИИ,
             # чтобы не было окна с placementTypes=None (=дефолт с динамич. местами), если финализация упадёт.
-            "placement_types": ["SEARCH_PAGE"]}
+            "placement_types": ["SEARCH_PAGE"],
+            # Глобальные минус-слова ВСЕГДА в spec через Grid-cookie (minusKeywords, без баллов).
+            # _apply_campaign_direct_minus через v5 для campaign-mode УБРАН (create_set_text.py) —
+            # Grid-spec уже ставит campaign-level, второй v5-вызов создавал бы дубль.
+            # _enabled_minus_words не прокинута в feed_builder_deps — доступ через _DEPS (safe get).
+            "minus_keywords": (_DEPS.get("_enabled_minus_words") or (lambda: []))()}
+
     # БАГ-10: цены из фида для tp2/tp4 cookie-пути (раньше price_map не прокидывался).
     try:
         _tp24_price_map = _account_offer_prices(login, href)
@@ -167,7 +175,7 @@ def _create_text_via_cookie(
                 _asl = _norm_sitelinks_for_v501(_ai_sitelinks or (_assets.get("sitelinks") or []), href)
                 if _asl:
                     try:
-                        _slset = gf.GridClient(login).add_sitelink_set(_asl)
+                        _slset = gf.get_grid_client(login).add_sitelink_set(_asl)
                     except Exception:  # noqa: BLE001
                         _slset = _get_or_reuse_sitelink_set(token, login, _asl)  # v5 fallback
                 # HAR-24/entry183: UpdateCampaigns должен получать реальный campaignId внутри
@@ -245,6 +253,200 @@ def _create_text_via_cookie(
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "name": name, "error": f"{tp_code}(куки): {str(e)[:200]}"}
 
+def _grid_set_search_autotarget(login: str, campaign_id: int) -> int:
+    """⚠️ УПРАЗДНЁН (2026-07-09, НЕ ВЫЗЫВАЕТСЯ) — оставлен как справка/анти-паттерн.
+    relevanceMatch tp2/tp4 token-пути теперь ставится АТОМАРНО при создании групп
+    (_build_tp2_adgroups Фаза 1 → Grid AddUnifiedAdGroups profile=search_tp2). Этот пост-патч через
+    groups_for_edit (edit-view) ловил ЛАГ реплики и молча возвращал 0 → WRONG_AUTOTARGET
+    (журнал TP5_AUTOTARGET v2/I/J). НЕ переиспользовать edit-view для детекта/патча свежих групп.
+
+    Grid (БЕЗ баллов): поставить relevanceMatch «Целевые запросы» (EXACT_V2_MARK) + «Запросы без
+    бренда» (WITHOUT_BRAND) на ВСЕ GdUnifiedAdGroup кампании. Нужно ТОЛЬКО на token-пути tp2/tp4:
+    v5 adgroups.add НЕ ставит автотаргет-профиль (в отличие от Grid AddUnifiedAdGroups куки-пути и
+    _build_tp1_adgroups(search_tp2) для tp5). Read-modify-write через groups_for_edit +
+    build_update_item + update_unified_adgroups (тот же примитив, что и repair_executor). Идемпотентно
+    (корректный профиль пропускается) и безопасно (группы с ретаргетингом/bidModifiers не трогаем).
+    → кол-во обновлённых групп; сбой не валит создание (best-effort)."""
+    try:
+        grid = gf.get_grid_client(login)
+        groups = grid.groups_for_edit(campaign_id)
+    except Exception:  # noqa: BLE001
+        return 0
+    items = []
+    for grp in groups:
+        if not grp.get("supported"):
+            continue
+        if grp.get("retargetings_present") or grp.get("bid_modifiers_present"):
+            continue
+        rm = grp.get("relevance_match")
+        if isinstance(rm, dict) and rm.get("isActive") \
+                and {str(x).upper() for x in (rm.get("relevanceMatchCategories") or [])} == {"EXACT_V2_MARK"} \
+                and {str(x).upper() for x in (rm.get("autotargetingBrandSettings") or [])} == {"WITHOUT_BRAND"}:
+            continue   # уже корректный профиль
+        target_rm = {"isActive": True,
+                     "id": (rm or {}).get("id") if isinstance(rm, dict) else None,
+                     "relevanceMatchCategories": ["EXACT_V2_MARK"],
+                     "autotargetingBrandSettings": ["WITHOUT_BRAND"]}
+        try:
+            items.append(grid.build_update_item(grp, keywords=list(grp.get("keywords") or []),
+                                                relevance_match=target_rm))
+        except Exception:  # noqa: BLE001
+            continue
+    if not items:
+        return 0
+    try:
+        return len(grid.update_unified_adgroups(items))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _create_text_via_token(
+    login: str, name: str, tp_code: str, counter_id: int, goal_id: int, cpa_rub: int,
+    budget_rub: int, region_ids: list, href: str, slepok: str, site_type: str, r_code: str,
+    titles: list | None, texts: list, pay: str = "cpa", city: str = "", autotarget: bool = False,
+    segment: str | None = None,
+    only_cts: list[str] | None = None,
+    corr: dict | None = None, ret_map: dict | None = None,
+    token: str = "", callout_texts: list | None = None,
+    callout_ids: list | None = None,
+    precreated_promo_id: int | None = None,
+) -> dict:
+    """tp2/tp4 (Поиск / Поиск+Динамика) через ТОКЕН/API v5 (тратит баллы Директа) — путь
+    DIRECT_API_FIRST при живых баллах. Shell TEXT_CAMPAIGN (search-only, инварианты #3/#4/#5 +
+    ENABLE_COMPANY_INFO=NO) + группы (_build_text_from_pack: v5 adgroups/keywords + v501 ads +
+    post-create Grid-репейр картинок/цен) + Grid-докрутка инвариантов, ИДЕНТИЧНАЯ cookie-пути
+    (те же примитивы _finalize_search_via_grid / _tp5_account_data / _common_sitelinks_fast /
+    _grid_callout_ids / _grid_minus_pack_id / _apply_campaign_direct_minus / _apply_corrections),
+    ПЛЮС relevanceMatch EXACT_V2_MARK+WITHOUT_BRAND (v5-группы автотаргет не получают → добиваем Grid).
+
+    Возвращает res-форму (via='token'). При исчерпании баллов (152) / недозаполнении — удаляет
+    недоделанную кампанию и ставит defer=True; фолбэк на _create_text_via_cookie делает вызывающий
+    (run_create_set_text), набор не валим."""
+    from .create_set_units import is_units_exhausted as _is_units
+    corr = corr or {}
+    ret_map = ret_map or {}
+    if not token:
+        return {"ok": False, "name": name, "error": f"{tp_code}(token): нет токена"}
+    wkl = int(budget_rub) if budget_rub else int(cpa_rub) * 10
+    # ── 1. SHELL: TEXT_CAMPAIGN (search-only) через v5 ─────────────────────────────
+    # pay='cpa' → PAY_FOR_CONVERSION, 'tcpa' → AVERAGE_CPA (те же стратегии, что cookie-путь).
+    _build_text_from_pack = _DEPS.get("_build_text_from_pack")
+    if not callable(_build_text_from_pack):
+        return {"ok": False, "name": name, "error": f"{tp_code}(token): нет билдера групп"}
+    try:
+        res = _create_search_test_campaign(
+            token, login, name, audiences=[], counter_id=counter_id,
+            mode="search", pay=("cpa" if pay == "cpa" else "tcpa"),
+            goal_id=goal_id or 0, cpa_rub=int(cpa_rub), budget_rub=wkl)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "name": name, "defer": bool(_is_units(str(e))),
+                "error": f"{tp_code}(token): shell {str(e)[:200]}"}
+    if not res.get("ok") or not res.get("campaign_id"):
+        _err = res.get("error") or "campaigns.add упал"
+        return {"ok": False, "name": name, "defer": bool(_is_units(_err)),
+                "error": f"{tp_code}(token): {str(_err)[:200]}"}
+    cid = res["campaign_id"]
+    # ── 2. ГРУППЫ (v5 adgroups/keywords + v501 ads, тратит баллы) ──────────────────
+    # apply_group_minus: group-режим → минусы на группах; campaign/shared_set → на кампании (ниже).
+    _mm = _SLEPOK_MINUS_MODE.get(slepok, "group")
+    _apply_group_minus = (_mm == "group")
+    try:
+        build = _build_text_from_pack(token, login, cid, slepok, site_type, tp_code,
+                                      region_ids, href, titles, texts, r_code=r_code,
+                                      segment=segment, city=city, autotarget=bool(autotarget),
+                                      apply_group_minus=_apply_group_minus, only_cts=only_cts)
+    except Exception as e:  # noqa: BLE001
+        build = {"error": str(e)[:240]}
+    _errs = build.get("errors") or []
+    _units_hit = _is_units(build.get("error")) or any(_is_units(x) for x in _errs)
+    # Недозаполнение (нет групп / пак пуст / 152) → удаляем недоделанную РК + defer (фолбэк на куку).
+    if build.get("error") or build.get("skipped") or not build.get("adgroups"):
+        try:
+            _delete_partial_campaign(token, login, cid)
+        except Exception:  # noqa: BLE001
+            pass
+        _reason = str(build.get("error") or build.get("skipped")
+                      or "; ".join(str(x) for x in _errs) or "группы не созданы")[:200]
+        return {"ok": False, "name": name, "campaign_id": cid, "partial_deleted": True,
+                "defer": bool(build.get("defer") or build.get("skipped") or _units_hit),
+                "error": f"{tp_code}(token) не дозаполнена: {_reason}"}
+    # ── 3. relevanceMatch EXACT_V2_MARK + WITHOUT_BRAND — ставится АТОМАРНО при СОЗДАНИИ групп ──
+    # _build_text_from_pack → _build_tp2_adgroups Фаза 1 создаёт группы через Grid
+    # AddUnifiedAdGroups(profile=search_tp2). Пост-патч _grid_set_search_autotarget (groups_for_edit +
+    # update_unified_adgroups) УПРАЗДНЁН: он ловил лаг реплики edit-view и молча возвращал 0 →
+    # кампания отдавалась ok:True БЕЗ корректного автотаргета → WRONG_AUTOTARGET (журнал
+    # TP5_AUTOTARGET v2 «не помогло», I/J). relevance_match_set == adgroups (атомарно); при сбое
+    # Grid-групп build вернёт 0 adgroups → выше кампания удаляется + defer (ok:True невозможен).
+    _rm_set = int(build.get("relevance_match_set") or 0)
+    # ── 4. Grid-докрутка УРОВНЯ КАМПАНИИ: ассеты + места показа + organic + инварианты #3/#4/#5/#6 ──
+    # Тот же контур, что в _create_text_via_cookie (строки asset-gathering + _finalize_search_via_grid).
+    _fin = None
+    try:
+        _assets = {"callout_ids": [], "promos": [], "sitelinks": []}
+        _slset = None
+        _prefer_callout_ids = [int(x) for x in (callout_ids or []) if str(x or "").strip().isdigit()]
+        try:
+            _assets = _tp5_account_data(token, login, slepok, site_type,
+                                        prefer_callout_texts=callout_texts or [],
+                                        prefer_callout_ids=_prefer_callout_ids)
+        except Exception:  # noqa: BLE001
+            pass
+        if _prefer_callout_ids:
+            _assets["callout_ids"] = _prefer_callout_ids[:8]
+        elif not _assets.get("callout_ids"):
+            _gco = _grid_callout_ids(login, callout_texts or [])
+            if _gco:
+                _assets["callout_ids"] = _gco
+        _ai_sitelinks = _common_sitelinks_fast(login, slepok, site_type, city, tp_code, href=href)
+        _asl = _norm_sitelinks_for_v501(_ai_sitelinks or (_assets.get("sitelinks") or []), href)
+        if _asl:
+            try:
+                _slset = gf.get_grid_client(login).add_sitelink_set(_asl)
+            except Exception:  # noqa: BLE001
+                _slset = _get_or_reuse_sitelink_set(token, login, _asl)
+        _bm_fin = _grid_bid_modifiers(cid, corr, ret_map)
+        _minus_ids = []
+        if _SLEPOK_MINUS_MODE.get(slepok) == "shared_set":
+            _mp = _grid_minus_pack_id(login)
+            if _mp:
+                _minus_ids = [_mp]
+        _finalize_search_via_grid(
+            login, cid, name=name, goal_id=goal_id or 0, cpa_rub=cpa_rub, weekly_rub=wkl,
+            counter_ids=[counter_id] if counter_id else [],
+            pay_for_conversion=(pay == "cpa"),
+            callout_ids=_assets.get("callout_ids"),
+            sitelink_set_id=_slset,
+            promo_id=(_assets["promos"][0] if _assets.get("promos") else precreated_promo_id),
+            minus_set_ids=_minus_ids,
+            bid_modifiers=_bm_fin,
+            platforms=_search_platforms(tp_code))   # tp2 organic=False / tp4 organic=True
+        _fin = {"callouts": len(_assets.get("callout_ids") or []),
+                "sitelink_set": _slset, "promo": bool(_assets.get("promos") or precreated_promo_id),
+                "minus_set_grid": _minus_ids, "relevance_match_set": _rm_set,
+                "corrections": len((_bm_fin.get("bidModifierRetargeting") or {}).get("adjustments") or [])}
+        _v5_mods, _v5_mod_err = _apply_corrections(token, login, cid, corr, ret_map)
+        _fin["v5_corrections"] = _v5_mods
+        if _v5_mod_err:
+            _fin["v5_corrections_error"] = _v5_mod_err[:160]
+        _fin["demographic_corrections"] = len((_bm_fin.get("bidModifierDemographics") or {}).get("adjustments") or [])
+    except Exception as _fe:  # noqa: BLE001
+        _fin = {"error": str(_fe)[:160]}
+    # ── 5. Глобальные минус-слова уровня кампании — ВСЕ режимы (v5 NegativeKeywords = _enabled_minus_words),
+    #       аддитивно к shared_set (libraryMinusKeywordsIds). Эквивалент cookie-spec "minus_keywords". ──
+    try:
+        _cd = _apply_campaign_direct_minus(token, login, cid, slepok, site_type, tp_code)
+        if isinstance(_fin, dict):
+            _fin["minus_campaign_note"] = _cd or "campaign-direct OK"
+    except Exception as _me:  # noqa: BLE001
+        if isinstance(_fin, dict):
+            _fin.setdefault("warnings", []).append(f"campaign-direct минусы: {str(_me)[:120]}")
+    return {"ok": True, "name": name, "campaign_id": cid, "launched": False, "via": "token",
+            "search_finalized": _fin,
+            "build": {"groups": build.get("groups_built"), "ads": build.get("ads"),
+                      "keywords": build.get("keywords", 0),
+                      "errors": (build.get("errors") or [])[:5]},
+            "url": f"https://direct.yandex.ru/dna/campaign/{cid}?ulogin={login}"}
+
 def _create_shopping_via_cookie(
     login: str, name: str, tp_code: str, counter_id: int, goal_id: int, cpa_rub: int,
     budget_rub: int, region_ids: list, href: str, agency: str = "",
@@ -256,10 +458,10 @@ def _create_shopping_via_cookie(
     ct: str = "ct0000", r_code: str = "",
     single_feed: bool = False,
 ) -> dict:
-    """tp3 (Товарная галерея РСЯ) / tp5 (Поиск + Товарная галерея) ПО КУКЕ (без баллов) — после
-    согласия через попап (152). Кампания (gallery+organic) + группа (автотаргет) + товарное
-    объявление по фиду (grid_create.create_shopping_full, реверс HAR17). → res-форма.
-    tp3 → РСЯ-канал (network), tp5 → Поиск (search). Фид обязателен (читаем по куке).
+    """tp3 (Товарная галерея Поиск, placementTypes=['ADV_GALLERY']) / tp5 (Поиск + Товарная галерея)
+    ПО КУКЕ (без баллов) — после согласия через попап (152). Кампания (gallery+organic) + группа
+    (автотаргет) + товарное объявление по фиду (grid_create.create_shopping_full, реверс HAR17). → res-форма.
+    tp3 и tp5 — Search-канал (search=True, network=False). Фид обязателен (читаем по куке).
     БАГ-12 фикс: после создания — Grid-finalize с callouts/sitelinks/инвариантами (раньше отсутствовал)."""
     import datetime as _dt
     fid = int(feed_id) if feed_id else 0
@@ -288,7 +490,7 @@ def _create_shopping_via_cookie(
         return {"ok": False, "name": name, "error": f"{tp_code}(куки): нет URL-фида на аккаунте — товарную галерею не создать"}
     if tp_code == "tp5" and feed_name and feed_name not in name and not _is_site_domain_name(feed_name, href):
         name = f"{name} — {feed_name}"
-    is_rsya = (tp_code == "tp3")
+    is_rsya = False  # tp3 и tp5 — оба Search-канал (tp3 был ошибочно network — исправлено)
     start_date = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=3))).strftime("%Y-%m-%d")
     wkl = int(budget_rub) if budget_rub else int(cpa_rub) * 10
     _bm = _grid_bid_modifiers(9999999, corr or {}, ret_map or {})  # корректировки в AddCampaigns (HAR21)
@@ -301,8 +503,12 @@ def _create_shopping_via_cookie(
             # HAR49-эталон 712024652 (known-good). Форс ['SEARCH_PAGE','ADV_GALLERY'] в AddCampaigns
             # не подтверждён и рискует ORGANIC_PLACEMENT_TYPES_INVALID_COMBINATION → падение ВСЕГО
             # create (code-review C). Прежний create-guard закрывал лишь микро-окно «только Поиск»
-            # и был добавлен под ложную тревогу UI-кэша (live был уже корректен). tp3 (РСЯ) — тоже null.
-            "placement_types": None}
+            # и был добавлен под ложную тревогу UI-кэша (live был уже корректен). tp3 — тоже null.
+            "placement_types": None,
+            # tp3/tp5 куки-путь: _apply_campaign_direct_minus downstream не вызывается (в отличие от tp2/tp4),
+            # поэтому ставим минусы в spec для ВСЕХ режимов без риска дубля.
+            # _enabled_minus_words не прокинута в feed_builder_deps — доступ через _DEPS (safe get).
+            "minus_keywords": (_DEPS.get("_enabled_minus_words") or (lambda: []))()}
     try:
         # #5: имя группы tp5/tp3 по кодеру (как tp1/tp2): {ct}_aon_n000_{r_code}_..._g00 — Товарная
         # галерея. Без r_code (нет контекста) — прежнее «Товарная галерея».
@@ -315,15 +521,14 @@ def _create_shopping_via_cookie(
         # БАГ-8 фикс: ListingAd «Страницы каталога» — by-shopping, без name-фильтра (Общее, автотаргет).
         # create_shopping_full создаёт ShoppingAd но не ListingAd; докрутка через Grid (без баллов).
         # Сбой не блокирует — ShoppingAd уже создан; warnings идут в rep["errors"].
-        # Guard: ТОЛЬКО не-РСЯ (tp5 Поиск+Динамика+ТГ). tp3 = РСЯ товарная галерея — ListingAd
-        # (страницы каталога, поиск/динамика) там НЕ нужен, иначе лишние объявления в РСЯ.
+        # Guard: ShoppingAd должен быть создан. ListingAd добавляем для tp3 и tp5 (оба Search-канал).
         _sh_ids = rep.get("shopping_ad_ids") or []
         if ok and cid and _sh_ids and not is_rsya:
             try:
                 from .create_set_tp1_builders import _grid_add_listings_with_name_filters
                 _lst_build: dict = {"listing_build_items": [], "listing_name_by_shop": {}}
                 _grid_add_listings_with_name_filters(
-                    gf.GridClient(login), _sh_ids, _lst_build, fid, _trim_clean(body_text or "", 81))
+                    gf.get_grid_client(login), _sh_ids, _lst_build, fid, _trim_clean(body_text or "", 81))
                 rep["listing_ads"] = _lst_build.get("listing_ads", 0)
             except Exception as _le8:  # noqa: BLE001
                 rep.setdefault("errors", []).append(f"листинги(куки): {str(_le8)[:120]}")
@@ -354,41 +559,25 @@ def _create_shopping_via_cookie(
                 _sh_asl = _norm_sitelinks_for_v501(_sh_assets.get("sitelinks") or [], href)
                 if _sh_asl:
                     try:
-                        _sh_slset = gf.GridClient(login).add_sitelink_set(_sh_asl)
+                        _sh_slset = gf.get_grid_client(login).add_sitelink_set(_sh_asl)
                     except Exception:  # noqa: BLE001
                         _sh_slset = _get_or_reuse_sitelink_set(token, login, _sh_asl)
                 # HAR-24/entry183: UpdateCampaigns должен получать реальный campaignId внутри
                 # bidModifiers (не placeholder 9999999 из AddCampaigns). Перестраиваем с cid.
                 _bm_fin = _grid_bid_modifiers(cid, corr or {}, ret_map or {})
-                if is_rsya:
-                    # tp3 — РСЯ-канал: _finalize_rsya (network-only, placementTypes=[] хардкодом
-                    # внутри — параметра placement_types у него НЕТ, передавать его = TypeError → ловилось
-                    # except'ом и tp3-куки оставалась БЕЗ финализации (callouts/sitelinks/промо/корр.)).
-                    _mp_disabled = _enabled_minus_places()   # #21 минус-площадки РСЯ (tp3 куки-путь)
-                    _finalize_rsya(
-                        login, cid, name=name, goal_id=goal_id or 0, cpa_rub=cpa_rub, weekly_rub=wkl,
-                        counter_ids=[counter_id] if counter_id else [],
-                        pay_for_conversion=False,
-                        callout_ids=_sh_assets.get("callout_ids"),
-                        sitelink_set_id=_sh_slset,
-                        promo_id=(_sh_assets["promos"][0] if _sh_assets.get("promos") else None),
-                        minus_set_ids=None, bid_modifiers=_bm_fin,
-                        disabled_places=_mp_disabled)
-                else:
-                    # tp5 «Поиск + Товарная галерея»: места показа SEARCH_PAGE + ADV_GALLERY (HAR20),
-                    # platforms по умолчанию = PLATFORMS_SEARCH (gallery=True — товарная галерея НА поиске).
-                    _finalize_search_via_grid(
-                        login, cid, name=name, goal_id=goal_id or 0, cpa_rub=cpa_rub, weekly_rub=wkl,
-                        counter_ids=[counter_id] if counter_id else [],
-                        pay_for_conversion=False,
-                        callout_ids=_sh_assets.get("callout_ids"),
-                        sitelink_set_id=_sh_slset,
-                        promo_id=(_sh_assets["promos"][0] if _sh_assets.get("promos") else None),
-                        minus_set_ids=None, bid_modifiers=_bm_fin,
-                        # tp5 «Ручная настройка + ТГ» = ЯВНЫЙ список ["SEARCH_PAGE","ADV_GALLERY"] (HAR49
-                        # эталон 712024652). null давал пресет «Поиск» (Grid откатывает к дефолту, ADV_GALLERY
-                        # не входит в пресет). Динамика = isOrganicSearchEnabled=True (platforms.organic). (C review)
-                        placement_types=list(gf.PLACEMENTS_TP5))
+                # Search-финализация: tp3 = ADV_GALLERY (только товарная галерея на поиске);
+                # tp5 = SEARCH_PAGE + ADV_GALLERY (PLACEMENTS_TP5, HAR49-эталон 712024652).
+                # isOrganicSearchEnabled=True из platforms.organic (gallery=True в PLATFORMS_SEARCH).
+                _tp_placements = (["ADV_GALLERY"] if tp_code == "tp3" else list(gf.PLACEMENTS_TP5))
+                _finalize_search_via_grid(
+                    login, cid, name=name, goal_id=goal_id or 0, cpa_rub=cpa_rub, weekly_rub=wkl,
+                    counter_ids=[counter_id] if counter_id else [],
+                    pay_for_conversion=False,
+                    callout_ids=_sh_assets.get("callout_ids"),
+                    sitelink_set_id=_sh_slset,
+                    promo_id=(_sh_assets["promos"][0] if _sh_assets.get("promos") else None),
+                    minus_set_ids=None, bid_modifiers=_bm_fin,
+                    placement_types=_tp_placements)
                 _fin = {"callouts": len(_sh_assets.get("callout_ids") or []),
                         "sitelink_set": _sh_slset, "promo": bool(_sh_assets.get("promos")),
                         "corrections": len((_bm_fin.get("bidModifierRetargeting") or {}).get("adjustments") or [])}
@@ -464,7 +653,7 @@ def _tp5_account_data(token: str, login: str, slepok: str, site_type: str, agenc
                     _clean = [(str(t) or "").strip()[:25] for t in prefer_callout_texts if t]
                     _clean = [t for t in _clean if t]
                     if _clean:
-                        _gc_co = gf.GridClient(login)
+                        _gc_co = gf.get_grid_client(login)
                         callout_ids = list(_gc_co.add_callouts(_clean).values())[:8]
                 except Exception:  # noqa: BLE001
                     pass
@@ -473,7 +662,7 @@ def _tp5_account_data(token: str, login: str, slepok: str, site_type: str, agenc
         if not callout_ids:
             # v5 get_callouts пусто (новый аккаунт / 152 на get) → Grid (без баллов)
             try:
-                _gc_co = gf.GridClient(login)
+                _gc_co = gf.get_grid_client(login)
                 callout_ids = _dedup_callout_ids(_gc_co.get_callouts())  # #24: normalize+dedup
             except Exception:  # noqa: BLE001
                 pass
@@ -492,13 +681,14 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
                        city: str = "", segment: str | None = None,
                        autotarget: bool = False, products_only: bool = False,
                        grid_cookie: str | None = None) -> dict:
-    """Одна боевая tp5 (комбинированная, как эталон Щербаковой 2026-06-22):
-    TEXT_CAMPAIGN (поиск-only) + бренд-группы из пака M3 (TextAd + ListingAd + ShoppingAd).
+    """Одна боевая tp5 (поиск + товарная галерея, Семён 2026-07-07):
+    TEXT_CAMPAIGN (поиск-only) + бренд-группы из пака M3 (ShoppingAd + ListingAd, БЕЗ TextAd).
 
     pay='tcpa' → AVERAGE_CPA (cpc-вариант, кодер tp5_cpc_site)
     pay='cpa'  → PAY_FOR_CONVERSION (cpa-вариант, кодер tp5_cpa_site)
 
     Каждая группа = ct-папка пака M3 (tp5) → кодер ct{N}_aon_n000_{r}_ct010_ag011_g00.
+    Группа содержит ключи + автотаргет + TextAd + ShoppingAd + ListingAd («Т+Л+ТОВ», как tp1/tp3).
     FeedFilterConditions по collectionId если feed_models передан; иначе по всему фиду.
     Grid-докрутка: места показа (gallery + search), ассеты кампании, минус, инварианты.
     Корректировки «Глобальных правил» — ПОСЛЕ Grid (он перезаписывает bidModifiers).
@@ -544,10 +734,19 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
     _shop_ids = tp5_build.get("shopping_ad_ids") or []
     if feed_id and not _shop_ids:
         _delete_partial_campaign(token, login, cid)
-        return {"ok": False, "name": name, "feed": feed_name, "campaign_id": cid, "partial_deleted": True,
-                "error": "tp5 не дозаполнена: фидовая кампания создана без ShoppingAd"}
+        # Причина обычно transient: token→Grid replication lag (add_shopping_ads не увидел
+        # свежесозданную кампанию/группы → *_NOT_FOUND даже после ретраев). Это НЕ permanent-fail:
+        # удаляем недоделанную РК, но пункт уходит на ДОКРУТКУ (defer, bounded _RESUME_MAX=3) —
+        # пересоздастся по куке, когда реплика догонит. Иначе часть tp5 аккаунта молча терялась
+        # (2026-07-06 группа C). Причину add_shopping_ads прокидываем в error (раньше терялась).
+        _shop_err = "; ".join(str(x) for x in (tp5_build.get("errors") or []))[:200]
+        return {"ok": False, "defer": True, "name": name, "feed": feed_name, "campaign_id": cid,
+                "partial_deleted": True,
+                "error": "tp5 не дозаполнена: фидовая кампания создана без ShoppingAd"
+                         + (f" [{_shop_err}]" if _shop_err else "")}
     if _shop_ids and feed_id:
-        _gcl = gf.GridClient(login, cookie=grid_cookie)
+        # A3: cookie-only — ShoppingAd создан Grid'ом по куке, token→Grid lag отсутствует → без пауз.
+        _gcl = gf.get_grid_client(login, cookie=grid_cookie, cookie_only=True)
         # Текст и листинги в РАЗДЕЛЬНЫХ try (как tp1, «G review»): падение текста (Яндекс 500)
         # раньше выкидывало из общего try и листинги вообще не создавались → «без ListingAd».
         try:
@@ -581,7 +780,7 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
     slset_grid = _assets.get("sitelink_set_id")
     grid_warn: str | None = None  # B1: Grid-сбой не блокирует, но должен быть виден в ответе
     try:
-        gridc = gf.GridClient(login)
+        gridc = gf.get_grid_client(login)
         gridc.finalize(
             cid, name=name, goal_id=goal_id, cpa_rub=cpa_rub, weekly_rub=budget_rub,
             counter_ids=[counter_id] if counter_id else [],
@@ -597,6 +796,13 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
         # защищает от Карт/организации. Требуется ретрай Grid вручную.
         grid_warn = f"Grid-докрутка не прошла (товарная галерея/ассеты НЕ выставлены): {str(_grid_exc)[:200]}"
 
+    # ── 4.5. relevanceMatch tp5 — упразднён (v3, 2026-07-08) ───────────────────
+    # relevanceMatch теперь ставится АТОМАРНО при создании групп: _build_tp1_adgroups
+    # использует Grid AddUnifiedAdGroups(autotargeting_profile="search_tp2") вместо v501
+    # adgroups.add → EXACT_V2_MARK + WITHOUT_BRAND гарантированы с первого момента.
+    # rep["relevance_match_set"] уже заполнен в Фазе 1 _build_tp1_adgroups.
+    # (ERRORS_JOURNAL: TP5_AUTOTARGET_ALL_CATEGORIES решение v3)
+
     # ── 5. Корректировки «Глобальных правил» — ПОСЛЕ Grid ───────────────────────
     nmod = 0
     try:
@@ -610,6 +816,21 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
            "url": f"https://direct.yandex.ru/dna/campaign/{cid}?ulogin={login}"}
     if grid_warn:
         out["grid_warn"] = grid_warn  # B1: Grid-сбой виден в ответе; товарная галерея требует ретрая
+
+    # ── 6. Глобальные минус-слова уровня кампании — ВСЕ режимы ──────────────────
+    # tp2/tp4 закрыты через spec (minusKeywords); tp5 создаётся без spec → добавляем напрямую.
+    # shared_set (scherbakova): «Минуса общие 016» содержит корпус слепка, но НЕ содержит слова
+    # из direct_global_minus_words («отзывы» и др.) — это разные источники. NegativeKeywords
+    # (campaign-level inline) и NegativeKeywordSharedSetIds аддитивны → оба ставятся одновременно.
+    # Требование Семёна: global_minus_words ДОЛЖНЫ быть на уровне кампании для ВСЕХ режимов.
+    _mm5 = _SLEPOK_MINUS_MODE.get(slepok, "group")  # оставляем для логирования
+    if token:
+        try:
+            _cd5 = _apply_campaign_direct_minus(token, login, cid, slepok, site_type, "tp5")
+            out["minus_campaign_note"] = f"campaign-direct: {_cd5}" if _cd5 else "campaign-direct OK"
+        except Exception as _me5:  # noqa: BLE001 — best-effort, не валим кампанию
+            out.setdefault("warnings", []).append(f"campaign-direct минусы tp5: {str(_me5)[:120]}")
+
     return out
 
 def _create_tp5_campaign(token: str, login: str, base_name: str, counter_id: int,
@@ -677,10 +898,11 @@ def _create_tp3_single(data: dict, token: str, login: str, name: str, mode: str,
                        pay_for_conv: bool, goal_id: int, cpa_rub: int, budget_rub: int,
                        counter_id: int, region_ids: list, href: str, feed_id: int,
                        feed_name: str, group_name: str, corr: dict, ret_map: dict) -> dict:
-    """Одна боевая tp3 «Товарная галерея» (ЕПК, канал РСЯ, товарная по ВСЕМУ фиду).
-    Отличие от tp5: канал network (network_cpa=AVERAGE_CPA / network_payconv=PAY_FOR_CONVERSION) +
-    РСЯ-докрутка (_finalize_rsya, чистый network-only). Группа — ShoppingAd+ListingAd по всему фиду
-    (без ТГО, без модель-фильтра — товарная галерея целиком). UTM на группе."""
+    """Одна боевая tp3 «Товарная галерея» (ЕПК, канал Поиск, placementTypes=['ADV_GALLERY']).
+    Отличие от tp5: места показа ТОЛЬКО галерея (без SEARCH_PAGE); стратегия
+    search_cpa=AVERAGE_CPA / search_payconv=PAY_FOR_CONVERSION (Search=ON, Network=OFF);
+    Search-докрутка (_finalize_search_via_grid, placement_types=['ADV_GALLERY']).
+    Группа — ShoppingAd+ListingAd по всему фиду (без ТГО, без модель-фильтра). UTM на группе."""
     cl = data["cl"]
     spec = cmc.UnifiedCampaignSpec(
         name=name, client_login=login, oauth_token=token, mode=mode,
@@ -715,23 +937,23 @@ def _create_tp3_single(data: dict, token: str, login: str, name: str, mode: str,
         except Exception:  # noqa: BLE001
             slset = None
     warn = None
-    # РСЯ-докрутка: уточнения/промо/ссылки уровня кампании, чистый РСЯ (как tp1)
-    _mp_disabled = _enabled_minus_places()               # #21 минус-площадки РСЯ (tp3 v5-путь)
+    # Search-докрутка: уточнения/промо/ссылки уровня кампании,
+    # места показа ADV_GALLERY (товарная галерея на поиске, без SEARCH_PAGE).
     try:
-        _finalize_rsya(
+        _finalize_search_via_grid(
             login, cid, name=name, goal_id=goal_id, cpa_rub=cpa_rub,
             weekly_rub=(budget_rub or int(cpa_rub) * 10),
             counter_ids=[counter_id] if counter_id else [], pay_for_conversion=pay_for_conv,
             callout_ids=data["callout_ids"], sitelink_set_id=slset,
             promo_id=(data["promos"][0] if data["promos"] else None),
             minus_set_ids=[data["minus_set"]] if data["minus_set"] else None,
-            disabled_places=_mp_disabled)
+            placement_types=["ADV_GALLERY"])
     except Exception as e:  # noqa: BLE001
-        warn = f"РСЯ-докрутка упала: {str(e)[:140]}"
+        warn = f"Search-докрутка упала: {str(e)[:140]}"
     # текст по умолчанию на товарном объявлении (как в tp5)
     if data["default_text"]:
         try:
-            gf.GridClient(login).set_default_text([shop], feed_id, data["default_text"])
+            gf.get_grid_client(login).set_default_text([shop], feed_id, data["default_text"])
         except Exception:  # noqa: BLE001
             pass
     # корректировки «Глобальных правил» — ПОСЛЕ Grid (он перезаписывает bidModifiers)
@@ -753,7 +975,7 @@ def _create_tp3_campaign(token: str, login: str, base_name: str, counter_id: int
                          href: str, slepok: str, site_type: str, r_code: str,
                          corr: dict, ret_map: dict, job=None, no_cpa: bool = False,
                          single_feed: bool = False, agency: str = "") -> dict:
-    """Боевая tp3 «Товарная галерея» (ЕПК, РСЯ, товарная по фиду) — ПАРА cpc+cpa.
+    """Боевая tp3 «Товарная галерея» (ЕПК, Поиск, placementTypes=['ADV_GALLERY'], товарная по фиду) — ПАРА cpc+cpa.
     FAN-OUT (CODER.md): мультиплицируется по ВСЕМ URL-фидам аккаунта — каждый фид своя пара,
     имя несёт название фида. single_feed=True → только /yandex.xml (fallback: первый фид). job — live-счётчик."""
     data = _tp5_account_data(token, login, slepok, site_type, agency)
@@ -774,8 +996,8 @@ def _create_tp3_campaign(token: str, login: str, base_name: str, counter_id: int
         nm_cpc = (f"{base_name} — {_f_label3}" if not _is_site_domain_name(feed_name, href)
                   else base_name)
         nm_cpa = nm_cpc.replace("tp3_cpc_site", "tp3_cpa_site", 1)
-        _t3 = ([(nm_cpc, "network_cpa", False)] if no_cpa
-               else [(nm_cpc, "network_cpa", False), (nm_cpa, "network_payconv", True)])
+        _t3 = ([(nm_cpc, "search_cpa", False)] if no_cpa
+               else [(nm_cpc, "search_cpa", False), (nm_cpa, "search_payconv", True)])
         for nm, mode, pay in _t3:
             if job and job.get("cancel"):                    # отмена: стоп ПЕРЕД следующей кампанией пары
                 break

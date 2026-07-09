@@ -13,13 +13,15 @@ Environment=DIRECT_REGISTER_CONTENT_EDITOR=0
 # чтобы рестарт этого сервиса не трогал очередь копирования, и наоборот. Убрать (или '1'),
 # чтобы вернуть копирование в основной процесс (single-process режим).
 Environment=DIRECT_REGISTER_COPY=0
-# Phase 2 (split web/worker): to hand campaign creation over to direct-worker.service,
-# UNCOMMENT the line below and (re)start direct-worker.service FIRST, then restart this one.
-# With DIRECT_ROLE=web this process serves the UI only: it POSTS jobs to the Victory DB
-# (status='queued', _web_posted=true) and reads status/queue from the DB — it does NOT run
-# the worker pool or daemons, so deploying/restarting the UI no longer kills in-flight jobs.
-# Leave it commented (default DIRECT_ROLE=all) to keep the current single-process behaviour.
-# Environment=DIRECT_ROLE=web
+# Phase 2 (split web/worker) — ACTIVE on prod (LXC 101, 2026-07): this process serves the
+# UI only. It POSTS jobs to the Victory DB (status='queued', _web_posted=true) and reads
+# status/queue from the DB — it does NOT run the worker pool or daemons, so deploying/
+# restarting the UI no longer kills in-flight jobs. Campaign creation runs in
+# direct-worker.service (DIRECT_ROLE=worker). Start direct-worker.service FIRST.
+# NOTE: on prod DIRECT_ROLE=web is ALSO applied via drop-in deploy/dropins/direct.service.d/
+# role.conf (drop-ins are additive and win). This line keeps the tracked unit self-documenting;
+# to revert to single-process, set DIRECT_ROLE=all here AND remove the role.conf drop-in.
+Environment=DIRECT_ROLE=web
 ExecStart=/root/venv/bin/python3 -m direct.main
 Restart=always
 RestartSec=5

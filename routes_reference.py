@@ -15,6 +15,7 @@ def register_reference_routes(
     load_json: Callable[[str], dict],
     load_audiences: Callable[[], list[dict]],
     victory_conn: Callable,
+    ag_part1_map: Callable[[], dict],
 ) -> None:
     @bp.route("/api/feeds")
     @access
@@ -80,3 +81,15 @@ def register_reference_routes(
             return jsonify({"cities": [row[0] for row in cur.fetchall()]})
         finally:
             conn.close()
+
+    @bp.route("/api/ct-list")
+    @access
+    def api_ct_list():
+        """Список ст-кодов и имён (ag_part1) для UI выбора среза при редактировании минус-слов.
+        → {ct_list: [{code, name}, ...]} отсортированный по code."""
+        m = ag_part1_map()
+        ct_list = sorted(
+            [{"code": k, "name": v} for k, v in m.items()],
+            key=lambda x: x["code"],
+        )
+        return jsonify({"ct_list": ct_list})

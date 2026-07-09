@@ -271,7 +271,12 @@ def verify_create_set(*, login: str, items: list[dict[str, Any]], results: list[
             if "groups" in build and int(build.get("groups") or 0) <= 0:
                 issues.append({"severity": "error", "code": "NO_ADGROUPS_REPORTED", "name": rn, "id": cid})
             if "ads" in build and int(build.get("ads") or 0) <= 0:
-                issues.append({"severity": "error", "code": "NO_ADS_REPORTED", "name": rn, "id": cid})
+                # tp5 (token-path): TextAd не создаётся намеренно (Семён 2026-07-07) — не дефект
+                # если ShoppingAd есть. Гейт «без ShoppingAd» остаётся (проверяется выше в create).
+                _tp5_no_text_ok = (bool(r.get("tp5_build"))
+                                   and int(build.get("shopping_ads") or 0) > 0)
+                if not _tp5_no_text_ok:
+                    issues.append({"severity": "error", "code": "NO_ADS_REPORTED", "name": rn, "id": cid})
         if r.get("search_finalized") is False:
             issues.append({"severity": "warn", "code": "SEARCH_NOT_FINALIZED", "name": rn, "id": cid})
         fin = r.get("shopping_finalized")

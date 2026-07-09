@@ -53,14 +53,10 @@ def register_account_routes(
         """Аккаунты из local_gsheet_sites (direction='Авто') с фильтром статуса и поиском."""
         import psycopg2.extras
 
+        from .account_filters import base_account_where
         status = (request.args.get("status") or default_status).strip()
         q = (request.args.get("q") or "").strip()
-        where = [
-            "direction='Авто'",
-            "login_key IS NOT NULL",
-            "login_key<>''",
-            "lower(btrim(login_key)) NOT IN ('нет', 'авито')",
-            "btrim(login_key) !~ '^-+$'",
+        where = list(base_account_where()) + [
             "(directologist IS NULL OR directologist <> ALL(%s))",
         ]
         params: list = [exclude_directologs]

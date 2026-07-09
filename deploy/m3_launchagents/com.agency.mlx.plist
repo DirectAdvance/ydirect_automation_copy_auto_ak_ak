@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  M3-side LaunchAgent для ka_mlx.sh (5 инстансов mlx: 4×14B 8082-8085 + 72B 8086).
+  ЗАЧЕМ: сейчас ka_mlx.sh запущен ВРУЧНУЮ (nohup в шелле) — при reboot/logout умирает,
+  и ничего не поднимает. LaunchAgent с KeepAlive держит скрипт живым и стартует при логине.
+  Ставит СЕМЁН на M3 (нужен доступ на сам M3):
+    cp com.agency.mlx.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/com.agency.mlx.plist
+  Перезапуск вручную: launchctl kickstart -k gui/$(id -u)/com.agency.mlx
+  ВАЖНО: ka_mlx.sh сам держит `while true` для каждого инстанса → KeepAlive тут страхует
+  смерть ВСЕГО скрипта/шелла, а не отдельного mlx (тот поднимает внутренний цикл).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.agency.mlx</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/analyst-semen/llm/ka_mlx.sh</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/analyst-semen/llm/ka_mlx_main.log</string>
+  <key>StandardErrorPath</key><string>/Users/analyst-semen/llm/ka_mlx_main.log</string>
+  <key>ProcessType</key><string>Interactive</string>
+</dict>
+</plist>

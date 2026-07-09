@@ -1,0 +1,20 @@
+[Unit]
+Description=M3 mlx health-watchdog (probe :8086 via SSH -L tunnel, restart on M3 + Telegram alert)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/scripts/home/seoadvanced/direct/deploy
+# Пробим только 72B :8086 по умолчанию (единственный инстанс = боттлнек, документированный обвал).
+# Чтобы сторожить все 5 портов: MLX_WATCHDOG_PORTS=8082,8083,8084,8085,8086
+Environment=MLX_WATCHDOG_PORTS=8086
+Environment=MLX_WATCHDOG_FAIL_THRESHOLD=2
+Environment=MLX_WATCHDOG_COOLDOWN=300
+Environment=MLX_WATCHDOG_MAX_PER_HOUR=4
+ExecStart=/root/venv/bin/python3 /opt/scripts/home/seoadvanced/direct/deploy/mlx_watchdog.py
+# Один проход не должен висеть дольше минуты (probe 8s + ssh 40s + tg 30s с запасом).
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

@@ -276,6 +276,17 @@ _CREATE_RUNNING_TIMEOUT = 1200   # сек без прогресса -> watchdog 
 # КОНЕЧНЫЙ бюджет на фазу финализации (> postprocess-бюджета 600с) → воркер/джоба всегда к терминалу.
 _CREATE_FINALIZE_TIMEOUT = int(os.environ.get("DIRECT_CREATE_FINALIZE_TIMEOUT", "900"))
 _CREATE_WATCHDOG_POLL = 30       # период watchdog, сек
+# ТРЕК A (2026-07-10): delayed content_repair (dcr) — это ОТЛОЖЕННАЯ фоновая добивка (run_at + свой
+# демон-исполнитель `_delayed_repair_daemon_loop`), фаза «докрутка» в UI ВЫКЛючена (F async-finalize
+# OFF). Раньше `_schedule_delayed_content_repair_after_done` вливал dcr как _active_children через
+# `_parent_absorb_child_start` → флипал уже-`done` родителя обратно в `running`; watchdog ЛЕГИТИМНО
+# щадит такую джобу (blueprint:868) пока ребёнок жив, а dcr, застрявший в `partial` (keywords_repair
+# не может дозалить ключи → reschedule до кап), держал родителя `running` ~час (прогон 59581fdd9f9d:
+# 14 РК за 41 мин, потом ~час висел running done=14/14 → interrupted). Детач: dcr НЕ держит родителя —
+# родитель доходит до ТЕРМИНАЛА (`done`) после создания+аудита, dcr крутится демоном асинхронно.
+# Реальные дочерние докрутки (recreate/UAC-replace/resume, child_jid=job_id) и finalize (`fin:`) —
+# НЕ тронуты (их child_jid НЕ начинается с `dcr:`; ими рулят K1/F watchdog'и). Реверс: env=0.
+_DCR_DETACH_PARENT = os.environ.get("DIRECT_DCR_DETACH_PARENT", "1") not in ("0", "false", "False", "no")
 
 
 # ── Роль процесса (Фаза 2: раздельные сервисы web/worker) ───────────────────────
@@ -1664,6 +1675,12 @@ def _parent_absorb_child_progress(parent_jid: str, child_jid: str, created: int,
     терминальная (done, бар 100%)."""
     if not parent_jid or not child_jid or parent_jid == child_jid:
         return
+    # ТРЕК A: под детачем dcr НЕ трекается на родителе (absorb_start пропущен) → ЕГО терминальный
+    # absorb_progress(final=True) не должен ни двигать бар, ни ВОСКРЕШАТЬ уже-терминального родителя
+    # (done/cancelled/error/interrupted) в `done`. dcr крутится демоном независимо. Реальные дети
+    # (recreate/resume, child_jid=job_id) и finalize (`fin:`) сюда не попадают — их child_jid не `dcr:`.
+    if _DCR_DETACH_PARENT and child_jid.startswith("dcr:"):
+        return
     def _m(job, result):
         children = result.setdefault("_resume_children", {})
         base = children.get(child_jid)
@@ -1816,13 +1833,16 @@ def _schedule_delayed_content_repair_after_done(parent_job_id: str, job_snapshot
         req.get("agency") or "",
         kind="content_repair_post_recreate" if req.get("post_recreate") else "content_repair",
     )
-    if did:
-        # Родитель уже «done» — возвращаем в running: delayed-repair ещё не завершён.
-        # child_total=0 → done/failed не трогаем, только status=running + добавляем в _active_children.
+    if did and not _DCR_DETACH_PARENT:
+        # (legacy, реверс env=0) Родитель уже «done» — возвращаем в running: delayed-repair ещё не
+        # завершён. child_total=0 → done/failed не трогаем, только status=running + _active_children.
+        # ⚠️ Держит родителя running пока dcr жив (watchdog:868 щадит) → dcr, застрявший в partial,
+        # висел ~час. Под детачем (дефолт) — НЕ вливаем: родитель остаётся терминальным (`done`).
         _parent_absorb_child_start(parent_job_id, f"dcr:{did}", 0)
     out = {
         "scheduled": bool(did),
         "delayed_repair_id": did,
+        "parent_detached": bool(did) and _DCR_DETACH_PARENT,
         "source": req.get("source") or "delayed_after_done",
         "content_repairs": req.get("content_repairs") or 0,
         "run_after_seconds": _DELAYED_CONTENT_REPAIR_DELAY_SECONDS,
@@ -6052,6 +6072,11 @@ _GENERIC_SITELINK_FILLERS = [  # все заголовки 22–30 симв (fix
     {"title": "Купить по госпрограмме", "description": "Оформим господдержку до 20% при покупке авто"},
     {"title": "Тест-драйв без предоплаты", "description": "Выберите удобное время для тест-драйва онлайн"},
     {"title": "Авто в наличии сегодня", "description": "Подберём автомобиль под ваш бюджет и выдадим за 1 день"},
+    # Backup-филлеры (позиции 9–10): используются когда _title_has_pct=True фильтрует позиции 5–6
+    # (с «до 30%»/«до 20%»), иначе UAC tp7 получает 6/8 сайтлинков (UAC_SITELINKS_MISSING, psm5h7q6).
+    # Без % → не фильтруются при _title_has_pct=True. Темы: rассрочка + гарантия (новые бакеты).
+    {"title": "Рассрочка без переплат", "description": "Оформим рассрочку без скрытых платежей и комиссий"},
+    {"title": "Гарантия на автомобиль", "description": "Расширенная гарантия при покупке нового автомобиля"},
 ]
 
 

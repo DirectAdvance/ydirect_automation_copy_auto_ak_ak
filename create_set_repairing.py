@@ -25,12 +25,42 @@ def _create_set_live_verification(login: str, results: list, *, agency: str = ""
         token, _ag = _token_for_login(_login, _agency, _direct_tokens())
         return token
 
+    from .campaign_result import created_campaigns as _created_campaigns
+    _created = _created_campaigns(results or [])
+    # Сужаем Grid read-back до кампаний ЭТОГО набора: primary-ключ — numeric id (устойчив
+    # к переименованию, в т.ч. UAC tp6/tp7). Name-fallback — только для ok-результатов
+    # без campaign_id (теоретический edge-case; на практике id всегда присутствует).
+    _ok_ids: frozenset[int] = frozenset(
+        int(c["id"]) for c in _created if c.get("id") is not None
+    )
+    _ok_names: frozenset[str] = frozenset(
+        c["name"] for c in _created
+        if c.get("id") is None and c.get("name")
+    )
+
+    def _filtered_grid_getter(_login: str) -> list:
+        rows = _grid_list_campaigns(_login)
+        if not _ok_ids and not _ok_names:
+            # Нет созданных РК с известным id/именем → не фильтруем,
+            # верификатор сам выдаст ошибку по пустым results.
+            return rows
+        out = []
+        for r in rows:
+            rid_raw = r.get("id")
+            try:
+                rid = int(rid_raw) if rid_raw not in (None, "") else None
+            except (TypeError, ValueError):
+                rid = None
+            if (rid is not None and rid in _ok_ids) or (r.get("name") and r["name"] in _ok_names):
+                out.append(r)
+        return out
+
     return vsvc.verify_create_set_live(
         login,
         results or [],
         agency=agency,
         use_v5=use_v5,
-        grid_campaigns_getter=_grid_list_campaigns,
+        grid_campaigns_getter=_filtered_grid_getter,
         token_getter=_token_getter,
     )
 
@@ -181,7 +211,7 @@ def _repair_keywords_group_context(login: str, ctx: dict, meta: dict) -> dict:
     ct_model = kp.feeds_ct_model()
     raw_brand = ct_name.get(ct) or ct_model.get(ct) or ct
     brand = _valid_pack_brand_name(ct, raw_brand) or "Авто"
-    kws = _filter_group_keywords(pos, seg, brand, city, site_type)
+    kws = _filter_group_keywords(pos, seg, brand, city, site_type, model=brand)
     return {"keywords": kws, "seg": seg, "brand": brand}
 
 def _attach_post_repair_verification(out: dict, login: str, ctx: dict) -> dict:
@@ -219,7 +249,7 @@ def _campaign_images_repair(login: str, campaign_id: int, ctx: dict) -> dict:
     try:
         client = _cmc.build_client(login, account=(agency or None))
         cookie = client.sess.headers.get("Cookie") or ""
-        grid = _gf.GridClient(login, cookie=cookie)
+        grid = _gf.get_grid_client(login, cookie=cookie)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"кука: {str(e)[:160]}"}
 
@@ -498,7 +528,8 @@ def _queue_recreate_repair_job(login: str, ctx: dict, plan: dict, *,
                                dedup_login: bool = True) -> dict:
     """Queue resume/recreate repair items without Direct API units."""
     def _create_job(total: int, job_login: str, body: dict, sess: dict, dedup: bool) -> str:
-        return _job_new(total, job_login, body, sess, dedup_login=dedup)
+        # recreate/resume = добивка → приоритет: сразу, а не в конец очереди (Семён 2026-07-06)
+        return _job_new(total, job_login, body, sess, dedup_login=dedup, priority=True)
 
     def _ahead(job_id: str) -> int:
         with _CREATE_JOBS_LOCK:
@@ -515,6 +546,7 @@ def _queue_recreate_repair_job(login: str, ctx: dict, plan: dict, *,
         jobs_ahead=_ahead,
         dedup_login=dedup_login,
         delete_search_draft=_delete_search_draft_campaigns,
+        units_alive=_DEPS.get("_units_alive_for_login"),   # баллы живы → recreate токеном (не по куке)
     )
 
 def _auto_queue_recreate_after_done(parent_job_id: str, job_snapshot: dict) -> dict | None:

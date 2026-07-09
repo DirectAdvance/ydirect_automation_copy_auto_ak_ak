@@ -413,6 +413,69 @@ def execute_default_text_repair(login: str, ctx: dict, campaign_ids: list[int],
                                     deps.campaign_default_text_repair)
 
 
+def execute_campaign_invariant_repair(login: str, ctx: dict, campaign_ids: list[int],
+                                      deps: RepairDeps) -> tuple[dict, int]:
+    """Переставить кампанийные инварианты-галочки tp1–tp5 через Grid set_campaign_invariants (P0).
+
+    In-place, БЕЗ баллов Direct (Grid UpdateCampaigns), РК всегда DRAFT → идемпотентно. Self-contained
+    как execute_images_forbidden_repair: строит куку по логину, вызывает GridClient.set_campaign_invariants
+    (persona/расш.гео/«Директ помогает»/Карты/организации OFF, мониторинг ON), затем read-back через
+    read_campaign_invariants — успех, если ни у одной кампании не осталось «включённого» булева-нарушения.
+    Blast-radius ложного детекта = один безвредный повторный UpdateCampaigns (НЕ удаление)."""
+    campaign_ids = _unique_positive_ints(campaign_ids)
+    if not campaign_ids:
+        return {"error": "нет campaign_id для campaign_invariant_repair", "uses_direct_units": False}, 422
+    body_obj = ctx.get("body") or {}
+    acc = deps.account_ctx(login)
+    if not acc:
+        return {"error": f"аккаунт {login} не найден в БД"}, 404
+    agency = (ctx.get("agency") or body_obj.get("agency") or acc.get("agency") or "").strip()
+    try:
+        client = cmc.build_client(login, account=(agency or None))
+        cookie = client.sess.headers.get("Cookie") or ""
+        grid = gf.GridClient(login, cookie=cookie)
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"кука для campaign_invariant_repair: {str(e)[:160]}",
+                "uses_direct_units": False}, 502
+
+    _BAD = (("is_alternative_texts_enabled", True), ("has_extended_geo_targeting", True),
+            ("enable_company_info", True), ("is_recommendations_management_enabled", True),
+            ("is_price_recommendations_management_enabled", True), ("yandex_maps_enabled", True),
+            ("serp_geo_wizard_enabled", True))
+
+    def _remaining_bad(inv: dict) -> dict[int, list[str]]:
+        out: dict[int, list[str]] = {}
+        for cid, row in (inv or {}).items():
+            bad = [f for f, v in _BAD if isinstance(row.get(f), bool) and row.get(f) is v]
+            if bad:
+                out[cid] = bad
+        return out
+
+    try:
+        updated = grid.set_campaign_invariants(campaign_ids)
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"Grid set_campaign_invariants отклонил: {str(e)[:220]}",
+                "transport": "grid", "uses_direct_units": False}, 502
+    # Read-back: не осталось «включённых» нарушений (None=не прочитано трактуем как ОК, не блокируем).
+    try:
+        after = grid.read_campaign_invariants(campaign_ids)
+        remaining = _remaining_bad(after)
+    except Exception:  # noqa: BLE001 — read-back best-effort, не валит успешную запись
+        remaining = {}
+    updated_ids = [int((u or {}).get("id") or 0) for u in (updated or []) if (u or {}).get("id")]
+    ok = not remaining
+    return {
+        "ok": ok,
+        "execute": True,
+        "login": login,
+        "repaired_campaign_ids": updated_ids or campaign_ids,
+        "repaired": len(updated_ids) or len(campaign_ids),
+        "remaining_violations": {str(k): v for k, v in list(remaining.items())[:40]},
+        "transport": "grid",
+        "uses_direct_units": False,
+    }, 200 if ok else 207
+
+
 # ── IMAGES_FORBIDDEN: очистка imageHashes у поисковых объявлений ────────────────
 # Поисковые tp2/tp4 не должны нести imageHashes. RMW: читаем текущее состояние
 # (href/titles/bodies/adPrice), ставим imageHashes=[], пишем через UpdateAdaptiveTextAds.
@@ -655,13 +718,22 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
             # (фильтруется ниже) — группа только с ним эквивалентна группе без источника.
             writable_kw = [k for k in final_kw if str(k).strip() and not str(k).startswith("---")]
             if need_kw and not writable_kw and not need_at:
-                # Источник контента не даёт ключей для этого ct (живой кейс ct0217 Skoda Kodiaq,
-                # porg-asfbs7qe 06.07): группа живёт на активном автотаргете — чинить НЕЧЕМ.
-                # Раньше уходило в failed («группа не подтверждена AddKeywords») → job partial →
-                # карточка вечно «нужна добивка». Ключи не выдумываем (аналог «цены только из фида»).
-                results.append({"ok": True, "skipped": "нет источника ключей (автотаргет активен)",
-                                "campaign_id": cid, "adgroup_id": gid})
-                skipped += 1
+                # Источник контента не даёт ключей для этого ct. Два разных случая:
+                # (а) «…-Автотаргетинг-…» — группа живёт на AT по дизайну, 0 ключей норма → ok.
+                # (б) КС-кампания (без «автотаргетинг» в имени) — пак пуст / M3 недоступен → failed,
+                #     чтобы repair вернул реальный статус (а не «всё уже корректно/идемпотентно»),
+                #     что позволяет audit↔repair не расходиться: аудит флагует NO_KEYWORDS_LIVE,
+                #     repair возвращает failed → caller видит реальную ошибку вместо «ок».
+                # Ключи не выдумываем (аналог «цены только из фида»).
+                _at_by_design = "автотаргетинг" in (camp_name or "").lower()
+                if _at_by_design:
+                    results.append({"ok": True, "skipped": "нет источника ключей (автотаргет активен)",
+                                    "campaign_id": cid, "adgroup_id": gid})
+                    skipped += 1
+                else:
+                    failed.append({"campaign_id": cid, "adgroup_id": gid,
+                                   "error": ("нет ключей от pack для этого ct "
+                                             "(pack недоступен/пуст; поисковая группа без ключей)")})
                 continue
             # Кап 200/группа (лимит Яндекса): иначе Grid AddKeywords отклонит всю пачку
             # (MAX_KEYWORDS_PER_AD_GROUP_EXCEEDED) → группа останется без ключей (NO_KEYWORDS_LIVE).
@@ -706,10 +778,19 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
         except Exception as e:  # noqa: BLE001
             failed.append({"error": f"Grid AddKeywords упал: {str(e)[:200]}"})
 
+    # Обновляем relevanceMatch через UpdateUnifiedAdGroups для групп с need_at=True.
+    # UpdateUnifiedAdGroups no-op для keywords → безопасно для NO_KEYWORDS_LIVE-only групп.
+    at_gids = {gid for gid, intent in intents.items() if intent.get("fixed_autotarget")}
+    if at_gids and write_items:
+        try:
+            grid.update_unified_adgroups(write_items)
+        except Exception as e:  # noqa: BLE001
+            failed.append({"error": f"Grid UpdateUnifiedAdGroups (autotarget): {str(e)[:200]}"})
+
     updated_set: set[int] = set()
     for gid, intent in intents.items():
         # Считаем группу «применённой» если: ключи залиты (kw_added) ИЛИ нужна только
-        # автотаргет-правка (need_at без need_kw — try update_unified_adgroups ниже).
+        # автотаргет-правка (need_at без need_kw — update_unified_adgroups вызван выше).
         if gid in kw_added or (not intent.get("fixed_keywords") and intent.get("fixed_autotarget")):
             updated_set.add(gid)
 

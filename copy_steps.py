@@ -118,6 +118,7 @@ def pull_source_campaign_assets(source_grid, source_campaign_ids, src_dir: Path,
 
     callouts_map: dict[str, list[str]] = {}
     promos_map: dict[str, str] = {}
+    sitelinks_map: dict[str, str] = {}   # str(campaign_id) → sitelinkSetId (баг 2a — быстрые ссылки)
     grid_ok = False
     if source_grid is not None and ids:
         try:
@@ -129,6 +130,9 @@ def pull_source_campaign_assets(source_grid, source_campaign_ids, src_dir: Path,
                 promo_id = p.get("promoExtensionId")
                 if promo_id and str(promo_id).strip() and str(promo_id) != "0":
                     promos_map[str(cid)] = str(promo_id)
+                sl_id = (p.get("inheritableSitelinkSet") or {}).get("sitelinkSetId")
+                if sl_id and str(sl_id).strip() and str(sl_id) != "0":
+                    sitelinks_map[str(cid)] = str(sl_id)
             grid_ok = True
             rep["source"] = "grid"
         except Exception as e:  # noqa: BLE001
@@ -159,12 +163,15 @@ def pull_source_campaign_assets(source_grid, source_campaign_ids, src_dir: Path,
     try:
         _wj(src_dir / "campaign_callouts.json", callouts_map)
         _wj(src_dir / "campaign_promos.json", promos_map)
+        _wj(src_dir / "campaign_sitelinks.json", sitelinks_map)
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"write: {str(e)[:200]}")
     rep["callouts_campaigns"] = len(callouts_map)
     rep["promos_campaigns"] = len(promos_map)
+    rep["sitelinks_campaigns"] = len(sitelinks_map)
     log(f"pull source assets ({rep['source']}): callouts у {rep['callouts_campaigns']} кампаний, "
-        f"promo у {rep['promos_campaigns']} кампаний")
+        f"promo у {rep['promos_campaigns']} кампаний, "
+        f"быстрые ссылки у {rep['sitelinks_campaigns']} кампаний")
     return rep
 
 
@@ -362,6 +369,116 @@ def step_attach_callouts(ctx: CopyCtx, per_campaign_cap: int = 8) -> dict:
             rep["errors"].append(f"camp {tgt_cid}: {str(e)[:180]}")
     ctx.log(f"уточнения по кампаниям: по исходной связи {rep['per_campaign']}, "
             f"фолбэк-union {rep['fallback_union']} (всего {rep['attached_campaigns']})")
+    return rep
+
+
+# ── Баг 2a: быстрые ссылки (sitelinks) по ИСХОДНОЙ связи campaign→sitelinkSet ───
+
+def step_attach_sitelinks(ctx: CopyCtx) -> dict:
+    """Перенести наборы быстрых ссылок с источника на target по исходной связи campaign→sitelinkSet.
+
+    Источник связи — campaign_sitelinks.json (pull_source_campaign_assets: str(src_cid)→src_set_id).
+    Состав набора читаем source_grid.get_sitelink_sets → title/href/description; title/href прогоняем
+    через гео-морфологию (ctx.geo_pairs) и доменную трансформацию (_copy_target_href, тот же путь, что
+    у объявлений). Создаём набор на target (grid.add_sitelink_set, 0 баллов) и привязываем к целевой
+    кампании (set_campaign_sitelink_set). Дедуп src_set_id→tgt_set_id в maps['sitelinks'] (набор
+    создаётся один раз на job). Нет source_grid / файла / связей → безопасный no-op."""
+    rep = {"sets_created": 0, "attached_campaigns": 0, "skipped": 0, "errors": []}
+    if ctx.grid is None:
+        rep["errors"].append("нет target grid-клиента — быстрые ссылки не привязаны")
+        return rep
+    if ctx.source_grid is None:
+        rep["errors"].append("нет source grid-клиента — состав быстрых ссылок не прочитать (пропуск)")
+        return rep
+    camp_map = ctx.maps.get("campaigns") or {}            # src_campaign_id → tgt_campaign_id
+    if not camp_map:
+        return rep
+    src_links = _rj(ctx.src_dir / "campaign_sitelinks.json")
+    src_links = src_links if isinstance(src_links, dict) else {}
+    if not src_links:
+        return rep
+
+    set_cache: dict[str, int] = {str(k): int(v) for k, v in (ctx.maps.get("sitelinks") or {}).items()
+                                 if str(v).isdigit()}
+    # Состав нужных наборов читаем ОДНИМ запросом (только те, что ещё не в кэше).
+    want_set_ids = [s for s in dict.fromkeys(str(v) for v in src_links.values() if str(v).strip())
+                    if s not in set_cache]
+    src_sets: dict[int, list[dict]] = {}
+    if want_set_ids:
+        try:
+            src_sets = ctx.source_grid.get_sitelink_sets(want_set_ids) or {}
+        except Exception as e:  # noqa: BLE001
+            rep["errors"].append(f"чтение source sitelink-наборов: {str(e)[:200]}")
+            return rep
+
+    # Трансформация title/href: гео-морфология + домен (тот же путь, что у объявлений).
+    from . import copy_geo_morph as cgm
+    try:
+        from .copy_engine import _copy_target_href as _href_fn
+    except Exception:  # noqa: BLE001 — доменная трансформация опциональна, гео-морф остаётся
+        _href_fn = None
+    pairs = ctx.geo_pairs or []
+    src_domain = str((ctx.body or {}).get("_copy_source_domain") or "").strip()
+    target_domain = str((ctx.body or {}).get("target_domain") or "").strip()
+
+    def _morph(text: str) -> str:
+        out, _ = cgm.apply_replacements(text, pairs)
+        return out
+
+    failed_sets: set[str] = set()   # src_set_id, чей create уже не удался — не пересоздавать на кампанию
+
+    def _tgt_set_id(src_set_id: str) -> int | None:
+        if src_set_id in set_cache:
+            return set_cache[src_set_id]
+        if src_set_id in failed_sets:   # ambiguous/None create уже был — второй раз НЕ дёргаем (дубли наборов)
+            return None
+        items = src_sets.get(int(src_set_id)) if str(src_set_id).isdigit() else None
+        if not items:
+            return None
+        sitelinks = []
+        for it in items:
+            title = _morph(str(it.get("title") or "").strip())
+            href = str(it.get("href") or "").strip()
+            if _href_fn:
+                href = _href_fn(href, src_domain, target_domain)
+            href = _morph(href)
+            desc = _morph(str(it.get("description") or "").strip())
+            if title and href:
+                sitelinks.append({"title": title, "href": href, "description": desc})
+        if not sitelinks:
+            return None
+        try:
+            new_id = ctx.grid.add_sitelink_set(sitelinks)
+        except Exception as e:  # noqa: BLE001
+            failed_sets.add(src_set_id)
+            rep["errors"].append(f"создание sitelink-набора (src {src_set_id}): {str(e)[:180]}")
+            return None
+        if new_id:
+            set_cache[src_set_id] = int(new_id)
+            rep["sets_created"] += 1
+            return int(new_id)
+        failed_sets.add(src_set_id)   # create вернул пустой id — не ретраить на след. кампаниях
+        return None
+
+    for src_cid, tgt_cid in camp_map.items():
+        if not str(tgt_cid).isdigit():
+            continue
+        src_set_id = str(src_links.get(str(src_cid)) or "").strip()
+        if not src_set_id:
+            continue
+        tgt_set_id = _tgt_set_id(src_set_id)
+        if not tgt_set_id:
+            rep["skipped"] += 1
+            continue
+        try:
+            ctx.grid.set_campaign_sitelink_set([int(tgt_cid)], int(tgt_set_id))
+            rep["attached_campaigns"] += 1
+        except Exception as e:  # noqa: BLE001
+            rep["errors"].append(f"camp {tgt_cid}: {str(e)[:180]}")
+
+    ctx.maps["sitelinks"] = set_cache
+    ctx.log(f"быстрые ссылки: наборов создано {rep['sets_created']}, "
+            f"привязано к {rep['attached_campaigns']} кампаниям (пропущено {rep['skipped']})")
     return rep
 
 

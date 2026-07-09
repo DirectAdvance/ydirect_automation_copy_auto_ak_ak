@@ -478,6 +478,12 @@ _GRID_IMG_FAIL_COUNT: dict[tuple[str, str], tuple[int, float]] = {}   # key → 
 # один транзиентный сбой Яндекса сжигал бы весь бюджет за раунд (ревью 03.07, TOCTOU).
 _IMG_FAIL_LIMIT = 3
 _IMG_FAIL_TTL = 900.0                                                 # 15 мин
+# ТРЕК C (2026-07-10): пул параллельной ЗАЛИВКИ картинок. Это Grid/куки-аплоад в библиотеку
+# аккаунта (0 баллов), НЕ v5-создание → жёсткий лимит «≤2 v5-потока» сюда НЕ относится. Пред-
+# заливка набора (`_preupload_tp1_images`) грузит ВСЕ картинки набора одним батчем — при 618
+# уникальных 8→10 воркеров сокращают фазу прогрева на ~20-25%. Env-tunable (реверс/тюнинг без
+# правки кода); держим в разумных рамках (не перегружаем Grid-эндпоинт). Дефолт 10.
+_IMG_UPLOAD_WORKERS = max(1, int(os.environ.get("DIRECT_IMG_UPLOAD_WORKERS", "10")))
 
 
 def _reset_img_fail_cache(login: str, paths: list | None = None) -> int:
@@ -569,7 +575,7 @@ def _cached_upload_image(gc_img, login: str, path: str):
     return _h
 
 
-def _parallel_upload_images(gc_img, login: str, paths: list, workers: int = 8,
+def _parallel_upload_images(gc_img, login: str, paths: list, workers: int | None = None,
                             account_map: dict | None = None) -> dict:
     """Параллельно залить картинки в библиотеку логина через ThreadPoolExecutor.
     Принимает список путей (может содержать дубли), возвращает {basename: imageHash}.
@@ -583,6 +589,8 @@ def _parallel_upload_images(gc_img, login: str, paths: list, workers: int = 8,
     хэш «оттуда». На fresh-аккаунте map пуст → полная заливка (без регресса)."""
     import os as _os_pu
     from concurrent.futures import ThreadPoolExecutor, as_completed as _asc
+    if workers is None or int(workers) <= 0:
+        workers = _IMG_UPLOAD_WORKERS            # env-tunable дефолт (ТРЕК C: 8→10)
     unique: dict[str, str] = {}   # basename -> первый валидный путь
     for p in (paths or []):
         if p:

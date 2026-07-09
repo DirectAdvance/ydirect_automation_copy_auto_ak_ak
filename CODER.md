@@ -79,7 +79,7 @@ tp6 _ cpc _ site _ ct0181 _ aon _ n025 _ r0000 _ ct001 _ ag011 _ g00
 | Тип объявлений в группе | ag_part5 | ag_part6 | Где используется |
 |-------------------------|----------|----------|-----------------|
 | TextAd only (ТГО) | `ct001` | `ag011` | tp1 (РСЯ, `with_shopping=False`), tp2, tp4 |
-| TextAd + ListingAd + ShoppingAd («Т+Л+ТОВ», комбинированный) | `ct010` | `ag011` | tp1 (`with_shopping=True`), **tp5** (канон с 2026-06-22) |
+| TextAd + ListingAd + ShoppingAd («Т+Л+ТОВ», комбинированный) | `ct010` | `ag011` | tp1 (`with_shopping=True`), **tp5** |
 | ShoppingAd + ListingAd only (фид без TextAd) | `ct009` | `ag001` | tp3, tp7 |
 
 Справочник `local_gsheet_naming` (ag_part5): `ct001` = ТГО (только TextAd); `ct009` = «Товарное
@@ -87,9 +87,12 @@ tp6 _ cpc _ site _ ct0181 _ aon _ n025 _ r0000 _ ct001 _ ag011 _ g00
 ТГО + каталог/фид + страницы каталога» — **TextAd + ShoppingAd + ListingAd**.
 
 **Правило «кодер = реальный состав»:** имя группы ОБЯЗАНО отражать типы объявлений, реально
-загружаемых в группу. Реализовано в `_tp1_group_name(ct, r_code, brand, with_shopping, autotarget)`:
-`with_shopping=False` → `ct001_ag011`; `with_shopping=True` → `ct010_ag011`;
-`autotarget=False` → `aoff`, `autotarget=True` → `aon`. Для `tp2/tp4` по пользовательскому
+загружаемых в группу. Реализовано в `_tp1_group_name(ct, r_code, brand, with_shopping, autotarget, tp_code)`:
+`with_shopping=False` → `ct001_ag011`; `with_shopping=True` (ЛЮБОЙ `tp_code`, включая `tp5`) →
+`ct010_ag011` (ИСПРАВЛЕНО 2026-07-09: промежуточная ветка `ct009_ag001`/без-TextAd для tp5,
+записанная как решение «Семён 2026-07-07», была ошибочной и откачена в коде —
+`create_set_tp1_builders.py:46-51`); `autotarget=False` → `aoff`, `autotarget=True` → `aon`
+(для tp5 группа всегда `aon`, независимо от autotarget-флага). Для `tp2/tp4` по пользовательскому
 правилу группа всегда называется через `aon`.
 
 > **Канон для tp1-групп с фидом (`with_shopping=True`):** состав группы = TextAd + ListingAd +
@@ -158,7 +161,7 @@ tp1_cpc_site — РСЯ - Модели - ключевики (with_shopping=True,
 tp2_cpc_site — Поиск - Модели - Автотаргетинг  (TextAd → ct001, ag011)
    ├ группа: ct0181_aon_n000_r0100_ct001_ag011_g00 — Lada
    └ группа: ct0031_aon_n000_r0100_ct001_ag011_g00 — Changan CS35Plus
-tp5_cpc_site — Поиск + Динамика + Товарная галерея - Товарная (TextAd+ListingAd+ShoppingAd → ct010, ag011; канон с 2026-06-22, эталон Щербаковой)
+tp5_cpc_site — Поиск + Товарная галерея - Товарная (TextAd+ListingAd+ShoppingAd, комбинированный → ct010, ag011)
    ├ группа: ct0181_aon_n000_r0100_ct010_ag011_g00 — Lada
    └ группа: ct0019_aon_n000_r0100_ct010_ag011_g00 — BAIC
 ```
@@ -218,29 +221,33 @@ tp5_cpc_site — Поиск + Динамика + Товарная галерея
 ### Каждый текстовый tp = ПАРА кампаний (cpc + cpa)
 Не одна «тестовая». На tp создаются **две** кампании — `tp{N}_cpc_…` и `tp{N}_cpa_…` (как Мастер/Товарка). Набор это уже показывает.
 
-### tp5 — ПОИСК, комбинированная (TextAd + ListingAd + ShoppingAd, эталон Щербаковой; канон с 2026-06-22)
+### tp5 — ПОИСК + Товарная галерея (TextAd + ShoppingAd + ListingAd, комбинированный)
 
-> **⚠️ Канон изменён 2026-06-22 решением пользователя.** Прежний канон «feed-only: одна товарная
-> группа ShoppingAd+ListingAd без TextAd, кодер ct009_ag001» — **упразднён**. Новый канон:
-> tp5 = комбинированная группа по каждому бренду (TextAd + ListingAd + ShoppingAd + ключи),
-> кодер `ct010_ag011`, как в живом эталоне Щербаковой (porg-mjyh6hjv, проверено API 2026-06-22).
+> **⚠️ ИСТОРИЯ (важно не перепутать порядок):** эталон с 2026-06-22 — комбинированный (`ct010_ag011`).
+> 2026-07-07 было принято промежуточное решение «только ShoppingAd+ListingAd, `ct009_ag001`, БЕЗ TextAd» —
+> оно оказалось **ошибочным** и было **откачено в коде** (`create_set_tp1_builders.py:46-51`,
+> `:809`: «условие tp5 убрано (2026-07-07)»). Семён подтвердил 2026-07-09: **комбинированный — финал.**
+> Кодер группы: `ct010_ag011` (TextAd+ShoppingAd+ListingAd), как у tp1 `with_shopping=True`.
 
-Живой эталон Щербаковой (porg-mjyh6hjv под victoryagency14): TEXT_CAMPAIGN (НЕ UNIFIED_CAMPAIGN),
-одна cpc-кампания + одна cpa, по каждому бренду — **отдельная группа** с TextAd + ListingAd + ShoppingAd
-(84–149 ключей на группу, ~20 групп на кампанию).
+UNIFIED/TEXT_CAMPAIGN, одна cpc-кампания + одна cpa, по каждому бренду — отдельная группа
+с **TextAd + ShoppingAd + ListingAd + ключевыми словами** (84–149 ключей на группу, ~20 групп на кампанию).
 
 - **Тип кампании: TEXT_CAMPAIGN** (`_create_search_test_campaign`, `pay="tcpa"|"cpa"`). Не UNIFIED_CAMPAIGN.
 - **Канал — только Поиск.** `Network=SERVING_OFF`. РСЯ, Яндекс.Карты — ВЫКЛ.
 - **Места показа** (Grid-докрутка): ✅ «Товарная галерея на поиске» + ✅ «Продвижение в поисковой выдаче».
   «Динамические места на поиске» и «Список организаций» — ВЫКЛ.
 - **Стратегия** — конверсионная (НЕ ручная): `cpc → pay="tcpa"` (Search=AVERAGE_CPA), `cpa → pay="cpa"` (Search=PAY_FOR_CONVERSION). Поля `AverageCpa/Cpa, GoalId, WeeklySpendLimit, BudgetType:"WEEKLY_BUDGET"`.
-- **Группы:** по одной на каждый бренд из контент-пака M3, кодер `ct{N}_aon_n000_{r}_ct010_ag011_g00 — {Бренд}`.
-  Каждая группа содержит TextAd + ListingAd + ShoppingAd + ключевые слова.
-  Реализовано через `_build_tp1_from_pack(with_shopping=True)` (тот же код что tp1 с фидом).
-- **Движок:** `_create_tp5_single` → TEXT_CAMPAIGN → `_build_tp1_from_pack(with_shopping=True)` →
+- **Группы:** по одной на каждый бренд из контент-пака M3, кодер `ct{N}_aon_n000_{r}_ct010_ag011_g00 — {Бренд}`,
+  `aon` ВСЕГДА (независимо от autotarget-флага бренд-группы).
+  Каждая группа содержит ключи + релевантное соответствие + **TextAd + ShoppingAd + ListingAd**.
+  Реализовано через `_build_tp1_from_pack(with_shopping=True, tp_code="tp5")` — Phase 3 (TextAd) и
+  Phase 4 (ShoppingAd+ListingAd) выполняются ОБЕ (условие пропуска Phase 3 для tp5 убрано 2026-07-07).
+- **Движок:** `_create_tp5_single` → TEXT_CAMPAIGN → `_build_tp1_from_pack(with_shopping=True, tp_code="tp5")` →
   Grid-финализация + корректировки. Фид-объявления получают `feed_models` с фильтром по коллекции (per-бренд).
 - **Расширения:** уточнения через наследуемые campaign-level callouts (Grid), быстрые ссылки — на объявлении.
-  На ShoppingAd уточнения напрямую не принимает (API отвергает) — только через наследуемые Grid-callouts.
+  На ShoppingAd уточнения напрямую не принимает (API отвергает) — TextAd в той же группе получает их обычным путём.
+- **Аудит:** сверить, действуют ли для tp5 те же правила, что для tp1 (`_audit_tp1_adaptive`:
+  BUTTON_MISSING/SHORT_TITLES/IMAGE_MISSING/VIDEO_MISSING, 7 заголовков) — не проверено, TODO.
 
 ### Фиды — кампания на КАЖДЫЙ разрешённый фид
 Фидовые tp (**tp3, tp5, tp7**) мультиплицируются по **разрешённым глобальными правилами фидам**,

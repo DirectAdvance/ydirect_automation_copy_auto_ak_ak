@@ -92,8 +92,9 @@ def _get_or_create_minus_set(token: str, login: str,
                          (msets[0][0] if msets else None))
         if minus_set:
             return minus_set
-        # Аккаунт без shared-set: создаём из пака M3
-        words = _collect_pack_minus(slepok, site_type, tp_code)
+        # Аккаунт без shared-set: собираем из ЕДИНОГО источника — вкладки «Минус-слова»
+        # (не из пака M3: пак как источник минус-фраз отключён — принцип «только оттуда»).
+        words = _enabled_minus_words()
         words = _minus_char_budget(words, _MINUS_SHARED_SET_CHAR_BUDGET)  # набор ≤4096, не 20000
         if not words:
             return None
@@ -146,10 +147,11 @@ def _apply_campaign_direct_minus(token: str, login: str,
     Возвращает None при успехе, строку ошибки при неудаче.
     """
     try:
-        words = _collect_pack_minus(slepok, site_type, tp_code)
+        # ЕДИНЫЙ источник минус-фраз — вкладка «Минус-слова» (пак M3 как источник отключён).
+        words = _enabled_minus_words()
         words = _minus_char_budget(words, _MINUS_CAMPAIGN_CHAR_BUDGET)  # ≤20 000 симв.
         if not words:
-            return "нет минусов в паке (campaign-direct пропущен)"
+            return "нет минус-слов во вкладке «Минус-слова» (campaign-direct пропущен)"
         j = _v5_call("campaigns", "update", token, login, {
             "Campaigns": [{
                 "Id": campaign_id,

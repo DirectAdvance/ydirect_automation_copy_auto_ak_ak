@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  M3-side LaunchAgent для ka_tunnel.sh (reverse-SSH на Victory: -R 18082..18086, порт 22022=sshd M3).
+  Через этот туннель LXC101 (ProxyJump victory) достаёт mlx-порты и sshd самой M3.
+  Сейчас запущен ВРУЧНУЮ — при reboot/logout LXC теряет и mlx, и ssh m3-relay.
+  Ставит СЕМЁН на M3:
+    cp com.agency.revtunnel.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/com.agency.revtunnel.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.agency.revtunnel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/analyst-semen/llm/ka_tunnel.sh</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/analyst-semen/llm/revtunnel.log</string>
+  <key>StandardErrorPath</key><string>/Users/analyst-semen/llm/revtunnel.log</string>
+</dict>
+</plist>

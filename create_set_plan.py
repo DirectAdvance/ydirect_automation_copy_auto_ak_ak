@@ -72,7 +72,8 @@ def _build_name(is_master: bool, is_autotarget: bool, pay: str, r_code: str, obl
     # ListingAd по каталогу + ShoppingAd по фиду + товарное ТГО) → ct010, НЕ ct009 (ct009 = товарное
     # БЕЗ ТГО). Правило пользователя: tp7 нейминг = ct010.
     fmt = "ct001" if is_master else "ct010"              # формат: ТГО / Каталог+ТГО+Фид
-    # Возраст 24-55+ (ag011) — tp6/Мастер в РУЧНЫХ режимах (keywords И audience), кроме
+    # Возраст 35+ (ag011; socdem age_lower=age_35, DoD §3.6) — tp6/Мастер в РУЧНЫХ режимах
+    # (keywords И audience), кроме
     # автотаргетинга (там полный socdem age_18/ag001 по дизайну, #7 в create_set_master_product.py)
     # и товарки tp7 (возраст не настраивается → всегда «Все»). is_autotarget=True ТОЛЬКО для
     # targeting_mode=='autotarget' — раньше сюда приходил is_auto=(targeting_mode!='keywords'),
@@ -156,6 +157,32 @@ def _tp1_plan_names(slepok: str, site_type: str, r_code: str) -> list[dict]:
     """Обёртка совместимости: позиции tp1 (см. _tp_plan_names)."""
     return _tp_plan_names(slepok, site_type, "tp1")
 
+
+# site_type'ы с АВТОМОБИЛЬНОЙ сегментной классификацией (Марки/Модели/Общее по справочнику
+# ag_part1). Слепки НЕ из этого списка (напр. «dmp» / «Прочее») — split-driven: их ct нет в
+# _ct_segment_map, поэтому _ct_segment() вырождается в дефолт «Марки» для ВСЕХ групп и склеивает
+# их в одну кампанию. Для таких — билдер идёт по splits[] (одна кампания на блок, имя = label).
+_AUTO_SEGMENT_SITE_TYPES = {"Мультибренд", "Монобренд", "С пробегом", "Мульти + БУ", "Квиз"}
+
+
+def _tp_splits(slepok: str, site_type: str, tp_code: str) -> list[dict] | None:
+    """splits[] tp-блока слепка (каждый: {sq,label,groups}) или None (нет splits / нет tp).
+
+    Отличается от _tp_plan_names: сохраняет ДЕЛЕНИЕ на блоки (label/sq/groups), не разворачивает
+    в плоский список items. Нужно split-driven слепкам (dmp): 1 tp.splits[]-блок = 1 кампания."""
+    key = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
+    struct = _json("slepki_structure.json").get("directologists", [])
+    d = next((x for x in struct if x.get("key") == key), None)
+    if not d:
+        return None
+    st = next((s for s in d.get("site_types", []) if s.get("name") == site_type), None)
+    if not st:
+        return None
+    tp = next((t for t in st.get("tp", []) if t.get("code") == tp_code), None)
+    if not tp:
+        return None
+    return tp.get("splits") or None
+
 def _set_plan_response():
     """План набора (предпросмотр, БЕЗ создания): какие кампании и с какими именами создадутся."""
     import psycopg2.extras
@@ -188,6 +215,7 @@ def _set_plan_response():
         return jsonify({"error": "login обязателен"}), 400
     ov_site = (body.get("site_type") or "").strip()      # ручной override типа сайта (правится в форме)
     ov_city = (body.get("city") or "").strip()           # ручной override города
+    ov_domain = (body.get("domain") or "").strip()       # ручной override домена (для новых аккаунтов без БД-записи)
 
     conn = _victory_conn()
     try:
@@ -197,10 +225,13 @@ def _set_plan_response():
         row = cur.fetchone()
     finally:
         conn.close()
-    if not row:
-        return jsonify({"error": f"аккаунт {login} не найден в local_gsheet_sites (Авто)"}), 404
+    _row_missing = not row
+    if _row_missing:
+        # Мягкая деградация: аккаунт ещё не занесён в local_gsheet_sites →
+        # продолжаем план на значениях из формы (site_type/city/domain).
+        row = {"domain": ov_domain}                      # домен из формы доступен замыканию _emit_struct
 
-    site_type = ov_site or (row["site_type"] or "").strip()   # override приоритетнее БД (правка ошибки в БД)
+    site_type = ov_site or (row.get("site_type") or "").strip()   # override приоритетнее БД (правка ошибки в БД)
     city = ov_city or (row.get("city") or "")
     r_code, oblast = _resolve_region(city)
     # Наборы бюджет/CPA из «Глобальных правил». pay=cpa → CPA-набор (оплата за конверсии),
@@ -214,6 +245,8 @@ def _set_plan_response():
     def _cpa_for(pay):                                   # целевой CPA по типу оплаты
         return rs["cpa"] if pay == "cpa" else rs["cpc_cpa"]
     warnings: list[str] = []
+    if _row_missing:
+        warnings.append("аккаунт не найден в local_gsheet_sites — используются значения из формы")
     if r_code == "r0000":
         warnings.append("регион не определён — r0000")
 
@@ -318,6 +351,7 @@ def _set_plan_response():
     pays = ["tcpa", "cpa"]
     plan = []
     want_master = want_product = False                    # tp6/tp7 строим из структуры после цикла variants
+    want_tp3 = False                                       # tp3 (ТГ-Фид) тоже требует URL-фид на аккаунте
     # Текстовые движки: один элемент-кампания на tp (наполняется моделями из пака внутри).
     # tp1_rsy → ЕПК РСЯ v501 mode=network_cpa (правильный путь из CODER.md + CAMPAIGN_INVARIANTS.md)
     _TEXT_PLAN = {"search_test": "Поиск (тест)", "tp1_rsy": "РСЯ", "search_gallery": "Поиск + Динамика + ТГ",
@@ -431,6 +465,7 @@ def _set_plan_response():
                                  if any((pos.get("label") or "") in s for s in sel3)]
                 if not tp3_items:
                     continue
+                want_tp3 = True                            # используется ниже для feed_alert (нужен URL-фид)
                 label = "ТГ - Фид (товары)" + (f" - {oblast}" if oblast else "")
                 nm, renamed = _uniq(f"tp3_cpc_site — {label}")
                 plan.append({"type": "rsya_gallery", "variant": v, "pay": None, "feed_id": None,
@@ -444,6 +479,42 @@ def _set_plan_response():
             if str(v) == "search_test":
                 if _slepok_profile_excludes_tp(agent, site_type, "tp2"):
                     warnings.append("tp2 (Поиск): нет в боевом профиле слепка — пропущен (строгое соответствие)")
+                    continue
+                # SPLIT-DRIVEN слепки (не авто-сегментные, напр. dmp): сегментная авто-
+                # классификация (Марки/Модели/Общее по ag_part1) к их ct неприменима → идём по
+                # tp.splits[]: одна кампания на блок, имя = буквально label блока (Идентификация /
+                # Маркетинговые инструменты / …), БЕЗ суффиксов Марки/Модели/КС/Автотаргет и БЕЗ
+                # pay-дублирования. Триггер узкий: site_type НЕ в авто-типах И у tp2 есть splits
+                # (сегодня это только dmp — авто-слепки splits на tp2 не держат, регрессия исключена).
+                _tp2_splits = _tp_splits(agent, site_type, "tp2")
+                if site_type not in _AUTO_SEGMENT_SITE_TYPES and _tp2_splits:
+                    sel2 = _sel_labels(2)
+                    for sp in _tp2_splits:
+                        label = (sp.get("label") or sp.get("sq") or "").strip()
+                        if not label:
+                            continue
+                        if sel2 is not None and label not in sel2:
+                            continue
+                        grp_names = [(g.get("name") or g.get("group") or "").strip()
+                                     for g in sp.get("groups", [])]
+                        # ct-коды ИМЕННО этого split-блока (из gc групп) — прокидываются в наполнение
+                        # как only_cts, чтобы каждая split-кампания получила ТОЛЬКО свои группы, а не
+                        # весь пул слепка (34 ct у dmp/tp2). _struct_cts для splits-формата даёт [] —
+                        # поэтому фильтруем ct-кодами плана, а не именами групп (см. _build_text_from_pack
+                        # / _tp1_pack_groups only_cts-ветку).
+                        grp_cts: list[str] = []
+                        for g in sp.get("groups", []):
+                            for gi in g.get("items", []):
+                                _ct = _gc_ct(gi.get("gc", "")) if isinstance(gi, dict) else ""
+                                if _ct and _ct != "ct0000" and _ct not in grp_cts:
+                                    grp_cts.append(_ct)
+                        nm, renamed = _uniq(f"tp2_cpc_site — {label}")
+                        plan.append({"type": "search_test", "variant": v, "pay": "tcpa",
+                                     "feed_id": None, "feed_name": None, "name": nm, "renamed": renamed,
+                                     "budget": _bud("tcpa"), "cpa": _cpa_for("tcpa"), "tp": "tp2",
+                                     "tp4_segment": None, "autotarget": False,
+                                     "tp2_split_sq": sp.get("sq"), "tp2_split_label": label,
+                                     "tp2_split_groups": grp_names, "tp2_split_cts": grp_cts})
                     continue
                 tp2_items = _tp_plan_names(agent, site_type, "tp2")
                 if not tp2_items:
@@ -598,7 +669,7 @@ def _set_plan_response():
         _emit_struct("tp6", True)
     if want_product:
         _emit_struct("tp7", False)
-    _fal_needed = len(feeds) == 0 and (want_product or want_master)
+    _fal_needed = len(feeds) == 0 and (want_product or want_master or want_tp3)
     from .create_set_input import FALLBACK_SINGLE_FEED_KEY as _FB_KEY
     return jsonify({"login": login, "site_type": site_type, "r_code": r_code, "oblast": oblast,
                     "feeds": len(feeds), "count": len(plan),
@@ -607,7 +678,7 @@ def _set_plan_response():
                     "feed_alert": {
                         "needed": _fal_needed,
                         "missing": ["yandex.xml"] if _fal_needed else [],
-                        "will_skip_types": (["product"] if want_product else []) + (["master"] if want_master else []) if _fal_needed else [],
+                        "will_skip_types": ((["product"] if want_product else []) + (["master"] if want_master else []) + (["tp3"] if want_tp3 else [])) if _fal_needed else [],
                         # найден фолбэк-фид → фронт показывает кнопку «Продолжить с другим фидом»
                         # (повторный set_plan с single_feed_fallback=true строит план на нём).
                         # Имя — реального фолбэка (не всегда канонический _FB_KEY: при его
