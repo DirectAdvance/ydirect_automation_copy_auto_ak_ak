@@ -24,6 +24,49 @@
 
 ## Активные / недавние ошибки
 
+### TITLE_BRAND_ORDER_UPGRADE_CLOBBER — `_upgrade_credit_titles` затирал brand-first короткими credit-first вариантами (R2-3, 2026-07-10)
+- Симптом (прогон e05fbc86e8ca, tp1 BAIC 712648428, СВЕЖАЯ генерация): заголовки НЕ brand-first —
+  «Кредит на BAIC в Кемерово. Первый взнос 0 ₽» (марка после УТП), «Платеж от 9 000 ₽/мес. BAIC в
+  Кемерово» (марка во 2-м сегменте) + 13-18 свободных символов (короткие). Промпт-правило brand-first
+  и reorder в `_rsya_titles` НЕ гарантировали результат live.
+- Где: **`create_set_assets.py:_upgrade_credit_titles`** (вызывается из `_responsive_ad` — ФИНАЛЬНАЯ
+  сборка Titles на TOKEN-пути v501 ads.add: tp1 `create_set_tp1_builders.py:328`, tp2/tp4
+  `create_set_text_builders.py:127`).
+- Root-cause: `_upgrade_credit_titles` при `_needs_credit_title_upgrade=True` ЗАМЕНЯЛ brand-first
+  g_titles (из `_rsya_titles`) своими вариантами `f"Кредит на {anchor}. Первый взнос 0 ₽"` /
+  `f"Платеж от 9 000 ₽/мес. {anchor}"` — марка ПОСЛЕ УТП (не подлежащее) И короткие (без `_fill_title`,
+  ~43 симв). Это ТОЧНО симптомы FACT. Прежний reorder в `_rsya_titles` давал brand-first g_titles, но
+  `_upgrade_credit_titles` их клобберил ПОСЛЕ → почему «reorder не сработал live». Cookie-путь (grid
+  `build_ad._fill_titles`) upgrade НЕ вызывает → клобберил только TOKEN-путь (прогон при 40М баллах = token).
+- Решение (2026-07-10, R2-3) — ДЕТЕРМИНИРОВАННО, без опоры на LLM:
+  - **`text_gen._brand_first_reorder(title, brand)`** (новый): сегментный реордер — марка/модель
+    принудительно в НАЧАЛО (до первой точки). «Кредит на BAIC в Кемерово. …» → «BAIC в Кемерово.
+    Кредит. …»; «Платеж … BAIC в Кемерово» → «BAIC в Кемерово. Платеж …». Уже-ведущая марка и допустимые
+    модификаторы («Новый/Купить BAIC») — без изменений; brand пустой (Общее/ct0000) → no-op; марки нет
+    вовсе → как есть (страховка = LLM `fix_brand_not_first`). Guard: реордер, породивший `_bad_ad_title`/
+    `_is_bad_start`, откатывается на оригинал.
+  - **`_rsya_titles`** (choke-point ОБОИХ путей, tp1/tp2/tp4 group titles): реордер применён в главном
+    цикле + в `brand_fillers`-нормализациях для брендовых групп → g_titles ВСЕ brand-first. Шаблон
+    `_brand_title_set` «Кредит на {brand}…» переписан на «{brand}. Выгода …» (brand-first в источнике,
+    покрывает и tp6/tp7 standalone).
+  - **`_upgrade_credit_titles`** (TOKEN финал): брендовые варианты переписаны на brand-first
+    `f"{anchor}. Кредит …"`; в цикле каждый (варианты + pass-through seq) прогоняется через
+    `_brand_first_reorder` + `_fill_title` (§2.2: добивка до ≥54, ≤2 свободных).
+- Оба пути покрыты: TOKEN — `_responsive_ad`→`_upgrade_credit_titles` (фикс) + g_titles brand-first;
+  COOKIE — `_rsya_titles`→grid `build_ad._fill_titles` (preserve, upgrade не зовётся). Backup —
+  `fix_brand_not_first` через delayed content_repair (после R2-1/К1 фикса фриза реально доедет,
+  `blueprint.py:7979`, `_audit_brand_not_first` детект).
+- Не сломано: Общее/ct0000 (brand пуст) — реордер no-op; дедуп УТП §2.3 (варианты distinct-бакеты);
+  ≤56 (guard `_trim_ad_line`); чужие марки (реордер по `_own_brand_tokens` своей марки); tp5 ShoppingAd
+  (без TextAd) н/п; tp3/tp6/tp7 вне scope.
+- Статус: 🟡 код на Mac (py_compile OK; pyflakes 0 новых undefined; изолированные тесты: FACT-симптомы
+  BAIC/Haval/Chery → 0 нарушений brand_head_ok И lead, len 48-56; `_responsive_ad` token-финал 0/7
+  нарушений; Общее-ветка валидна). НЕ деплоено. **live не проверено** — проверит round 2 (tp1/tp2/tp4:
+  КАЖДЫЙ заголовок марка в 1-м сегменте, ≤8 свободных).
+- НЕ помогло ранее: reorder ТОЛЬКО в `_rsya_titles`/промпт brand-first — `_upgrade_credit_titles`
+  (финал token-пути) клобберил результат ПОСЛЕ → live оставался non-brand-first. R2-3 чинит именно
+  финальную сборку + держит реордер детерминированным на обоих путях.
+
 ### FALSE_152_COOKIE_FLIP_AT_LIVE_OPERATOR_UNITS — ложный/транзиентный 152 уводил набор на куку при 40М баллов (R2-2, 2026-07-09)
 - Симптом (прогон e05fbc86e8ca, agency victorylotsofads1 = **40.5 МЛН** баллов оператора): транзиентный/
   ложный 152 увёл tp5 «Марки» на via_cookie → сегменты кука не умеет → `NO_BRAND_SEGMENTS` → деферред.

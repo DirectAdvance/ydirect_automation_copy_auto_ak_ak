@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from .text_norm import _trim_clean
+from .text_gen import _brand_first_reorder
 
 _DEPS: dict = {}
 
@@ -72,7 +73,8 @@ _AC_GROUP_CAP = 150           # макс. групп на кампанию за 
 _AC_CHUNK_AG = 100            # групп в одном adgroups.add
 _AC_CHUNK_KW = 1000           # ключей в одном keywords.add
 _AC_CHUNK_AD = 100            # объявлений в одном ads.add
-_AC_BATCH_SLEEP = 0.4         # пауза между батч-вызовами (троттл, сек)
+_AC_BATCH_SLEEP = 0.2         # пауза между батч-вызовами (троттл, сек); A4: 0.4→0.2, при 429
+                              # срабатывают существующие backoff-ретраи в самих батч-вызовах
 # Комбинаторное объявление (RESPONSIVE_AD) — замена ТГО (TextAd), которое отключают с 30.06.2026.
 # Создаётся ТОЛЬКО через v501 ads.add {ResponsiveAd:{Titles[],Texts[],Href,AdImageHashes[],...}}.
 # Несколько заголовков/текстов в ОДНОМ объявлении (Яндекс комбинирует). Уточнения наследуются
@@ -130,9 +132,9 @@ def _combo_fill_titles(items: list, cap: int = _RA_TITLES_CAP) -> list:
             cand = f"{anchor} {tail}"
         if len(cand) > _RA_TITLE_MAX:
             cand = _trim_clean(cand, _RA_TITLE_MAX)   # по слову + чистка хвоста («…за 30»)
-        # Правило Семёна: свободно ≤8 симв. Если кандидат короче hi-8 — добиваем хвостами.
-        if cand and len(cand) < _RA_TITLE_MAX - 8:
-            cand = _fill_title(cand, _RA_TITLE_MAX - 8, _RA_TITLE_MAX)
+        # Правило Семёна: свободно ≤2 симв. Если кандидат короче hi-2 — добиваем хвостами.
+        if cand and len(cand) < _RA_TITLE_MAX - 2:
+            cand = _fill_title(cand, _RA_TITLE_MAX - 2, _RA_TITLE_MAX)
         if cand and cand not in out:
             out.append(cand)
     return out
@@ -233,7 +235,7 @@ _DANGLING_TEXT_TAIL_RE = re.compile(
 )
 
 
-def _finalize_text_line(s: str, maxlen: int = _RA_TEXT_MAX, minlen: int = 73) -> str:
+def _finalize_text_line(s: str, maxlen: int = _RA_TEXT_MAX, minlen: int = 79) -> str:
     """Clean generated ad text: no dangling tails and no large unused character budget."""
     line = _trim_ad_line(s, maxlen).rstrip(" ,.")
     while True:
@@ -275,7 +277,8 @@ def _upgrade_credit_titles(items: list[str], cap: int = _RA_TITLES_CAP) -> list[
         return seq[:cap]
     anchor, brand = _credit_title_anchor(seq)
     brand_low = (brand or "").strip().lower()
-    if not brand or brand_low.startswith("авто"):
+    brand_real = bool(brand) and not brand_low.startswith("авто")
+    if not brand_real:
         variants = [
             "Новые авто в кредит. Первый взнос 0 ₽",
             "Купить новое авто. КАСКО на 1 год бесплатно",
@@ -287,21 +290,33 @@ def _upgrade_credit_titles(items: list[str], cap: int = _RA_TITLES_CAP) -> list[
             "Госпрограмма 2026. Кредит на новые авто",
         ]
     else:
+        # §2.1 brand-first: марка/модель (anchor = «BAIC в Кемерово») строго В НАЧАЛЕ, до первой
+        # точки. Прежние варианты «Кредит на {anchor}…»/«Платеж … {anchor}» ставили марку ПОСЛЕ
+        # УТП (живой баг e05fbc86e8ca, tp1 BAIC) — переписаны на подлежащее-марку.
         variants = [
-            f"Кредит на {anchor}. Первый взнос 0 ₽",
-            f"Купить {anchor}. КАСКО на 1 год бесплатно",
-            f"Платеж от 9 000 ₽/мес. {anchor}",
-            f"Одобрение за 30 минут онлайн. {anchor}",
-            f"Кредит от 15 банков онлайн. {anchor}",
-            f"Выгода до 45% при покупке. {anchor}",
-            f"Трейд-ин до 150% цены авто. {anchor}",
-            f"Госпрограмма 2026 и кредит. {brand}",
-            f"Заявка на кредит за 1 минуту. {brand}",
+            f"{anchor}. Кредит и первый взнос 0 ₽",
+            f"{anchor}. КАСКО на 1 год бесплатно",
+            f"{anchor}. Платеж от 9 000 ₽/мес",
+            f"{anchor}. Одобрение за 30 минут онлайн",
+            f"{anchor}. Кредит от 15 банков онлайн",
+            f"{anchor}. Выгода до 45% при покупке",
+            f"{anchor}. Трейд-ин до 150% цены авто",
+            f"{brand}. Госпрограмма 2026 и кредит",
+            f"{brand}. Заявка на кредит за 1 минуту",
         ]
+    _fill = globals().get("_fill_title")
     out: list[str] = []
     seen: set[str] = set()
     for cand in variants + seq:
         line = _trim_ad_line(cand, _RA_TITLE_MAX)
+        if not line:
+            continue
+        # brand-first детерминированно (страховка для pass-through seq: «Платеж … BAIC» → «BAIC. …»)
+        if brand_real:
+            line = _trim_ad_line(_brand_first_reorder(line, brand), _RA_TITLE_MAX)
+        # §2.2 короткие: добить до ≥ hi-2 (54), чтобы не оставлять 13-18 свободных символов
+        if callable(_fill) and line and len(line) < _RA_TITLE_MAX - 2:
+            line = _trim_ad_line(_fill(line, _RA_TITLE_MAX - 2, _RA_TITLE_MAX), _RA_TITLE_MAX)
         if not line:
             continue
         low = line.lower()
@@ -413,6 +428,42 @@ def _chunks(seq: list, n: int):
         yield seq[i:i + n]
 
 
+# Полные формы коротких УТП-хвостов для добивки уточнений до 17-25 символов.
+# Упорядочены: сначала длиннее (предпочитаем максимально заполненный вариант).
+# Все ≤ _CALLOUT_POOL_TEXT_MAX (25). Правило Семёна: уточнения заполнять ≤8 свободных.
+_CALLOUT_EXPAND_POOL = [
+    "Рассрочка без переплат",   # 22
+    "Гарантия производителя",   # 22
+    "Трейд-ин выше рынка",      # 20
+    "Одобрение за 5 минут",     # 20
+    "Тест-драйв бесплатно",     # 20
+    "Официальная гарантия",     # 20
+    "Кредит от 15 банков",      # 20
+    "В наличии у дилера",       # 18
+    "Выгода при покупке",       # 18
+    "Быстрое оформление",       # 18
+    "Подбор авто онлайн",       # 18
+    "Первый взнос 0 ₽",         # 16
+    "КАСКО в подарок",          # 15
+    "Авто в наличии",           # 14
+]
+
+
+def _expand_callout(s: str) -> str:
+    """Расширить короткое уточнение до более полной формы из пула УТП (≤25 симв).
+    Пример: «Трейд-ин» (9) → «Трейд-ин выше рынка» (20). Срабатывает только
+    когда len(s) < 17 и найдена запись из _CALLOUT_EXPAND_POOL, начинающаяся с s.
+    Если расширение не найдено — возвращает оригинал без изменений."""
+    if not s or len(s) >= 17:
+        return s
+    s_l = s.lower().replace("ё", "е").strip()
+    for exp in _CALLOUT_EXPAND_POOL:
+        exp_l = exp.lower().replace("ё", "е")
+        if exp_l.startswith(s_l) and len(exp) <= _CALLOUT_POOL_TEXT_MAX:
+            return exp
+    return s
+
+
 def _normalize_callout_text(text: str) -> str:
     """Нормализовать уточнение до создания ассета Директа."""
     s = str(text or "").strip()
@@ -428,6 +479,8 @@ def _normalize_callout_text(text: str) -> str:
     # «Рапродаем/рапродаём» → «Распродаем/распродаём»  (пропущена «с» в «распродаж»)
     s = re.sub(r"(?i)\bрапрода",
                lambda m: ("Р" if m.group()[0].isupper() else "р") + "аспрода", s)
+    # Расширение через _CALLOUT_EXPAND_POOL отключено: добавляло непроверенные обещания.
+    # Уточнения возвращаются как есть из слепка (достоверность > заполнение лимита).
     return s[:_CALLOUT_MAX_EACH].strip()
 
 
@@ -498,6 +551,95 @@ def _dedup_callout_ids(co_map: dict, cap: int = 8) -> list:
             norm_to_id[nt] = cid
     clean_texts = _dedup_callouts(list(norm_to_id), cap=cap)
     return [norm_to_id[t] for t in clean_texts if t in norm_to_id]
+
+
+_CALLOUT_POOL_V5_CAP = 20        # max AdExtensionId в пуле, возвращаемом v5_ensure_callout_pool
+_CALLOUT_POOL_TEXT_MAX = 25      # лимит символов Яндекса на одно уточнение
+
+
+def v5_ensure_callout_pool(token: str, login: str, texts: list,
+                           v5_call_fn, *, cap: int = _CALLOUT_POOL_V5_CAP) -> list:
+    """Создать/переиспользовать пул CALLOUT AdExtensions через v5 API.
+
+    Алгоритм:
+    1. Нормализует тексты: trim по слову до ≤25 символов; длиннее — отброс.
+    2. Дедуп с уже существующими в аккаунте (adextensions.get, case-insensitive).
+    3. Недостающие создаёт батчем (adextensions.add); частичные ошибки валидации
+       пропускает, не валит весь пул.
+    4. Возвращает список AdExtensionId, ≤cap.
+
+    v5_call_fn — callable(svc, method, token, login, params) → dict (blueprint._v5_call).
+    Безопасен при отсутствии токена/текстов: возвращает [].
+    НЕ зависит от globals-инъекции (configure); пригоден и из repair-скриптов.
+    """
+    if not token or not texts or not v5_call_fn:
+        return []
+    # 1. Нормализация + trim по слову до ≤25 символов; дропаем если после trim всё равно >25
+    normed: list[str] = []
+    seen_lower: set[str] = set()
+    for t in texts:
+        t = str(t or "").strip()
+        if not t:
+            continue
+        if len(t) > _CALLOUT_POOL_TEXT_MAX:
+            try:
+                t = _trim_clean(t, _CALLOUT_POOL_TEXT_MAX).strip()
+            except Exception:  # noqa: BLE001
+                t = t[:_CALLOUT_POOL_TEXT_MAX].strip()
+        if not t or len(t) > _CALLOUT_POOL_TEXT_MAX:
+            continue
+        lk = t.lower()
+        if lk in seen_lower:
+            continue
+        seen_lower.add(lk)
+        normed.append(t)
+        if len(normed) >= cap * 3:   # достаточно широкий пре-пул до дедупа с существующими
+            break
+    if not normed:
+        return []
+    # 2. Читаем существующие уточнения аккаунта (adextensions.get) с пагинацией
+    existing: dict[str, int] = {}   # lower_text → AdExtensionId
+    try:
+        offset = 0
+        while True:
+            j = v5_call_fn("adextensions", "get", token, login, {
+                "SelectionCriteria": {"Types": ["CALLOUT"]},
+                "FieldNames": ["Id", "Type"],
+                "CalloutFieldNames": ["CalloutText"],
+                "Page": {"Limit": 1000, "Offset": offset},
+            })
+            res = (j.get("result") or {})
+            for ext in res.get("AdExtensions", []):
+                txt = ((ext.get("Callout") or {}).get("CalloutText") or "").strip()
+                if txt:
+                    existing[txt.lower()] = int(ext["Id"])
+            limited = res.get("LimitedBy")
+            if not limited:
+                break
+            offset = int(limited)
+    except Exception:  # noqa: BLE001 — провал чтения не блокирует создание новых
+        pass
+    # 3. Разбиваем тексты на уже существующие (переиспользуем Id) и новые
+    ids: list[int] = []
+    to_create: list[str] = []
+    for t in normed:
+        if t.lower() in existing:
+            ids.append(existing[t.lower()])
+        else:
+            to_create.append(t)
+    # 4. Создаём недостающие батчем; частичные ошибки валидации пропускаем
+    for i in range(0, len(to_create), 50):
+        chunk = to_create[i:i + 50]
+        try:
+            j = v5_call_fn("adextensions", "add", token, login,
+                           {"AdExtensions": [{"Callout": {"CalloutText": t}} for t in chunk]})
+            for t, r in zip(chunk, (j.get("result") or {}).get("AddResults", [])):
+                if isinstance(r, dict) and r.get("Id"):
+                    ids.append(int(r["Id"]))
+                    # ошибки в r.get("Errors") — пропускаем битый элемент, не бросаем
+        except Exception:  # noqa: BLE001 — одна пачка не валит весь пул
+            pass
+    return ids[:cap]
 
 
 def _ensure_callout_exts(token: str, login: str, texts: list) -> dict:

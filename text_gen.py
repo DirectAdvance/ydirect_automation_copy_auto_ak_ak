@@ -532,6 +532,73 @@ def _brand_in_text(text: str, brand: str) -> bool:
     low = str(text or "").lower()
     return any(re.search(r"(?<![a-zа-яё0-9])" + re.escape(tok) + r"(?![a-zа-яё0-9])", low) for tok in own)
 
+# Слова-модификаторы, при которых марка ОСТАЁТСЯ подлежащим (brand-first уже соблюдён):
+# «Новый BAIC …», «Купить BAIC …» — реордер НЕ нужен.
+_BRAND_LEAD_OK_PREFIX = {
+    "новый", "новая", "новые", "новое",
+    "купить", "купите", "купи",
+    "закажите", "закажи", "заказать",
+    "оформить", "оформите", "оформи",
+    "возьмите", "возьми", "взять", "бери", "берите",
+}
+# Соединительные слова/предлоги — обрезаем с хвоста «осиротевшего» префикса при реордере
+# («Кредит на» → «Кредит»).
+_REORDER_TAIL_STRIP = {"на", "в", "во", "по", "для", "от", "с", "со", "за", "к", "ко", "у", "о", "об", "и", "а"}
+
+
+def _brand_first_reorder(title: str, brand: str) -> str:
+    """ДЕТЕРМИНИРОВАННО поставить марку/модель в НАЧАЛО заголовка (подлежащее, до первой точки).
+
+    Не полагаемся на LLM: даже если генерация/фиксер дали «Кредит на BAIC …» или «Платеж … BAIC»,
+    переставляем сегмент с маркой в начало.
+      «Кредит на BAIC в Кемерово. Первый взнос 0 ₽» → «BAIC в Кемерово. Кредит. Первый взнос 0 ₽»
+      «Платеж от 9 000 ₽/мес. BAIC в Кемерово»      → «BAIC в Кемерово. Платеж от 9 000 ₽/мес»
+    Если марка уже ведёт (или ведёт с допустимым модификатором «Новый/Купить …») — без изменений.
+    Если марку не нашли вовсе — возвращаем как есть (страховкой служит LLM-регенерация
+    ``fix_brand_not_first``). Реордер НЕ применять к сегменту «Общее»/ct0000 (там brand пуст)."""
+    t = str(title or "").strip()
+    if not t or not brand:
+        return t
+    own = _own_brand_tokens(brand)
+    if not own:
+        return t
+    tok_re = re.compile(
+        r"(?<![a-zа-яё0-9])(?:" + "|".join(re.escape(x) for x in own) + r")(?![a-zа-яё0-9])",
+        re.IGNORECASE)
+    m = tok_re.search(t)
+    if not m:
+        return t                                    # марки нет вовсе → не наша забота (LLM-бэкап)
+    pre_words = re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", t[:m.start()])
+    # марка уже ведёт (пустой префикс) ИЛИ префикс = только допустимые модификаторы → brand-first OK
+    if not pre_words or all(w.lower() in _BRAND_LEAD_OK_PREFIX for w in pre_words):
+        return t
+    # ── нужен реордер: делим на сегменты по «. » и находим сегмент с маркой ──
+    parts = [p for p in re.split(r"\s*\.\s+", t) if p.strip()]
+    b_idx = next((i for i, p in enumerate(parts) if tok_re.search(p)), -1)
+    if b_idx < 0:
+        return t
+    seg = parts[b_idx]
+    sm = tok_re.search(seg)
+    seg_pre = seg[:sm.start()]                       # текст ДО марки внутри её сегмента
+    brand_onwards = seg[sm.start():].strip()         # марка и всё после неё в этом сегменте
+    if not brand_onwards:
+        return t
+    # осиротевший внутрисегментный префикс: чистим хвостовые предлоги/союзы, капитализируем
+    pw = re.findall(r"[A-Za-zА-Яа-яЁё0-9%₽/]+", seg_pre)
+    while pw and pw[-1].lower() in _REORDER_TAIL_STRIP:
+        pw.pop()
+    leftover = " ".join(pw).strip()
+    new_parts = [brand_onwards]
+    if leftover and leftover.lower() not in _REORDER_TAIL_STRIP:
+        new_parts.append(_cap_first(leftover))
+    new_parts += [p for i, p in enumerate(parts) if i != b_idx]
+    out = ". ".join(x.strip().rstrip(".") for x in new_parts if x and x.strip())
+    out = _cap_first(out)
+    # безопасность: реордер не должен родить «плохой» заголовок — иначе оставляем оригинал
+    if not out or _is_bad_start(out) or _bad_ad_title(out):
+        return t
+    return out
+
 # Чистые УТП-тексты для РСЯ (≤56, ОДНА мысль/предложение) — приоритетнее «кашеобразных» текстов
 # слепка («Господдержка … Нулевой утильсбор … Распродаём стоянку -45%. Звоните!»). Правило пользователя.
 # ⛔ БЕЗ %-ставки кредита/рассрочки (правило Семёна). Полные, «вкусные», грамотные УТП-предложения
@@ -923,7 +990,7 @@ def _brand_title_set(brand: str, city: str) -> list:
         f"{brand}{loc}. КАСКО на 1 год в подарок. Трейд-ин",     # марка первой + подарки
         f"{brand} в трейд-ин{loc}. Оценка авто за 30 минут",     # бренд-подлежащее
         f"{brand} по госпрограмме{loc}. Господдержка 2026",      # бренд-подлежащее
-        f"Кредит на {brand}{loc}. Первый взнос 0 ₽",             # кредит-акцент (вторично)
+        f"{brand}{loc}. Выгода до 45% при покупке в кредит",     # марка первой + выгода/кредит
         f"Купить {brand}{loc}. КАСКО на 1 год бесплатно",        # «Купить»
         f"Новый {brand}{loc}. Одобрение за 30 минут",            # «Новый»
     ]
@@ -974,8 +1041,13 @@ def _rsya_titles(brand: str, city: str, site_type: str, ai_title2: str = "",
         # БАГ 8: не берём заголовки начинающиеся с предлога или маленькой буквы
         if _is_bad_start(str(t)):
             continue
+        _t0 = str(t)
+        if brand and is_brand:
+            # ДЕТЕРМИНИРОВАННЫЙ brand-first (§2.1): даже если базовый/пуловый AI-заголовок
+            # «Кредит на BAIC …»/«Платеж … BAIC» — марка принудительно в начало ДО первой точки.
+            _t0 = _brand_first_reorder(_t0, brand)
         s = _normalize_numeric_suffixes_bp(
-            _fill_title(_replace_sep_hyphen(_replace_emdash(_strip_credit_rate(str(t)))), 45, 56)
+            _fill_title(_replace_sep_hyphen(_replace_emdash(_strip_credit_rate(_t0))), 45, 56)
         )
         if not s:
             continue
@@ -1045,7 +1117,8 @@ def _rsya_titles(brand: str, city: str, site_type: str, ai_title2: str = "",
         seed = ""
         for cand in brand_fillers:
             s = _normalize_numeric_suffixes_bp(
-                _fill_title(_replace_sep_hyphen(_replace_emdash(_strip_credit_rate(str(cand)))), 45, 56)
+                _fill_title(_replace_sep_hyphen(_replace_emdash(
+                    _strip_credit_rate(_brand_first_reorder(str(cand), brand)))), 45, 56)
             )
             if s and len(s) >= 48 and _has_own_brand_final(s) and not _bad_ad_title(s) and not _has_stamp(s):
                 seed = s
@@ -1058,7 +1131,8 @@ def _rsya_titles(brand: str, city: str, site_type: str, ai_title2: str = "",
         seen_keys = {_variant_norm_key(x) for x in out if _variant_norm_key(x)}
         for cand in brand_fillers:
             s = _normalize_numeric_suffixes_bp(
-                _fill_title(_replace_sep_hyphen(_replace_emdash(_strip_credit_rate(str(cand)))), 45, 56)
+                _fill_title(_replace_sep_hyphen(_replace_emdash(
+                    _strip_credit_rate(_brand_first_reorder(str(cand), brand)))), 45, 56)
             )
             if (not s or len(s) < 48 or _bad_ad_title(s) or _is_bad_start(s) or not _has_own_brand_final(s)):
                 continue

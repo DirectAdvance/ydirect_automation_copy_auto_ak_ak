@@ -6878,3 +6878,22 @@ create_set_repairing ожидаемы); новые символы определ
   отложено post-create штатно). Если нужно вынести и их — тот же паттерн capture по login. (2) watchdog
   demona может пометить stuck finalize-строку failed → child fin:{did} не закроется, карточка повиснет
   running (та же грабля, что у dcr — предложить Семёну общий фикс: закрывать child при watchdog-fail).
+
+---
+## 2026-07-10 — R2-3: детерминированный brand-first reorder на создании + короткие
+- КОРЕНЬ live «не brand-first» (прогон e05fbc86e8ca, tp1 BAIC): `_upgrade_credit_titles`
+  (`create_set_assets.py`, финал token-пути `_responsive_ad`) ЗАМЕНЯЛ brand-first g_titles своими
+  вариантами `Кредит на {anchor}…`/`Платеж … {anchor}` — марка после УТП + короткие (~43). Cookie-путь
+  (grid `build_ad._fill_titles`) upgrade не зовёт → клобберил только token (прогон = 40М баллов = token).
+  Вот почему прежний reorder в `_rsya_titles` «не доезжал» — его результат затирался ПОСЛЕ.
+- ФИКС (детерминированно, не LLM): (1) `text_gen._brand_first_reorder(title, brand)` — сегментный
+  реордер марки в начало (guard: bad-title → откат; brand пуст/Общее → no-op); (2) `_rsya_titles`
+  применяет реордер в главном цикле + brand_fillers → g_titles всегда brand-first (ОБА пути); шаблон
+  `_brand_title_set` «Кредит на {brand}» → «{brand}. Выгода…»; (3) `_upgrade_credit_titles` варианты
+  переписаны brand-first + `_fill_title` (≥54) + реордер pass-through seq.
+- Verified: py_compile OK, pyflakes 0 новых undefined; изол.тесты BAIC/Haval/Chery 0 нарушений
+  (head_ok И lead, len 48-56), token-финал `_responsive_ad` 0/7, Общее-ветка валидна. НЕ деплоено,
+  live проверит round 2. Backup `fix_brand_not_first`→delayed content_repair подтверждён по коду
+  (blueprint.py:7979, доедет после R2-1/К1 фикса фриза).
+- Файлы: text_gen.py (`_brand_first_reorder`, `_rsya_titles`, `_brand_title_set`), create_set_assets.py
+  (`_upgrade_credit_titles`, import). ERRORS_JOURNAL: TITLE_BRAND_ORDER_UPGRADE_CLOBBER.
