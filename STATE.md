@@ -3,6 +3,25 @@
 > Читать ПЕРВЫМ в начале каждой сессии. Обновлять ПОСЛЕДНИМ перед выходом.
 > Ошибки создания РК: сигнатуры/решения/что-помогло — **ERRORS_JOURNAL.md** (обязателен к заполнению при фиксах).
 
+## Сессия 2026-07-10 — R2-4: бандл качества (Э-ключи + каталог позитив + UAC-сайтлинки + суммы)
+- **Сделано (4 дефекта прогона e05fbc86e8ca):**
+  - (а) `text_gen._AUTO_BRAND_CYRILLIC_EXTRA` += «ситирэй»/«кулрэй»/«рэй» (Э, U+044D) рядом с Е-вариантами
+    Geely Cityray/Coolray — «ситирэй» протекал в tp5 «Общее» ct0010-Дром (712650300).
+  - (б) `create_set_tp1_builders._grid_add_listings_with_name_filters`: брендовая ListingAd = ТОЛЬКО
+    позитив name CONTAINS_ANY [своя марка], убран негатив `_lad_minus_conds`. Общее/ct0000 — негатив как есть.
+    ⚠️ follow-up: AUTO_RU фид **3537034** (yandex.xml) — поле листинга не в fieldsForUseAs → позитив невозможен.
+  - (в1) `create_set_master_product`: `_dedup_sitelinks(diversify_…)` теперь ВСЕГДА (был под гейтом `<8`) →
+    UAC кредит-дубль «Платеж от 9 000»+«Автокредит от 9 000» схлопывается (оба `credit_pay|9000`).
+  - (в2/г) `ai_content`: account-pass helpers — `_account_sitelinks_get/put` (reuse набора на аккаунт, флаг
+    `DIRECT_SITELINK_REUSE_ACCOUNT` дефолт **OFF**) + `_account_pay_unify` (канон-сумма платежа на аккаунт,
+    флаг `DIRECT_PAY_CANON_ACCOUNT` дефолт **ON**). Wired в orchestrator (tp1/tp2/tp5) + master_product (tp6/tp7).
+- **Проверено:** py_compile OK (5 файлов), pyflakes 0 новых undefined, изолированные smoke (а/в1/г) зелёные.
+  НЕ деплоено, live не проверено — проверит round 2.
+- **Коммит `402949f`** (не amend): захватил также ПРЕЖНЮЮ незакоммиченную R2-работу в этих файлах
+  (#16 content-reuse в ai_content, K2-детекторы/листинг в tp1_builders) — всё в границах проекта, идёт
+  одним деплоем. Свои файлы: text_gen, tp1_builders, master_product, ai_content, orchestrator, ERRORS_JOURNAL, DOD.
+- **Осталось/follow-up:** листинг-фильтр для фида 3537034 (нерезолвимое поле); c2/g под флагами — включить и проверить.
+
 ## Сессия 2026-07-09 — R2-2: не флипать на куку по ложному 152 при живых баллах оператора
 - **Сделано:** `create_set_orchestrator.py` — жёсткая проверка остатка баллов оператора (`_units_alive_for_login`)
   перед куки-флипом по 152 в ОБЕИХ точках: мид-сет флип канала (~597, обе ветки OFF/ON) + конец-сет
