@@ -3,6 +3,17 @@
 > Читать ПЕРВЫМ в начале каждой сессии. Обновлять ПОСЛЕДНИМ перед выходом.
 > Ошибки создания РК: сигнатуры/решения/что-помогло — **ERRORS_JOURNAL.md** (обязателен к заполнению при фиксах).
 
+## Сессия 2026-07-10 — АВТОНОМНЫЙ /goal ЦИКЛ: деплой→удаление→создание→валидация (ЯДРО ЦЕЛИ ✅)
+- **Итог: ядро цели выполнено, валидировано 2 чистыми циклами на porg-psm5h7q6 (scherbakova, autos-kemerovo.site, no_cpa, 1 фид, метрика 109986178).**
+- **Прогрессия скорости:** Цикл-0 (59581) 41мин+~час dcr-hang → Цикл-1 (5de58) 26.5мин, 2 сбоя авто-восст. → **Цикл-2 (af4bd7) 19.4мин, 0 failed/0 errors** = **ЦЕЛЬ 14×1.5=21мин ВЗЯТА**.
+- **Ground-truth (v5 dupcheck):** 12 текстовых РК + 2 tp7 UAC = 14, **0 дублей, 0 failed** (оба цикла).
+- **Валидировано live:** ✅ dcr-detach (карточка `done`, не ~час) · ✅ R2-5 delete no-hang (18-34с) · ✅ C1 параллель · ✅ R2-6 контент (deploy подтверждён; LIVE PASS П.5 Общее-без-brand-first / П.6 нет Э-ключей; П.1/2/4 код-деплой, кабинет needs Grid-кука 403) · ✅ #28 R2-7 retry-1000 (0 errors в Цикле-2).
+- **Деплои:** Цикл-1 commit f41fff0 (R2-6+dcr-detach+img-workers10+DoD). Цикл-2 commit 0db54ce (#28 retry-v501-1000 backoff, img-workers 10→14). Флаги: DIRECT_DCR_DETACH_PARENT=1(дефолт), DIRECT_IMG_UPLOAD_WORKERS=14, PARALLEL_CHANNELS/API_FIRST/CONTENT_REUSE=1.
+- **#29 reuse картинок = WON'T-FIX:** эксперимент — библиотека 410→после delete 0 и остаётся 0 (t+50с, НЕ Grid-лаг). Delete кампаний удаляет cookie-картинки из библиотеки → reuse при delete→create невозможен (inherent; в проде свежий аккаунт тоже). Скорость взята заливкой(14 воркеров)+чистотой.
+- **ct0032 (Changan CS55):** харвест a97e — у scherbakova ВООБЩЕ нет CS55-кампаний (проверено 71 аккаунт); записано 8 строк (6 seed+2 real) в tp1/tp2/tp5 на M3+LXC. Live: 4 реальных ключа — предел данных.
+- **Механизм автономного запуска джоб (для след. сессий):** `_job_new_web(total,login,body,session,dedup_login)` на LXC (`cd /opt/scripts/home/seoadvanced && python3` import `from direct import blueprint`). Create — переиспользовать body прошлого прогона (strip `_job_id`/`_web_posted`). Delete — body `{_kind:delete_drafts,login,agency}`. Скрипты в scratchpad (enq_create/enq_delete/dupcheck/test_imghash).
+- **ОСТАЛОСЬ (крупные стрейч-таски, НЕ в ядре):** #20 распил blueprint.py 8k (рискованный рефактор — делать отдельной сессией с чекпоинтом/инкрементально, есть карта секций + паттерн DI+ре-экспорт, blueprint = лист графа [0 импортёров]); #30 полный харвест scherbakova (tp2 149 пустых ct, 74 в реальных аккаунтах — дорого по токенам, отдельным батч-прогоном). #32 double-recreate churn = приемлемо (name-dedup защищает от реального дубля).
+
 ## Сессия 2026-07-10 — ТРЕК A (родитель висит ~час на dcr) + ТРЕК C (аудит инфра-скорости)
 - **ТРЕК A (главное, фикс):** прогон 59581fdd9f9d — 14 РК за 41 мин, потом ~час `running` done=14/14 →
   interrupted. Корень: воркер СВОБОДЕН, висел только СТАТУС. `_schedule_delayed_content_repair_after_done`
