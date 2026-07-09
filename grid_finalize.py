@@ -1006,6 +1006,54 @@ class GridClient:
                     data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
         return res.get("updatedCampaigns") or []
 
+    def set_campaign_minus_keywords(self, campaign_ids: list[int], words: list[str]) -> list:
+        """Идемпотентно добавить глобальные минус-слова НА УРОВЕНЬ КАМПАНИИ (inline minusKeywords)
+        через узкий ``UpdateCampaigns`` (in-place, БЕЗ баллов, РК DRAFT). D6 2026-07-09
+        (GLOBAL_MINUS_CAMPAIGN_MISSING): аддитивно к существующим inline-минусам; шаблон —
+        ``set_campaign_invariants``. Union сохраняет порядок; повторный вызов не меняет корректную
+        РК (слова уже есть → items пуст). ``libraryMinusKeywordsIds`` (shared-set) НЕ трогаем."""
+        add = [str(w).strip() for w in (words or []) if str(w or "").strip()]
+        ids: list[int] = []
+        for raw in campaign_ids or []:
+            try:
+                cid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if cid > 0 and cid not in ids:
+                ids.append(cid)
+        if not ids or not add:
+            return []
+        payloads = self._read_unified_campaign_update_payloads(ids)
+        q = ("mutation UpdateCampaigns($input:GdUpdateCampaignsInput!$login:String!){"
+             "updateCampaigns(input:$input){updatedCampaigns{id}"
+             "validationResult{errors{code params path}warnings{code params path}}}"
+             "getClientMutationId(input:{login:$login}){mutationId}}")
+        bases, skipped = self._narrow_bases(payloads, ids, "Grid set-minus")
+        for _cid, _why in skipped.items():
+            print(f"[grid] set-minus: кампания {_cid} пропущена — стратегия «{_why}»", flush=True)
+        items = []
+        for cid, base in bases.items():
+            cur = [str(m) for m in (base.get("minusKeywords") or [])]
+            cur_low = {m.lower() for m in cur}
+            missing = [w for w in add if w.lower() not in cur_low]
+            if not missing:
+                continue   # уже есть все — идемпотентно пропускаем
+            base["minusKeywords"] = cur + missing
+            items.append({"unifiedCampaign": base})
+        if not items:
+            return []
+        data = self._post_json_retry("UpdateCampaigns", q, {
+            "login": self.login,
+            "input": {"campaignUpdateItems": items},
+        })
+        res = (data.get("data") or {}).get("updateCampaigns") or {}
+        vr = res.get("validationResult") or {}
+        if data.get("errors") or vr.get("errors"):
+            raise GridFinalizeError(
+                "Grid set-minus: " + json.dumps(
+                    data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
+        return res.get("updatedCampaigns") or []
+
     def set_campaign_age_bidmods(self, campaign_ids: list[int],
                                  ages_percent: dict[str, int]) -> list[int]:
         """Set age demographic bid modifiers on campaigns through the narrow Grid RMW

@@ -290,9 +290,55 @@ print(json.dumps(out, ensure_ascii=False))
 '''
 
 
+_LOCAL_SHIM = "/opt/neuro_agency_shim"
+
+
+def _ensure_local_shim() -> str | None:
+    """Дерево-шим для ЛОКАЛЬНОГО построения индекса (2026-07-06, независимость от ssh):
+    _INDEX_BUILDER ходит за Manual/Video относительно dirname(dirname(root)) — воссоздаём
+    структуру agency симлинками на локальное зеркало. → путь до kontent_oktyabr или None."""
+    if not _LOCAL_MIRROR_ROOT:
+        return None
+    pack = os.path.join(_LOCAL_MIRROR_ROOT, "kontent_oktyabr")
+    if not os.path.isdir(pack):
+        return None
+    try:
+        os.makedirs(os.path.join(_LOCAL_SHIM, "creatives"), exist_ok=True)
+        for link, target in (
+                (os.path.join(_LOCAL_SHIM, "нейродиректолог"), _LOCAL_MIRROR_ROOT),
+                (os.path.join(_LOCAL_SHIM, "Video"), os.path.join(_LOCAL_MIRROR_ROOT, "_video_pool")),
+                (os.path.join(_LOCAL_SHIM, "creatives", "Manual"), os.path.join(_LOCAL_MIRROR_ROOT, "_manual"))):
+            if not os.path.islink(link) and not os.path.exists(link):
+                os.symlink(target, link)
+        return os.path.join(_LOCAL_SHIM, "нейродиректолог", "kontent_oktyabr")
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def refresh_index(timeout: int = 120) -> bool:
-    """Перестроить индекс НА M3 (ssh, локальный диск Mac) и атомарно записать локально.
-    Возвращает True при успехе. Безопасно при сбое связи (вернёт False, старый индекс цел)."""
+    """Перестроить индекс и атомарно записать локально. С 2026-07-06 при активном локальном
+    зеркале (NEURO_PACK_MOUNT) индекс строится ЛОКАЛЬНО (без ssh; пути переписываются на
+    канонические M3 — их ждут потребители, _fetch_bytes сам замапит обратно на зеркало);
+    ssh-путь на M3 остаётся фолбэком. Безопасно при сбое (вернёт False, старый индекс цел)."""
+    _local_pack = _ensure_local_shim()
+    if _local_pack:
+        try:
+            os.makedirs(INDEX_DIR, exist_ok=True)
+            r = subprocess.run(["python3", "-", _local_pack],
+                               input=_INDEX_BUILDER, capture_output=True, text=True, timeout=timeout)
+            if r.returncode == 0 and r.stdout.strip():
+                txt = r.stdout
+                txt = txt.replace(_LOCAL_SHIM + "/нейродиректолог", M3_AGENCY_ROOT)
+                txt = txt.replace(_LOCAL_SHIM + "/creatives/Manual", M3_MANUAL_ROOT)
+                txt = txt.replace(_LOCAL_SHIM + "/Video", M3_VIDEO_ROOT)
+                data = json.loads(txt)
+                tmp = INDEX_PATH + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(data, ensure_ascii=False))
+                os.replace(tmp, INDEX_PATH)
+                return True
+        except Exception:  # noqa: BLE001 — локальный сбой → ssh-фолбэк ниже
+            pass
     try:
         os.makedirs(INDEX_DIR, exist_ok=True)
         r = subprocess.run(_M3_SSH + ["python3", "-", M3_PACK_ROOT],
@@ -375,6 +421,15 @@ def _fetch_bytes(remote_abs: str) -> str | None:
     # валидность кодека гарантирована компрессором). Нет в пуле → провалиться в ssh-фетч ниже.
     if _LOCAL_MIRROR_ROOT and remote_abs.startswith(M3_VIDEO_ROOT + "/"):
         _lm = os.path.join(_LOCAL_MIRROR_ROOT, "_video_pool") + remote_abs[len(M3_VIDEO_ROOT):]
+        try:
+            if os.path.isfile(_lm) and os.path.getsize(_lm) > 0:
+                return _lm
+        except OSError:
+            pass
+    # MANUAL-креативы: agency/creatives/Manual синкается в _manual/ (2026-07-06, полная
+    # независимость от ssh — Семён). Нет в зеркале → ssh-фетч ниже.
+    if _LOCAL_MIRROR_ROOT and remote_abs.startswith(M3_MANUAL_ROOT + "/"):
+        _lm = os.path.join(_LOCAL_MIRROR_ROOT, "_manual") + remote_abs[len(M3_MANUAL_ROOT):]
         try:
             if os.path.isfile(_lm) and os.path.getsize(_lm) > 0:
                 return _lm
@@ -1001,6 +1056,24 @@ def read_slepok_images(segment: str, tp: str, ct: str, slepok: str) -> list:
     return _dedup([got[r] for r in rels if got.get(r)])
 
 
+def has_slepok_images(segment: str, tp: str, ct: str, slepok: str) -> bool:
+    """Быстрый (БЕЗ скачивания байтов) чек: есть ли в манифесте ``image_slepki`` хотя бы одна
+    картинка нужного slepok для (сегмент, tp, ct). Для аудита D5 (CT_SLEPOK_IMAGES_EMPTY):
+    полный ``read_slepok_images`` фетчит файлы точечным scp — в hot-path аудита это дорого,
+    здесь считаем только строки манифеста. б/у-пути тоже отсекаем (как read_slepok_images)."""
+    rels = []
+    for ln in _pack_entry(segment, tp, ct).get("image_slepki", []):
+        rel, _, slp = ln.partition("\t")
+        rel = rel.strip()
+        slp = slp.strip()
+        if not rel:
+            continue
+        if slepok and slp and slepok not in _slepok_tags(slp):
+            continue
+        rels.append(rel)
+    return bool(_filter_bu_images(rels))
+
+
 def read_any_slepok_images(segment: str, tp: str, ct: str, prefer: str = "",
                            exclude_bu_slepoks: bool = False) -> list:
     """Ищет картинки для ct во всех слепках SLEPOK_KEYS.
@@ -1059,7 +1132,7 @@ def videos_for_login(login: str, limit: int = 2) -> list:
     return []
 
 
-def videos_for_ct(login: str, ct: str, limit: int = 2) -> list:
+def videos_for_ct(login: str, ct: str, limit: int = 2, brand_hint: str = "") -> list:
     """Видео ПО КОНКРЕТНОЙ МОДЕЛИ/МАРКЕ (ct) из слепок-сборки аккаунта (per-кодер).
 
     Механика: находим папку _slepki_data/<бренд>_<город>_<суффикс> по суффиксу логина;
@@ -1108,7 +1181,7 @@ def videos_for_ct(login: str, ct: str, limit: int = 2) -> list:
                     if slepki:
                         return slepki
                 break                                   # слепок найден, но ролика нет → пул по ct
-    return videos_pool_for_ct(ct, limit)
+    return videos_pool_for_ct(ct, limit, brand_hint=brand_hint)
 
 
 _VIDEO_DURATION_CACHE: dict[tuple[str, float, int], float] = {}
@@ -1160,13 +1233,17 @@ def _filter_valid_videos(paths: list) -> list:
     return out
 
 
-def videos_pool_for_ct(ct: str, limit: int = 2) -> list:
+def videos_pool_for_ct(ct: str, limit: int = 2, brand_hint: str = "") -> list:
     """Видео из общего per-ct пула M3 ``/Users/Shared/agency/Video/<ct>/`` (индекс
     external_assets, ключ ``Video|video|<ct>``, kind ``video_external``).
 
     Account-agnostic: ролики нарезаны по коду модели (ct = coder-ct, как фид-картинки),
     подходят любому аккаунту с этой моделью. Возвращает ЛОКАЛЬНЫЕ пути (точечный fetch с M3).
-    Лимит Директа — 2 видео на мастер."""
+    Лимит Директа — 2 видео на мастер.
+
+    ``brand_hint`` — имя марки (напр. «Haval») от вызывающего кода (из gsheet_naming/ag_part1)
+    для брендовых ct сегмента «Марки», у которых нет записи в feeds_ct_model() (нет фид-картинки)
+    и brand_word иначе остался бы пустым, полностью блокируя brand-fallback."""
     ct = _norm_ct(ct)
     if not ct or ct == GENERAL_CT:
         return []
@@ -1184,10 +1261,15 @@ def videos_pool_for_ct(ct: str, limit: int = 2) -> list:
         if result:
             return result
     # Brand-fallback: точного ct нет в пуле Video/ (брендовый ct без своей папки, напр. ct0111
-    # Haval). Берём ролики из модельных ct того же бренда (feeds_ct_model: ct→'Brand Model').
+    # Haval). Берём ролики из модельных ct того же бренда.
+    # brand_word: 1й приоритет — feeds_ct_model (ct→'Brand Model' из фид-картинок); 2й —
+    # brand_hint от вызывающего кода (gsheet_naming.ag_part1), нужен для «Марки»-ct без
+    # фид-картинки: feeds_ct_model()["ct0111"]=None, но ag_part1["ct0111"]="Haval".
     ct_models = feeds_ct_model()
     my_model = ct_models.get(ct, "")
     brand_word = (my_model.strip().split()[0] if my_model else "").lower()
+    if not brand_word and brand_hint:
+        brand_word = brand_hint.strip().split()[0].lower()
     if brand_word:
         brand_rels: list = []
         for key, rows2 in ext_assets.items():

@@ -45,6 +45,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     _discount_pcts = deps['_discount_pcts']
     _diverse_text_offers = deps['_diverse_text_offers']
     _drop_used_car = deps['_drop_used_car']
+    _enabled_minus_words = deps['_enabled_minus_words']
     _fallback_master_titles = deps['_fallback_master_titles']
     _fill_title = deps['_fill_title']
     _fill_variants = deps['_fill_variants']
@@ -419,7 +420,11 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     # Передаём запас кандидатов: campaign.py загрузит до 5 УСПЕШНО принятых Direct файлов.
     it_images = list(dict.fromkeys(it_images))[:12]
     try:                                          # видео per-кодер (ct): per-модель → фолбэк на логин
-        it_videos = (kp.videos_for_ct(login, c_ct) if c_ct else []) or kp.videos_for_login(login)
+        # brand_hint=c_brand: для «Марки»-ct feeds_ct_model()[ct]=None → brand_word="" → пул пуст
+        # (D3-create 2026-07-09, зеркало tp1-аудита MEMORY 2026-07-07). Прокидываем марку кодера,
+        # чтобы videos_for_ct нашёл ролики через brand-fallback (BAIC/Belgee/Haval/Москвич).
+        it_videos = (kp.videos_for_ct(login, c_ct, brand_hint=(c_brand or "")) if c_ct else []) \
+            or kp.videos_for_login(login)
     except Exception:  # noqa: BLE001
         it_videos = []
     it_warnings: list[str] = []
@@ -468,17 +473,21 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
         fm_entry = next((f for f in _tp7_mf if f["id"] == it_feed), None)
         feed_models = fm_entry["models"] if fm_entry else None
         coll_id = _match_collection(c_brand, feed_models) if feed_models else None
-        # coll_id найден → фильтр по коллекции; иначе — весь фид (марка или неизвестная модель)
+        # coll_id найден → позитивный фильтр по коллекции (брендовая tp7).
+        # Без coll_id — весь фид (марка или неизвестная модель): it_lff остаётся [].
         if coll_id:
             it_lff = [{"conditions": [{"field": "collectionId", "operator": "CONTAINS",
                                        "value": f'["{coll_id}"]'}]}]
-    # Минус-марки на «Страницы каталога» (глобальные правила действуют и на каталог):
-    # если позитивного collectionId-фильтра нет (общая tp7 / марка без коллекции — каталог
-    # идёт ЦЕЛИКОМ), исключаем mark-коллекции включённых минус-марок (NOT_CONTAINS).
-    _lff_minus_applied = False
-    if is_product and it_listings and not it_lff:
-        it_lff = _tp7_listings_minus_filters(login, it_listings, _w_agency or "")
-        _lff_minus_applied = bool(it_lff)
+    elif is_product and it_feed:
+        if not c_ct or c_ct == "ct0000":
+            # ct0000 = «Страницы каталога»: БЕЗ mark-фильтров → весь каталог (все 198+ стр.).
+            # Страницы каталога НЕ входят в mark_* коллекции → CONTAINS(mark_*) даёт 0 результатов.
+            # UAC принимает фильтр без Exception → except-retry-без-фильтра (ниже) не срабатывает.
+            # Требование Семёна: каталог показывает ВСЕ страницы, mark-фильтры не нужны.
+            it_lff = []
+        else:
+            # ct0111 или нетоварный без c_brand/c_ct: allow-list по mark_* с вычетом минус-марок.
+            it_lff = _tp7_listings_minus_filters(login, it_feed, _w_agency or "")
     try:
         spec = cmc.MasterCampaignSpec(
             href=it_href, titles=it_titles, texts=it_texts, region_ids=region_ids,
@@ -493,7 +502,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             feed_filters=it_ff,                 # товарка tp7: фильтр по модели/марке, не по всему фиду
             listings_feed_filters=it_lff,        # фильтр по collectionId (tp7-only; [] = весь фид)
             keywords=it_keywords,
-            minus_keywords=list(dict.fromkeys((it_minus_keywords or []) + (["отзывы"] if targeting_mode == "keywords" else []))),
+            minus_keywords=list(dict.fromkeys((it_minus_keywords or []) + _enabled_minus_words())),
             audiences=it_audiences,
             audience_interest_type="short-term",
             # #7: группа ТОЛЬКО автотаргетинг → «Подобрать оптимальную» (HAR 34): пустые
@@ -504,24 +513,34 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             alternative_texts_enabled=False,   # #3 персонализация (адаптивные тексты) ВЫКЛ
             # tcpa = оплата за клики (PER_CLICK), cpa = оплата за конверсии (PER_CONVERSION)
             pricing="PER_CONVERSION" if it.get("pay") == "cpa" else "PER_CLICK",
-            # Возраст 25+ (age_25) — для ВСЕХ ручных режимов tp6/Мастер (keywords И audience),
-            # кроме автотаргетинга (#7 выше — там полный socdem по дизайну) и товарки tp7.
-            # РАНЬШЕ audience-режим молча попадал в финальный else → age_18 («Все») — Семён:
-            # «в tp6 не проставляется аудитория-корректировка на возраст» (живой баг 2026-07-06,
-            # porg-lzjk6p5m/terehov). ag_part6 в имени синхронизирован тем же условием, см.
-            # create_set_plan.py (age = "ag011" при том же targeting_mode/is_product).
-            age_lower=("age_18" if (targeting_mode == "autotarget" or is_product) else "age_25"),
+            # Возраст 35+ (age_35) — для ВСЕХ ручных режимов tp6/Мастер (keywords И audience):
+            # DoD §3.6 требует исключить ОБА младших брекета (18-24 И 25-34) → socdem-range стартует
+            # с 35-44 (age_lower=age_35, age_upper=age_inf по дефолту). Раньше стоял age_25 (исключал
+            # только 18-24) — пробел DoD, исправлено 2026-07-09. Значение age_35 — та же enum-семья
+            # Яндекс-socdem, что age_18/age_25 (границы брекетов 18/25/35/45/55).
+            # Исключения: автотаргетинг (#7 выше — полный socdem age_18 по дизайну) и товарка tp7
+            # (age_18 всегда — возраст не настраивается). ag_part6 в имени = ag011 («ручной возраст»,
+            # НЕ привязан к конкретной границе) — синхронизирован тем же условием, create_set_plan.py.
+            age_lower=("age_18" if (targeting_mode == "autotarget" or is_product) else "age_35"),
         )
         try:
             cid = client.create_master_campaign(spec, launch=launch)
-        except Exception:
-            # Страховка: NOT_CONTAINS по collectionId на листингах мог не пройти
-            # валидацию UAC — ретрай БЕЗ минус-фильтра каталога (кампания важнее фильтра).
-            if not _lff_minus_applied:
+        except Exception as _lff_err:  # noqa: BLE001
+            if it_lff:
+                # listings_feed_filters для ct0000 отклонён UAC (невалидный collectionId,
+                # field unavailable, MUST_BE_NULL и т.п.) → ретрай без фильтра (весь каталог).
+                # Принцип ERRORS_JOURNAL #TP7_LISTING_FILTER_ZERO: «лучше весь каталог
+                # чем несозданная кампания».
+                _lff_warn = ("listings_feed_filters отклонён UAC, кампания создана без фильтра "
+                             f"(весь каталог). Причина: {str(_lff_err)[:120]}")
+                spec.listings_feed_filters = []
+                try:
+                    cid = client.create_master_campaign(spec, launch=launch)
+                except Exception:
+                    raise _lff_err from None  # ретрай тоже упал — бросаем оригинал
+                it_warnings.append(_lff_warn)
+            else:
                 raise
-            spec.listings_feed_filters = []
-            cid = client.create_master_campaign(spec, launch=launch)
-            it_warnings.append("tp7: минус-фильтр каталога отклонён API — создано без него")
         _res = {"name": disp_name, "ok": True, "id": cid, "launched": launch,
                 "images": len(it_images), "videos": len(it_videos),
                 "sitelinks": len(it_sitelinks),

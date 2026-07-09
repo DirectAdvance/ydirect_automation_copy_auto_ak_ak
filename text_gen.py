@@ -9,7 +9,11 @@ campaign_naming/kontent_pack) импортируются напрямую; bluep
 """
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
+
+_HERE_TG = Path(__file__).resolve().parent
 
 from .text_norm import (
     _replace_emdash, _replace_sep_hyphen, _is_bad_start, _trim_to_word,
@@ -156,6 +160,14 @@ def _variant_norm_key(x) -> str:
     s = re.sub(r"\s+", " ", s)                            # схлоп пробелов (модели X35/F7 сохраняем)
     return s.strip()
 
+def _lead_utp_bucket(t: str) -> str:
+    """Смысловой ключ ведущего УТП финального текста РСЯ: первый сегмент до '. ', без цифр/₽/%,
+    первые 2 смысловых слова (lower, ё→е). Используется для дедупа лида в _rsya_texts.
+    «Первый взнос 0 ₽. КАСКО…» → «первый взнос», «Автокредит от 9 000 руб.…» → «автокредит от»."""
+    first_seg = str(t or "").split(". ")[0]
+    base = re.sub(r"[0-9₽%]+", " ", first_seg.lower().replace("ё", "е"))
+    return " ".join(base.split()[:2])
+
 def _text_norm_tokens(x) -> list:
     """Нормализованное ядро текста в токены для префиксного дедупа: lower, ё→е, убрана
     пунктуация/валюта/проценты, схлоп пробелов. «Каско на 1 год бесплатно.» →
@@ -289,12 +301,86 @@ def _drop_model_keys_common(keywords: list) -> list:
         out.append(kw)
     return out
 
-def _filter_group_keywords(positive: list, seg: str, brand: str, city: str, site_type: str) -> list:
+# ── Защита «чужая модель той же марки» для сегмента «Модели» ──────────────────────────────────
+# Токены-дискриминаторы чужих моделей вычисляются из brand_models_catalog.json (статичный JSON).
+# Кэш на процесс: каталог не меняется в рантайме.
+
+_DISC_STOP: frozenset = frozenset({"новый", "новые", "new", "нов"})   # общие модификаторы ≠ дискриминаторы
+_FOREIGN_DISCRIMINATORS_CACHE: dict = {}
+
+
+def _model_subtokens(name: str) -> frozenset:
+    """Токены строки с разбивкой на границах буква↔цифра; len≤1 отсеиваются.
+    'CS35Plus' → {'cs','35','plus'}, 'cs75' → {'cs','75'}, 'UNI-K' → {'uni'} (k len=1 → дроп).
+    Применяется и к каталожным именам моделей, и к ключевым фразам при дискриминации."""
+    raw = re.findall(r"[a-zа-яё0-9]+", (name or "").lower())
+    toks: set = set()
+    for part in raw:
+        for sub in re.findall(r"[a-zа-яё]+|[0-9]+", part):
+            if len(sub) > 1:
+                toks.add(sub)
+    return frozenset(toks)
+
+
+def _foreign_model_discriminators(model: str) -> frozenset:
+    """Дискриминирующие токены ЧУЖИХ моделей той же марки относительно own-модели model.
+
+    Алгоритм: own_toks = _model_subtokens(model); для каждой другой модели в brand_models_catalog
+    той же марки (первое слово model): disc += _model_subtokens(other) − own_toks − _DISC_STOP.
+
+    Пример: model='Changan CS35Plus' → own={changan,cs,35,plus}; CS75→{cs,75}→disc {75};
+    CS35Plus Новый→{cs,35,plus,новый}→{новый} но в _DISC_STOP → исключается.
+    Ключ «changan cs75 plus» содержит '75' ∈ disc → дроп.
+
+    Кэш на процесс. При ошибке / модели нет в каталоге → frozenset() (фильтрация отключена)."""
+    model = (model or "").strip()
+    if not model:
+        return frozenset()
+    if model in _FOREIGN_DISCRIMINATORS_CACHE:
+        return _FOREIGN_DISCRIMINATORS_CACHE[model]
+    try:
+        cat = json.loads((_HERE_TG / "brand_models_catalog.json").read_text(encoding="utf-8"))
+        brands: dict = cat.get("brands") or {}
+        brand_key = model.split()[0].lower()
+        brand_entry: dict = brands.get(brand_key) or {}
+        all_models: list = brand_entry.get("models") or []
+    except Exception:  # noqa: BLE001 — нет файла / битый JSON → без фильтрации
+        _FOREIGN_DISCRIMINATORS_CACHE[model] = frozenset()
+        return frozenset()
+    if not all_models:
+        _FOREIGN_DISCRIMINATORS_CACHE[model] = frozenset()
+        return frozenset()
+    own_toks = _model_subtokens(model)
+    disc: set = set()
+    for other_name in all_models:
+        other_toks = _model_subtokens(other_name)
+        disc.update((other_toks - own_toks) - _DISC_STOP)
+    result = frozenset(disc)
+    _FOREIGN_DISCRIMINATORS_CACHE[model] = result
+    return result
+
+
+def _filter_group_keywords(positive: list, seg: str, brand: str, city: str, site_type: str,
+                           model: str = "") -> list:
     """Единый отбор ключей группы по сегменту ct: 'Марки' → убрать «марка+модель»; 'Общее' → убрать
     любые модельные/марочные ключи (cityray/monjaro в общей группе — баг); 'Модели' → оставить как есть
-    (модельные ключи — суть группы). Предварительно всегда: б/у и чужой город."""
+    (модельные ключи — суть группы), + защита от ключей ЧУЖОЙ модели той же марки при model != ''.
+    Предварительно всегда: б/у и чужой город.
+
+    model: полное имя модели группы из ct-кодера (напр. 'Changan CS35Plus'). При непустом значении
+    для seg='Модели' дропаются ключи с дискриминирующими токенами других моделей той же марки."""
     kws = _drop_used_car(_drop_foreign_city_keywords(positive or [], city), site_type)
     if seg == "Модели":
+        if model:
+            disc = _foreign_model_discriminators(model)
+            if disc:
+                filtered = []
+                for kw in kws:
+                    kw_toks = _model_subtokens(str(kw))
+                    if kw_toks & disc:
+                        continue  # ключ содержит токен чужой модели → дроп
+                    filtered.append(kw)
+                return filtered
         return kws                                    # модельные ключи — суть группы «Модели»
     if seg == "Марки":
         # Марки: убрать «марка+модель»; фолбэк на kws допустим (там марочная лексика, не чужая).
@@ -355,6 +441,11 @@ _AUTO_BRAND_TOKEN_CACHE: set[str] | None = None
 # «икс» + «рей» = Lada X-Ray, «монжаро» = Haval Monjaro / Changan Mongaro и т.п.
 _AUTO_BRAND_CYRILLIC_EXTRA: frozenset[str] = frozenset({
     "икс", "рей", "монжаро", "бестарн", "кулун", "атлас", "туксон", "солярис",
+    # «ситирей» = Geely Cityray (city-ray → сити-рей → ситирей), «кулрей» = Coolray:
+    # кириллический транслит НЕ выводим из Latin-имени фида → добавлен явно, иначе
+    # чистый модель-запрос «ситирей купить» протекал в тема/«Общее»-группу («Дром»),
+    # D8 2026-07-09 (tp5 712608932 ct0010-Дром получила ключи «ситирей»).
+    "ситирей", "кулрей",
 })
 
 def _auto_brand_tokens() -> set[str]:
@@ -527,6 +618,16 @@ def _rsya_texts(incoming: list, site_type: str, city: str,
                 break
         # БАГ 3: обрезка по целому слову, не посреди
         out.append(_sentence_case(_trim_to_word(cur.strip(), _TXT_MAX).rstrip()))
+    # Дедуп по ведущему УТП: не допускать двух текстов с одинаковым смысловым лидом
+    # («Первый взнос 0 ₽. …» ×2 — _variant_norm_key не схлопывает однозначный «0»).
+    _seen_lead: set[str] = set()
+    _dedup_lead_out: list[str] = []
+    for _t in out:
+        _lb = _lead_utp_bucket(_t)
+        if _lb not in _seen_lead:
+            _seen_lead.add(_lb)
+            _dedup_lead_out.append(_t)
+    out = _dedup_lead_out
     # Практическое требование по tp1: первый текст не должен оставаться коротким однофразником,
     # если в лимите 81 есть место для нормального второго УТП.
     pad_tails = [
@@ -690,7 +791,11 @@ _TITLE_TAILS = ("одобрение за 5 минут", "трейд-ин выш�
                 "авто в наличии", "выгода до 45%", "господдержка",
                 # Короткие хвосты (≤10 симв, баг #1): добивают заголовки 43-47 симв, куда длинные
                 # УТП-хвосты не влезают (len+2+хвост>56) → раньше оставались с 9-13 пустыми символами.
-                "рассрочка", "тест-драйв", "гарантия", "трейд-ин")
+                "рассрочка", "тест-драйв", "гарантия", "трейд-ин",
+                # Сверхкороткие (≤7, 2026-07-07): остаток 9 симв (заголовок 47) с разделителем
+                # «. » вмещает только хвост ≤7 — минимальный «гарантия» (8) не влезал, 1136
+                # заголовков застревали на 47 симв (кейс psm: «…Первый взнос 0 ₽»=47).
+                "выгодно", "онлайн")
 
 _LOW_MONTHLY_PAYMENT_RE = re.compile(r"(?i)(?:от\s*)?(\d[\d\s\u00a0]{2,})\s*(?:₽|руб)?\s*/\s*мес")
 
@@ -779,20 +884,23 @@ def _dominant_discount_pct(lines: list[str]) -> str:
     return max(counts, key=counts.get)
 
 def _fill_title(t: str, lo: int = 45, hi: int = 56) -> str:
-    """Дотянуть заголовок до lo-hi симв., подклеивая УТП-хвосты «. …» БЕЗ обрезки слов и БЕЗ
-    повтора уже упомянутого УТП. Если ни один хвост не влезает - оставляем как есть (но ≤hi).
-    Разделитель — точка (правило Кудерко: дефис как разделитель частей фразы недопустим)."""
+    """Дотянуть заголовок до hi-2..hi симв., подклеивая УТП-хвосты БЕЗ обрезки слов и БЕЗ
+    повтора уже упомянутого УТП. Если ни один хвост не влезает — оставляем как есть (но ≤hi).
+    Целевой минимум = hi-2 (при hi=56 → 54, правило Семёна: остаток ≤2 у каждого заголовка).
+    Разделитель смарт: заголовок на «.!?…» → « » (1 симв, добор для 47-симв. заголовков);
+    иначе «. » (2 симв, правило Кудерко: дефис как разделитель недопустим)."""
     # _trim_clean: обрезка по слову + чистка оборванного хвоста («Одобрение за 30» —
     # live-кейс psm/ozge); числовой хвост чистится ТОЛЬКО если обрезали сами (см. text_norm).
     t = _trim_clean(t, hi)
     for f in _TITLE_TAILS:
-        if len(t) >= hi - 8:          # правило Семёна: свободно ≤8 симв (hi-8 = 48 при hi=56)
+        if len(t) >= hi - 2:          # правило Семёна: свободно ≤2 симв (hi-2 = 54 при hi=56)
             break
         kw = f.split()[0].lower().rstrip("%")
         if kw and kw in t.lower():
             continue                                 # не дублируем уже упомянутое (кредит/КАСКО/трейд-ин…)
-        if len(t) + 2 + len(f) <= hi:
-            t = f"{t}. {_cap_first(f)}"
+        sep = " " if (t and t[-1] in ".!?…") else ". "  # смарт-разделитель: без двойной точки
+        if len(t) + len(sep) + len(f) <= hi:
+            t = t + sep + _cap_first(f)
     return _normalize_numeric_suffixes_bp(_trim_clean(t, hi))
 
 def _brand_title_set(brand: str, city: str) -> list:

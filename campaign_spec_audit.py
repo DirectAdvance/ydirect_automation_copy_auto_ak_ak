@@ -28,15 +28,20 @@ cannot see:
   minus-marks.
 * ``EXTRA_TP_NOT_IN_SLEPOK`` — an account carrying a tp that the chosen slepok's
   structure does not declare (e.g. a tp6 Master campaign for a slepok without tp6).
-* ``SHORT_TITLES`` — a tp6/tp7 Master (UAC) campaign whose titles waste length budget
-  (≥2 titles ≤45 chars of the 56 limit). Auto-fixed in place: each short title is
-  extended with a neutral suffix (``ai_agents.extend_title_to_max``) via the same
-  cookie ``PATCH /web-api/uac/campaign/{id}`` path the content editor uses.
+* ``SHORT_TITLES`` — a tp1/tp2/tp4 adaptive or tp6/tp7 Master (UAC) campaign whose titles
+  waste length budget (any title ≤47 of the 56 limit). Fixed by **LLM regeneration**
+  (``content_quality.regen_titles`` через тот же ``_llm_pair_for``): regenerate → check
+  length (≥48) → retry up to 4 → HARD-FAIL ``SHORT_TITLES_UNFIXABLE`` instead of a silent
+  suffix pad. Written back via Grid RMW (grid) or cookie PATCH (UAC).
+* ``BRAND_NOT_FIRST`` — adaptive tp1/tp2/tp4 ad whose group brand/model is NOT before the
+  first "." of some title (breaks Yandex autotarget). Fixed by ``content_quality.regen_titles``
+  with ``need_brand_first=True``; HARD-FAIL ``BRAND_NOT_FIRST_UNFIXABLE``.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import sys
@@ -111,6 +116,7 @@ SPEC: dict[str, dict[str, Any]] = {
 _CT_RE = re.compile(r"ct\d{4}", re.IGNORECASE)
 _TP_RE = re.compile(r"^\s*tp(\d+)_", re.IGNORECASE)
 _SEARCH_TPS = {2, 4, 5}
+_TEXTS_MIN = 3   # DoD §2: у объявления должно быть ≥3 текста (CONTENT_TEXTS_LOW при меньшем)
 # generic автотематические токены, которые НЕ различают ct (кредит/купить/цена/…): не дают
 # им становиться «дискриминативными» — но фильтровать вручную не нужно, т.к. они встречаются
 # в >1 ct и алгоритм disc-токенов их естественно отбрасывает. Список — только для читаемости отчёта.
@@ -195,7 +201,7 @@ def _expected_keywords_by_ct(login: str, slepok: str, site_type: str, city: str,
         raw_brand = ct_name.get(ct) or ct_model.get(ct) or ct
         brand = (_valid_brand(ct, raw_brand) if _valid_brand else raw_brand) or "Авто"
         try:
-            kws = _filter(pos, seg, brand, city, site_type)
+            kws = _filter(pos, seg, brand, city, site_type, model=brand)
         except Exception:  # noqa: BLE001
             kws = list(pos)
         out[ct] = [str(k) for k in (kws or []) if str(k).strip() and not str(k).startswith("---")]
@@ -250,8 +256,11 @@ def _audit_search_keywords(groups: list[dict], login: str, slepok: str, site_typ
         live = list(g.get("keywords") or [])
         if not live or gid <= 0:
             continue  # пустые группы ловит NO_KEYWORDS_LIVE, не дублируем
-        # Только «Модели»: их ключи обязаны быть про конкретную модель. Бренд/Общее делят лексику.
-        if _ct_segment and _ct_segment(own_ct) != "Модели":
+        # «Модели» И «Общее»/тема: их ключи обязаны быть по адресу (модельные — про свою модель;
+        # тема/«Общее» — общая авто/финанс-лексика, НЕ модельные запросы). «Марки» пропускаем —
+        # марочная группа легитимно делит лексику со своими моделями (D8 2026-07-09: снято
+        # ограничение только-«Модели»; группа «Дром»/ct0010 получала ключи «ситирей»).
+        if _ct_segment and _ct_segment(own_ct) not in ("Модели", "Общее"):
             continue
         own_set = exp_keys.get(own_ct)
         if not own_set:
@@ -289,6 +298,105 @@ def _audit_search_keywords(groups: list[dict], login: str, slepok: str, site_typ
                 "detail": (f"группа ct={own_ct} (adgroup {gid}) не содержит НИ ОДНОГО ключа своего "
                            f"эталона, но {found_hits} её ключей = эталон ct={found_ct} (сдвиг)"),
             })
+
+    # ── Детект ЧАСТИЧНОГО загрязнения чужемодельными ключами (FOREIGN_MODEL_KEYWORDS) ────────────
+    # KEYWORDS_WRONG_GROUP ловит только полный сдвиг (own_hits==0). При частичном загрязнении
+    # (группа CS35Plus имеет часть своих ключей + ключи CS75) own_hits>0 → выше не флагируется.
+    # Новый детектор: дискриминирующие токены чужих моделей той же марки (из brand_models_catalog)
+    # проверяются против КАЖДОГО живого ключа группы — чужемодельные ключи помечаются к удалению.
+    _ag_part1 = _DEPS.get("_ag_part1_map")
+    _valid_brand = _DEPS.get("_valid_pack_brand_name")
+    kp_mod = _DEPS.get("kp")
+    try:
+        from .text_gen import (_foreign_model_discriminators as _fmd,
+                               _model_subtokens as _mst,
+                               _auto_brand_tokens as _abt)
+        ct_name_fm: dict = {}
+        ct_model_fm: dict = {}
+        try:
+            ct_name_fm = _ag_part1() if _ag_part1 else {}
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            ct_model_fm = kp_mod.feeds_ct_model() if kp_mod else {}
+        except Exception:  # noqa: BLE001
+            pass
+        # Тема/«Общее»: набор ВСЕХ марка/модель-токенов (латиница + кириллич. транслиты)
+        # — любой такой токен в тема-группе = чужемодельный ключ (D8 2026-07-09).
+        try:
+            all_brand_toks = set(_abt() or set())
+        except Exception:  # noqa: BLE001
+            all_brand_toks = set()
+        already_full_shift = {it.get("adgroup_id") for it in issues
+                              if it.get("code") == "KEYWORDS_WRONG_GROUP"}
+        for g in search:
+            own_ct = _ct_of_name(g.get("adgroup_name"))
+            gid = int(g.get("adgroup_id") or 0)
+            if gid in already_full_shift:
+                continue  # полный сдвиг уже флаг — не дублируем
+            seg_fm = _ct_segment(own_ct) if _ct_segment else "Марки"
+            if seg_fm not in ("Модели", "Общее"):
+                continue  # «Марки» пропускаем (легитимно делят лексику с моделями)
+            live_kws = list(g.get("keywords") or [])
+            if not live_kws:
+                continue
+            if seg_fm == "Общее":
+                # Тема-группа не должна нести НИ ОДНОГО модель/марка-запроса. Дискриминатор —
+                # общий набор _auto_brand_tokens (word-boundary матч по токену). fail-safe:
+                # набор пуст (kp/feeds недоступны) → не флагаем вслепую.
+                if not all_brand_toks:
+                    continue
+                foreign_kws = []
+                for kw in live_kws:
+                    if _mst(str(kw)) & all_brand_toks:
+                        foreign_kws.append(kw)
+                brand_fm = "тема/Общее"
+                if foreign_kws:
+                    cid_fm = g.get("campaign_id")
+                    issues.append({
+                        "code": "FOREIGN_MODEL_KEYWORDS",
+                        "id": cid_fm,
+                        "campaign_id": cid_fm,
+                        "name": str(g.get("campaign_name") or ""),
+                        "adgroup_id": gid,
+                        "model": brand_fm,
+                        "foreign_kws": [str(k) for k in foreign_kws[:50]],
+                        "foreign_count": len(foreign_kws),
+                        "live_count": len(live_kws),
+                        "severity": "medium",
+                        "detail": (f"тема-группа ct={own_ct}: {len(foreign_kws)}/{len(live_kws)} ключей "
+                                   f"содержат токены марок/моделей — не для «Общей» группы, удалить "
+                                   f"v5 keywords.delete"),
+                    })
+                continue
+            raw_brand = ct_name_fm.get(own_ct) or ct_model_fm.get(own_ct) or ""
+            brand_fm = ((_valid_brand(own_ct, raw_brand) if _valid_brand else raw_brand)
+                        if raw_brand else "")
+            if not brand_fm or brand_fm == "Авто":
+                continue
+            disc = _fmd(brand_fm)
+            if not disc:
+                continue  # единственная модель марки — нет чужих
+            foreign_kws = [kw for kw in live_kws if _mst(str(kw)) & disc]
+            if foreign_kws:
+                cid_fm = g.get("campaign_id")
+                issues.append({
+                    "code": "FOREIGN_MODEL_KEYWORDS",
+                    "id": cid_fm,
+                    "campaign_id": cid_fm,
+                    "name": str(g.get("campaign_name") or ""),
+                    "adgroup_id": gid,
+                    "model": brand_fm,
+                    "foreign_kws": [str(k) for k in foreign_kws[:50]],
+                    "foreign_count": len(foreign_kws),
+                    "live_count": len(live_kws),
+                    "severity": "medium",
+                    "detail": (f"группа ct={own_ct} ({brand_fm}): {len(foreign_kws)}/{len(live_kws)} ключей "
+                               f"содержат токены чужих моделей той же марки — удалить v5 keywords.delete"),
+                })
+    except Exception:  # noqa: BLE001 — дискриминатор опционален, не ломаем аудит
+        pass
+
     return issues
 
 
@@ -345,12 +453,12 @@ def _audit_product_feed_filters(rc: gr.GridReadClient, login: str, campaign_id: 
         marks = list(_minus() or []) if callable(_minus) else []
     except Exception:  # noqa: BLE001
         marks = []
-    if not marks:
-        return []      # минус-марки выключены — ни ShoppingAd, ни ListingAd фиксить нечем, не флагаем
+    # Не early-return по marks: ListingAd позитивный name-фильтр (fix-3) проверяется независимо.
+    # ShoppingAd и ListingAd (минус) пропускают строки при marks=[] в теле цикла — поведение прежнее.
     q = ("query SpecPFF($login:String!,$inp:GdAdsContainerInput!){"
          "client(searchBy:{login:$login}){ads(input:$inp){rowset{id adGroupId __typename "
          "...on GdShoppingAd{bodies feed{id} feedFilter{tab conditions{field}}} "
-         "...on GdListingAd{bodies feed{id} feedFilter{tab conditions{field}}}}}}}")
+         "...on GdListingAd{bodies feed{id} feedFilter{tab conditions{field operator}}}}}}}")
     inp = {
         "filter": {"campaignIdIn": [str(campaign_id)]},
         "statRequirements": {"preset": "LAST_30DAYS", "goalIds": [], "useCampaignGoalIds": True},
@@ -364,7 +472,11 @@ def _audit_product_feed_filters(rc: gr.GridReadClient, login: str, campaign_id: 
     rows = ((((data.get("data") or {}).get("client") or {}).get("ads") or {}).get("rowset") or [])
     agid_to_ct = {str(g.get("adgroup_id") or ""): _ct_of_name(g.get("adgroup_name"))
                   for g in (groups or []) if g.get("adgroup_id")}
+    agid_to_name = {str(g.get("adgroup_id") or ""): str(g.get("adgroup_name") or "")
+                    for g in (groups or []) if g.get("adgroup_id")}
+    _ct_segment_fn = _DEPS.get("_ct_segment")
     ads_missing: list[dict] = []
+    listing_pos_missing: list[dict] = []   # ListingAd без позитивного name-фильтра в «Марки»-группе
     total_product = 0
     for r in rows:
         tn = str(r.get("__typename") or "")
@@ -372,6 +484,7 @@ def _audit_product_feed_filters(rc: gr.GridReadClient, login: str, campaign_id: 
             continue
         total_product += 1
         ff = r.get("feedFilter")
+        agid_str = str(r.get("adGroupId") or "")
         if tn == "GdShoppingAd":
             # ShoppingAd: детект только при включённых минус-марках (исходное поведение)
             if not marks:
@@ -380,35 +493,73 @@ def _audit_product_feed_filters(rc: gr.GridReadClient, login: str, campaign_id: 
                 continue
             if ff and str(ff.get("tab") or "") not in ("", "CONDITION"):
                 continue   # tree/категорийный фильтр: conditions=null легитимен
+            ads_missing.append({
+                "ad_id": str(r.get("id")),
+                "listing": False,
+                "feed_id": str((r.get("feed") or {}).get("id") or ""),
+                "bodies": list(r.get("bodies") or []),
+                "ct": agid_to_ct.get(agid_str) or "",
+            })
         else:
-            # GdListingAd «Страницы каталога»: null feedFilter — дефект, но фиксер
-            # fix_feed_filters_grid ставит фильтр по имени каталога ТОЛЬКО при включённых
-            # минус-марках (иначе early-return campaigns_fixed:0). Без марок ставить нечего →
-            # НЕ флагаем, иначе набор вечно висит в «нужна добивка» (ПРАВКА 3, согласовано с фиксером).
-            if not marks:
-                continue
-            if ff:
-                continue   # любой feedFilter → ok для ListingAd
-        ads_missing.append({
-            "ad_id": str(r.get("id")),
-            "listing": tn == "GdListingAd",
-            "feed_id": str((r.get("feed") or {}).get("id") or ""),
-            "bodies": list(r.get("bodies") or []),
-            "ct": agid_to_ct.get(str(r.get("adGroupId") or "")) or "",
+            # GdListingAd «Страницы каталога»:
+            # (A) Минус-марки: только при включённых марках (FEED_FILTER_MISSING_GRID, как раньше).
+            # (B) Позитивный name-фильтр (fix-3): брендовые «Марки»-группы, независимо от marks.
+            ct = agid_to_ct.get(agid_str) or ""
+            seg = _ct_segment_fn(ct) if callable(_ct_segment_fn) else ""
+            # (A) null feedFilter + включены марки → нужны минус-марки
+            if marks and not ff:
+                ads_missing.append({
+                    "ad_id": str(r.get("id")),
+                    "listing": True,
+                    "feed_id": str((r.get("feed") or {}).get("id") or ""),
+                    "bodies": list(r.get("bodies") or []),
+                    "ct": ct,
+                })
+            # (B) брендовая «Марки»-группа без позитивного CONTAINS_ANY на name → весь фид в каталоге
+            if seg == "Марки":
+                _pos_name = any(
+                    c.get("field") == "name"
+                    and "CONTAINS" in str(c.get("operator") or "")
+                    and "NOT" not in str(c.get("operator") or "")
+                    for c in ((ff or {}).get("conditions") or [])
+                )
+                if not _pos_name:
+                    _grp_name = agid_to_name.get(agid_str, "")
+                    _brand = _grp_name.split(" — ", 1)[1].strip() if " — " in _grp_name else ""
+                    listing_pos_missing.append({
+                        "ad_id": str(r.get("id")),
+                        "listing": True,
+                        "feed_id": str((r.get("feed") or {}).get("id") or ""),
+                        "bodies": list(r.get("bodies") or []),
+                        "ct": ct,
+                        "brand": _brand,
+                    })
+    out_issues: list[dict] = []
+    if ads_missing:
+        out_issues.append({
+            "code": "FEED_FILTER_MISSING_GRID",
+            "id": campaign_id,
+            "campaign_id": campaign_id,
+            "name": campaign_name,
+            "ads": ads_missing,
+            "ads_total": total_product,
+            "severity": "medium",
+            "detail": (f"{len(ads_missing)}/{total_product} товарных/каталожных объявл. без "
+                       f"feedFilter — добить минус-марками (поле бренда per-feed)"),
         })
-    if not ads_missing:
-        return []
-    return [{
-        "code": "FEED_FILTER_MISSING_GRID",
-        "id": campaign_id,
-        "campaign_id": campaign_id,
-        "name": campaign_name,
-        "ads": ads_missing,
-        "ads_total": total_product,
-        "severity": "medium",
-        "detail": (f"{len(ads_missing)}/{total_product} товарных/каталожных объявл. без "
-                   f"feedFilter — добить минус-марками (поле бренда per-feed)"),
-    }]
+    if listing_pos_missing:
+        out_issues.append({
+            "code": "LISTING_POSITIVE_FILTER_MISSING",
+            "id": campaign_id,
+            "campaign_id": campaign_id,
+            "name": campaign_name,
+            "ads": listing_pos_missing,
+            "ads_total": total_product,
+            "severity": "high",
+            "detail": (f"{len(listing_pos_missing)}/{total_product} каталожных объявл. (ListingAd) "
+                       f"без позитивного name-фильтра в брендовой «Марки»-группе — весь фид в каталоге"),
+        })
+    return out_issues
 
 
 # ── tp5 placements audit (PLACEMENTS_WRONG) ───────────────────────────────────────
@@ -541,6 +692,83 @@ def _audit_plan_vs_slepok(account_campaigns: list[dict], slepok: str, site_type:
     return issues
 
 
+def _audit_group_count_vs_slepok(grid: gf.GridClient, tool: list[dict], slepok: str,
+                                 site_type: str) -> list[dict]:
+    """GROUP_COUNT_BELOW_SLEPOK (D10 2026-07-09, **report-only warn**): по каждому tp (1/2/4/5)
+    аккаунт должен покрывать НЕ МЕНЬШЕ модель-ct, чем объявлено в структуре слепка.
+
+    ``_audit_plan_vs_slepok`` проверял только НАЛИЧИЕ типа, не число групп. Здесь — агрегатное
+    покрытие по аккаунту: distinct не-ct0000 модель-ct в живых группах tp vs ``_struct_cts``.
+    Осознанное упрощение: сравнение АГРЕГАТНОЕ (по всем кампаниям tp), НЕ per-campaign/per-сегмент
+    (segment-per-campaign надёжно не маппится); tp5 feed-driven — его brands могут отличаться от
+    slepok-ct, поэтому warn+report-only, БЕЗ авто-фиксера (иначе детект без ремонта зациклил бы
+    reschedule «до нуля», журнал I). Fail-safe: структура пуста / группы не прочитались → [].
+    Групп читаем через ``groups_for_edit`` (edit-view) — но это НЕ триггерит destructive-ремонт,
+    поэтому edit-view лаг максимум даёт лишний warn в отчёте, ничего не удаляет."""
+    _struct = _DEPS.get("_struct_cts")
+    if not (slepok and _struct):
+        return []
+    tp_map = {1: "tp1", 2: "tp2", 4: "tp4", 5: "tp5"}
+    # tp → set ожидаемых модель-ct из структуры слепка
+    expected_by_tp: dict[int, set] = {}
+    for tp, code in tp_map.items():
+        try:
+            cts = {str(c).lower() for c in (_struct(slepok, site_type, code) or [])
+                   if c and str(c).lower() != "ct0000"}
+        except Exception:  # noqa: BLE001
+            cts = set()
+        if cts:
+            expected_by_tp[tp] = cts
+    if not expected_by_tp:
+        return []
+    # Живые cid'ы по нужным tp
+    cid_tp: dict[int, int] = {}
+    for c in tool:
+        tp = _tp_of_name(c.get("name"))
+        if tp in expected_by_tp:
+            try:
+                cid_tp[int(c.get("id"))] = tp
+            except (TypeError, ValueError):
+                continue
+    if not cid_tp:
+        return []
+    try:
+        groups = grid.groups_for_edit(list(cid_tp.keys())) or []
+    except Exception:  # noqa: BLE001
+        return []
+    if not groups:
+        return []   # fail-safe: не прочитали группы → не судим
+    live_by_tp: dict[int, set] = defaultdict(set)
+    for g in groups:
+        tp = _tp_of_name(g.get("campaign_name")) or cid_tp.get(int(g.get("campaign_id") or 0))
+        if tp not in expected_by_tp:
+            continue
+        ct = _ct_of_name(g.get("adgroup_name"))
+        if ct and ct != "ct0000":
+            live_by_tp[tp].add(ct)
+    issues: list[dict] = []
+    for tp, exp in expected_by_tp.items():
+        if tp not in {_tp_of_name(c.get("name")) for c in tool}:
+            continue   # tp вообще нет в аккаунте — это забота _audit_plan_vs_slepok, не наша
+        live = live_by_tp.get(tp, set())
+        if len(live) < len(exp):
+            missing = sorted(exp - {c.lower() for c in live})
+            issues.append({
+                "code": "GROUP_COUNT_BELOW_SLEPOK",
+                "tp": tp,
+                "slepok": slepok,
+                "expected_ct_count": len(exp),
+                "live_ct_count": len(live),
+                "missing_cts": missing[:40],
+                "severity": "warn",
+                "fixable": False,
+                "detail": (f"tp{tp}: живых модель-групп {len(live)} < слепка {len(exp)} "
+                           f"(не хватает ct: {missing[:12]}...) — report-only, добить пересозданием "
+                           f"недостающих позиций"),
+            })
+    return issues
+
+
 # ── tp1 combo-ads audit (BUTTON_MISSING + SHORT_TITLES grid) ─────────────────────
 def _ct_has_pool_video(ct: str) -> bool:
     """Есть ли в пуле РЕАЛЬНО СУЩЕСТВУЮЩЕЕ валидное видео для ct.
@@ -560,7 +788,20 @@ def _ct_has_pool_video(ct: str) -> bool:
         # videos_pool_for_ct находит видео через brand-fallback — строгий pre-check
         # `Video|video|<ct>` отсекал такие ct → VIDEO_MISSING не эмитился → видео не прикреплялось
         # (живой кейс 2026-07-05, porg-psm5h7q6). videos_pool_for_ct сам делает чек exists+size.
-        paths = kp_mod.videos_pool_for_ct(ct_norm, limit=1)
+        #
+        # brand_hint: для «Марки»-ct (напр. ct0111 Haval) feeds_ct_model() не содержит записи
+        # (нет фид-картинки с именем модели) → brand_word в videos_pool_for_ct оставался бы ""
+        # → brand-fallback полностью пропускался → пул пуст → VIDEO_MISSING не эмитился
+        # (ложно-зелёный still_missing:0). Резолвим из gsheet_naming.ag_part1 (уже в _DEPS).
+        brand_hint = ""
+        _ag_part1 = _DEPS.get("_ag_part1_map")
+        if _ag_part1:
+            try:
+                full_name = (_ag_part1() or {}).get(ct_norm, "")
+                brand_hint = full_name.strip().split()[0] if full_name else ""
+            except Exception:  # noqa: BLE001
+                pass
+        paths = kp_mod.videos_pool_for_ct(ct_norm, limit=1, brand_hint=brand_hint)
         return bool(paths)
     except Exception:  # noqa: BLE001
         return False
@@ -572,12 +813,12 @@ def _audit_tp1_adaptive(rc: gr.GridReadClient, login: str, campaign_id: int,
 
     * BUTTON_MISSING — объявление с валидным href без кнопки «Получить скидку»
       (_apply_combo_button при создании best-effort: 29/50 без кнопки, инцидент 03.07.2026);
-    * SHORT_TITLES (transport=grid) — объявление с ≥2 заголовками ≤45 симв из 56
+    * SHORT_TITLES (transport=grid) — объявление с ЛЮБЫМ заголовком <48 симв из 56
       (скрин #78: группа BAIC с запасом 8–18). Фикс — RMW, видео сохраняется (typedCreatives).
     """
     q = ("query SpecTp1($login:String!,$inp:GdAdsContainerInput!){"
          "client(searchBy:{login:$login}){ads(input:$inp){rowset{id campaignId adGroupId "
-         "__typename ...on GdAdaptiveTextAd{href hasButton hasVideo titles images{imageHash}}}}}}")
+         "__typename ...on GdAdaptiveTextAd{href hasButton hasVideo titles bodies images{imageHash}}}}}}")
     inp = {
         "filter": {"campaignIdIn": [str(campaign_id)]},
         "statRequirements": {"preset": "LAST_30DAYS", "goalIds": [], "useCampaignGoalIds": True},
@@ -604,6 +845,25 @@ def _audit_tp1_adaptive(rc: gr.GridReadClient, login: str, campaign_id: int,
             "severity": "low",
             "detail": f"РСЯ: {len(missing)}/{len(rows)} объявл. без кнопки «Получить скидку» — добить RMW",
         })
+    # BUTTON_MISSING_NO_HREF: объявления без кнопки И без валидного href.
+    # fix_button_missing/_apply_combo_button требует href в объявлении — без него кнопку
+    # поставить нельзя через RMW. Detect-only: делаем видимым в аудите вместо тихого пропуска.
+    no_href = [str(r.get("id")) for r in rows
+               if r.get("hasButton") is False
+               and not re.match(r"https?://", str(r.get("href") or ""))]
+    if no_href:
+        issues.append({
+            "code": "BUTTON_MISSING_NO_HREF",
+            "id": campaign_id,
+            "campaign_id": campaign_id,
+            "name": campaign_name,
+            "ad_ids": no_href,
+            "ads_total": len(rows),
+            "severity": "low",
+            "fixable": False,
+            "detail": (f"РСЯ: {len(no_href)}/{len(rows)} объявл. без кнопки и без href"
+                       " — автофикс невозможен, требует ручной проверки (detect-only)"),
+        })
     # VIDEO_MISSING: видео вынесено из создания в добивку (03.07.2026) — объявление брендовой
     # группы без hasVideo при наличии роликов в пуле M3 для его ct. Цель Семёна: ВСЕ видео
     # в итоге загружены — детект идемпотентен, каждый цикл аудита двигает остаток к нулю.
@@ -613,6 +873,7 @@ def _audit_tp1_adaptive(rc: gr.GridReadClient, login: str, campaign_id: int,
         if gid:
             agid_to_ct[gid] = _ct_of_name(g.get("adgroup_name"))
     video_missing = []   # [{ad_id, ct}]
+    video_no_pool: list[str] = []   # ct без роликов в пуле M3 (детерминированный пропуск — норма)
     if agid_to_ct:
         for r in rows:
             if r.get("hasVideo") is not False:
@@ -621,9 +882,24 @@ def _audit_tp1_adaptive(rc: gr.GridReadClient, login: str, campaign_id: int,
             if not ct or ct == "ct0000":
                 continue
             if _ct_has_pool_video(ct):
-                video_missing.append({"ad_id": str(r.get("id")), "ct": ct})
+                # brand_hint: резолв из ag_part1 (зеркально _ct_has_pool_video) —
+                # нужен фетчеру videos_for_ct для «Марки»-ct без записи в feeds_ct_model()
+                _brand_h = ""
+                _ag1 = _DEPS.get("_ag_part1_map")
+                if _ag1:
+                    try:
+                        _ct_n = (ct or "").strip().lower()
+                        _fn = (_ag1() or {}).get(_ct_n, "")
+                        _brand_h = _fn.strip().split()[0] if _fn else ""
+                    except Exception:  # noqa: BLE001
+                        pass
+                video_missing.append({"ad_id": str(r.get("id")), "ct": ct, "brand": _brand_h})
+            elif ct not in video_no_pool:
+                # Пул M3 пуст для этого ct → пропуск детерминированный (не дефект добивки).
+                # Логируем чтобы отличать «пула нет» от «репар не доработал» (п.4 fix 2.3).
+                video_no_pool.append(ct)
     if video_missing:
-        issues.append({
+        _issue_vm: dict = {
             "code": "VIDEO_MISSING",
             "id": campaign_id,
             "campaign_id": campaign_id,
@@ -633,6 +909,22 @@ def _audit_tp1_adaptive(rc: gr.GridReadClient, login: str, campaign_id: int,
             "severity": "low",
             "detail": (f"РСЯ: {len(video_missing)}/{len(rows)} объявл. без видео при наличии "
                        f"роликов в пуле — добить загрузкой (deferred-video)"),
+        }
+        if video_no_pool:
+            _issue_vm["video_no_pool_cts"] = video_no_pool   # ct с пустым пулом — не ложный missing
+        issues.append(_issue_vm)
+    elif video_no_pool:
+        # Только «нет пула» (без fixable missing): делаем видимым в аудите — отдельный info-issue.
+        issues.append({
+            "code": "VIDEO_NO_POOL",
+            "id": campaign_id,
+            "campaign_id": campaign_id,
+            "name": campaign_name,
+            "no_pool_cts": video_no_pool,
+            "severity": "info",
+            "fixable": False,
+            "detail": (f"РСЯ: {len(video_no_pool)} ct без роликов в пуле M3 "
+                       "(hasVideo=false, но видео класть некуда — detect-only, не дефект добивки)"),
         })
     # IMAGE_MISSING: комбинаторное РСЯ-объявление без единого imageHash. Причина (лайв 03.07):
     # upload_image молча падал при создании → часть объявлений голая (8/24 в camp 712119904).
@@ -661,7 +953,7 @@ def _audit_tp1_adaptive(rc: gr.GridReadClient, login: str, campaign_id: int,
         if not titles:
             continue
         n_short = sum(1 for t in titles if len(t) <= _TITLE_SHORT_LEN)
-        if n_short >= 2:
+        if n_short >= 1:
             short_ads.append(str(r.get("id")))
     if short_ads:
         issues.append({
@@ -673,10 +965,157 @@ def _audit_tp1_adaptive(rc: gr.GridReadClient, login: str, campaign_id: int,
             "ad_ids": short_ads,
             "ads_total": len(rows),
             "severity": "low",
-            "detail": (f"РСЯ: {len(short_ads)}/{len(rows)} объявл. с ≥2 заголовками "
-                       f"≤{_TITLE_SHORT_LEN} симв (лимит 56) — добить суффиксами (RMW)"),
+            "detail": (f"РСЯ: {len(short_ads)}/{len(rows)} объявл. с ЛЮБЫМ заголовком "
+                       f"<{_TITLE_SHORT_LEN + 1} симв (лимит 56) — добить суффиксами (RMW)"),
+        })
+    # CONTENT_TEXTS_LOW (D9 2026-07-09): адаптивное объявление с <3 текстами (bodies). DoD §2
+    # требует ≥3 текста. Fail-safe: bodies is None (Grid не отдал поле) → пропускаем объявление
+    # (не флагаем вслепую); считаем только по объявлениям с реально прочитанными bodies.
+    low_text_ads = []
+    for r in rows:
+        if r.get("__typename") != "GdAdaptiveTextAd":
+            continue
+        bodies_field = r.get("bodies")
+        if bodies_field is None:
+            continue   # поле не прочитано → fail-safe, не судим
+        bodies = [str(b) for b in bodies_field if str(b or "").strip()]
+        if len(bodies) < _TEXTS_MIN:
+            low_text_ads.append(str(r.get("id")))
+    if low_text_ads:
+        issues.append({
+            "code": "CONTENT_TEXTS_LOW",
+            "id": campaign_id,
+            "campaign_id": campaign_id,
+            "name": campaign_name,
+            "transport": "grid",
+            "ad_ids": low_text_ads,
+            "ads_total": len(rows),
+            "severity": "low",
+            "detail": (f"РСЯ: {len(low_text_ads)}/{len(rows)} объявл. с <{_TEXTS_MIN} текстами — "
+                       f"добить регенерацией/филлерами (RMW)"),
         })
     return issues
+
+
+# ── ct-slepok images audit (CT_SLEPOK_IMAGES_EMPTY, D5 minimum) ──────────────────
+def _audit_ct_slepok_images(campaign_id: int, campaign_name: str, groups: list | None,
+                            slepok: str, site_type: str) -> list[dict]:
+    """CT_SLEPOK_IMAGES_EMPTY (D5 2026-07-09, **report-only warn, minimum**): брендовая/модельная
+    tp1-группа, для чьего ct в СЛЕПКЕ нет ни одной картинки (`kp.has_slepok_images`==False) →
+    группа неизбежно берёт картинки только из ОБЩЕГО пула, не из своей ct.
+
+    Осознанное упрощение (задача разрешила «минимум»): проверяем НАЛИЧИЕ ct-картинок в манифесте
+    слепка (лёгкий чек без скачивания байтов), а НЕ «сколько живых картинок объявления из ct-папки»
+    (для последнего нужен per-image reverse-lookup, дорого). Это ловит корень «пустой слепок по ct /
+    маппинг в ct0000». Report-only, БЕЗ авто-фиксера: наполнение слепка картинками — задача контента
+    (слепки-мастер), не кода создания. Fail-safe: нет kp/слепка/site_type или чек упал → [].
+    """
+    if not (groups and slepok and site_type):
+        return []
+    kp_mod = _DEPS.get("kp")
+    _ct_segment = _DEPS.get("_ct_segment")
+    if not (kp_mod and hasattr(kp_mod, "has_slepok_images")):
+        return []
+    slepok_key = _selected_slepok_key(slepok)
+    checked: set = set()
+    empty_cts: list[str] = []
+    for g in groups:
+        ct = _ct_of_name(g.get("adgroup_name"))
+        if not ct or ct == "ct0000" or ct in checked:
+            continue
+        seg = _ct_segment(ct) if callable(_ct_segment) else "Марки"
+        if seg not in ("Марки", "Модели"):
+            continue   # только брендовые/модельные группы (общие берут общий пул by design)
+        checked.add(ct)
+        try:
+            has = kp_mod.has_slepok_images(site_type, "tp1", ct, slepok_key)
+        except Exception:  # noqa: BLE001
+            continue   # fail-safe: чек упал → не судим
+        if not has:
+            empty_cts.append(ct)
+    if not empty_cts:
+        return []
+    return [{
+        "code": "CT_SLEPOK_IMAGES_EMPTY",
+        "id": int(campaign_id),
+        "campaign_id": int(campaign_id),
+        "name": campaign_name,
+        "cts": sorted(empty_cts)[:40],
+        "severity": "warn",
+        "fixable": False,
+        "detail": (f"tp1: {len(empty_cts)} брендовых ct без картинок в слепке {slepok} "
+                   f"(берут только общий пул): {sorted(empty_cts)[:12]} — наполнить слепок (контент)"),
+    }]
+
+
+# ── brand-first audit (BRAND_NOT_FIRST): марка/модель ДО первой точки заголовка ──────
+def _audit_brand_not_first(rc: gr.GridReadClient, login: str, campaign_id: int,
+                           campaign_name: str, groups: list | None) -> list[dict]:
+    """BRAND_NOT_FIRST: адаптивное объявление, где марка/модель ЕГО ГРУППЫ не стоит ДО
+    первой точки хотя бы одного заголовка (нарушение brand-first под автотаргет Яндекса —
+    он матчит по началу заголовка). Работает ТОЛЬКО там, где группа завязана на конкретную
+    марку/модель (ct != ct0000 и марка резолвится через ``_ag_part1_map``). Общие/аудиторные
+    группы (ct0000) не флагаем — им нечего ставить в начало. Фикс — LLM-регенерация
+    заголовков c ``need_brand_first=True`` (``fix_brand_not_first``)."""
+    if not groups:
+        return []
+    _ag_part1 = _DEPS.get("_ag_part1_map")
+    try:
+        ct_name = (_ag_part1() if _ag_part1 else {}) or {}
+    except Exception:  # noqa: BLE001
+        ct_name = {}
+    if not ct_name:
+        return []
+    agid_to_brand: dict[str, str] = {}
+    for g in groups:
+        gid = str(g.get("adgroup_id") or "")
+        ct = _ct_of_name(g.get("adgroup_name"))
+        if not gid or not ct or ct == "ct0000":
+            continue
+        nm = str(ct_name.get(ct.strip().lower()) or "").strip()
+        if nm:
+            agid_to_brand[gid] = nm
+    if not agid_to_brand:
+        return []
+    q = ("query SpecBrandFirst($login:String!,$inp:GdAdsContainerInput!){"
+         "client(searchBy:{login:$login}){ads(input:$inp){rowset{id adGroupId __typename "
+         "...on GdAdaptiveTextAd{titles}}}}}")
+    inp = {
+        "filter": {"campaignIdIn": [str(campaign_id)]},
+        "statRequirements": {"preset": "LAST_30DAYS", "goalIds": [], "useCampaignGoalIds": True},
+        "limitOffset": {"limit": 5000, "offset": 0},
+        "orderBy": [{"order": "ASC", "field": "ID"}],
+    }
+    try:
+        data = rc._post("SpecBrandFirst", q, {"login": login, "inp": inp})
+    except Exception:  # noqa: BLE001
+        return []
+    rows = ((((data.get("data") or {}).get("client") or {}).get("ads") or {}).get("rowset") or [])
+    from .content_quality import brand_head_ok
+    bad: list[dict] = []   # [{ad_id, brand}]
+    for r in rows:
+        brand = agid_to_brand.get(str(r.get("adGroupId") or ""))
+        if not brand:
+            continue
+        titles = [str(t) for t in (r.get("titles") or []) if str(t or "").strip()]
+        if not titles:
+            continue
+        if any(not brand_head_ok(t, brand) for t in titles):
+            bad.append({"ad_id": str(r.get("id")), "brand": brand})
+    if not bad:
+        return []
+    return [{
+        "code": "BRAND_NOT_FIRST",
+        "id": campaign_id,
+        "campaign_id": campaign_id,
+        "name": campaign_name,
+        "transport": "grid",
+        "ads": bad,
+        "ads_total": len(rows),
+        "severity": "low",
+        "detail": (f"{len(bad)}/{len(rows)} объявл. с заголовком, где марка НЕ до первой точки — "
+                   f"регенерация brand-first (LLM)"),
+    }]
 
 
 # ── listing audit (NO_LISTING): группы с товарным объявлением без «Страниц каталога» ──
@@ -726,9 +1165,10 @@ def _audit_no_listing(rc: gr.GridReadClient, login: str, campaign_id: int,
 
 
 # ── UAC master short-titles audit (SHORT_TITLES) ─────────────────────────────────
-# Заголовок «короткий», если ≤45 из 56: запас ≥11 гарантирует, что хотя бы самый короткий
-# суффикс банка («В наличии», 9+2 сепаратор) влезет — фикс всегда достижим, ре-флага нет.
-_TITLE_SHORT_LEN = 45
+# Заголовок «короткий», если <48 (≤47) из 56 (требование Семёна: остаток ≤8 у КАЖДОГО).
+# Для ≤46 фикс суффиксом всегда достижим (46+". "+гарантия(8)=56); 47 — best-effort
+# (зависит от разделителя: заголовок на '.' → sep=" " → 47+1+8=56 ✓, иначе 57>56).
+_TITLE_SHORT_LEN = 47
 
 
 def _uac_item_text(item: Any) -> str:
@@ -753,7 +1193,7 @@ def _uac_titles_field(detail: dict) -> tuple[str, list]:
 
 def _audit_uac_short_titles(login: str, campaign_id: int, campaign_name: str,
                             agency: str | None, detail: dict | None = None) -> list[dict]:
-    """tp6/tp7 Мастер: ≥2 заголовков ≤45 симв (из лимита 56) → SHORT_TITLES (авто-добивка)."""
+    """tp6/tp7 Мастер: ЛЮБОЙ заголовок <48 симв (из лимита 56) → SHORT_TITLES (авто-добивка)."""
     if detail is None:
         try:
             rc = ur.UacReadClient(login, agency=agency)
@@ -767,8 +1207,8 @@ def _audit_uac_short_titles(login: str, campaign_id: int, campaign_name: str,
         return []
     texts = [t for t in (_uac_item_text(it) for it in items) if t]
     short = [t for t in texts if len(t) <= _TITLE_SHORT_LEN]
-    if len(short) < 2:
-        return []  # 1 слегка короткий — не трогаем (апдейт кампании того не стоит)
+    if not short:
+        return []  # ни одного короткого — всё в порядке
     return [{
         "code": "SHORT_TITLES",
         "id": campaign_id,
@@ -780,6 +1220,81 @@ def _audit_uac_short_titles(login: str, campaign_id: int, campaign_name: str,
         "severity": "low",
         "detail": (f"Мастер: {len(short)}/{len(texts)} заголовков ≤{_TITLE_SHORT_LEN} симв "
                    f"(лимит 56) — добить суффиксами"),
+    }]
+
+
+# ── UAC video-brand audit (UAC_VIDEO_MISSING) ────────────────────────────────────
+# Марки с видео-пулом (BAIC/Belgee/Haval/Москвич) — как в tp1-добивке (журнал VIDEO_NO_POOL).
+_UAC_VIDEO_BRANDS: tuple = (
+    ("baic", "баик", "baic"),
+    ("belgee", "белджи", "belgee"),
+    ("haval", "хавал", "haval"),
+    ("moskvich", "москвич", "moskvich"),
+)
+
+
+def _uac_video_brand(name: str) -> str:
+    """Если имя UAC-кампании относится к видео-марке (BAIC/Belgee/Haval/Москвич) — вернуть
+    brand_hint для резолва видео-пула, иначе ''. Матч по токену (латиница+кириллица)."""
+    low = str(name or "").lower()
+    for lat, cyr, hint in _UAC_VIDEO_BRANDS:
+        if re.search(r"(?<![a-zа-яё0-9])(?:" + re.escape(lat) + "|" + re.escape(cyr)
+                     + r")(?![a-zа-яё0-9])", low):
+            return hint
+    return ""
+
+
+def _audit_uac_video_missing(login: str, campaign_id: int, campaign_name: str,
+                             agency: str | None, detail: dict | None = None) -> list[dict]:
+    """tp6/tp7 UAC: видео-марка (BAIC/Belgee/Haval/Москвич) без единого видео → UAC_VIDEO_MISSING.
+
+    D3-UAC 2026-07-09: до этого пост-аудит UAC вообще не проверял видео (только feed-фильтры +
+    короткие заголовки). Ремонт — через существующий UAC recreate (`UAC_VIDEO_MISSING` в
+    `_RECREATE_CODES` планировщика → resume_or_recreate_campaign с довложением видео).
+
+    Fail-safe (журнал I/J — не флагать вслепую):
+    * detail не прочитан → [] (нет данных);
+    * имя не относится к видео-марке → [] (нечего проверять);
+    * медиа-блок не прочитан (images==0 И content==0) → [] (не знаем, есть ли видео);
+    * videos>0 → [] (видео уже есть);
+    * пул для марки пуст (`videos_pool_for_ct` brand_hint) → [] (VIDEO_NO_POOL — не дефект).
+    Флаг только когда: видео-марка И медиа реально прочитано И videos==0 И пул НЕ пуст.
+    """
+    if detail is None:
+        try:
+            detail = ur.UacReadClient(login, agency=agency).campaign_detail(campaign_id)
+        except Exception:  # noqa: BLE001
+            return []
+    if not detail:
+        return []
+    brand_hint = _uac_video_brand(campaign_name)
+    if not brand_hint:
+        return []
+    summ = ur.summarize_uac_detail(detail)
+    videos = int(summ.get("videos") or 0)
+    if videos > 0:
+        return []
+    # Медиа-блок реально прочитан? Если ни картинок, ни контента — detail мог не отдать медиа →
+    # не знаем, есть ли видео → НЕ флагаем (fail-safe против ложного детекта на неполном detail).
+    if int(summ.get("images") or 0) <= 0 and int(summ.get("content") or 0) <= 0:
+        return []
+    # Пул для марки существует? Пусто → VIDEO_NO_POOL, не дефект.
+    kp_mod = _DEPS.get("kp")
+    try:
+        pool = kp_mod.videos_pool_for_ct("", limit=1, brand_hint=brand_hint) if kp_mod else []
+    except Exception:  # noqa: BLE001
+        pool = []
+    if not pool:
+        return []
+    return [{
+        "code": "UAC_VIDEO_MISSING",
+        "id": campaign_id,
+        "campaign_id": campaign_id,
+        "name": campaign_name,
+        "brand": brand_hint,
+        "severity": "low",
+        "detail": (f"UAC видео-марка ({brand_hint}) без видео (videos=0, пул есть) — "
+                   f"довложить видео через recreate"),
     }]
 
 
@@ -849,6 +1364,79 @@ def _audit_sitelinks(grid: gf.GridClient, login: str, campaign_id: int,
              "transport": "grid"}]
 
 
+def _audit_callouts(grid: gf.GridClient, login: str, campaign_id: int,
+                    camp_name: str, tp_code: str) -> list[dict]:
+    """CALLOUTS_MISSING: ЕПК-кампания без прикреплённых уточнений (inheritableCallouts пуст).
+
+    Уточнения — campaign-level Grid-ассет (inheritableCallouts.calloutIds). Не применимо к
+    UAC (tp6/tp7) — вызывающая сторона обязана не передавать эти tp. Payload читается тем же
+    путём что _audit_sitelinks (_read_unified_campaign_update_payloads); если кампания не
+    GdUnifiedCampaign или payload не прочитался — не флагаем (возвращаем []). Severity low:
+    недоделка, не showstopper (как VIDEO_MISSING/BUTTON_MISSING)."""
+    try:
+        pl = (grid._read_unified_campaign_update_payloads([int(campaign_id)]) or {}).get(int(campaign_id)) or {}
+    except Exception:  # noqa: BLE001
+        return []
+    if not pl:
+        # payload пуст → кампания не ЕПК/GdUnifiedCampaign → inheritableCallouts неприменимо
+        return []
+    co = pl.get("inheritableCallouts") or {}
+    callout_ids = co.get("calloutIds") or []
+    if callout_ids:
+        return []
+    return [{"severity": "low", "code": "CALLOUTS_MISSING", "id": int(campaign_id),
+             "campaign_id": int(campaign_id), "name": camp_name, "tp_code": tp_code,
+             "detail": "кампания без уточнений (inheritableCallouts пуст) — добить set_campaign_callouts"}]
+
+
+def _audit_global_minus_campaign(grid: gf.GridClient, login: str, campaign_id: int,
+                                 camp_name: str, tp_code: str) -> list[dict]:
+    """GLOBAL_MINUS_CAMPAIGN_MISSING (D6 2026-07-09): у поисковых кампаний (tp2/tp4/tp5) на
+    уровне КАМПАНИИ должны стоять глобальные минус-слова («отзывы», `_enabled_minus_words`).
+
+    Read: unified-payload (тот же путь, что _audit_sitelinks) — inline ``minusKeywords`` +
+    ``libraryMinusKeywordsIds`` (shared-set). Fail-safe (журнал I — не флагать вслепую):
+    * payload не прочитан / не GdUnifiedCampaign → [] (не судим);
+    * ``libraryMinusKeywordsIds`` НЕ пуст → [] (слова могут быть в shared-set, содержимое
+      которого мы дёшево не резолвим — предполагаем покрытие, не флагаем ложно);
+    * набор `_enabled_minus_words` пуст → [] (нечего требовать).
+    Флаг ТОЛЬКО когда shared-set нет И inline-minus не содержит все требуемые слова.
+    Ремонт (`fix_global_minus_campaign`) добавляет их inline (Grid UpdateCampaigns, без баллов),
+    что консистентно с детектом (после ремонта inline содержит слова → детект молчит, без цикла)."""
+    _enabled = _DEPS.get("_enabled_minus_words")
+    try:
+        want = [str(w).strip() for w in (_enabled() or [])] if callable(_enabled) else []
+    except Exception:  # noqa: BLE001
+        want = []
+    want = [w for w in want if w]
+    if not want:
+        return []
+    try:
+        pl = (grid._read_unified_campaign_update_payloads([int(campaign_id)]) or {}).get(int(campaign_id)) or {}
+    except Exception:  # noqa: BLE001
+        return []
+    if not pl:
+        return []   # не ЕПК/не прочитано → не судим
+    if pl.get("libraryMinusKeywordsIds"):
+        return []   # есть shared-set минусов → считаем покрытым (fail-safe)
+    inline = {str(m).strip().lower() for m in (pl.get("minusKeywords") or [])}
+    missing = [w for w in want if w.lower() not in inline]
+    if not missing:
+        return []
+    return [{
+        "severity": "warn",
+        "code": "GLOBAL_MINUS_CAMPAIGN_MISSING",
+        "id": int(campaign_id),
+        "campaign_id": int(campaign_id),
+        "name": camp_name,
+        "tp_code": tp_code,
+        "missing_words": missing,
+        "transport": "grid",
+        "detail": (f"кампания без глоб.минус-слов на уровне кампании: нет {missing} "
+                   f"(ни inline, ни shared-set) — добить UpdateCampaigns"),
+    }]
+
+
 def audit_campaign(login: str, campaign_id: int, tp: int, ctx: dict,
                    *, grid: gf.GridClient | None = None,
                    read_client: gr.GridReadClient | None = None) -> list[dict]:
@@ -884,21 +1472,35 @@ def audit_campaign(login: str, campaign_id: int, tp: int, ctx: dict,
             rc = read_client or gr.GridReadClient(login)
             issues += _audit_search_images(rc, login, int(campaign_id), camp_name)
             issues += _audit_sitelinks(g, login, int(campaign_id), camp_name, tp_code)   # #7 быстрые ссылки
+            issues += _audit_callouts(g, login, int(campaign_id), camp_name, tp_code)    # #8 уточнения
+            # D6: глоб.минус-слова на уровне КАМПАНИИ (tp2/tp4/tp5) — 1.4 DoD
+            issues += _audit_global_minus_campaign(g, login, int(campaign_id), camp_name, tp_code)
             if tp == 5:   # tp5 = фид-кампания: листинги + фильтры + места показа
                 issues += _audit_generic_fallback_group(groups, int(campaign_id), camp_name)
                 issues += _audit_no_listing(rc, login, int(campaign_id), camp_name)
                 issues += _audit_product_feed_filters(rc, login, int(campaign_id), camp_name, groups)
                 issues += _audit_placements(rc, login, int(campaign_id), camp_name)
+                # tp5 (ЕПК) несёт TextAd (GdAdaptiveTextAd) — комбинированный «Т+Л+ТОВ» (DoD §3.5, 7
+                # заголовков), поэтому brand-first + длина заголовков применимы как на tp1/tp2/tp4
+                # (D2 2026-07-09: ветка tp5 их не вызывала → ложное «чисто»). groups=None гасит
+                # VIDEO_MISSING/IMAGE_MISSING (на поиске не нужны); _audit_tp1_adaptive сам режет
+                # заголовки только у GdAdaptiveTextAd → ShoppingAd/ListingAd (без titles) не трогаются
+                # (tp5-специфика ShoppingAd сохранена).
+                issues += [i for i in _audit_tp1_adaptive(rc, login, int(campaign_id), camp_name, groups=None)
+                           if i.get("code") in ("BUTTON_MISSING", "SHORT_TITLES")]
+                issues += _audit_brand_not_first(rc, login, int(campaign_id), camp_name, groups)
             elif tp in (2, 4):
                 # tp2/Поиск и tp4/Поиск+Динамика используют те же GdAdaptiveTextAd, что и tp1 —
-                # кнопка «Получить скидку» (BUTTON_MISSING) там так же применима и её ставит
-                # _apply_combo_button при создании best-effort, но раньше никто не проверял и не
-                # добивал остаток (живой гэп 2026-07-06: ozge tp2 210/450, psm tp2 70/210 без
-                # кнопки). groups=None гасит VIDEO_MISSING (agid_to_ct пуст без groups); IMAGE_MISSING/
-                # SHORT_TITLES отфильтрованы — на поиске текстовые объявления без картинок/видео
-                # by design, добивать их images_repair/video не нужно.
+                # кнопка «Получить скидку» (BUTTON_MISSING) + длина заголовков (SHORT_TITLES) там
+                # так же применимы. groups=None гасит VIDEO_MISSING (agid_to_ct пуст без groups);
+                # IMAGE_MISSING отфильтрован — на поиске текстовые объявления без картинок by design,
+                # добивать images_repair не нужно. SHORT_TITLES ВКЛЮЧЁН (2026-07-09, задача A): длина
+                # заголовка важна и на поиске; фикс — LLM-регенерация (не суффикс).
                 issues += [i for i in _audit_tp1_adaptive(rc, login, int(campaign_id), camp_name, groups=None)
-                           if i.get("code") == "BUTTON_MISSING"]
+                           if i.get("code") in ("BUTTON_MISSING", "SHORT_TITLES")]
+                # brand-first (марка до первой точки) применима к поисковым адаптивным tp2/tp4:
+                # тут groups есть → марка группы резолвится, автотаргет матчит по началу заголовка.
+                issues += _audit_brand_not_first(rc, login, int(campaign_id), camp_name, groups)
     elif tp == 1:
         g = grid or gf.GridClient(login)
         try:
@@ -909,7 +1511,11 @@ def audit_campaign(login: str, campaign_id: int, tp: int, ctx: dict,
         camp_name = str((ctx or {}).get("campaign_name") or "")
         issues += _audit_product_feed_filters(rc, login, int(campaign_id), camp_name, groups)
         issues += _audit_tp1_adaptive(rc, login, int(campaign_id), camp_name, groups=groups)
+        issues += _audit_brand_not_first(rc, login, int(campaign_id), camp_name, groups)
         issues += _audit_no_listing(rc, login, int(campaign_id), camp_name)
+        issues += _audit_callouts(g, login, int(campaign_id), camp_name, tp_code)    # #8 уточнения
+        # D5: брендовый ct без картинок в слепке (report-only) — берёт только общий пул
+        issues += _audit_ct_slepok_images(int(campaign_id), camp_name, groups, slepok, site_type)
     elif tp in (6, 7):
         # один GET detail на кампанию — и для feed-фильтров (tp7), и для коротких заголовков
         detail = None
@@ -922,6 +1528,8 @@ def audit_campaign(login: str, campaign_id: int, tp: int, ctx: dict,
             if tp == 7:
                 issues += _audit_uac_feed_filters(login, int(campaign_id), camp_name, agency, detail=detail)
             issues += _audit_uac_short_titles(login, int(campaign_id), camp_name, agency, detail=detail)
+            # D3-UAC: видео-марки (BAIC/Belgee/Haval/Москвич) без видео → UAC_VIDEO_MISSING
+            issues += _audit_uac_video_missing(login, int(campaign_id), camp_name, agency, detail=detail)
     return issues
 
 
@@ -976,6 +1584,7 @@ def audit_account_jobs(login: str, job_result: dict) -> dict:
             all_issues.append({"code": "AUDIT_ERROR", "id": cid, "campaign_id": cid,
                                "name": str(c.get("name") or ""), "detail": str(e)[:200]})
     all_issues += _audit_plan_vs_slepok(tool, slepok, site_type)
+    all_issues += _audit_group_count_vs_slepok(grid, tool, slepok, site_type)   # D10 report-only
     report = {
         "login": login,
         "slepok": slepok,
@@ -1021,6 +1630,89 @@ def fix_keywords_wrong_group(login: str, ctx: dict, issues: list[dict], deps=Non
     out, code = rex.execute_keywords_wrong_group_repair(login, ctx, items, deps)
     out["http_status"] = code
     return out
+
+
+# ── fixer (FOREIGN_MODEL_KEYWORDS): удалить чужемодельные ключи v5 keywords.delete ──
+def fix_foreign_model_keywords(login: str, ctx: dict, issues: list[dict]) -> dict:
+    """Delete keywords containing foreign-model discriminating tokens from MODEL groups.
+
+    FOREIGN_MODEL_KEYWORDS issue carries ``foreign_kws`` (list of phrase strings) and
+    ``adgroup_id`` / ``campaign_id``. Механика:
+    1. v5 keywords.get по кампаниям → phrase→id маппинг.
+    2. Сопоставить foreign_kws из issue → keyword_id.
+    3. v5 keywords.delete этих id.
+    Не трогает собственные ключи группы. Баллов не тратит (keywords.delete бесплатен)."""
+    import requests as _req
+    fm_issues = [it for it in (issues or []) if it.get("code") == "FOREIGN_MODEL_KEYWORDS"]
+    if not fm_issues:
+        return {"ok": True, "note": "нет FOREIGN_MODEL_KEYWORDS", "deleted": 0}
+    # v5 OAuth-токен
+    _v5_tok = _DEPS.get("_v5_token_for_login")
+    token = _v5_tok(login) if callable(_v5_tok) else None
+    if not token:
+        return {"ok": False, "error": "нет v5 OAuth-токена для keywords.delete", "deleted": 0}
+    _V5 = "https://api.direct.yandex.com/json/v5/"
+    _hdrs = {"Authorization": f"Bearer {token}", "Client-Login": login,
+             "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8",
+             "Use-Operator-Units": "true"}
+    # Собрать уникальные campaign_id
+    camp_ids = list({int(it["campaign_id"]) for it in fm_issues if it.get("campaign_id")})
+    # Прочитать все keyword id+phrase по этим кампаниям
+    phrase_to_ids: dict[str, list[int]] = {}  # нормализованная фраза → [keyword_id, ...]
+    try:
+        for cid in camp_ids:
+            r = _req.post(_V5 + "keywords", headers=_hdrs, json={
+                "method": "get",
+                "params": {"SelectionCriteria": {"CampaignIds": [cid]},
+                           "FieldNames": ["Id", "AdGroupId", "Keyword"]},
+            }, timeout=60)
+            r.raise_for_status()
+            data = r.json()
+            if "error" in data:
+                return {"ok": False, "error": f"v5 keywords.get camp {cid}: {data['error']}", "deleted": 0}
+            for kw in ((data.get("result") or {}).get("Keywords") or []):
+                kid = int(kw.get("Id") or 0)
+                phrase = str(kw.get("Keyword") or "").strip().lower()
+                if kid > 0 and phrase:
+                    phrase_to_ids.setdefault(phrase, []).append(kid)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"v5 keywords.get: {str(e)[:180]}", "deleted": 0}
+    # Найти id для чужемодельных фраз
+    del_ids: list[int] = []
+    results: list[dict] = []
+    for it in fm_issues:
+        gid = int(it.get("adgroup_id") or 0)
+        foreign_phrases = [str(p).strip().lower() for p in (it.get("foreign_kws") or [])]
+        found_ids: list[int] = []
+        for ph in foreign_phrases:
+            found_ids.extend(phrase_to_ids.get(ph, []))
+        del_ids.extend(found_ids)
+        results.append({"adgroup_id": gid, "model": it.get("model"), "to_delete": len(found_ids),
+                        "foreign_phrases_count": len(foreign_phrases)})
+    del_ids = list(dict.fromkeys(del_ids))  # дедуп, сохраняя порядок
+    if not del_ids:
+        return {"ok": True, "note": "keyword_id не найдены (возможно уже удалены)", "deleted": 0,
+                "results": results}
+    # v5 keywords.delete
+    try:
+        deleted = 0
+        for i in range(0, len(del_ids), 10000):
+            chunk = del_ids[i:i + 10000]
+            r = _req.post(_V5 + "keywords", headers=_hdrs, json={
+                "method": "delete",
+                "params": {"SelectionCriteria": {"Ids": chunk}},
+            }, timeout=60)
+            r.raise_for_status()
+            data = r.json()
+            if "error" in data:
+                return {"ok": False, "error": f"v5 keywords.delete: {data['error']}",
+                        "deleted": deleted, "results": results}
+            deleted += len((data.get("result") or {}).get("DeleteResults") or chunk)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"v5 keywords.delete: {str(e)[:180]}",
+                "deleted": 0, "results": results}
+    return {"ok": True, "deleted": deleted, "results": results,
+            "adgroups_fixed": len({r["adgroup_id"] for r in results if r["to_delete"] > 0})}
 
 
 # ── fixer (SITELINK_MISSING): доливка быстрых ссылок ЕПК in-place (#7) ────────────
@@ -1070,20 +1762,72 @@ def fix_sitelinks_missing(login: str, ctx: dict, issues: list[dict]) -> dict:
             "set_id": set_id, "campaigns": cids, "errors": errors[:5]}
 
 
-# ── fixer (SHORT_TITLES): добивка коротких заголовков Мастера in-place ───────────
+# ── helper: gen-контекст для LLM-регенерации (agent/site_type/city/domain/provider) ──
+def _regen_ctx(login: str, ctx: dict) -> tuple:
+    """(agent_dict|None, gen_ctx, provider) для content_quality-регенерации.
+
+    Восстанавливает слепок-агента и параметры сайта (тип/город/домен) из ``ctx.body`` +
+    ``_account_ctx``; провайдер LLM — из ``body.llm_provider`` (дефолт openrouter, как в
+    боевой генерации). Если слепок не резолвится (agent=None) — вызывающая сторона обязана
+    трактовать регенерацию как невозможную (hard-fail без тихого фолбэка)."""
+    from . import ai_agents as A
+    body = (ctx or {}).get("body") or {}
+    slepok = (body.get("agent") or "").strip()
+    acc = {}
+    _account_ctx = _DEPS.get("_account_ctx")
+    try:
+        acc = (_account_ctx(login) if _account_ctx else None) or {}
+    except Exception:  # noqa: BLE001
+        acc = {}
+    agent = None
+    try:
+        agent = A.get_agent(slepok) if slepok else None
+    except Exception:  # noqa: BLE001
+        agent = None
+    site_type = (body.get("site_type") or acc.get("site_type") or "").strip()
+    gen_ctx = {
+        "site_type": site_type,
+        "city": acc.get("city") or "",
+        "domain": (acc.get("domain") or "").strip(),
+    }
+    provider = str(body.get("llm_provider") or "openrouter").strip().lower()
+    return agent, gen_ctx, provider
+
+
+# ── fixer (SHORT_TITLES): РЕГЕНЕРАЦИЯ коротких заголовков через LLM (тот же _llm_pair_for) ──
 def fix_short_titles(login: str, ctx: dict, issues: list[dict]) -> dict:
-    """Extend short Master (UAC) titles in place: read detail → extend each ≤45-char title
-    with a neutral suffix (``ai_agents.extend_title_to_max``) → cookie PATCH (the content
-    editor's ``_uac_patch_campaign_texts`` path) → read-back count of remaining short titles.
+    """Перегенерировать короткие заголовки через LLM (content_quality.regen_titles) —
+    единый паттерн «регенерация → проверка длины (≥48) → повтор до 4 попыток → HARD-FAIL».
+
+    ⚠️ БОЛЬШЕ НЕ добиваем суффиксами (``extend_title_to_max``): если после всех попыток
+    заголовки остались короткими — заводим терминальный ``SHORT_TITLES_UNFIXABLE``
+    (severity error, fixable:False) вместо тихого прохождения. Две транспортные ветки:
+    grid (tp1/tp2/tp4 адаптивные, RMW UpdateAdaptiveTextAds) и UAC (tp6/tp7, cookie PATCH).
     Никаких пересозданий и баллов API — только кука."""
     short_issues = [it for it in (issues or []) if it.get("code") == "SHORT_TITLES"]
     if not short_issues:
         return {"ok": True, "note": "нет SHORT_TITLES", "campaigns_fixed": 0}
-    from . import ai_agents as A  # Flask-free
+    from . import content_quality as CQ  # Flask-free
+    agent, gen_ctx, provider = _regen_ctx(login, ctx)
+    _min_len = _TITLE_SHORT_LEN + 1   # валидный минимум = 48 (audit флагает ≤47)
     fixed, extended_total = [], 0
     errors: list[str] = []
+    terminal: list[dict] = []   # SHORT_TITLES_UNFIXABLE — регенерация не дала валидную длину
 
-    # ── grid-ветка (tp1 комбинаторные): RMW UpdateAdaptiveTextAds, видео сохраняется ──
+    if agent is None:
+        # Слепок не восстановлен → LLM-регенерация невозможна. НЕ падаем суффиксом — hard-fail.
+        for it in short_issues:
+            cid = int(it.get("campaign_id") or 0)
+            terminal.append({
+                "code": "SHORT_TITLES_UNFIXABLE", "id": cid, "campaign_id": cid,
+                "name": str(it.get("name") or ""), "severity": "error", "fixable": False,
+                "detail": "короткие заголовки: слепок не восстановлен → LLM-регенерация невозможна",
+            })
+        return {"ok": False, "campaigns_fixed": 0, "titles_extended": 0,
+                "campaigns": [], "errors": ["слепок-агент не восстановлен для регенерации"],
+                "terminal": terminal}
+
+    # ── grid-ветка (tp1/tp2/tp4 адаптивные): регенерация → RMW UpdateAdaptiveTextAds ──
     grid_issues = [it for it in short_issues if it.get("transport") == "grid"]
     if grid_issues:
         from . import create_set_feeds as csf  # самодостаточные Grid-хелперы
@@ -1100,30 +1844,48 @@ def fix_short_titles(login: str, ctx: dict, issues: list[dict]) -> dict:
             try:
                 cur_map = gcl.adaptive_ads_for_update([cid], ad_ids)
                 items, changed = [], 0
+                unfixable_ads: list[int] = []
                 for aid, cur in cur_map.items():
                     titles = [str(t) for t in (cur.get("titles") or [])]
-                    used: set = set()
-                    new_titles = [A.extend_title_to_max(t, idx=i, used=used)
-                                  for i, t in enumerate(titles)]
-                    if new_titles != titles:
+                    if not any(len(t) <= _TITLE_SHORT_LEN for t in titles):
+                        continue   # у этого объявления коротких нет — не трогаем
+                    res = CQ.regen_titles(agent, gen_ctx, brand="", old_titles=titles,
+                                          n=len(titles), min_len=_min_len,
+                                          need_brand_first=False, provider=provider)
+                    if res.get("ok") and res.get("value"):
+                        new_titles = list(res["value"])
                         items.append({"id": aid, "titles": new_titles})
                         changed += sum(1 for a, b in zip(titles, new_titles) if a != b)
+                    else:
+                        unfixable_ads.append(int(aid))
                 if items:
                     csf._grid_update_adaptive_ads(login, items, campaign_ids=[cid])
                 after = [i for i in _audit_tp1_adaptive(rcl, login, cid, str(it.get("name") or ""))
                          if i.get("code") == "SHORT_TITLES"]
                 still = len((after[0].get("ad_ids") or [])) if after else 0
                 extended_total += changed
-                fixed.append({"campaign_id": cid, "transport": "grid", "extended": changed,
-                              "ads_updated": len(items), "still_short_ads": still})
+                fixed.append({"campaign_id": cid, "transport": "grid", "regenerated": changed,
+                              "ads_updated": len(items), "still_short_ads": still,
+                              "unfixable_ads": unfixable_ads})
+                if unfixable_ads or still:
+                    terminal.append({
+                        "code": "SHORT_TITLES_UNFIXABLE", "id": cid, "campaign_id": cid,
+                        "name": str(it.get("name") or ""), "transport": "grid",
+                        "ad_ids": unfixable_ads, "still_short_ads": still,
+                        "severity": "error", "fixable": False,
+                        "detail": (f"grid: регенерация не дала заголовки ≥{_min_len} симв "
+                                   f"после {CQ._REGEN_MAX_ATTEMPTS} попыток "
+                                   f"(unfixable={len(unfixable_ads)}, still_short={still})"),
+                    })
             except Exception as e:  # noqa: BLE001
                 errors.append(f"кампания {cid} (grid): {str(e)[:180]}")
 
     # ── UAC-ветка (tp6/tp7 Мастера): cookie PATCH ────────────────────────────────
     uac_issues = [it for it in short_issues if it.get("transport") != "grid"]
     if not uac_issues:
-        return {"ok": not errors, "campaigns_fixed": len(fixed), "titles_extended": extended_total,
-                "campaigns": fixed, "errors": errors}
+        return {"ok": not errors and not terminal, "campaigns_fixed": len(fixed),
+                "titles_extended": extended_total, "campaigns": fixed, "errors": errors,
+                "terminal": terminal}
     # PATCH-хелпер контент-редактора (лениво: routes_content_editor тянет flask на импорте)
     from .routes_content_editor import _uac_patch_campaign_texts, _unwrap_uac_response
     agency = ((ctx or {}).get("agency") or "").strip() or None
@@ -1131,7 +1893,21 @@ def fix_short_titles(login: str, ctx: dict, issues: list[dict]) -> dict:
         client = ur.UacReadClient(login, agency=agency).client
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"uac client: {str(e)[:160]}", "campaigns_fixed": len(fixed),
-                "titles_extended": extended_total, "campaigns": fixed, "errors": errors}
+                "titles_extended": extended_total, "campaigns": fixed, "errors": errors,
+                "terminal": terminal}
+
+    def _set_uac_item_text(item, new_text):
+        """Заменить видимый текст UAC-элемента, сохранив структуру (dict-метаданные)."""
+        if isinstance(item, dict):
+            d = dict(item)
+            for key in ("text", "title", "value", "body", "name"):
+                if str(d.get(key) or "").strip():
+                    d[key] = new_text
+                    return d
+            d["text"] = new_text
+            return d
+        return new_text
+
     for it in uac_issues:
         try:
             cid = int(it.get("campaign_id") or 0)
@@ -1146,27 +1922,22 @@ def fix_short_titles(login: str, ctx: dict, issues: list[dict]) -> dict:
             if not items:
                 errors.append(f"кампания {cid}: заголовки не найдены в detail")
                 continue
-            used: set = set()
-            new_items, changed = [], 0
-            for i, item in enumerate(items):
-                text = _uac_item_text(item)
-                ext = A.extend_title_to_max(text, idx=i, used=used) if text else text
-                if ext and ext != text:
-                    changed += 1
-                    if isinstance(item, dict):
-                        d = dict(item)
-                        for key in ("text", "title", "value", "body", "name"):
-                            if str(d.get(key) or "").strip() == text:
-                                d[key] = ext
-                                break
-                        new_items.append(d)
-                    else:
-                        new_items.append(ext)
-                else:
-                    new_items.append(item)
-            if not changed:
-                errors.append(f"кампания {cid}: расширяемых заголовков нет (не влез ни один суффикс)")
+            old_titles = [_uac_item_text(item) for item in items]
+            # РЕГЕНЕРАЦИЯ всего набора заголовков (n=len) — единый паттерн, без суффиксов.
+            res = CQ.regen_titles(agent, gen_ctx, brand="", old_titles=old_titles,
+                                  n=len(items), min_len=_min_len,
+                                  need_brand_first=False, provider=provider)
+            if not (res.get("ok") and res.get("value")):
+                terminal.append({
+                    "code": "SHORT_TITLES_UNFIXABLE", "id": cid, "campaign_id": cid,
+                    "name": str(it.get("name") or ""), "severity": "error", "fixable": False,
+                    "detail": (f"UAC: регенерация не дала {len(items)} заголовков ≥{_min_len} симв "
+                               f"после {CQ._REGEN_MAX_ATTEMPTS} попыток: {res.get('reason') or ''}"),
+                })
                 continue
+            new_titles = list(res["value"])
+            new_items = [_set_uac_item_text(item, new_titles[i]) for i, item in enumerate(items)]
+            changed = sum(1 for o, n in zip(old_titles, new_titles) if o != n)
             _uac_patch_campaign_texts(client, cid, field_key, new_items)
             # read-back: сколько коротких осталось
             after = _unwrap_uac_response(client._request("GET", f"/campaign/{cid}",
@@ -1175,11 +1946,189 @@ def fix_short_titles(login: str, ctx: dict, issues: list[dict]) -> dict:
             still_short = sum(1 for x in (_uac_item_text(a) for a in after_items)
                               if x and len(x) <= _TITLE_SHORT_LEN)
             extended_total += changed
-            fixed.append({"campaign_id": cid, "extended": changed, "still_short": still_short})
+            fixed.append({"campaign_id": cid, "regenerated": changed, "still_short": still_short})
+            if still_short:
+                terminal.append({
+                    "code": "SHORT_TITLES_UNFIXABLE", "id": cid, "campaign_id": cid,
+                    "name": str(it.get("name") or ""), "severity": "error", "fixable": False,
+                    "detail": f"UAC: после регенерации осталось {still_short} коротких заголовков",
+                })
         except Exception as e:  # noqa: BLE001
             errors.append(f"кампания {cid}: {str(e)[:180]}")
-    return {"ok": not errors, "campaigns_fixed": len(fixed), "titles_extended": extended_total,
+    return {"ok": not errors and not terminal, "campaigns_fixed": len(fixed),
+            "titles_extended": extended_total, "campaigns": fixed, "errors": errors,
+            "terminal": terminal}
+
+
+# ── fixer (CONTENT_TEXTS_LOW): добить тексты объявления до ≥3 через LLM-регенерацию ──
+def fix_texts_low(login: str, ctx: dict, issues: list[dict]) -> dict:
+    """Догенерировать тексты (bodies) адаптивных объявлений с <3 текстами до ``_TEXTS_MIN`` —
+    LLM-регенерация (content_quality._regen_texts, тот же _llm_pair_for), затем Grid RMW
+    UpdateAdaptiveTextAds (bodies; видео/цена сохраняются через typedCreatives). Только grid-
+    транспорт (tp1/tp2/tp4/tp5 адаптивные); UAC (tp6/tp7 texts<3) чинит recreate (UAC_TEXTS_MISSING).
+    Баллов не тратит (кука). Read-back — повторный детект; остаток доберут следующие циклы."""
+    tl_issues = [it for it in (issues or []) if it.get("code") == "CONTENT_TEXTS_LOW"
+                 and it.get("transport") == "grid"]
+    if not tl_issues:
+        return {"ok": True, "note": "нет CONTENT_TEXTS_LOW (grid)", "campaigns_fixed": 0}
+    from . import content_quality as CQ  # Flask-free
+    from . import create_set_feeds as csf
+    agent, gen_ctx, provider = _regen_ctx(login, ctx)
+    if agent is None:
+        return {"ok": False, "campaigns_fixed": 0, "texts_added": 0, "campaigns": [],
+                "errors": ["слепок-агент не восстановлен для регенерации текстов"]}
+    gcl = gf.GridClient(login)
+    rcl = gr.GridReadClient(login)
+    fixed, errors, added_total = [], [], 0
+    for it in tl_issues:
+        try:
+            cid = int(it.get("campaign_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        ad_ids = [int(a) for a in (it.get("ad_ids") or []) if str(a).strip()]
+        if cid <= 0 or not ad_ids:
+            continue
+        try:
+            cur_map = gcl.adaptive_ads_for_update([cid], ad_ids)
+            items, changed = [], 0
+            for aid, cur in cur_map.items():
+                bodies = [str(b) for b in (cur.get("bodies") or []) if str(b or "").strip()]
+                if len(bodies) >= _TEXTS_MIN:
+                    continue   # уже добито (edit-view лаг/параллельный фикс) — не трогаем
+                res = CQ._regen_texts(agent, gen_ctx, brand="", old_texts=bodies,
+                                      n=_TEXTS_MIN, provider=provider)
+                if res.get("ok") and res.get("value"):
+                    new_bodies = [str(b) for b in res["value"] if str(b or "").strip()][:max(_TEXTS_MIN, len(bodies))]
+                    if len(new_bodies) >= _TEXTS_MIN:
+                        items.append({"id": aid, "bodies": new_bodies})
+                        changed += 1
+            if items:
+                csf._grid_update_adaptive_ads(login, items, campaign_ids=[cid])
+            after = [i for i in _audit_tp1_adaptive(rcl, login, cid, str(it.get("name") or ""))
+                     if i.get("code") == "CONTENT_TEXTS_LOW"]
+            still = len((after[0].get("ad_ids") or [])) if after else 0
+            added_total += changed
+            fixed.append({"campaign_id": cid, "ads_updated": len(items),
+                          "regenerated": changed, "still_low_ads": still})
+            if still:
+                errors.append(f"кампания {cid}: осталось {still} объявл. с <{_TEXTS_MIN} текстами")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"кампания {cid}: {str(e)[:180]}")
+    return {"ok": not errors, "campaigns_fixed": len(fixed), "texts_added": added_total,
             "campaigns": fixed, "errors": errors}
+
+
+# ── fixer (GLOBAL_MINUS_CAMPAIGN_MISSING): добить глоб.минус на кампанию (in-place, без баллов) ──
+def fix_global_minus_campaign(login: str, ctx: dict, issues: list[dict]) -> dict:
+    """Добавить глобальные минус-слова на уровень кампании inline через Grid UpdateCampaigns
+    (`set_campaign_minus_keywords`, БЕЗ баллов, РК DRAFT, идемпотентно). D6 2026-07-09.
+    Слова берём из `_enabled_minus_words` (источник истины), не из issue (чтобы не рассинхрониться)."""
+    gm_issues = [it for it in (issues or []) if it.get("code") == "GLOBAL_MINUS_CAMPAIGN_MISSING"]
+    if not gm_issues:
+        return {"ok": True, "note": "нет GLOBAL_MINUS_CAMPAIGN_MISSING", "campaigns_fixed": 0}
+    _enabled = _DEPS.get("_enabled_minus_words")
+    try:
+        words = [str(w).strip() for w in (_enabled() or [])] if callable(_enabled) else []
+    except Exception:  # noqa: BLE001
+        words = []
+    words = [w for w in words if w]
+    if not words:
+        return {"ok": True, "note": "_enabled_minus_words пуст — нечего добавлять", "campaigns_fixed": 0}
+    gcl = gf.GridClient(login)
+    fixed, errors = [], []
+    for it in gm_issues:
+        try:
+            cid = int(it.get("campaign_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if cid <= 0:
+            continue
+        try:
+            upd = gcl.set_campaign_minus_keywords([cid], words) or []
+            fixed.append({"campaign_id": cid, "updated": len(upd), "words": words})
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"кампания {cid}: {str(e)[:180]}")
+    return {"ok": not errors, "campaigns_fixed": len(fixed), "campaigns": fixed, "errors": errors}
+
+
+# ── fixer (BRAND_NOT_FIRST): регенерация заголовков с маркой в начале (brand-first) ──
+def fix_brand_not_first(login: str, ctx: dict, issues: list[dict]) -> dict:
+    """Перегенерировать заголовки объявлений, где марка не стоит до первой точки —
+    LLM-регенерация с ``need_brand_first=True`` (единый паттерн: регенерация → проверка →
+    повтор до 4 попыток → HARD-FAIL ``BRAND_NOT_FIRST_UNFIXABLE``). Grid RMW, видео/цена
+    сохраняются (typedCreatives)."""
+    bn_issues = [it for it in (issues or []) if it.get("code") == "BRAND_NOT_FIRST"]
+    if not bn_issues:
+        return {"ok": True, "note": "нет BRAND_NOT_FIRST", "campaigns_fixed": 0}
+    from . import content_quality as CQ  # Flask-free
+    from . import create_set_feeds as csf
+    agent, gen_ctx, provider = _regen_ctx(login, ctx)
+    fixed, errors, terminal = [], [], []
+    _min_len = _TITLE_SHORT_LEN + 1
+    if agent is None:
+        for it in bn_issues:
+            cid = int(it.get("campaign_id") or 0)
+            terminal.append({
+                "code": "BRAND_NOT_FIRST_UNFIXABLE", "id": cid, "campaign_id": cid,
+                "name": str(it.get("name") or ""), "severity": "error", "fixable": False,
+                "detail": "brand-first: слепок не восстановлен → LLM-регенерация невозможна",
+            })
+        return {"ok": False, "campaigns_fixed": 0, "campaigns": [],
+                "errors": ["слепок-агент не восстановлен для регенерации"], "terminal": terminal}
+    gcl = gf.GridClient(login)
+    rcl = gr.GridReadClient(login)
+    for it in bn_issues:
+        try:
+            cid = int(it.get("campaign_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        ads = it.get("ads") or []
+        brand_by_ad = {int(a["ad_id"]): str(a.get("brand") or "")
+                       for a in ads if str(a.get("ad_id") or "").strip()}
+        ad_ids = list(brand_by_ad.keys())
+        if cid <= 0 or not ad_ids:
+            continue
+        try:
+            cur_map = gcl.adaptive_ads_for_update([cid], ad_ids)
+            items, changed, unfixable = [], 0, []
+            for aid, cur in cur_map.items():
+                brand = brand_by_ad.get(int(aid)) or ""
+                titles = [str(t) for t in (cur.get("titles") or [])]
+                if not titles:
+                    continue
+                res = CQ.regen_titles(agent, gen_ctx, brand=brand, old_titles=titles,
+                                      n=len(titles), min_len=_min_len,
+                                      need_brand_first=True, provider=provider)
+                if res.get("ok") and res.get("value"):
+                    new_titles = list(res["value"])
+                    items.append({"id": aid, "titles": new_titles})
+                    changed += sum(1 for a, b in zip(titles, new_titles) if a != b)
+                else:
+                    unfixable.append(int(aid))
+            if items:
+                csf._grid_update_adaptive_ads(login, items, campaign_ids=[cid])
+            # read-back: перечитать группы и пере-аудитить brand-first
+            try:
+                groups = gcl.groups_for_edit(cid)
+            except Exception:  # noqa: BLE001
+                groups = []
+            after = _audit_brand_not_first(rcl, login, cid, str(it.get("name") or ""), groups)
+            still = len((after[0].get("ads") or [])) if after else 0
+            fixed.append({"campaign_id": cid, "regenerated": changed, "ads_updated": len(items),
+                          "still_bad_ads": still, "unfixable_ads": unfixable})
+            if unfixable or still:
+                terminal.append({
+                    "code": "BRAND_NOT_FIRST_UNFIXABLE", "id": cid, "campaign_id": cid,
+                    "name": str(it.get("name") or ""), "transport": "grid",
+                    "ad_ids": unfixable, "still_bad_ads": still,
+                    "severity": "error", "fixable": False,
+                    "detail": (f"регенерация brand-first не удалась после {CQ._REGEN_MAX_ATTEMPTS} "
+                               f"попыток (unfixable={len(unfixable)}, still_bad={still})"),
+                })
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"кампания {cid}: {str(e)[:180]}")
+    return {"ok": not errors and not terminal, "campaigns_fixed": len(fixed),
+            "campaigns": fixed, "errors": errors, "terminal": terminal}
 
 
 # ── fixer (BUTTON_MISSING): добивка кнопки «Получить скидку» RMW-апдейтом ─────────
@@ -1324,7 +2273,7 @@ def fix_video_missing(login: str, ctx: dict, issues: list[dict]) -> dict:
             warns: list = []
             while remaining and passes < 3:
                 passes += 1
-                meta = [{"id": a["ad_id"], "meta": {"ct": a["ct"]}} for a in remaining]
+                meta = [{"id": a["ad_id"], "meta": {"ct": a["ct"], "brand": a.get("brand") or ""}} for a in remaining]
                 vr = _video_ads(login, meta, grid_cookie=None, campaign_id=cid) or {}
                 total_attached += int(vr.get("videos_attached") or 0)
                 total_uploaded += int(vr.get("videos_uploaded") or 0)
@@ -1343,7 +2292,20 @@ def fix_video_missing(login: str, ctx: dict, issues: list[dict]) -> dict:
                           "warnings": warns[:4]})
         except Exception as e:  # noqa: BLE001
             errors.append(f"кампания {cid}: {str(e)[:180]}")
-    return {"ok": not errors, "campaigns_fixed": len(fixed), "campaigns": fixed, "errors": errors}
+    # Агрегируем still_missing_total: если > 0 → логируем явно и ставим requeue_needed.
+    # Это отличает «не всё загружено» от «всё ок»; следующий цикл spec-аудита доберёт.
+    still_missing_total = sum(int(c.get("still_missing") or 0) for c in fixed)
+    if still_missing_total > 0:
+        logging.warning(
+            "fix_video_missing: login=%s still_missing_total=%d по %d кампаниям "
+            "— VIDEO_MISSING остаток, requeue_needed",
+            (ctx or {}).get("login") or login, still_missing_total, len(fixed),
+        )
+    result = {"ok": not errors, "campaigns_fixed": len(fixed), "campaigns": fixed,
+              "errors": errors, "still_missing_total": still_missing_total}
+    if still_missing_total > 0:
+        result["requeue_needed"] = True
+    return result
 
 
 # ── fixer (NO_LISTING): добить «Страницы каталога» by-shopping ────────────────────
@@ -1464,10 +2426,19 @@ def fix_feed_filters_grid(login: str, ctx: dict, issues: list[dict]) -> dict:
                         continue          # у фида нет поля бренда — пропускаем (не ошибка)
                     items.append({
                         "id": a["ad_id"], "feed_id": fid,
-                        # Канон create-пути: одно условие НА КАЖДУЮ марку (AND → исключить,
-                        # если совпала любая). ОДНО условие со всеми марками имело бы другую
-                        # семантику NOT_CONTAINS_ALL (ревью 03.07, 3 угла сошлись).
-                        "conditions": _csf._minus_marks_grid_conditions(brand_field=bf, model_field=mf),
+                        # Канон create-пути (с 2026-07-06): ОДНО условие на поле со всеми
+                        # значениями массивом — NOT_CONTAINS_ALL [A,B] = «не содержит ни одной»
+                        # (значения внутри условия объединяются ИЛИ, дока yard.yandex.ru
+                        # filtry-v-fidah; лимит «до 22 условий, объединённых И»). Прежний вывод
+                        # ревью 03.07 «другая семантика» неверен; по-условию-на-значение при
+                        # 86 минусах ломало Grid-лимит 30 условий и UAC-дедуп.
+                        # Листинги: поле 'model' физически отсутствует в Grid feedFilter для ListingAd
+                        # (UNAVAILABLE_FIELD live 2026-07-07) — фильтруем ТОЛЬКО по 'name'.
+                        # ShoppingAd: оба поля (brand + model) передаются без изменений.
+                        "conditions": _csf._minus_marks_grid_conditions(
+                            brand_field=bf,
+                            model_field=None if listing_flag else mf,
+                        ),
                         "bodies": a.get("bodies") or [],
                     })
                 if items:
@@ -1475,9 +2446,11 @@ def fix_feed_filters_grid(login: str, ctx: dict, issues: list[dict]) -> dict:
                     try:
                         updated += gcl.set_product_feed_filters(items, listing=listing_flag)
                     except gf.GridFinalizeError as _ffe:
-                        if "UNKNOWN_FIELD" in str(_ffe):
+                        if "UNKNOWN_FIELD" in str(_ffe) or "UNAVAILABLE_FIELD" in str(_ffe):
                             # _resolve_feed_field при сбое probe отдаёт фолбэк 'vendor' —
-                            # у фида такого поля может не быть: это skip, не ошибка цикла
+                            # у фида такого поля может не быть: это skip, не ошибка цикла.
+                            # UNAVAILABLE_FIELD: Grid сигнализирует что поле недоступно для
+                            # данного типа объявления (напр. 'model' на ListingAd) — тоже skip.
                             skipped_no_field += len(items)
                         else:
                             raise
@@ -1489,6 +2462,51 @@ def fix_feed_filters_grid(login: str, ctx: dict, issues: list[dict]) -> dict:
             if attempted and not updated:
                 errors.append(f"кампания {cid}: 0 из {attempted} фильтров применилось "
                               f"(см. журнал set_product_feed_filters)")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"кампания {cid}: {str(e)[:180]}")
+    return {"ok": not errors, "campaigns_fixed": len(fixed), "campaigns": fixed, "errors": errors}
+
+
+# ── fixer (LISTING_POSITIVE_FILTER_MISSING): позитивный name-фильтр на ListingAd ──
+def fix_listing_positive_filter(login: str, ctx: dict, issues: list[dict]) -> dict:
+    """Поставить позитивный name CONTAINS_ANY [brand] на GdListingAd в «Марки»-группах.
+
+    Переиспользует _listing_name_value (create_set_feeds:1189) + set_listing_name_filters
+    (grid_finalize:1348) — те же функции что и create-путь (fix-2, HAR36).
+    Пропускает записи без brand (парсинг из adgroup_name мог не найти марку)."""
+    from . import create_set_feeds as _csf
+    lp_issues = [it for it in (issues or []) if it.get("code") == "LISTING_POSITIVE_FILTER_MISSING"]
+    if not lp_issues:
+        return {"ok": True, "note": "нет LISTING_POSITIVE_FILTER_MISSING", "campaigns_fixed": 0}
+    gcl = gf.GridClient(login)
+    fixed, errors = [], []
+    for it in lp_issues:
+        try:
+            cid = int(it.get("campaign_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        ads = [a for a in (it.get("ads") or [])
+               if a.get("ad_id") and a.get("feed_id") and a.get("brand")]
+        if cid <= 0 or not ads:
+            continue
+        try:
+            items = []
+            skipped_no_brand = 0
+            for a in ads:
+                brand = (a.get("brand") or "").strip()
+                name_val = _csf._listing_name_value(brand, "Марки") if brand else None
+                if not name_val:
+                    skipped_no_brand += 1
+                    continue
+                items.append({
+                    "id": a["ad_id"],
+                    "feed_id": str(a["feed_id"]),
+                    "value": name_val,
+                    "bodies": list(a.get("bodies") or []),
+                })
+            updated = gcl.set_listing_name_filters(items) if items else 0
+            fixed.append({"campaign_id": cid, "updated": updated,
+                          "skipped_no_brand": skipped_no_brand})
         except Exception as e:  # noqa: BLE001
             errors.append(f"кампания {cid}: {str(e)[:180]}")
     return {"ok": not errors, "campaigns_fixed": len(fixed), "campaigns": fixed, "errors": errors}
@@ -1525,6 +2543,188 @@ def fix_placements_wrong(login: str, ctx: dict, issues: list[dict]) -> dict:
         except Exception as e:  # noqa: BLE001
             errors.append(f"кампания {cid}: {str(e)[:180]}")
     return {"ok": not errors, "campaigns_fixed": len(fixed), "campaigns": fixed, "errors": errors}
+
+
+# ── fixer (GENERIC_FALLBACK_GROUP): удалить DRAFT-пустышку + deferred токеном ───
+def fix_generic_fallback_group(login: str, ctx: dict, issues: list[dict]) -> dict:
+    """Удалить DRAFT tp5 с generic ct0000-группой и поставить deferred с _resume_via_token=True.
+
+    Пересоздание пойдёт ТОКЕНОМ (с сегментными бренд-группами из M3-пака) на сброс баллов.
+
+    Порядок: проверить DRAFT → dedup deferred → delete_campaigns(cookie) → _deferred_save.
+
+    - Только DRAFT-кампании: live-проверка через _grid_list_campaigns(login, only_draft=True).
+    - Не-DRAFT → skip с reason (удаление боевых заблокировано).
+    - Защита от дублей: если по (login, item name) уже есть waiting/resumed deferred → skip.
+    - item матчится по it["name"] == campaign_name (точный == из body["items"]).
+    """
+    gfb_issues = [it for it in (issues or []) if it.get("code") == "GENERIC_FALLBACK_GROUP"]
+    if not gfb_issues:
+        return {"ok": True, "note": "нет GENERIC_FALLBACK_GROUP", "campaigns_fixed": 0}
+
+    _grid_list = _DEPS.get("_grid_list_campaigns")
+    _def_save = _DEPS.get("_deferred_save")
+    _units_reset = _DEPS.get("_next_units_reset_utc")
+    _conn_rw = _DEPS.get("_victory_conn_rw")
+
+    body = (ctx or {}).get("body") or {}
+    agency = ((ctx or {}).get("agency") or body.get("agency") or "").strip()
+    job_id = (ctx or {}).get("job_id") or body.get("_job_id")
+    items_plan: list[dict] = list(body.get("items") or [])
+
+    # --- Собрать live DRAFT id-шники ---
+    draft_ids: set[int] = set()
+    try:
+        if _grid_list:
+            for c in (_grid_list(login, only_draft=True) or []):
+                cid = c.get("id")
+                if cid:
+                    draft_ids.add(int(cid))
+    except Exception as _e:  # noqa: BLE001
+        return {"ok": False, "error": f"grid_list DRAFT: {str(_e)[:160]}",
+                "campaigns_fixed": 0, "deferred_ids": [], "skipped": [], "errors": []}
+
+    from . import grid_create as _gc_mod  # Flask-free, лениво
+
+    fixed: list[dict] = []
+    deferred_ids: list[str] = []
+    skipped: list[dict] = []
+    errors: list[str] = []
+
+    for issue in gfb_issues:
+        try:
+            cid = int(issue.get("campaign_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        camp_name = (issue.get("name") or "").strip()
+        if cid <= 0:
+            continue
+
+        # 1) Только DRAFT — удаление боевых заблокировано
+        if cid not in draft_ids:
+            skipped.append({"campaign_id": cid, "name": camp_name,
+                            "reason": "не DRAFT — удаление заблокировано"})
+            continue
+
+        # 2) Найти item в плане по имени кампании
+        item_match = next(
+            (x for x in items_plan if (x.get("name") or "").strip() == camp_name), None)
+        if item_match is None:
+            skipped.append({"campaign_id": cid, "name": camp_name,
+                            "reason": "item не найден в body['items'] — план потерян"})
+            continue
+
+        # 2b) ЗАЩИТА от ложного детекта на edit-view lag (живой кейс 2026-07-06: аудит сразу
+        #     после создания видел «1 группу» у ПОЛНОЦЕННОЙ tp5 (35 групп/3609 ключей) и фиксер
+        #     УДАЛЯЛ её). Пустышка = НЕТ живых ключей; ключи читаем через showConditions
+        #     (_show_condition_kw_counts — надёжный источник, НЕ edit-view). Ключи есть →
+        #     кампания живая, детект ложный, пропускаем.
+        try:
+            _kw_map = gr.GridReadClient(login)._show_condition_kw_counts([cid]) or {}
+            _kw_live = int(_kw_map.get(int(cid)) or _kw_map.get(cid) or 0)
+        except Exception as _e:  # noqa: BLE001
+            errors.append(f"кампания {cid}: guard-проверка живых ключей упала "
+                          f"({str(_e)[:120]}) — фикс пропущен (безопасность)")
+            continue
+        if _kw_live > 0:
+            skipped.append({"campaign_id": cid, "name": camp_name,
+                            "reason": f"живые ключи ({_kw_live}) — НЕ пустышка (edit-view lag), пропуск"})
+            continue
+
+        # 3) Защита от дублей deferred
+        if _conn_rw:
+            try:
+                _conn = _conn_rw()
+                try:
+                    _cur = _conn.cursor()
+                    _cur.execute(
+                        "SELECT id FROM public.direct_deferred_creates "
+                        "WHERE login=%s AND status IN ('waiting','resumed') "
+                        "AND body->'items' @> %s::jsonb LIMIT 1",
+                        (login, json.dumps([{"name": camp_name}])))
+                    _row = _cur.fetchone()
+                finally:
+                    _conn.close()
+                if _row:
+                    skipped.append({"campaign_id": cid, "name": camp_name,
+                                    "reason": f"deferred уже есть ({_row[0]}) — повтор не нужен"})
+                    continue
+            except Exception as _e:  # noqa: BLE001
+                errors.append(f"кампания {cid}: dedup-check: {str(_e)[:160]}")
+                continue
+
+        # 4) СНАЧАЛА deferred токеном (ревью 06.07: если ставить его ПОСЛЕ удаления, did=None
+        #    от _deferred_save — он глотает ошибки БД — означал «черновик удалён, докрутки нет,
+        #    ok:True» = молчаливая потеря пункта). Деферред без удаления безопасен: дубля не
+        #    будет — RESUME-SKIP пропустит живую кампанию, а generic-пустышку удалим ниже.
+        if not (_def_save and _units_reset):
+            skipped.append({"campaign_id": cid, "name": camp_name,
+                            "reason": "deferred_save/_next_units_reset_utc не сконфигурированы"})
+            continue
+        did: str | None = None
+        try:
+            _def_body = dict(body)
+            _def_body["_resume_via_token"] = True   # резюм пойдёт ТОКЕНОМ, не по куке
+            # иначе резюм опять форсит куку → тот же NO_BRAND_SEGMENTS по кругу (ревью 06.07;
+            # парный фикс — create_set_gallery.py)
+            _def_body.pop("via_cookie", None)
+            # Семён 2026-07-07 (никаких ночных отложек): «баллы первичны» — если баллы ЖИВЫ,
+            # добиваем ТОКЕНОМ СРАЗУ (resume_at=None → now(), демон ~2 мин). Реальный 152 (баллы
+            # исчерпаны) — только тогда ждём сброс (физическая невозможность, не расписание).
+            _units_alive = _DEPS.get("_units_alive_for_login")
+            _alive = _units_alive(login, agency) if _units_alive else None
+            _resume_at = None if _alive else _units_reset().isoformat()
+            did = _def_save(login, agency, _def_body, [item_match], job_id,
+                            resume_count=int(_def_body.get("_resume_count") or 0),
+                            resume_at=_resume_at)
+        except Exception as _e:  # noqa: BLE001
+            errors.append(f"кампания {cid}: deferred_save: {str(_e)[:180]}")
+            continue
+        if not did:
+            errors.append(f"кампания {cid}: deferred_save вернул None (сбой БД?) — "
+                          "удаление НЕ выполняем, пункт не потерян")
+            continue
+        deferred_ids.append(did)
+
+        # 5) Удалить DRAFT-пустышку по куке (без баллов v5). Свежая пере-проверка DRAFT
+        #    НЕПОСРЕДСТВЕННО перед delete (как в create_set_repairing:463-478): за время
+        #    dedup-check/предыдущих итераций кампанию могли опубликовать — боевые не трогаем.
+        try:
+            _draft_now = {int(c["id"]) for c in (_grid_list(login, only_draft=True) or [])
+                          if c.get("id")}
+        except Exception as _e:  # noqa: BLE001
+            errors.append(f"кампания {cid}: повторная DRAFT-проверка упала: {str(_e)[:160]} — "
+                          f"удаление пропущено (deferred {did} поставлен)")
+            continue
+        if cid not in _draft_now:
+            skipped.append({"campaign_id": cid, "name": camp_name, "deferred_id": did,
+                            "reason": "при повторной проверке не DRAFT — удаление заблокировано"})
+            continue
+        try:
+            _gc_cl = _gc_mod.GridCreateClient(login)
+            _del_res = _gc_cl.delete_campaigns([cid])
+        except Exception as _e:  # noqa: BLE001
+            errors.append(f"кампания {cid}: delete_campaigns: {str(_e)[:180]} "
+                          f"(deferred {did} поставлен — пустышка удалится следующим аудитом)")
+            continue
+        _del_errs = _del_res.get("errors") or []
+        _del_ok = cid in {int(x) for x in (_del_res.get("deleted") or []) if x}
+        if _del_errs or not _del_ok:
+            errors.append(f"кампания {cid}: Grid не подтвердил удаление "
+                          f"({(_del_errs[0] if _del_errs else 'нет в deleted')!r:.160}) "
+                          f"(deferred {did} поставлен)")
+            continue
+
+        fixed.append({"campaign_id": cid, "name": camp_name, "deferred_id": did})
+
+    return {
+        "ok": not errors,
+        "campaigns_fixed": len(fixed),
+        "deferred_ids": deferred_ids,
+        "campaigns": fixed,
+        "skipped": skipped,
+        "errors": errors,
+    }
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────────
@@ -1622,6 +2822,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\n[fix] KEYWORDS_WRONG_GROUP → {fix_res}")
     fix_st = fix_short_titles(args.login, ctx, issues)
     print(f"[fix] SHORT_TITLES → {fix_st}")
+    fix_bf = fix_brand_not_first(args.login, ctx, issues)
+    print(f"[fix] BRAND_NOT_FIRST → {fix_bf}")
     fix_btn = fix_button_missing(args.login, ctx, issues)
     print(f"[fix] BUTTON_MISSING → {fix_btn}")
     fix_ff = fix_feed_filters_uac(args.login, ctx, issues)

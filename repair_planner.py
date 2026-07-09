@@ -17,14 +17,11 @@ _COOKIE_FIRST_CODES = {
     "SHOPPING_NOT_FINALIZED",
     "GRID_FINALIZE_WARN",
 }
-# Поисковые кампании с битым автотаргетом — UpdateUnifiedAdGroups no-op для ключей, но для
-# relevanceMatch ТЕОРЕТИЧЕСКИ работает. Пока идут в RECREATE из-за надёжности.
-# NO_KEYWORDS_LIVE УБРАН из этого набора (2026-07-03): in-place repair через Grid AddKeywords
-# (execute_keywords_repair) подтверждён рабочим → предпочитаем keywords_repair, recreate только
-# если in-place попытка не помогла (repair_attempts в issue > 0).
-_SEARCH_RECREATE_CODES = {
-    "WRONG_AUTOTARGET",
-}
+# WRONG_AUTOTARGET УБРАН из этого набора (2026-07-07): in-place repair через Grid
+# UpdateUnifiedAdGroups (execute_keywords_repair) выставляет EXACT_V2_MARK+WITHOUT_BRAND
+# → предпочитаем keywords_repair, recreate только если in-place попытка не помогла
+# (repair_attempts > 0 в issue). Набор оставлен для возможных будущих кодов.
+_SEARCH_RECREATE_CODES: set = set()
 _RECREATE_CODES = {
     "RESULT_FAILED",
     "CAMPAIGN_NOT_FOUND_IN_GRID",
@@ -46,6 +43,7 @@ _RECREATE_CODES = {
     "UAC_TEXTS_MISSING",
     "UAC_SITELINKS_MISSING",
     "UAC_MEDIA_MISSING",
+    "UAC_VIDEO_MISSING",   # D3-UAC 2026-07-09: видео-марка без видео → recreate с довложением видео
     "UAC_FEED_MISSING",
     "UAC_PRODUCT_MODEL_FILTER_MISSING",
     "CAMPAIGN_ARCHIVED",
@@ -99,14 +97,10 @@ def _action_for_issue(issue: dict[str, Any]) -> dict[str, Any] | None:
             "note": "создать/докрутить через cookie/Grid, v5 не использовать без отдельной необходимости",
         }
         if code in _SEARCH_RECREATE_CODES:
-            # Кампания РЕАЛЬНО существует, но с пустыми поисковыми группами / битым автотаргетом.
-            # IN-PLACE keyword-repair не работает (UpdateUnifiedAdGroups no-op) → её надо снести и
-            # пересоздать с корректным cap. requires_campaign_delete → авто-путь такое НЕ трогает
-            # (destructive), исполняется только под явным гейтом.
+            # Пустые кампании (future codes): нужен destructive recreate.
             action["requires_campaign_delete"] = True
-            action["note"] = ("поисковая кампания с пустыми группами/битым автотаргетом: "
-                              "in-place keyword-repair невозможен — удалить кампанию и пересоздать "
-                              "с корректным cap через cookie/Grid (destructive, только под гейтом)")
+            action["note"] = ("поисковая кампания требует пересоздания через cookie/Grid "
+                              "(destructive, только под гейтом)")
         return action
     if code in {"NAME_MISMATCH", "CAMPAIGN_NAME_EMPTY"}:
         return {
@@ -153,6 +147,33 @@ def _action_for_issue(issue: dict[str, Any]) -> dict[str, Any] | None:
             "issue_code": code,
             "uses_direct_units": False,
             "note": "дозалить ключи через Grid AddKeywords (in-place, executable_now)",
+        }
+
+    # WRONG_AUTOTARGET: in-place через execute_keywords_repair (UpdateUnifiedAdGroups ставит
+    # EXACT_V2_MARK + WITHOUT_BRAND). Recreate только если in-place уже провалился
+    # (repair_attempts > 0 в issue — выставляется repair-executor'ом).
+    if code == "WRONG_AUTOTARGET":
+        attempts = int(issue.get("repair_attempts") or 0)
+        if attempts > 0:
+            return {
+                "action": "resume_or_recreate_campaign",
+                "transport": "cookie_grid_preferred",
+                "campaign_id": cid,
+                "name": name,
+                "issue_code": code,
+                "requires_campaign_delete": True,
+                "uses_direct_units": False,
+                "note": (f"in-place autotarget-repair выполнялся {attempts} раз без результата "
+                         "→ удалить кампанию и пересоздать через cookie/Grid"),
+            }
+        return {
+            "action": "keywords_repair",
+            "transport": "grid",
+            "campaign_id": cid,
+            "name": name,
+            "issue_code": code,
+            "uses_direct_units": False,
+            "note": "выставить relevanceMatch search_tp2 (EXACT_V2_MARK + WITHOUT_BRAND) через Grid UpdateUnifiedAdGroups (in-place)",
         }
 
     if code == "KEYWORDS_WRONG_GROUP":
@@ -263,6 +284,30 @@ def _action_for_issue(issue: dict[str, Any]) -> dict[str, Any] | None:
             "uses_direct_units": False,
             "note": "добить короткие заголовки Мастера суффиксами (cookie PATCH uac/campaign, in-place; "
                     "исполняется в спека-аудите fix_short_titles)",
+        }
+
+    if code == "CONTENT_TEXTS_LOW":
+        return {
+            "action": "content_texts_repair",
+            "transport": "grid",
+            "campaign_id": cid,
+            "name": name,
+            "issue_code": code,
+            "uses_direct_units": False,
+            "note": "добить тексты объявления до ≥3 LLM-регенерацией + Grid RMW (in-place, без баллов; "
+                    "исполняется в спека-аудите fix_texts_low)",
+        }
+
+    if code == "GLOBAL_MINUS_CAMPAIGN_MISSING":
+        return {
+            "action": "global_minus_campaign_repair",
+            "transport": "grid",
+            "campaign_id": cid,
+            "name": name,
+            "issue_code": code,
+            "uses_direct_units": False,
+            "note": "добить глоб.минус-слова на уровень кампании inline Grid UpdateCampaigns "
+                    "(in-place, без баллов; исполняется в спека-аудите fix_global_minus_campaign)",
         }
 
     if code in ("NO_IMAGES_LIVE", "IMAGE_MISSING"):
@@ -434,6 +479,18 @@ def _action_for_candidate(candidate: dict[str, Any]) -> dict[str, Any] | None:
             "uses_direct_units": False,
             "note": "заполнить bodies ShoppingAd через set_default_text (in-place)",
         }
+    if kind == "campaign_invariant_repair":
+        return {
+            "action": "campaign_invariant_repair",
+            "transport": "grid",
+            "campaign_id": _cid(candidate),
+            "name": name,
+            "issue_code": "CAMPAIGN_INVARIANT_WRONG",
+            "uses_direct_units": False,
+            "note": ("переставить кампанийные инварианты-галочки tp1–tp5 (персонализация/расш.гео/"
+                     "«Директ помогает»/Карты/организации OFF, мониторинг ON) через Grid "
+                     "set_campaign_invariants — UpdateCampaigns, in-place, БЕЗ баллов, DRAFT, идемпотентно"),
+        }
     return None
 
 
@@ -475,6 +532,7 @@ def build_repair_plan(report: dict[str, Any] | None) -> dict[str, Any]:
         "images_repair": 3,
         "adprice_repair": 4,
         "default_text_repair": 5,
+        "campaign_invariant_repair": 5,
         "create_or_attach_promo": 6,
         "ensure_callouts": 7,
         "rename_campaign": 8,

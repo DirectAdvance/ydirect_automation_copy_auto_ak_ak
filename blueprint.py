@@ -7827,6 +7827,7 @@ def _spec_audit_deps() -> dict:
         "_direct_tokens": _direct_tokens,
         "_token_for_login": _token_for_login,
         "_enabled_minus_marks": _enabled_minus_marks,
+        "_enabled_minus_words": _enabled_minus_words,   # D6: глоб.минус-слова на кампанию (GLOBAL_MINUS_CAMPAIGN_MISSING)
         "_grid_list_campaigns": _grid_list_campaigns,
         "_is_tool_campaign": _is_tool_campaign,
         "_struct_cts": _struct_cts,
@@ -7883,6 +7884,14 @@ def _run_spec_audit_and_fix(login: str, ctx: dict, *, skip_recreate: bool = Fals
             "titles_extended": fix_st.get("titles_extended"),
             "terminal": (fix_st.get("terminal") or [])[:5],   # SHORT_TITLES_UNFIXABLE (hard-fail)
             "errors": (fix_st.get("errors") or [])[:5],
+        }
+    texts_low = [it for it in (report.get("issues") or []) if it.get("code") == "CONTENT_TEXTS_LOW"]
+    if texts_low:
+        fix_tl = csa.fix_texts_low(login, ctx, texts_low)
+        out["content_texts_low_fix"] = {
+            "ok": fix_tl.get("ok"), "campaigns_fixed": fix_tl.get("campaigns_fixed"),
+            "texts_added": fix_tl.get("texts_added"),
+            "errors": (fix_tl.get("errors") or [])[:5],
         }
     brand_first = [it for it in (report.get("issues") or []) if it.get("code") == "BRAND_NOT_FIRST"]
     if brand_first:
@@ -7976,6 +7985,13 @@ def _run_spec_audit_and_fix(login: str, ctx: dict, *, skip_recreate: bool = Fals
             "ok": fix_fmk.get("ok"), "deleted": fix_fmk.get("deleted"),
             "adgroups_fixed": fix_fmk.get("adgroups_fixed"),
             "note": fix_fmk.get("note"), "error": fix_fmk.get("error"),
+        }
+    gmc = [it for it in (report.get("issues") or []) if it.get("code") == "GLOBAL_MINUS_CAMPAIGN_MISSING"]
+    if gmc:
+        fix_gmc = csa.fix_global_minus_campaign(login, ctx, gmc)
+        out["global_minus_campaign_fix"] = {
+            "ok": fix_gmc.get("ok"), "campaigns_fixed": fix_gmc.get("campaigns_fixed"),
+            "errors": (fix_gmc.get("errors") or [])[:5],
         }
     lpf = [it for it in (report.get("issues") or []) if it.get("code") == "LISTING_POSITIVE_FILTER_MISSING"]
     if lpf:

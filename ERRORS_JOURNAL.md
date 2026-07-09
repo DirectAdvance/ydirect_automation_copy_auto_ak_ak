@@ -24,6 +24,65 @@
 
 ## Активные / недавние ошибки
 
+### K2_AUDIT_COVERAGE_HOLES — петля добивки давала ложное «чисто» на 7 классах контент-дефектов (2026-07-09)
+- Симптом (блок К2, дыры покрытия, не «живая» ошибка а пробел петли): два аудита — система #1
+  `grid_content_verifier` (структура) и система #2 `campaign_spec_audit.audit_campaign` (качество) —
+  НЕ ловили 7 классов дефектов → карточка «чисто», а в кабинете дефект. Примеры: tp5 712608932 группа
+  ct0010-«Дром» получила ключи «ситирей»; tp5 без brand-first/коротких-заголовков аудита; UAC видео-марки
+  без видео; объявления с <3 текстами; tp5 «Общее» 712608932 групп меньше слепка; tp2 712606684 без
+  глоб.минуса на кампании; брендовый ct-tp1 берёт картинки только из общего пула.
+- Где: `campaign_spec_audit.py` (детекторы+фиксеры), `repair_planner.py` (роутинг),
+  `blueprint._run_spec_audit_and_fix` + `_spec_audit_deps` (wiring), `create_set_master_product.py:423`
+  (create-side), `text_gen.py` (дискриминаторы), `kontent_pack.py` (манифест-чек), `grid_finalize.py`
+  (in-place минус).
+- Root-cause по пунктам:
+  - **D8:** `_audit_search_keywords` гейты (стр. ~259/325) резали FOREIGN_MODEL_KEYWORDS/KEYWORDS_WRONG_GROUP
+    только сегментом «Модели» → тема/«Общее»-группы не проверялись; плюс «ситирей» (кириллич. транслит
+    Geely Cityray) не был в `_auto_brand_tokens` → не распознавался как модель-токен.
+  - **D2:** ветка tp5 в `audit_campaign` (~1157) НЕ вызывала `_audit_tp1_adaptive`/`_audit_brand_not_first`,
+    хотя tp5 несёт TextAd (7 заголовков, DoD §3.5).
+  - **D3-UAC:** tp6/tp7 пост-аудит делал только feed-фильтры+короткие заголовки, VIDEO-аудита не было;
+    create-side `videos_for_ct(login, c_ct)` без `brand_hint` → «Марки»-ct давал пустой видео-пул
+    (feeds_ct_model[ct]=None → brand_word="").
+  - **D9:** число текстов объявления (<3) никто не считал на live.
+  - **D10:** `_audit_plan_vs_slepok` проверял только НАЛИЧИЕ типа, не число групп.
+  - **D6:** глоб.минус на кампании (1.4) был вынесен в P1-отложенное (нужен shared-set-id).
+  - **D5:** «брендовый ct берёт картинки из общего пула вместо своей ct» никто не ловил.
+- Решение (2026-07-09):
+  - **D8:** гейты сняты до `("Модели","Общее")`; FOREIGN_MODEL_KEYWORDS для тема-группы = любой ключ с
+    токеном из `_auto_brand_tokens` (word-boundary); «ситирей»/«кулрей» добавлены в
+    `_AUTO_BRAND_CYRILLIC_EXTRA`. Фиксер `fix_foreign_model_keywords` (удаляет `foreign_kws` по фразе)
+    работает generic. Fail-safe: набор токенов пуст → не флагаем.
+  - **D2:** tp5-ветка вызывает `_audit_tp1_adaptive`(BUTTON_MISSING+SHORT_TITLES, `groups=None`) +
+    `_audit_brand_not_first`. ShoppingAd/ListingAd (без titles) не трогаются. Фиксеры уже подключены.
+  - **D3-UAC:** новый `_audit_uac_video_missing` (`UAC_VIDEO_MISSING`) → добавлен в `_RECREATE_CODES`
+    (существующий UAC recreate). Fail-safe: не видео-марка / медиа-блок не прочитан (images==0 И
+    content==0) / videos>0 / пул пуст → []. Create-side: `videos_for_ct(login, c_ct, brand_hint=c_brand)`.
+  - **D9:** `CONTENT_TEXTS_LOW` в `_audit_tp1_adaptive` (читает `bodies`; fail-safe `bodies is None`→skip);
+    фиксер `fix_texts_low` = `_regen_texts` + Grid RMW `_grid_update_adaptive_ads` (bodies; RMW сохраняет
+    titles/images/video/цену). Wired в `_run_spec_audit_and_fix` + planner `content_texts_repair`.
+  - **D10:** `_audit_group_count_vs_slepok` (агрегатное покрытие модель-ct по аккаунту vs `_struct_cts`)
+    — **report-only warn**, БЕЗ авто-фиксера (детект без ремонта зациклил бы reschedule «до нуля»,
+    журнал I). Осознанно агрегатно (не per-сегмент — segment-per-campaign надёжно не маппится).
+  - **D6:** `_audit_global_minus_campaign` (tp2/tp4/tp5, читает inline `minusKeywords`+
+    `libraryMinusKeywordsIds`; fail-safe: shared-set есть → молчим) → `fix_global_minus_campaign` →
+    `grid_finalize.set_campaign_minus_keywords` (inline UpdateCampaigns, БЕЗ баллов, идемпотентно).
+    Детект и ремонт оба на inline → консистентны, без цикла.
+  - **D5:** `_audit_ct_slepok_images` (`CT_SLEPOK_IMAGES_EMPTY`, **report-only warn, minimum**): брендовый
+    tp1-ct с пустым `kp.has_slepok_images` (лёгкий манифест-чек БЕЗ скачивания байтов) → берёт только
+    общий пул. БЕЗ авто-фиксера (наполнение слепка = контент). Fail-safe: чек упал → skip.
+- Осознанные упрощения (честно): D10 агрегатно+report-only (tp5 feed-driven, brands≠slepok-ct);
+  D5 = наличие ct-картинок в манифесте, а не per-image reverse-lookup живого объявления. Оба report-only
+  (визуализация, не автопочинка) — чтобы детект-без-ремонта не зациклил reschedule.
+- Статус: 🟡 код на Mac (py_compile OK; pyflakes чисто — 0 новых undefined-name; изолированные smoke:
+  `_auto_brand_tokens` содержит «ситирей»/«кулрей», foreign-match ключа True; `_uac_video_brand`
+  корректно матчит Haval/Москвич/BAIC/Belgee и отсеивает Chery/пусто; `has_slepok_images` не падает).
+  НЕ деплоено (единый рестарт после Фазы 1). **live не проверено** — re-run на аккаунте с дефектами
+  (psm5h7q6: tp5 «Дром»/ситирей, tp2 712606684 минус, UAC видео-марки).
+- НЕ помогло ранее: детект «пустоты» по одному groups_for_edit — edit-view лаг (журнал I/J). Здесь:
+  keyword-детекты по `keywords` из showConditions-запроса groups_for_edit; D10/D5 report-only (лаг даёт
+  максимум лишний warn, ничего не удаляет); D6 читает кампанийный payload (не group-level).
+
 ### UNAVAILABLE_FIELD_LISTING_FILTER — name-фильтр «Страницы каталога» валит чанк, каталог = весь фид (D4, 2026-07-09)
 - Симптом (live porg-psm5h7q6, кампания 712605238): «Страницы каталога» tp5 показывают ВЕСЬ фид вместо
   бренда. `listing_name_set=0`. В логе (если дошло) — Grid `updateListingAds` отвергал чанк
