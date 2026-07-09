@@ -24,6 +24,75 @@
 
 ## Активные / недавние ошибки
 
+### WORKER_FREEZE_POSTPROCESS_NO_TIMEOUT — постпроцесс морозит поток воркера (#17, 2026-07-09)
+- Симптом (живой прогон 09.07, ДВАЖДЫ за прогон): direct-worker ЗАМЕРЗАЛ — процесс жив, **CPU 0%, лог
+  молчит 6-8+ мин**, джоба висит `running`/`interrupted`, `done=14/14` но НЕ флипается в `done`. Второй
+  раз — при СВЕЖЕЙ куке И уже задеплоенном M3 circuit-breaker → блок НЕ на M3 и НЕ на куке. 0% CPU +
+  тишина = поток заблокирован на СЕТЕВОМ `recv()` БЕЗ таймаута. Сопутствующий лог:
+  `[agency-gate] sweep fail-open: connection to 103.88.240.90:5432 timeout` (Victory-DB подвисает).
+- Где: постпроцесс между созданием РК и флипом джобы в done. Точка №1 (главная, до флипа) —
+  `create_set_orchestrator.py:987 run_create_set_postprocess` (внутри `_create_set_response`, т.е. до
+  возврата `data` воркеру, поэтому `done=N/N` не флипается): `verify_create_set` +
+  `_create_set_live_verification` (Grid по куке) + `rauto.execute_safe_post_create` (Grid-ремонт по куке).
+  Точка №2 (done-блок `blueprint.py:~2593`) — `_auto_queue_recreate_after_done` /
+  `_schedule_delayed_content_repair_after_done` / finalize-enqueue: DB-записи в Victory.
+- Root-cause: (а) **Victory-DB БЕЗ statement_timeout.** `_victory_conn`/`_victory_conn_rw` имели только
+  `connect_timeout=15` (ловит фазу коннекта), но РЕЗУЛЬТАТ запроса читался с сокета без предела —
+  подвисший запрос/мёртвая сеть = вечный блок на `recv()` (0% CPU, тишина). (б) **Нет таймбокса на
+  постпроцесс в целом:** даже с тайт-таймаутами на HTTP (Grid/UAC уже 40-180с) суммарная деградация
+  тянулась минутами и морозила поток; K1-watchdog чинит только БД-строку delayed-repair (отдельный
+  демон), сам ЗАБЛОКИРОВАННЫЙ поток воркера так не освобождается.
+- Решение (2026-07-09, #17):
+  - **DB (`blueprint.py`):** `_victory_conn`+`_victory_conn_rw` — добавлены `options="-c statement_timeout=
+    120000"` (env `DIRECT_VICTORY_STMT_TIMEOUT_MS`, сервер сам рвёт подвисший запрос) + keepalives
+    (`keepalives_idle=30,interval=10,count=3` → мёртвый сокет детектируется за ~60с ConnectionError, а не
+    висит вечно). ВСЕ DB-операции сервиса идут через эти 2 хелпера → покрыты одной точкой. 120с — щедрый
+    потолок для OLTP jobs/deferred (одиночные строки/JSONB), но КОНЕЧНЫЙ.
+  - **Таймбокс (`create_set_postprocess.py`):** `run_create_set_postprocess` теперь тонкая обёртка —
+    тело вынесено в `_run_create_set_postprocess_body`, исполняется в daemon-потоке, основной поток ждёт
+    `join(_POSTPROCESS_TIME_BUDGET_SECONDS=600, env DIRECT_POSTPROCESS_BUDGET_SEC)`. Не уложились → возврат
+    degraded-результата (все 4 ключа на месте, `live_verification` без `repair_plan` → авто-recreate не
+    стартует, `postprocess_timeboxed` в результате) → orchestrator возвращает `data` → джоба флипается в
+    терминал (done). Созданные РК не теряются; orphan-поток дожимает свой bounded-таймаут (HTTP ≤180с,
+    DB ≤~120с) и умирает сам; добивку/верификацию подхватит delayed-репэйр демон свежей Grid-проверкой.
+- Как джоба ВСЕГДА доходит до терминала: главный блок (точка №1) внутри `_create_set_response` теперь
+  bounded таймбоксом 600с → `data` всегда возвращается → воркер флипает `status=done` (`blueprint.py:2576`)
+  и `_job_db_save(full=True)` (2589) ДО done-блочных добивок; сами добивки (точка №2) — DB-bounded +
+  best-effort try/except, и выполняются уже ПОСЛЕ терминального сохранения.
+- Не сломано: нормальный постпроцесс (verify+safe-repair) — тот же код в `_run_..._body`, при быстром
+  завершении `box["out"]` отдаётся 1:1. K1-watchdog (delayed content_repair), F finalize-очередь не
+  тронуты. keepalives безвредны (лишь быстрее детектят мёртвый сокет). statement_timeout=120с не рвёт
+  здоровые OLTP-запросы. batch-аспекты (`DIRECT_BATCH_ASPECTS`, прод off) вне таймбокса — осознанно
+  (по умолчанию не исполняются; их Grid-вызовы уже best-effort try/except).
+- Статус: 🟡 код на Mac (py_compile OK; pyflakes чисто по postprocess, 0 новых undefined в blueprint).
+  НЕ деплоено (единый рестарт). **live не проверено** — проверит полный прогон: при подвисе Grid/DB
+  постпроцесс отпускает воркер за ≤600с, джоба уходит в done; в логе `[postprocess-timebox] …`.
+- НЕ помогло ранее: K1-watchdog (running>30мин→failed+закрыть child) — освобождает ТОЛЬКО БД-строку
+  content_repair отдельным демоном; ЗАБЛОКИРОВАННЫЙ на сокете поток воркера так не освобождается (висит,
+  пока не сработает СОБСТВЕННЫЙ таймаут операции) → нужны тайт-таймауты на самих операциях + таймбокс.
+
+### CONTENT_REUSE_ACCOUNT_PASS — account-level reuse контента по ct/brand (перф, #16, НЕ баг, 2026-07-09)
+- Симптом: НЕ ошибка — оптимизация. Каждая марка/модель (ct+brand) генерилась заново в каждом наборе
+  аккаунта (per-набор кэш `_generated_content_by_key` сбрасывается каждый набор) → лишние вызовы LLM,
+  тормоз прохода.
+- Где: `create_set_orchestrator.py` точка интеграции контента (~667 read / ~704 write);
+  `ai_content.py` account-кэш.
+- Механика фикса: account-level in-memory кэш `_ACCOUNT_CONTENT_CACHE` (ключ `(login, agent, site,
+  city, ct, brand)`), живёт весь проход воркера. Порядок источников: набор-кэш → account-кэш →
+  генерация → запись в оба. Тумблер env `DIRECT_CONTENT_REUSE_ACCOUNT` (дефолт ON).
+- ⚠️ Обход кэша при recreate/repair: `_force_recreate_item = force_recreate(name, _repair_force_names)`
+  → account-кэш read пропускается (дефектной РК нужен свежий контент, не старый из кэша). Grabля,
+  которую избежали: reuse устаревшего контента при пересоздании — закрыт обходом.
+- brand-first сохранён: ключ включает ct+brand (чужая марка не подставится). slepok-scoping: смена
+  слепка = смена agent-ключа → кэш не переживает. Потокобезопасность: свой Lock account-кэша ВНЕ
+  `_guard` (без вложенных локов), покрывает prefetch 3w / каналы C1.
+- Статус: 🟡 код на Mac (py_compile OK; изолированный smoke helpers зелёный: roundtrip/isolation/
+  scoping/TTL/toggle/size-cap). НЕ деплоено (единый рестарт после Фазы 1). **live не проверено** —
+  покажет полный прогон.
+- НЕ помогло ранее: — (первая реализация account-level reuse; process-global `_CONTENT_CACHE` не
+  покрывал потоковый prefetch-путь, т.к. он зовёт `_cached_campaign_content(fast_mode=True)` в обход).
+
+
 ### K4_CONTENT_STYLE_WEAK_STATIC_RESERVES — слабые филлеры/промпты сработали на деградации M3 (D1/D7/D11, 2026-07-09)
 - Симптом (блок К4, качество, не «живая» ошибка): при деградации генерации на мёртвом M3 (до
   circuit-breaker'а) в live уходили слабые СТАТИЧЕСКИЕ резервы: (D1) филлеры быстрых ссылок с висячим

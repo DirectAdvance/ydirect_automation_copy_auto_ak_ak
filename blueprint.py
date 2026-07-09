@@ -3778,6 +3778,18 @@ DEFAULT_STATUS = "Контекст активно"
 _EXCLUDE_DIRECTOLOGS = ["Аксиома", "О-Лидер", "Медиа-Актив", "Ниндзя Илья"]
 
 
+# Задача #17 (робастность): зависшая сеть до Victory (103.88.240.90:5432) морозила поток воркера
+# на 6-8+ мин (0% CPU = блок на recv() сокета БЕЗ таймаута). connect_timeout=15 ловит только фазу
+# коннекта; РЕЗУЛЬТАТ запроса читался без предела. Защита: (а) statement_timeout — сервер сам
+# прерывает подвисший запрос; (б) keepalives — мёртвый сокет (пропавшая сеть, сервер молчит)
+# детектируется за ~idle+interval*count ≈ 60с и рвётся ConnectionError, а не висит вечно.
+# 120с — щедрый потолок для OLTP-запросов jobs/deferred (одиночные строки/JSONB), но конечный.
+_VICTORY_STATEMENT_TIMEOUT_MS = int(os.environ.get("DIRECT_VICTORY_STMT_TIMEOUT_MS", "120000"))
+_VICTORY_KEEPALIVE_KW = {
+    "keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 3,
+}
+
+
 def _victory_conn():
     import psycopg2
     sd = str(cmc._find_secret_dir())
@@ -3786,7 +3798,9 @@ def _victory_conn():
     from loader import load_db  # noqa: E402
     cfg = load_db("victory")
     conn = psycopg2.connect(host=cfg["host"], port=cfg["port"], database=cfg["database"],
-                            user=cfg["user"], password=cfg["password"], connect_timeout=15)
+                            user=cfg["user"], password=cfg["password"], connect_timeout=15,
+                            options=f"-c statement_timeout={_VICTORY_STATEMENT_TIMEOUT_MS}",
+                            **_VICTORY_KEEPALIVE_KW)
     conn.set_session(readonly=True, autocommit=True)
     return conn
 
@@ -3844,7 +3858,9 @@ def _victory_conn_rw():
     from loader import load_db  # noqa: E402
     cfg = load_db("victory")
     conn = psycopg2.connect(host=cfg["host"], port=cfg["port"], database=cfg["database"],
-                            user=cfg["user"], password=cfg["password"], connect_timeout=15)
+                            user=cfg["user"], password=cfg["password"], connect_timeout=15,
+                            options=f"-c statement_timeout={_VICTORY_STATEMENT_TIMEOUT_MS}",
+                            **_VICTORY_KEEPALIVE_KW)
     conn.autocommit = False
     return conn
 
