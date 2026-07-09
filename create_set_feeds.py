@@ -483,7 +483,7 @@ _IMG_FAIL_TTL = 900.0                                                 # 15 ми�
 # заливка набора (`_preupload_tp1_images`) грузит ВСЕ картинки набора одним батчем — при 618
 # уникальных 8→10 воркеров сокращают фазу прогрева на ~20-25%. Env-tunable (реверс/тюнинг без
 # правки кода); держим в разумных рамках (не перегружаем Grid-эндпоинт). Дефолт 10.
-_IMG_UPLOAD_WORKERS = max(1, int(os.environ.get("DIRECT_IMG_UPLOAD_WORKERS", "10")))
+_IMG_UPLOAD_WORKERS = max(1, int(os.environ.get("DIRECT_IMG_UPLOAD_WORKERS", "14")))
 
 
 def _reset_img_fail_cache(login: str, paths: list | None = None) -> int:

@@ -229,6 +229,7 @@ class DirectV501Client:
         """Вызов метода v501. Возвращает result-словарь или бросает DirectV501Error."""
         url = f"{V501_BASE}/{service}"
         body = {"method": method, "params": params}
+        _transient_err = None
         for attempt in range(3):
             resp = self.sess.post(url, json=body, timeout=self.timeout)
             if resp.status_code == 429:
@@ -238,13 +239,25 @@ class DirectV501Client:
             data = resp.json()
             if "error" in data:
                 err = data["error"]
+                _code = err.get("error_code", 0)
+                _msg = err.get("error_string", "") or ""
+                # Транзиентные ошибки Яндекса («Сервис/операция временно недоступна», code 1000) —
+                # РЕТРАИМ с backoff, а не роняем создание РК на моргании API (живой кейс 5de58f8ad0d9:
+                # [v501:campaigns.add] 1000 → одна РК failed). До 3 попыток (как 429), потом бросаем.
+                if (_code == 1000 or "временно недоступ" in _msg.lower()) and attempt < 2:
+                    _transient_err = DirectV501Error(f"{service}.{method}", _code, _msg,
+                                                     err.get("error_detail", ""))
+                    time.sleep(3 * (attempt + 1))     # backoff 3с, 6с
+                    continue
                 raise DirectV501Error(
                     f"{service}.{method}",
-                    err.get("error_code", 0),
-                    err.get("error_string", ""),
+                    _code,
+                    _msg,
                     err.get("error_detail", ""),
                 )
             return data.get("result", {})
+        if _transient_err is not None:
+            raise _transient_err
         raise DirectV501Error(f"{service}.{method}", 429, "превышен лимит запросов (3 ретрая)")
 
     # -- высокий уровень --
