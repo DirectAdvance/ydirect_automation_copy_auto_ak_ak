@@ -54,6 +54,8 @@ def create_set_response(deps: dict):
     _cached_campaign_content = deps['_cached_campaign_content']
     _callout_semantic_key = deps['_callout_semantic_key']
     _content_cache_key = deps['_content_cache_key']
+    _account_content_get = deps.get('_account_content_get')   # #16: account-level reuse (в пределах прохода)
+    _account_content_put = deps.get('_account_content_put')
     _content_copy = deps['_content_copy']
     _counter_foreign_owner = deps['_counter_foreign_owner']
     _create_account_promo_from_slepok = deps['_create_account_promo_from_slepok']
@@ -568,7 +570,8 @@ def create_set_response(deps: dict):
             # inline-cookie (тогда он ok); если нет — остаётся failed, дубля не будет (повторный набор
             # пропустит уже созданные через set_plan). Это убирает требование ручного попапа-согласия
             # для системной/фоновой докрутки: 152 = автоматический переход на куки.
-            _new_units_fail = False          # РЕАЛЬНЫЙ (failed/fallback) 152 среди новых результатов пункта
+            _new_units_fail = False          # РЕАЛЬНЫЙ (failed/fallback) 152 (баллы) среди новых результатов
+            _new_auth_fail = False           # ошибка 53 (auth): токен не открывает аккаунт (НЕ про баллы)
             while ch.scan_i < len(ch.results):
                 _r = ch.results[ch.scan_i]; ch.scan_i += 1
                 # token_units_fallback: token-путь tp2/tp4 упёрся в баллы и добился кукой (res ok) —
@@ -576,52 +579,68 @@ def create_set_response(deps: dict):
                 if _r.get("token_units_fallback"):
                     ch.units_seen = True
                     _new_units_fail = True
-                if _units_in_result(_r) or (
-                    _auth_error_in_result and (not _r.get("ok")) and _auth_error_in_result(_r)
-                ):
+                _r_units = bool(_units_in_result(_r))
+                _r_auth = bool(_auth_error_in_result and (not _r.get("ok")) and _auth_error_in_result(_r))
+                if _r_units or _r_auth:
                     ch.units_seen = True
                     if not _r.get("ok"):
                         ch.units_block = True
-                        _new_units_fail = True
-            # СТРОГИЙ флип (ON): _API_FIRST_FLIP_STREAK считает ТОЛЬКО ПОДРЯД идущие реальные 152.
+                        # 152 (units) → проверяется остаток баллов оператора перед куки-флипом (R2-2).
+                        # 53 (auth, БЕЗ 152) → баллы ни при чём: токен не открывает аккаунт, куки-путь —
+                        # единственный шанс, флипаем без проверки остатка (как раньше).
+                        if _r_units:
+                            _new_units_fail = True
+                        else:
+                            _new_auth_fail = True
+            # streak (ON): _API_FIRST_FLIP_STREAK считает ТОЛЬКО ПОДРЯД идущие реальные 152.
             # Пункт, завершившийся БЕЗ нового units-маркера (успех token-пути / не-152), ОБРЫВАЕТ
             # серию → сбрасываем счётчик в 0. Иначе два транзиентных 152, разделённых успешными
-            # token-созданиями, накопили бы streak и ложно флипнули ВЕСЬ набор на куку (замысел и
-            # комментарий ниже — подтверждённое ИСЧЕРПАНИЕ, а не разрозненные сбои). После реального
-            # флипа via_cookie уже True → инкремент/сброс роли не играют. Гейт _API_FIRST: при OFF
-            # ветка инкремента не исполняется, streak=0 всегда → поведение байт-в-байт.
+            # token-созданиями, накопили бы streak. После реального флипа via_cookie уже True →
+            # инкремент/сброс роли не играют. Гейт _API_FIRST: при OFF ветка инкремента не
+            # исполняется, streak=0 всегда → куки-флип решается ТОЛЬКО жёсткой проверкой остатка
+            # баллов оператора (_confirmed_dead), см. блок ниже.
             if _API_FIRST and not _new_units_fail:
                 ch.units_fail_streak = 0
             if ch.units_seen and not ch.via_cookie:
-                if not _API_FIRST:
-                    # OFF — прежнее поведение байт-в-байт: флип по ПЕРВОМУ units-маркеру.
+                if _new_auth_fail:
+                    # Ошибка 53 (auth): токен не открывает аккаунт — остаток баллов ни при чём.
+                    # Куки-путь (Grid/UAC, без баллов) — единственный шанс. Флипаем как раньше,
+                    # БЕЗ проверки остатка баллов (её и не прочитать: тот же битый токен).
                     ch.via_cookie = True     # с этого пункта и до конца набора — только по куке (без баллов)
                     ch.units_switched = True
-                    ch.units_block = False   # 152 больше НЕ блокирующий стоп: продолжаем по куке, не break
+                    ch.units_block = False
                 else:
-                    # ON — СТРОГИЙ флип: у агентства много баллов, одиночный/транзиентный 152 при живых
-                    # баллах НЕ уводит на куку зря. Флипаем ТОЛЬКО при подтверждённом исчерпании:
-                    # (а) units_alive прочитал units≈0 (False), ИЛИ (б) N реальных 152-провалов подряд.
-                    _confirmed = False
+                    # 152 (units). R2-2: ЖЁСТКАЯ проверка реального остатка баллов ОПЕРАТОРА перед
+                    # куки-флипом — ОБЕ ветки (OFF-дефолт и ON/DIRECT_API_FIRST). У оператора могут
+                    # быть десятки млн баллов (напр. victorylotsofads1 = 40.5M) → одиночный/транзиентный
+                    # 152 ЛОЖНЫЙ, уводить весь набор на куку (→ NO_BRAND_SEGMENTS/детур/риск потери)
+                    # НЕЛЬЗЯ. Флипаем на куку ТОЛЬКО при ПОДТВЕРЖДЁННОМ исчерпании:
+                    #   (а) остаток прочитан УСПЕШНО и rest < порога → _units_alive_for_login = False;
+                    #   (б) ON-режим: N реальных 152 подряд (страховка от упорного read-fail — не держать
+                    #       набор вечно на token, если баллы физически не читаются).
+                    # Живые баллы (True) → ложный 152 → НЕ флипать. None (не прочитали: сеть/блип/нет
+                    # токена) → НЕ трактовать как «мертвы» → НЕ флипать (token-retry). Пункт, реально
+                    # упавший по 152, остаётся failed → добирается по имени в token-deferred/resume
+                    # (units_failed_names, resume_at=след. сброс) — семантика сохранения остатка цела,
+                    # cookie-фолбэк для РЕАЛЬНОГО исчерпания сохранён ветвью _confirmed_dead.
+                    _units_state = None
                     if _new_units_fail:
-                        ch.units_fail_streak += 1
+                        if _API_FIRST:
+                            ch.units_fail_streak += 1
                         try:
-                            if callable(_units_alive_for_login) and \
-                                    _units_alive_for_login(login, (_w_agency or "")) is False:
-                                _confirmed = True
+                            if callable(_units_alive_for_login):
+                                _units_state = _units_alive_for_login(login, (_w_agency or ""))
                         except Exception:  # noqa: BLE001 — чтение остатка best-effort
-                            pass
-                        if ch.units_fail_streak >= _API_FIRST_FLIP_STREAK:
-                            _confirmed = True
-                    if _confirmed:
+                            _units_state = None
+                    _confirmed_dead = (_units_state is False)     # прочитано УСПЕШНО И rest < порога
+                    _streak_confirmed = _API_FIRST and ch.units_fail_streak >= _API_FIRST_FLIP_STREAK
+                    if _confirmed_dead or _streak_confirmed:
                         ch.via_cookie = True
                         ch.units_switched = True
                         ch.units_block = False
                     else:
-                        # Не подтверждено (транзиент/ложный маркер/успех с inline-восстановлением):
-                        # НЕ флипаем, сбрасываем sticky-флаги — следующий пункт переоценивается заново.
-                        # Пункт, реально упавший по 152, остаётся failed и добирается по имени в
-                        # deferred/resume (units_failed_names) — семантика сохранения остатка цела.
+                        # Живые баллы / неизвестность (None) / недобор streak → НЕ флипаем.
+                        # Сбрасываем sticky-флаги — следующий пункт переоценивается заново.
                         ch.units_seen = False
                         ch.units_block = False
             if _job and _job.get("cancel"):              # отмена: стоп ПОСЛЕ текущей (не рвём кампанию на полпути)
@@ -661,10 +680,24 @@ def create_set_response(deps: dict):
                 return
             _it_ckey = _content_cache_key((agent or "").strip().lower(), eff_site, ctx.get("city") or "", it)
 
+            # force-recreate/repair: НЕ берём контент из account-кэша — при пересоздании
+            # дефектной РК нужен свежий контент, а не старый из кэша (per-набор кэш свежий —
+            # его reuse для пары cpc/cpa recreate допустим).
+            _force_recreate_item = bool(force_recreate(name, _repair_force_names))
+
             # Для парных кампаний и дублей с тем же st/ct/brand в рамках ОДНОГО набора не
             # генерируем заново: вторая кампания получает ТОЧНО тот же готовый контентный набор.
+            # #16: при промахе набор-кэша — фолбэк в account-кэш (та же марка/модель ct+brand
+            # генерится 1 раз на аккаунт, переиспользуется во всех наборах прохода). Порядок:
+            # набор-кэш → account-кэш → генерация. recreate/repair обходит account-кэш.
             if not (it.get("titles") and it.get("texts") and it.get("sitelinks")):
                 _prev_content = _generated_content_by_key.get(_it_ckey)
+                if (not _prev_content and not _force_recreate_item
+                        and callable(_account_content_get)):
+                    try:
+                        _prev_content = _account_content_get(login, _it_ckey)
+                    except Exception:  # noqa: BLE001 — reuse не критичен: фолбэк на генерацию
+                        _prev_content = None
                 if _prev_content:
                     if _prev_content.get("titles") and not it.get("titles"):
                         it["titles"] = list(_prev_content["titles"])
@@ -700,13 +733,21 @@ def create_set_response(deps: dict):
                         _job["step"] = "creating"        # UI: «создаю кампанию…»
 
             if it.get("titles") and it.get("texts") and it.get("sitelinks"):
+                _content_snapshot = {
+                    "titles": list(it.get("titles") or []),
+                    "texts": list(it.get("texts") or []),
+                    "sitelinks": _content_copy({"sitelinks": it.get("sitelinks") or []}).get("sitelinks", []),
+                    "title2": it.get("title2") or "",
+                }
                 with _guard:
-                    _generated_content_by_key[_it_ckey] = {
-                        "titles": list(it.get("titles") or []),
-                        "texts": list(it.get("texts") or []),
-                        "sitelinks": _content_copy({"sitelinks": it.get("sitelinks") or []}).get("sitelinks", []),
-                        "title2": it.get("title2") or "",
-                    }
+                    _generated_content_by_key[_it_ckey] = _content_snapshot
+                # #16: пишем в оба кэша. account-кэш (свой lock внутри helper) — ВНЕ _guard,
+                # чтобы не вкладывать локи. Внутри — гейт _content_complete (только полный 5/3/8).
+                if callable(_account_content_put):
+                    try:
+                        _account_content_put(login, _it_ckey, _content_snapshot)
+                    except Exception:  # noqa: BLE001 — кэширование не критично
+                        pass
 
             # ── tp1 РСЯ: ЕПК v501 mode=network_cpa с бренд-группами из пака M3 ──────
             if it.get("type") == "tp1_rsy":
@@ -1075,7 +1116,45 @@ def create_set_response(deps: dict):
             _units_pending = _pend                       # для ответа units_pending
             _tail = (f"; не создано пунктов плана: {_pend}" if _pend else "")
             _rc = int(body.get("_resume_count") or 0)
+            # R2-2: перед куки-докруткой остатка ЖЁСТКО читаем реальный остаток баллов ОПЕРАТОРА.
+            # Живые (True) / нечитаемые (None) баллы → 152 ложный/транзиентный → остаток добиваем
+            # ТОКЕНОМ (deferred с _resume_via_token=True, resume_at=now() — демон повторит API-путём
+            # немедленно), а НЕ уводим на куку (лишний детур + NO_BRAND для сегментного tp5). Куки-
+            # remainder — ТОЛЬКО при ПОДТВЕРЖДЁННО мёртвых баллах (False) ИЛИ при исчерпании токен-
+            # ретраев (_rc >= _RESUME_MAX): тогда кука — законный фолбэк для реального 152.
+            _units_dead_confirmed = False
             if _remaining:
+                try:
+                    if callable(_units_alive_for_login):
+                        _units_dead_confirmed = (
+                            _units_alive_for_login(login, (_w_agency or body.get("agency") or "")) is False)
+                except Exception:  # noqa: BLE001 — чтение остатка best-effort, не критично
+                    _units_dead_confirmed = False
+            _token_retry_did = None
+            if _remaining and not _units_dead_confirmed and _rc < _RESUME_MAX:
+                # Ложный/транзиентный 152 при живых (или нечитаемых) баллах → token-ретрай СРАЗУ.
+                # _resume_via_token=True обязателен: демон _resume_one_deferred иначе форсит via_cookie.
+                try:
+                    _tb = dict(body)
+                    _tb["_resume_via_token"] = True
+                    _tb.pop("via_cookie", None)
+                    # exclude_id: этот прогон мог САМ быть резюмом (_deferred_id) — исключаем его строку
+                    # из дедупа, иначе self-reference (дедуп вернул бы parent-id, финал пометил бы его
+                    # done, новая token-строка не создалась → остаток теряется, инцидент SEGMENT_TP5).
+                    _tb_parent = _tb.pop("_deferred_id", None)
+                    _token_retry_did = _deferred_save(
+                        login, (_w_agency or body.get("agency") or ""),
+                        _tb, _remaining, body.get("_job_id"), resume_count=_rc,
+                        exclude_id=_tb_parent)
+                except Exception:  # noqa: BLE001
+                    _token_retry_did = None
+                if _token_retry_did:
+                    deferred_id = _token_retry_did
+                    units_note = (f"⚠️ Транзиентный/ложный 152 при ЖИВЫХ баллах оператора — остаток "
+                                  f"({_pend} пунктов) добивается ТОКЕНОМ (не по куке){_tail}. "
+                                  f"Создано: {created}. Дублей не будет.")
+            if _remaining and not _token_retry_did:
+                # ПОДТВЕРЖДЁННОЕ исчерпание баллов ИЛИ исчерпан токен-ретрай → куки-remainder (реальный 152).
                 # п.1: немедленно ставим куки-джобу — не ждём демона (~10 мин) и не блокируемся на
                 # _RESUME_MAX (cookie-путь не тратит баллов; дублей нет — RESUME-SKIP пропустит созданные).
                 if _job_new:
@@ -1108,11 +1187,12 @@ def create_set_response(deps: dict):
                 units_note = (f"⛔ Баллы коммандера исчерпаны (error 152). Создано: {created}{_tail}. "
                               f"Остаток ({_pend} пунктов) автоматически поставлен в очередь по куке "
                               f"(джоба {_auto_cookie_jid}) — ничего делать не нужно. Дублей не будет.")
-            elif deferred_id:
+            elif deferred_id and units_note is None:
+                # token-retry ветвь уже выставила units_note; сюда попадаем только на реальном 152 (кука).
                 units_note = (f"⛔ Суточный лимит баллов Яндекс.Директа исчерпан (error 152). "
                               f"Создано кампаний: {created}{_tail}. Остаток ({_pend} пунктов) "
                               f"поставлен на докрутку по куке — повторно кликать не нужно. Дублей не будет.")
-            else:
+            elif units_note is None:
                 _no_rem = ("нет несозданного остатка — всё создано или добито" if not _pend
                            else f"не создано {_pend} пунктов; повторите после сброса баллов (полночь МСК)")
                 units_note = f"⛔ Баллы коммандера исчерпаны (error 152). Создано: {created}. {_no_rem}."
