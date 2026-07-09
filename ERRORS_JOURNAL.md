@@ -64,12 +64,56 @@
   тронуты. keepalives безвредны (лишь быстрее детектят мёртвый сокет). statement_timeout=120с не рвёт
   здоровые OLTP-запросы. batch-аспекты (`DIRECT_BATCH_ASPECTS`, прод off) вне таймбокса — осознанно
   (по умолчанию не исполняются; их Grid-вызовы уже best-effort try/except).
-- Статус: 🟡 код на Mac (py_compile OK; pyflakes чисто по postprocess, 0 новых undefined в blueprint).
-  НЕ деплоено (единый рестарт). **live не проверено** — проверит полный прогон: при подвисе Grid/DB
-  постпроцесс отпускает воркер за ≤600с, джоба уходит в done; в логе `[postprocess-timebox] …`.
+- Статус: ❌ #17 НЕ ПОКРЫЛ реальную точку фриза (прогон e05fbc86e8ca 09.07, >33мин, done=14/14) →
+  добито R2-1 (см. ниже). #17-таймбокс сам по себе корректен (постпроцесс отпускается ≤600с), но
+  фриз был ВНЕ обёрнутой функции.
 - НЕ помогло ранее: K1-watchdog (running>30мин→failed+закрыть child) — освобождает ТОЛЬКО БД-строку
   content_repair отдельным демоном; ЗАБЛОКИРОВАННЫЙ на сокете поток воркера так не освобождается (висит,
   пока не сработает СОБСТВЕННЫЙ таймаут операции) → нужны тайт-таймауты на самих операциях + таймбокс.
+  **#17 (таймбокс ТОЛЬКО `run_create_set_postprocess`)** — не покрыл фазу финализации ПОСЛЕ создания
+  (promo/build_response/DB-хвост/орфан-лок постпроцесса) + слепое пятно watchdog'а (см. R2-1).
+
+### WORKER_FREEZE_FINALIZE_WATCHDOG_BLINDSPOT — watchdog БЕЗУСЛОВНО щадил done>=total → вечный running (R2-1, 2026-07-09)
+- Симптом (прогон e05fbc86e8ca 09.07, >33мин): джоба `running`/`interrupted`, `done=14/14`, CPU 0%,
+  тишина; delayed content_repair НЕ отработал (brand-first/ключи не добились). #17 (таймбокс постпроцесса
+  600с + statement_timeout + keepalives) УЖЕ задеплоен — не помогло.
+- Где: `blueprint.py:_create_watchdog_tick` (~843). Точка фриза: фаза ФИНАЛИЗАЦИИ набора в
+  `create_set_orchestrator.py` ПОСЛЕ создания (done=len(items) выставлен на строке ~930), ДО возврата
+  data воркеру: `attach_or_create_promo` (~958, сеть, НЕ таймбокснута) → postprocess (~986, таймбокс
+  #17) → `build_create_set_response` (~1170) → DB-хвост (deferred/units). Любой зависший сетевой read /
+  лок / мёртвая Victory-DB тут вешал воркер, а done-флип (blueprint:~2576) не наступал.
+- Root-cause: watchdog `_create_watchdog_tick` при `done>=total` делал БЕЗУСЛОВНЫЙ `continue`
+  («почти-завершённую джобу не красим error») — задумано против ложного kill'а куки-бэкфилла (массовый
+  skip: created не растёт, done доходит до total). Но это создало СЛЕПОЕ ПЯТНО: джоба, зависшая в
+  фазе финализации ПРИ done>=total, была невидима watchdog'у НАВСЕГДА. #17 таймбоксил ТОЛЬКО
+  `run_create_set_postprocess` (одна из ~4 операций фазы) → promo/build_response/DB-хвост и возможный
+  орфан-лок постпроцесса оставались без предохранителя, а watchdog их не подхватывал.
+- Решение (2026-07-09, R2-1):
+  - **Отдельный КОНЕЧНЫЙ бюджет фазы финализации** `_CREATE_FINALIZE_TIMEOUT` (env
+    `DIRECT_CREATE_FINALIZE_TIMEOUT`, дефолт 900с > postprocess-бюджета 600с). При `done>=total` и
+    `now-heartbeat > _CREATE_FINALIZE_TIMEOUT` → терминал `status=done` (кампании СОЗДАНЫ → не error) +
+    `_watchdog_done`/`cancel` + освобождение агентского слота (`_agency_gate_release`). heartbeat при
+    done>=total заморожен на последнем item (per-item `_bump_item`) → `_stuck` = ровно длительность
+    финализации. Куки-бэкфилл (массовый skip) укладывается в бюджет; реальный фриз терминируется.
+  - **delayed content_repair добивается** best-effort из watchdog'а (`_schedule_delayed_content_repair_
+    after_done`, ВНЕ `_CREATE_COND` — берёт `_CREATE_JOBS_LOCK`): осиротевший воркер мог не дойти до
+    своего done-блока (blueprint:~2594). Идемпотентно (`_delayed_content_repair_save` дедуп по
+    parent_job_id; absorb_child по child_jid) → повтор проснувшимся воркером безвреден.
+  - **Анти-регрессия:** джобы с активной дочерней добивкой (`result["_active_children"]`, dcr:/fin:)
+    ЛЕГИТИМНО держат родителя running с done>=total (absorb_child_start→running) — ими рулят K1/F
+    watchdog'и; финализ-таймаут их ЯВНО пропускает (не убивает delayed-repair/finalize на 15-й минуте).
+    Путь done<total не тронут: тот же `_CREATE_RUNNING_TIMEOUT=1200` (гейт перенесён ниже, байт-в-байт).
+- Как гарантирован терминал на ЛЮБОМ пути (C1 вкл/выкл): фаза финализации ОДНА для обоих путей —
+  каналы C1 влияют только на цикл СОЗДАНИЯ (done<total, покрыт `_CREATE_RUNNING_TIMEOUT` + heartbeat);
+  постпроцесс/promo/build_response идут через ту же орк-«хвост»-секцию после join каналов. Watchdog —
+  внешний поток → освобождает джобу даже если воркер намертво на сокете/локе. Терминал: done<total →
+  error за ≤1200с; done>=total-фриз → done за ≤900с; активные dcr:/fin: → K1/F.
+- Статус: 🟡 код на Mac (py_compile OK; pyflakes 0 undefined в blueprint). НЕ деплоено. **live не
+  проверено** — проверит round 2: при подвисе финализации watchdog флипает done ≤900с + ставит
+  delayed content_repair; в result `finalize_timeboxed{stuck_seconds,budget_seconds}`; активная
+  delayed-добивка НЕ убивается досрочно.
+- НЕ помогло ранее: #17 (таймбокс `run_create_set_postprocess`) — покрыл 1 из ~4 операций фазы
+  финализации, watchdog-слепое-пятно done>=total осталось → фриз в promo/build_response/DB висел вечно.
 
 ### CONTENT_REUSE_ACCOUNT_PASS — account-level reuse контента по ct/brand (перф, #16, НЕ баг, 2026-07-09)
 - Симптом: НЕ ошибка — оптимизация. Каждая марка/модель (ct+brand) генерилась заново в каждом наборе

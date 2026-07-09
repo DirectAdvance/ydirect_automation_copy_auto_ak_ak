@@ -98,6 +98,7 @@ from .ai_content import (              # ре-экспорт: deps-словар�
     _CONTENT_CACHE, _CONTENT_CACHE_LOCK, _content_cache_key, _content_complete,
     _ai_campaign_content_for_item, _ai_group_content, _slepok_content_ensure,
     _slepok_content_get, _slepok_content_save, _gen_campaign_content, _seed_slepok_content,
+    _account_content_get, _account_content_put,   # #16: account-level content reuse (в пределах прохода)
 )
 from . import copy_engine as _ce       # копирование кампаний 1:1 (вынесено; 28 DI инъектим ниже)
 from .copy_engine import (             # ре-экспорт: _create_worker_loop/_ensure_copy_worker/_wire_copy_routes
@@ -268,6 +269,12 @@ _CREATE_POOL_PAUSE = 15          # сек паузы после УСПЕШНОГ
 _CREATE_MAX_PER_AGENCY = 1
 _CREATE_ACTIVE_AGENCIES: dict[str, int] = {}   # агентский ключ -> число активных джоб прямо сейчас
 _CREATE_RUNNING_TIMEOUT = 1200   # сек без прогресса -> watchdog завершает зависшую running-джобу
+# R2-1 (2026-07-09): done>=total = цикл создания завершён, идёт ФИНАЛИЗАЦИЯ (promo/postprocess/
+# build_response/DB-хвост). Раньше watchdog БЕЗУСЛОВНО щадил done>=total → зависшая финализация
+# висела running ВЕЧНО (job e05fbc86e8ca, done=14/14, >33мин, CPU 0%). #17 таймбоксил ТОЛЬКО
+# run_create_set_postprocess, а promo/build_response/DB-хвост/орфан-лок постпроцесса — нет. Отдельный
+# КОНЕЧНЫЙ бюджет на фазу финализации (> postprocess-бюджета 600с) → воркер/джоба всегда к терминалу.
+_CREATE_FINALIZE_TIMEOUT = int(os.environ.get("DIRECT_CREATE_FINALIZE_TIMEOUT", "900"))
 _CREATE_WATCHDOG_POLL = 30       # период watchdog, сек
 
 
@@ -836,19 +843,62 @@ def _jobs_purge_old() -> None:
 def _create_watchdog_tick() -> None:
     """Одиночный проход watchdog: локальные зависшие running-джобы и stale running в БД."""
     timed_out: list[tuple[str, dict]] = []
+    finalize_stuck: list[tuple[str, dict]] = []   # done>=total + зависшая финализация → done + delayed repair
     now = time.time()
     with _CREATE_COND:
         for jid, job in list(_CREATE_JOBS.items()):
             if job.get("status") != "running":
                 continue
             heartbeat = max(float(job.get("_heartbeat") or 0), float(job.get("started_at") or 0))
-            if not heartbeat or (now - heartbeat) <= _CREATE_RUNNING_TIMEOUT:
+            if not heartbeat:
                 continue
-            # Не красим error почти-завершённую джобу: на куки-бэкфилле она массово ПРОПУСКАЕТ уже
-            # созданные (created не растёт, но done доходит до total) — это не зависание. heartbeat
-            # теперь тикает на каждый обработанный item (_bump_item/_bump_job), но done>=total — явный
-            # признак, что джоба фактически дошла до конца и финализируется.
+            _stuck = now - heartbeat
+            # done>=total — цикл создания завершён; heartbeat тикает на каждый обработанный item
+            # (_bump_item/_bump_job), при done>=total он заморожен на последнем item → _stuck растёт
+            # ровно на время фазы ФИНАЛИЗАЦИИ. Раньше эта фаза была БЕЗУСЛОВНО освобождена от
+            # watchdog'а → любой зависший сетевой read / лок / мёртвая Victory-DB в promo/postprocess/
+            # build_response вешал джобу running НАВСЕГДА (job e05fbc86e8ca, done=14/14, >33мин).
+            # Теперь — свой КОНЕЧНЫЙ бюджет _CREATE_FINALIZE_TIMEOUT (> postprocess-бюджета 600с): на
+            # куки-бэкфилле массовый skip укладывается в него, а реальный фриз финализации терминируется.
             if int(job.get("done") or 0) >= int(job.get("total") or 0) > 0:
+                # Активные дочерние добивки (dcr: delayed content_repair / fin: finalize) держат
+                # родителя running с done>=total ЛЕГИТИМНО (absorb_child_start → status=running) —
+                # ими управляют K1/F watchdog'и, НЕ этот финализ-таймаут. Не убиваем их досрочно.
+                _res_now = job.get("result")
+                if isinstance(_res_now, dict) and _res_now.get("_active_children"):
+                    continue
+                if _stuck <= _CREATE_FINALIZE_TIMEOUT:
+                    continue
+                # Финализация зависла > бюджета → освобождаем воркер/слот. Кампании УЖЕ созданы
+                # (done>=total) → терминал = done (не error); добивку контента подхватит delayed
+                # content_repair (ставим ниже best-effort, т.к. done-блок осиротевшего воркера мог
+                # не отработать). Орфан-поток дожмёт свой bounded-таймаут (HTTP ≤180с/DB ≤120с) и
+                # при пробуждении увидит _watchdog_done → не перепишет статус.
+                job["status"] = "done"
+                job["error"] = None
+                _res = job.get("result") if isinstance(job.get("result"), dict) else {}
+                _res["finalize_timeboxed"] = {
+                    "stuck_seconds": int(_stuck),
+                    "budget_seconds": int(_CREATE_FINALIZE_TIMEOUT),
+                    "note": ("финализация набора зависла > бюджета — воркер освобождён watchdog'ом; "
+                             "созданные кампании целы, добивку подхватит delayed content_repair"),
+                }
+                job["result"] = _res
+                job["finished_at"] = now
+                job["_watchdog_done"] = True
+                job["cancel"] = True
+                snap = dict(job)
+                timed_out.append((jid, snap))
+                finalize_stuck.append((jid, snap))
+                agency = _job_agency(job)
+                active = max(0, int(_CREATE_ACTIVE_AGENCIES.get(agency, 0)) - 1)
+                if active:
+                    _CREATE_ACTIVE_AGENCIES[agency] = active
+                else:
+                    _CREATE_ACTIVE_AGENCIES.pop(agency, None)
+                _agency_gate_release(agency, jid)
+                continue
+            if _stuck <= _CREATE_RUNNING_TIMEOUT:
                 continue
             job["status"] = "error"
             job["error"] = f"watchdog: running без прогресса > {int(_CREATE_RUNNING_TIMEOUT // 60)} мин"
@@ -896,6 +946,16 @@ def _create_watchdog_tick() -> None:
             pass
     for jid, snap in timed_out:
         _job_db_save(jid, snap, full=True)
+    # Финализ-стак: воркер осиротел на зависшей финализации → его done-блок (delayed content_repair,
+    # blueprint:_create_set_response worker) мог не отработать (поток может так и не разблокироваться).
+    # Планируем добивку контента здесь best-effort ВНЕ _CREATE_COND (schedule берёт _CREATE_JOBS_LOCK).
+    # Идемпотентно: _delayed_content_repair_save дедупит по parent_job_id, absorb_child — по child_jid;
+    # если проснувшийся воркер тоже вызовет _schedule (видит status=done) — повтор безвреден.
+    for jid, snap in finalize_stuck:
+        try:
+            _schedule_delayed_content_repair_after_done(jid, snap)
+        except Exception:  # noqa: BLE001 — watchdog не должен падать на постановке добивки
+            pass
     _jobs_db_mark_stale_running(_CREATE_RUNNING_TIMEOUT)
     _agency_gate_sweep()                                  # освободить слоты агентств крашнутых/терминальных джоб
 
@@ -7688,6 +7748,7 @@ def _create_set_orchestrator_deps() -> dict:
         "_account_retargeting", "_add_job_err", "_apply_campaign_direct_minus", "_apply_corrections",
         "_attach_minus_set_to_text_campaign", "_attach_post_repair_verification", "_bump_item", "_bump_job",
         "_busy_response", "_cached_campaign_content", "_callout_semantic_key", "_content_cache_key",
+        "_account_content_get", "_account_content_put",   # #16: account-level content reuse (в пределах прохода)
         "_content_copy", "_counter_foreign_owner", "_create_account_promo_from_slepok",
         "_create_set_live_verification", "_create_shopping_via_cookie", "_create_text_via_cookie",
         "_create_text_via_token",   # DIRECT_API_FIRST: tp2/tp4 через баллы (token), фолбэк на cookie
