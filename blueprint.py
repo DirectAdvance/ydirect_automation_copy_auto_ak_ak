@@ -52,7 +52,7 @@ from . import kontent_pack as kp  # чтение контент-пака с M3 (
 from . import llm_providers as _llmp   # M3/OpenRouter (вынесено из blueprint; heartbeat инъектим ниже)
 from .llm_providers import (           # ре-экспорт: внутренние вызовы + deps-словари модулей
     _M3_LLM_URL, _M3_LLM_TIMEOUT, _M3_LLM_URLS_14B, _M3_LLM_URL_72B,
-    _M3_LLM_TIMEOUT_14B, _M3_LLM_REPAIR_TIMEOUT, _OPENROUTER_LLM_MODEL,
+    _M3_LLM_TIMEOUT_14B, _M3_LLM_REPAIR_TIMEOUT, _M3_CONTENT_IDLE_TIMEOUT, _OPENROUTER_LLM_MODEL,
     _m3_llm_probe, _m3_complete, _m3_complete_url, _m3_complete_parallel,
     _openrouter_api_key, _openrouter_probe, _or_complete_url, _llm_pair_for,
     _strip_error_leak, _has_error_leak,
@@ -267,7 +267,7 @@ _CREATE_WORKERS = 0              # 0 = по числу агентских ток
 _CREATE_POOL_PAUSE = 15          # сек паузы после УСПЕШНОГО полного аккаунта
 _CREATE_MAX_PER_AGENCY = 1
 _CREATE_ACTIVE_AGENCIES: dict[str, int] = {}   # агентский ключ -> число активных джоб прямо сейчас
-_CREATE_RUNNING_TIMEOUT = 900    # сек без прогресса -> watchdog завершает зависшую running-джобу
+_CREATE_RUNNING_TIMEOUT = 1200   # сек без прогресса -> watchdog завершает зависшую running-джобу
 _CREATE_WATCHDOG_POLL = 30       # период watchdog, сек
 
 
@@ -322,23 +322,32 @@ def _job_touch(job: dict | None) -> None:
     job["_heartbeat"] = time.time()
 
 
+# Сериализует read-modify-write счётчиков job при C1-параллельных каналах создания
+# (DIRECT_PARALLEL_CHANNELS): master/product-путь канала B бампает эти же функции напрямую (через
+# _master_product_deps), а не через обёртки оркестратора. Uncontended в OFF/однопоточных потоках →
+# поведение не меняется (только защита от lost-update при двух потоках).
+_JOB_MUT_LOCK = threading.Lock()
+
+
 def _bump_job(job, ok: bool = True, n: int = 1) -> None:
     """Инкремент счётчиков по ФАКТУ созданной кампании (fan-out даёт N кампаний на 1 пункт плана)."""
     if not job:
         return
-    if ok:
-        job["created"] = int(job.get("created") or 0) + n
-    else:
-        job["failed"] = int(job.get("failed") or 0) + n
-    job["_heartbeat"] = time.time()   # watchdog: прогресс по ЛЮБОЙ кампании (создание/ошибка) = живой
+    with _JOB_MUT_LOCK:
+        if ok:
+            job["created"] = int(job.get("created") or 0) + n
+        else:
+            job["failed"] = int(job.get("failed") or 0) + n
+        job["_heartbeat"] = time.time()   # watchdog: прогресс по ЛЮБОЙ кампании (создание/ошибка) = живой
 
 
 def _bump_item(job) -> None:
     """Инкремент set_done: вызывать ОДИН РАЗ после завершения каждого item набора (не за каждую кампанию fan-out)."""
     if not job:
         return
-    job["set_done"] = int(job.get("set_done") or 0) + 1
-    job["_heartbeat"] = time.time()   # watchdog: каждый обработанный item (вкл. skip/пропуск) = живой
+    with _JOB_MUT_LOCK:
+        job["set_done"] = int(job.get("set_done") or 0) + 1
+        job["_heartbeat"] = time.time()   # watchdog: каждый обработанный item (вкл. skip/пропуск) = живой
 
 
 def _add_job_err(job, err) -> None:
@@ -622,6 +631,12 @@ def _job_db_progress(job: dict) -> None:
         return
     _JOB_DB_LAST[jid] = now
     _job_db_save(jid, job)
+    # Live-вливание прогресса дочерней добивки в родительскую карточку (троттлинг тот же ≤4 c).
+    _pref = _child_parent_ref(job.get("body"))
+    if _pref and _pref != jid:
+        _parent_absorb_child_progress(
+            _pref, jid, int(job.get("created") or 0), int(job.get("failed") or 0),
+            int(job.get("set_done") or job.get("done") or 0), final=False)
 
 
 def _jobs_db_mark_stale_running(timeout_sec: int = _CREATE_RUNNING_TIMEOUT) -> list[str]:
@@ -749,7 +764,21 @@ def _jobs_db_recover() -> None:
     # кампания создалась, но рестарт убил сборку). В фоне (не блокируем старт) и ТОЛЬКО при старте,
     # когда активного создания ещё нет (гонок с наполнением групп нет). По куке, без баллов.
     if _interrupted_logins:
-        def _bg_sweep(logins):
+        # Собрать прерванные джобы для reconciler — _CREATE_JOBS уже заполнен SELECT'ом выше.
+        # Исключаем requeue-джобы (_requeue_of != '') — они сами по себе уже доставка,
+        # внучки не ставим (gate внутри _requeue_missing_positions_once тоже проверяет это).
+        _interrupted_jobs: list = []  # [(job_id, login, body), ...]
+        _interrupted_login_set = set(_interrupted_logins)
+        with _CREATE_JOBS_LOCK:
+            for _jid, _jdata in _CREATE_JOBS.items():
+                if (_jdata.get("status") == "interrupted"
+                        and _jdata.get("login") in _interrupted_login_set):
+                    _ijbody = _jdata.get("body") or {}
+                    if (_ijbody.get("items")                         # есть позиции для доставки
+                            and not str(_ijbody.get("_requeue_of") or "").strip()):  # не сама доставка
+                        _interrupted_jobs.append((_jid, str(_jdata["login"]), _ijbody))
+
+        def _bg_sweep(logins, interrupted_jobs):
             time.sleep(8)                                # дать сервису и воркеру подняться
             for lg in logins:
                 try:
@@ -758,7 +787,23 @@ def _jobs_db_recover() -> None:
                         print(f"[startup-sweep] {lg}: удалено пустых ЕПК-черновиков: {n}", flush=True)
                 except Exception:  # noqa: BLE001
                     pass
-        threading.Thread(target=_bg_sweep, args=(list(_interrupted_logins),), daemon=True).start()
+            # RECONCILER: после сноса пустышек сверяем план vs. кабинет для каждой прерванной
+            # джобы и доставляем недостающие позиции повторной джобой. Гейты внутри
+            # _requeue_missing_positions_once: (1) _requeue_of → без внучек;
+            # (2) auto_requeue_missing → без дублей при повторных рестартах;
+            # (3) _job_db_active_by_login → не конкурируем с текущей активной джобой логина.
+            # Порядок важен: sweep сначала (пустые UAC-оболочки удалены), тогда Grid покажет
+            # реальное отсутствие позиций, которые были удалены до обрыва.
+            time.sleep(5)                                # Grid: пауза после sweep для стабилизации
+            for job_id, lg, body in interrupted_jobs:
+                try:
+                    new_jid = _requeue_missing_positions_once(job_id, lg, body)
+                    if new_jid:
+                        print(f"[startup-reconcile] {lg}: восстановление прерванных позиций "
+                              f"→ джоба {new_jid} (родитель {job_id})", flush=True)
+                except Exception:  # noqa: BLE001
+                    pass
+        threading.Thread(target=_bg_sweep, args=(list(_interrupted_logins), _interrupted_jobs), daemon=True).start()
 
 
 _JOB_HISTORY_TTL = 86400        # сек: завершённые джобы (история + errors_log) живут СУТКИ, потом удаляются
@@ -879,7 +924,9 @@ def _ensure_create_watchdog() -> None:
 # (сброс — полночь МСК = 21:00 UTC). Дедупа не нужно: остаток = пункты, которые ещё НЕ начинали.
 _RESUME_DAEMON = {"started": False}
 _RESUME_MAX = 3                                       # макс. авто-докруток одного остатка (анти-цикл)
-_RESUME_POLL = 600                                    # период опроса демона, сек (~10 мин)
+_RESUME_POLL = 120                                    # период опроса демона, сек (~2 мин: добивка «сразу»,
+                                                      # Семён 2026-07-07 — никаких ночных отложек по расписанию;
+                                                      # запрос дешёвый LIMIT 5, нагрузку не меняет)
 _DEFERRED_STALE_HOURS = 3                             # 'resumed'-остаток без финала дольше N часов = осиротел
                                                       # (джоба умерла при рестарте) → вернуть в waiting+now()
 _DELAYED_REPAIR_DAEMON = {"started": False}
@@ -887,6 +934,52 @@ _DELAYED_REPAIR_POLL = 60
 _DELAYED_CONTENT_REPAIR_DELAY_SECONDS = 180
 _DELAYED_FULL_REPAIR_MAX_ITERATIONS = 2   # верифай→исполнить-всё→ре-верифай; защита от ping-pong
 _DELAYED_REPAIR_STUCK_TIMEOUT_SECONDS = 1800  # 30 мин: running→failed (watchdog ПРАВКА P2)
+# B2: явный бюджет времени на ОДНУ repair-джобу (< watchdog-таймаута 1800с). Исчерпан → корректно
+# завершаем статусом partial БЕЗ reschedule (иначе на большом аккаунте цикл full-Grid-верификаций
+# упирается в watchdog kill вместо чистого partial).
+_DELAYED_REPAIR_TIME_BUDGET_SECONDS = 1200  # 20 мин
+# B1: коды Grid-ошибок «поле недоступно/неизвестно для этой схемы/фида» — НЕфиксабельно in-place
+# (мутация вернёт executed=0 навсегда). Такую проблему исключаем из inplace-остатка, чтобы цикл
+# не перепланировался по кругу на нечинимом флаге до watchdog kill.
+_REPAIR_NONFIXABLE_FIELD_MARKERS = (
+    "UNAVAILABLE_FIELD", "UNKNOWN_FIELD", "MINUS_MARKS_FILTER_MISSING",
+    "FIELD_NOT_ALLOWED", "INVALID_FIELD",
+)
+
+
+def _repair_failures_nonfixable(failed_actions: list) -> bool:
+    """True если ВСЕ провалившиеся in-place действия несут field-ошибку Grid (нечинимо для этой
+    схемы/фида) — тогда повторять/перепланировать бессмысленно. Пусто → False (нечего оценивать).
+
+    Проверяем ТОЛЬКО структурированные коды ошибок (validationResult.errors[].code и
+    extensions.code из top-level errors) — НЕ весь сериализованный blob. Если структура
+    ошибки неоднородна (plain exception-строка, нет dict-result) — считаем fixable (ретраить
+    безопаснее, чем ошибочно бросить)."""
+    if not failed_actions:
+        return False
+    for fa in failed_actions:
+        result = fa.get("result") if isinstance(fa, dict) else None
+        if not isinstance(result, dict):
+            # Структура неизвестна (plain-exception или нет result) → считаем fixable
+            return False
+        # Собираем коды ошибок из двух источников:
+        # 1) top-level errors[].extensions.code (транспортные/авторизационные ошибки Grid)
+        # 2) validationResult.errors[].code (валидационные ошибки схемы/фида)
+        codes: list[str] = []
+        for e in (result.get("errors") or []):
+            c = (e.get("extensions") or {}).get("code") if isinstance(e, dict) else None
+            if c:
+                codes.append(str(c).upper())
+        for e in (result.get("validationResult") or {}).get("errors") or []:
+            c = e.get("code") if isinstance(e, dict) else None
+            if c:
+                codes.append(str(c).upper())
+        if not codes:
+            # Нет структурированных кодов → неизвестная ошибка, считаем fixable
+            return False
+        if not any(any(m in code for m in _REPAIR_NONFIXABLE_FIELD_MARKERS) for code in codes):
+            return False   # хотя бы один код НЕ field-ошибка → возможно чинимо
+    return True
 
 
 def _next_units_reset_utc():
@@ -928,8 +1021,15 @@ def _deferred_db_init() -> None:
 
 
 def _deferred_save(login: str, agency: str, body: dict, remaining_items: list,
-                   job_id: str | None, resume_count: int = 0) -> str | None:
-    """Сохранить остаток набора для авто-докрутки после сброса баллов. → id или None."""
+                   job_id: str | None, resume_count: int = 0,
+                   resume_at: str | None = None, exclude_id: str | None = None) -> str | None:
+    """Сохранить остаток набора для авто-докрутки после сброса баллов. → id или None.
+
+    resume_at=None (по умолчанию) → докрутка по куке СРАЗУ (now()), как раньше.
+    resume_at=ISO-строка (напр. _next_units_reset_utc().isoformat()) — докрутка не раньше
+    этого момента: нужна пунктам, которые в принципе НЕ создать по куке (напр. NO_BRAND_
+    SEGMENTS_AVAILABLE — сегментный tp5 требует ТОКЕН/M3, не Grid-куку) — тогда caller
+    также должен положить body['_resume_via_token']=True (см. _resume_one_deferred)."""
     if not remaining_items:
         return None
     b = dict(body or {})
@@ -940,17 +1040,59 @@ def _deferred_save(login: str, agency: str, body: dict, remaining_items: list,
         conn = _victory_conn_rw()
         try:
             cur = conn.cursor()
-            cur.execute(
-                "INSERT INTO public.direct_deferred_creates "
-                "(id, login, agency, job_id, body, n_items, status, resume_count, resume_at) "
-                "VALUES (%s,%s,%s,%s,%s,%s,'waiting',%s, now())",   # resume_at=now(): докрутка по куке СРАЗУ
-                (did, login, agency, job_id, json.dumps(b, ensure_ascii=False),
-                 len(remaining_items), int(resume_count)))
+            # ДЕДУП (2026-07-07): одна позиция НЕ должна висеть в двух активных деферредах —
+            # двойная постановка (guardrail сработал в двух джобах подряд) давала ДУБЛИ кампаний
+            # при докрутке (кейс psm: 8 деферредов на 4 позиции → 8 лишних tp5). Если ЛЮБОЕ из
+            # имён remaining_items уже в waiting/resumed деферреде этого логина — возвращаем
+            # существующий id, второй не создаём.
+            # exclude_id: НЕ дедупить по самой резюмящейся строке. Токен-ретрай сегментного tp5
+            # планируется ИЗ resume-джобы, чья строка (body._deferred_id) уже 'resumed' и содержит
+            # тот же item → без исключения дедуп вернул бы ЕЁ id (self-reference) → финал пометил бы
+            # её done, а новая токен-строка не создалась → tp5 теряется (инцидент 08.07 721641cad7c1).
+            for _it in remaining_items:
+                _nm = str((_it or {}).get("name") or "").strip()
+                if not _nm:
+                    continue
+                if exclude_id:
+                    cur.execute(
+                        "SELECT id FROM public.direct_deferred_creates "
+                        "WHERE login=%s AND status IN ('waiting','resumed') AND id <> %s "
+                        "AND body->'items' @> %s::jsonb LIMIT 1",
+                        (login, exclude_id, json.dumps([{"name": _nm}], ensure_ascii=False)))
+                else:
+                    cur.execute(
+                        "SELECT id FROM public.direct_deferred_creates "
+                        "WHERE login=%s AND status IN ('waiting','resumed') "
+                        "AND body->'items' @> %s::jsonb LIMIT 1",
+                        (login, json.dumps([{"name": _nm}], ensure_ascii=False)))
+                _dup = cur.fetchone()
+                if _dup:
+                    print(f"[deferred-save] {login}: позиция «{_nm[:60]}» уже в активном "
+                          f"деферреде {_dup[0]} — дубль не создаём", flush=True)
+                    return str(_dup[0])
+            if resume_at:
+                cur.execute(
+                    "INSERT INTO public.direct_deferred_creates "
+                    "(id, login, agency, job_id, body, n_items, status, resume_count, resume_at) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,'waiting',%s,%s::timestamptz)",
+                    (did, login, agency, job_id, json.dumps(b, ensure_ascii=False),
+                     len(remaining_items), int(resume_count), resume_at))
+            else:
+                cur.execute(
+                    "INSERT INTO public.direct_deferred_creates "
+                    "(id, login, agency, job_id, body, n_items, status, resume_count, resume_at) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,'waiting',%s, now())",   # resume_at=now(): докрутка по куке СРАЗУ
+                    (did, login, agency, job_id, json.dumps(b, ensure_ascii=False),
+                     len(remaining_items), int(resume_count)))
             conn.commit()
         finally:
             conn.close()
         return did
-    except Exception:  # noqa: BLE001
+    except Exception as _e:  # noqa: BLE001
+        # НЕ молчим (фикс 2026-07-06): немой None здесь = потерянный набор без следа
+        # (guardrail NO_BRAND_SEGMENTS_AVAILABLE обещал докрутку токеном, а деферред не создавался).
+        print(f"[deferred-save] {login}: ошибка сохранения остатка ({len(remaining_items)} шт): "
+              f"{type(_e).__name__}: {str(_e)[:200]}", flush=True)
         return None
 
 
@@ -1036,7 +1178,8 @@ def _delayed_repair_set_status(did: str, status: str, note: str | None = None,
 
 
 def _delayed_content_repair_save(parent_job_id: str, login: str, agency: str,
-                                 *, delay_seconds: int = _DELAYED_CONTENT_REPAIR_DELAY_SECONDS) -> str | None:
+                                 *, delay_seconds: int = _DELAYED_CONTENT_REPAIR_DELAY_SECONDS,
+                                 kind: str = "content_repair") -> str | None:
     parent_job_id = (parent_job_id or "").strip()
     login = (login or "").strip()
     if not parent_job_id or not login:
@@ -1049,11 +1192,11 @@ def _delayed_content_repair_save(parent_job_id: str, login: str, agency: str,
             cur.execute("""
                 INSERT INTO public.direct_delayed_repairs
                     (id, parent_job_id, login, agency, kind, status, attempts, run_at)
-                VALUES (%s,%s,%s,%s,'content_repair','waiting',0,
+                VALUES (%s,%s,%s,%s,%s,'waiting',0,
                         now() + (%s || ' seconds')::interval)
                 ON CONFLICT (parent_job_id, kind) DO NOTHING
                 RETURNING id
-            """, (did, parent_job_id, login, agency or "", str(int(delay_seconds))))
+            """, (did, parent_job_id, login, agency or "", kind, str(int(delay_seconds))))
             row = cur.fetchone()
             conn.commit()
             return row[0] if row else None
@@ -1088,7 +1231,7 @@ def _supersede_delayed_repairs_for_login(login: str) -> None:
         pass
 
 
-_DELAYED_REPAIR_MAX_RESCHEDULES = 4   # partial-повторы «до нуля»; кап от вечного цикла
+_DELAYED_REPAIR_MAX_RESCHEDULES = 1   # 1 reschedule → 2 прогона добивки всего (+ 1 создание = 3 попытки)
 
 
 # ── «Готовые логины» — реестр аккаунтов с загруженными кампаниями (вкладка UI) ──────
@@ -1251,7 +1394,16 @@ def _requeue_missing_positions_once(parent_job_id: str, login: str, body: dict) 
             return None                              # состав фактически полный — доставка не нужна
         rbody["items"] = missing
         rbody["_requeue_of"] = parent_job_id
-        new_jid = _job_new_web(len(missing), login, rbody, {}, True)
+        # Активная джоба логина? Тогда доставку НЕ ставим и маркер НЕ сжигаем (ревью 06.07:
+        # dedup_login=True возвращал ЧУЖОЙ job_id, rbody выбрасывался, а одноразовый маркер
+        # auto_requeue_missing сгорал → позиции не доставлялись никогда). Доставим на следующем
+        # финале delayed-repair, когда логин освободится.
+        if _job_db_active_by_login(login):
+            print(f"[requeue-missing] {login}: у логина активная джоба — доставка отложена, "
+                  f"маркер не проставлен", flush=True)
+            return None
+        # доставка остатка = добивка → приоритет (Семён 2026-07-06: сразу, не в конец очереди)
+        new_jid = _job_new_web(len(missing), login, rbody, {}, False, priority=True)
         if not new_jid:
             return None
         p_res["auto_requeue_missing"] = {"job_id": new_jid, "was_created": created,
@@ -1378,6 +1530,178 @@ def _delayed_repair_reschedule(did: str, row: dict, remaining: int) -> bool:
         return False
 
 
+def _child_parent_ref(body) -> str:
+    """job_id родителя для ЛЮБОЙ дочерней джобы: докрутка 152/резерв (_resume_of), доставка
+    недостающих (_requeue_of), recreate-починка (_repair_parent_job_id). '' — джоба самостоятельная."""
+    b = body or {}
+    for k in ("_resume_of", "_requeue_of", "_repair_parent_job_id"):
+        v = str((b.get(k) or "")).strip()
+        if v:
+            return v
+    return ""
+
+
+def _parent_update(parent_jid: str, mutate) -> bool:
+    """Прочитать родительскую джобу (БД → истина), применить mutate(job,result), записать
+    в БД и in-memory. mutate возвращает False → изменений нет (не пишем). Best-effort:
+    родителя нет (TTL/убран) → тихо пропускаем (Семён 2026-07-07: дочерняя работает без карточки)."""
+    job = _job_db_get(parent_jid) or {}
+    if not job:
+        return False
+    result = rgate.dict_from_jsonish(job.get("result"))
+    if not isinstance(result, dict):
+        result = {}
+    job["result"] = result
+    if mutate(job, result) is False:
+        return False
+    _job_db_save(parent_jid, job, full=True)
+    with _CREATE_JOBS_LOCK:
+        mem = _CREATE_JOBS.get(parent_jid)
+        if mem is not None:
+            for _k in ("created", "failed", "done", "total", "set_total", "status",
+                       "error", "finished_at"):
+                if _k in job:
+                    mem[_k] = job[_k]
+            mem["result"] = result
+            _job_touch(mem)
+    return True
+
+
+def _parent_absorb_child_start(parent_jid: str, child_jid: str, child_total: int) -> None:
+    """Старт дочерней добивки → родитель снова «в работе»: done -= объём добивки (total остаётся),
+    прогресс-бар падает (было 14/14 → стало 9/14 при добивке 5 шт.), добиваемые пункты покидают
+    bucket «не создано» (failed -= child_total; при неуспехе вернутся дельтой через
+    _parent_absorb_child_progress). Идемпотентно по child_jid (ре-клейм после рестарта не
+    задваивает)."""
+    if not parent_jid or not child_jid or parent_jid == child_jid:
+        return
+    def _m(job, result):
+        children = result.setdefault("_resume_children", {})
+        if child_jid in children:
+            return False                                 # уже учтён — не задваиваем
+        children[child_jid] = {"c": 0, "f": 0, "d": 0}
+        active = result.setdefault("_active_children", [])
+        if child_jid not in active:
+            active.append(child_jid)
+        ct = int(child_total or 0)
+        job["done"] = max(0, int(job.get("done") or 0) - ct)
+        job["failed"] = max(0, int(job.get("failed") or 0) - ct)
+        job["status"] = "running"
+        job["error"] = None
+        job["finished_at"] = None
+        return True
+    try:
+        _parent_update(parent_jid, _m)
+    except Exception:  # noqa: BLE001 — вливание best-effort
+        pass
+
+
+def _parent_absorb_child_progress(parent_jid: str, child_jid: str, created: int,
+                                  failed: int, done_units: int, *, final: bool = False) -> None:
+    """Влить ЖИВОЙ прогресс дочерней добивки в родителя дельтами (без задвоения при повторных
+    вызовах — база хранится в result['_resume_children'][child_jid]). created/failed/done
+    родителя пополняются по мере добивки; при final последний ребёнок → карточка снова
+    терминальная (done, бар 100%)."""
+    if not parent_jid or not child_jid or parent_jid == child_jid:
+        return
+    def _m(job, result):
+        children = result.setdefault("_resume_children", {})
+        base = children.get(child_jid)
+        if base is None:                                 # start-хук не отработал → учитываем с нуля
+            base = {"c": 0, "f": 0, "d": 0}
+            children[child_jid] = base
+        dc = int(created or 0) - int(base.get("c") or 0)
+        df = int(failed or 0) - int(base.get("f") or 0)
+        dd = int(done_units or 0) - int(base.get("d") or 0)
+        job["created"] = max(0, min(int(job.get("total") or 0), int(job.get("created") or 0) + dc))
+        job["failed"] = max(0, min(int(job.get("total") or 0), int(job.get("failed") or 0) + df))
+        job["done"] = min(int(job.get("total") or 0), int(job.get("done") or 0) + dd)
+        base["c"] = int(created or 0)
+        base["f"] = int(failed or 0)
+        base["d"] = int(done_units or 0)
+        if final:
+            hist = result.get("resume_merged")
+            if not isinstance(hist, list):
+                hist = []
+            hist.append({"job_id": child_jid, "created": int(created or 0),
+                         "failed": int(failed or 0)})
+            result["resume_merged"] = hist[-10:]
+            active = result.setdefault("_active_children", [])
+            if child_jid in active:
+                active.remove(child_jid)
+            if not active:                               # все добивки закрыты → карточка терминальна
+                job["done"] = int(job.get("total") or 0)
+                job["status"] = "done"
+                job["finished_at"] = time.time()
+        else:
+            job["status"] = "running"
+        return True
+    try:
+        _parent_update(parent_jid, _m)
+    except Exception:  # noqa: BLE001 — вливание best-effort
+        pass
+
+
+def _merge_resume_into_parent(jid: str, job_final: dict, body: dict) -> None:
+    """Финальное вливание дочерней добивки (докрутка/доставка/recreate) в родительскую карточку
+    (Семён 2026-07-06/07: «по карточке видно сколько создалось/добилось/готово»). Дельтами через
+    _parent_absorb_child_progress — согласовано с live-прогрессом (start-хук + периодический sync),
+    без задвоения. Саму дочернюю джобу /api/create_jobs НЕ отдаёт отдельной карточкой."""
+    parent_jid = _child_parent_ref(body)
+    if not parent_jid or parent_jid == jid:
+        return
+    _du = int(job_final.get("set_done") or job_final.get("done") or job_final.get("total") or 0)
+    _parent_absorb_child_progress(
+        parent_jid, jid, int(job_final.get("created") or 0),
+        int(job_final.get("failed") or 0), _du, final=True)
+
+
+def _cancel_children_of(parent_jid: str) -> int:
+    """Отмена родителя каскадом гасит его активные дочерние джобы (докрутка/доставка/recreate)
+    того же логина (Семён 2026-07-07). queued/claimed/awaiting → cancelled; running → control=cancel
+    (worker остановит после текущей кампании). → число погашенных дочерних."""
+    parent_jid = (parent_jid or "").strip()
+    if not parent_jid:
+        return 0
+    rows = []
+    try:
+        import psycopg2.extras
+        conn = _victory_conn()
+        try:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("""
+                SELECT job_id, status FROM public.direct_automation_jobs
+                 WHERE status NOT IN ('done','error','cancelled','interrupted')
+                   AND (body->>'_resume_of'=%s OR body->>'_requeue_of'=%s
+                        OR body->>'_repair_parent_job_id'=%s)
+            """, (parent_jid, parent_jid, parent_jid))
+            rows = cur.fetchall() or []
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        rows = []
+    n = 0
+    for r in rows:
+        cjid = r["job_id"]
+        st = (r.get("status") or "").strip()
+        try:
+            if st in ("queued", "claimed", "awaiting_feed_decision"):
+                _job_db_set_status(cjid, "cancelled", "отменено вместе с родителем")
+            else:                                        # running → команда worker'у
+                _job_control_set(cjid, "cancel")
+            with _CREATE_JOBS_LOCK:
+                mem = _CREATE_JOBS.get(cjid)
+                if mem is not None:
+                    mem["cancel"] = True
+                    if mem.get("status") in ("queued", "claimed") and cjid in _CREATE_QUEUE:
+                        _CREATE_QUEUE.remove(cjid)
+                        mem["status"] = "cancelled"
+            n += 1
+        except Exception:  # noqa: BLE001
+            pass
+    return n
+
+
 def _record_delayed_content_repair(parent_job_id: str, row: dict) -> None:
     job = _job_db_get(parent_job_id) or {}
     if not job:
@@ -1430,7 +1754,12 @@ def _schedule_delayed_content_repair_after_done(parent_job_id: str, job_snapshot
         parent_job_id,
         req.get("login") or "",
         req.get("agency") or "",
+        kind="content_repair_post_recreate" if req.get("post_recreate") else "content_repair",
     )
+    if did:
+        # Родитель уже «done» — возвращаем в running: delayed-repair ещё не завершён.
+        # child_total=0 → done/failed не трогаем, только status=running + добавляем в _active_children.
+        _parent_absorb_child_start(parent_job_id, f"dcr:{did}", 0)
     out = {
         "scheduled": bool(did),
         "delayed_repair_id": did,
@@ -1465,12 +1794,14 @@ def _run_delayed_content_repair(row: dict) -> None:
         out = {"ok": False, "error": err[0].get("error"), "uses_direct_units": False}
         _delayed_repair_set_status(did, "error", out["error"], out)
         _record_delayed_content_repair(parent_job_id, {"id": did, "status": "error", **out})
+        _parent_absorb_child_progress(parent_job_id, f"dcr:{did}", 0, 0, 0, final=True)
         return
     login = (ctx.get("login") or row.get("login") or "").strip()
     if not login:
         out = {"ok": False, "error": "login не сохранён в job", "uses_direct_units": False}
         _delayed_repair_set_status(did, "error", out["error"], out)
         _record_delayed_content_repair(parent_job_id, {"id": did, "status": "error", **out})
+        _parent_absorb_child_progress(parent_job_id, f"dcr:{did}", 0, 0, 0, final=True)
         return
     agency = ctx.get("agency") or row.get("agency") or ""
     results_tree = ctx.get("results") or []
@@ -1498,10 +1829,25 @@ def _run_delayed_content_repair(row: dict) -> None:
     last_live: dict = {}
     last_summ: dict = {}
     remaining = 0
+    _repair_started = time.time()          # B2: старт бюджета времени repair-джобы
+    _budget_exhausted = False
+    _nonfixable_stop = False
     try:
         for _ in range(_DELAYED_FULL_REPAIR_MAX_ITERATIONS):
+            # B2: бюджет времени исчерпан → выходим ЧИСТО (partial, без reschedule), не давая
+            # watchdog-у (1800с) убить джобу. remaining держит последний известный остаток.
+            if time.time() - _repair_started > _DELAYED_REPAIR_TIME_BUDGET_SECONDS:
+                _budget_exhausted = True
+                # Свежий пересчёт remaining: предыдущее значение было взято ДО execute_all_in_place
+                # последней итерации → финальный отчёт должен отражать реальное состояние после неё.
+                try:
+                    last_live, _fp, remaining, last_summ = _live_plan()
+                except Exception:  # noqa: BLE001 — best-effort, не сбиваем бюджет-break
+                    pass
+                break
             live_report, plan, inplace_cnt, last_summ = _live_plan()
             last_live = live_report
+            remaining = inplace_cnt         # актуальный остаток (на случай budget-break на след. итерации)
             if inplace_cnt <= 0:
                 remaining = 0
                 break
@@ -1521,6 +1867,13 @@ def _run_delayed_content_repair(row: dict) -> None:
             units_gated.extend(res.get("units_gated") or [])
             if not (res.get("executed") or 0):
                 # ничего не исполнилось за проход → повторная попытка бессмысленна (anti ping-pong)
+                # B1: если ВСЕ провалы — field-ошибки Grid (UNAVAILABLE_FIELD/UNKNOWN_FIELD/…),
+                # проблема нечинима in-place: НЕ считаем её остатком и НЕ перепланируем (иначе цикл
+                # долбит по кругу на одном флаге до watchdog kill). Иначе — обычная сверка остатка.
+                if _repair_failures_nonfixable(res.get("failed_actions") or []):
+                    _nonfixable_stop = True
+                    remaining = 0
+                    break
                 last_live, _fp, remaining, last_summ = _live_plan()
                 break
         else:
@@ -1533,16 +1886,26 @@ def _run_delayed_content_repair(row: dict) -> None:
         _delayed_repair_set_status(did, "error", out["error"], out)
         _record_delayed_content_repair(parent_job_id, {"id": did, "status": "error", **out})
         _record_auto_repair_full(parent_job_id, out["auto_repair_full"])
+        _parent_absorb_child_progress(parent_job_id, f"dcr:{did}", 0, 0, 0, final=True)
         return
 
     # Declarative spec-audit (keyword-shift/images-forbidden/plan⊆slepok) + auto-fix of
     # KEYWORDS_WRONG_GROUP. Runs after the standard in-place actions; failures never break the
     # delayed-repair cycle (best-effort, no Direct create units).
     spec_audit: dict = {}
+    _is_post_recreate = (row.get("kind") or "") == "content_repair_post_recreate"
     try:
-        spec_audit = _run_spec_audit_and_fix(login, ctx)
+        spec_audit = _run_spec_audit_and_fix(login, ctx, skip_recreate=_is_post_recreate)
     except Exception as e:  # noqa: BLE001
         spec_audit = {"error": str(e)[:220]}
+
+    # Видео недогружено (still_missing из spec-audit) → считаем это остатком, чтобы «до нуля»
+    # reschedule перезапустил докрутку: per-ct breaker + 2 ретрая аплоада добьют видео на следующем
+    # цикле, когда Grid догонит edit-view lag. video_no_pool в still_missing НЕ входит (fixable=False)
+    # → нечинимый «нет ролика в паке» не создаёт вечный цикл. (Семён 2026-07-08: «чтобы загружалось».)
+    _video_still = int((spec_audit.get("video_missing_fix") or {}).get("still_missing_total") or 0)
+    if _video_still > 0:
+        remaining = int(remaining) + _video_still
 
     afr = {
         "executed": all_executed[:40],
@@ -1552,6 +1915,8 @@ def _run_delayed_content_repair(row: dict) -> None:
         "units_gated": units_gated[:10],
         "results": all_outputs[:20],
         "spec_audit": spec_audit,
+        "budget_exhausted": _budget_exhausted,        # B2
+        "nonfixable_stop": _nonfixable_stop,          # B1
     }
     ok = (not all_failed) and int(remaining) == 0
     if not all_executed and not all_failed:
@@ -1577,7 +1942,10 @@ def _run_delayed_content_repair(row: dict) -> None:
     _delayed_repair_set_status(
         did, final_status,
         (f"авто-добивка: исполнено {len(all_executed)}, остаток {remaining}, итераций {iterations}"
-         + (f", spec_audit={_sa_fixed}" if _sa_fixed else "")),
+         + (f", spec_audit={_sa_fixed}" if _sa_fixed else "")
+         + (" · бюджет времени исчерпан (partial без reschedule)" if _budget_exhausted else "")
+         + (" · остаток нечиним in-place (field-ошибка Grid) — reschedule отменён"
+            if _nonfixable_stop else "")),
         out,
     )
     _record_delayed_content_repair(parent_job_id, {"id": did, "status": final_status, **out})
@@ -1585,7 +1953,10 @@ def _run_delayed_content_repair(row: dict) -> None:
     # «ДО НУЛЯ» (требование Семёна 2026-07-05): partial с остатком → вернуть ЭТУ ЖЕ строку в
     # waiting — демон прогонит цикл ещё раз (Grid к тому времени догонит edit-view lag).
     # Кап _DELAYED_REPAIR_MAX_RESCHEDULES защищает от вечного цикла на нечинимом остатке.
-    if final_status == "partial" and int(remaining) > 0:
+    # B1/B2: НЕ перепланируем если остаток нечиним (field-ошибки Grid) или исчерпан бюджет времени —
+    # это не даёт циклу долбить по кругу и упереться в watchdog kill.
+    if (final_status == "partial" and int(remaining) > 0
+            and not _nonfixable_stop and not _budget_exhausted):
         _delayed_repair_reschedule(did, row, remaining)
     elif final_status in ("done", "skipped"):
         # Реконсиляция счётчиков карточки (требование Семёна 2026-07-05): после добивки НЕ должно
@@ -1606,6 +1977,59 @@ def _run_delayed_content_repair(row: dict) -> None:
     # оркестратора пропустит уже созданные кампании (tp1_rsy — пофидово), создастся только
     # недостающее. Один уровень: джоба-доставка сама внучек не плодит (_requeue_of-гейт).
     _requeue_missing_positions_once(parent_job_id, login, body)
+    # Возвращаем родителя в терминальный статус после завершения delayed-repair.
+    # Если repair перепланирован (partial + remaining>0) — родитель остаётся running до
+    # следующего прохода демона. Во всех остальных случаях (done/skipped/partial-без-остатка/
+    # error/исключение — они handled выше через return) — убираем dcr:{did} из _active_children;
+    # если active пусто → карточка снова «done» (статус/done=total/finished_at).
+    if not (final_status == "partial" and int(remaining) > 0):
+        _parent_absorb_child_progress(parent_job_id, f"dcr:{did}", 0, 0, 0, final=True)
+
+
+def _run_delayed_finalize(row: dict) -> None:
+    """Задача F: REPLAY захваченной Grid-финализации набора (kind='finalize_set').
+
+    Демон-путь: те же функции _finalize_rsya/_finalize_search_via_grid, что и инлайн — «ровно
+    тот же набор Grid-операций», только вне цикла создания. Идемпотентно (UpdateCampaigns теми
+    же значениями). remaining>0 → reschedule (attempts cap). done → карточка снова терминальна
+    (закрываем child fin:{did}) + снимаем finalize_pending. Баллы Директа НЕ тратит."""
+    did = (row.get("id") or "").strip()
+    parent_job_id = (row.get("parent_job_id") or "").strip()
+    _delayed_repair_set_status(did, "running", "async-финализация: replay Grid-финализаций")
+    try:
+        out = _finalize_queue_module().run_finalize_job(row)
+    except Exception as e:  # noqa: BLE001 — весь replay best-effort, карточку не вешаем
+        out = {"ok": False, "error": str(e)[:240], "remaining": 1, "uses_direct_units": False}
+    remaining = int(out.get("remaining") or 0)
+    ok = bool(out.get("ok")) and remaining == 0
+    final_status = "done" if ok else ("partial" if remaining > 0 else "error")
+    _delayed_repair_set_status(
+        did, final_status,
+        f"async-финализация: применено {out.get('applied', 0)}/{out.get('total', 0)}, "
+        f"остаток {remaining}",
+        out)
+    _record_delayed_content_repair(parent_job_id, {"id": did, "status": final_status,
+                                                   "kind": "finalize_set", **out})
+    # reschedule до нуля (attempts cap защищает от вечного цикла на нечинимом остатке).
+    _rescheduled = False
+    if final_status == "partial" and remaining > 0:
+        _rescheduled = _delayed_repair_reschedule(did, row, remaining)
+    if not _rescheduled:
+        # Терминал (done/error или исчерпан лимит reschedule): снимаем finalize_pending и
+        # закрываем child → карточка снова терминальна. При error оставляем в result отметку.
+        try:
+            def _clear_pending(job, result):
+                if isinstance(result.get("finalize_pending"), dict):
+                    result["finalize_finished"] = {"status": final_status,
+                                                    "applied": out.get("applied", 0),
+                                                    "remaining": remaining}
+                    result.pop("finalize_pending", None)
+                    return True
+                return False
+            _parent_update(parent_job_id, _clear_pending)
+        except Exception:  # noqa: BLE001
+            pass
+        _parent_absorb_child_progress(parent_job_id, f"fin:{did}", 0, 0, 0, final=True)
 
 
 def _delayed_repair_daemon_loop(app) -> None:
@@ -1613,6 +2037,7 @@ def _delayed_repair_daemon_loop(app) -> None:
     while True:
         # ПРАВКА P2: watchdog — строки в status='running' дольше порога → помечать failed.
         # Только реально просроченные по updated_at (активная строка обновляется set_status).
+        _wd_failed_finalize: list[tuple] = []
         try:
             _wconn = _victory_conn_rw()
             try:
@@ -1624,13 +2049,39 @@ def _delayed_repair_daemon_loop(app) -> None:
                            updated_at=now()
                      WHERE status='running'
                        AND updated_at < now() - (%s || ' seconds')::interval
+                    RETURNING id, parent_job_id, kind
                 """, (str(_DELAYED_REPAIR_STUCK_TIMEOUT_SECONDS // 60),
                       str(_DELAYED_REPAIR_STUCK_TIMEOUT_SECONDS)))
+                _wd_failed_finalize = [(r[0], r[1]) for r in (_wcur.fetchall() or [])
+                                       if (r[2] or "") == "finalize_set"]
                 _wconn.commit()
             finally:
                 _wconn.close()
         except Exception:  # noqa: BLE001
             pass
+        # Задача F (DIRECT_ASYNC_FINALIZE): watchdog пометил застрявшую finalize-строку failed, но
+        # child fin:{did} остаётся ОТКРЫТ (не пройден терминальный путь _run_delayed_finalize) →
+        # карточка вечно «running» с невыставленными инвариантами (Карты OFF / места показа #3-#6).
+        # Закрываем child как терминальный + снимаем finalize_pending (тот же терминал, что в
+        # _run_delayed_finalize:2018-2032) — иначе набор виснет навсегда. Строки kind='finalize_set'
+        # существуют ТОЛЬКО при DIRECT_ASYNC_FINALIZE=ON (создаются capture-путём) → при OFF список
+        # пуст, no-op (нормальный dcr-путь не трогаем).
+        if _wd_failed_finalize:
+            def _clear_pending_wd(job, result):
+                if isinstance(result.get("finalize_pending"), dict):
+                    result["finalize_finished"] = {"status": "failed",
+                                                    "note": "watchdog: stuck running"}
+                    result.pop("finalize_pending", None)
+                    return True
+                return False
+            for _fdid, _fparent in _wd_failed_finalize:
+                if not _fparent:
+                    continue
+                try:
+                    _parent_update(_fparent, _clear_pending_wd)
+                except Exception:  # noqa: BLE001
+                    pass
+                _parent_absorb_child_progress(_fparent, f"fin:{_fdid}", 0, 0, 0, final=True)
         rows = []
         try:
             conn = _victory_conn_rw()
@@ -1648,7 +2099,10 @@ def _delayed_repair_daemon_loop(app) -> None:
             rows = []
         for row in rows:
             try:
-                _run_delayed_content_repair(row)
+                if (row.get("kind") or "") == "finalize_set":
+                    _run_delayed_finalize(row)               # Задача F: async-финализация
+                else:
+                    _run_delayed_content_repair(row)
             except Exception:  # noqa: BLE001
                 pass
         time.sleep(_DELAYED_REPAIR_POLL)
@@ -1682,14 +2136,44 @@ def _resume_one_deferred(app, row) -> None:
     _tok, ag = _token_for_login(login, row.get("agency") or "", _direct_tokens())
     body["_resume_count"] = int(row.get("resume_count") or 0) + 1
     body["agency"] = ag or body.get("agency") or row.get("agency") or ""
-    body["via_cookie"] = True                              # докрутка ПО КУКЕ (без баллов) — не ждём полночь
+    # _resume_via_token: пункты, которые в принципе НЕ создать по куке (NO_BRAND_SEGMENTS_AVAILABLE —
+    # сегментный tp5 требует M3/токен) — сохранены с этим флагом; куку им НЕ навязываем.
+    if body.get("_resume_via_token"):
+        # Токен-докрутку СТАВИМ В ОЧЕРЕДЬ ТОЛЬКО когда есть И токен, И баллы. Иначе воркер уйдёт на
+        # cookie-путь (пустой токен ИЛИ preflight-152 форсит via_cookie) → NO_BRAND → self-reference-
+        # дедуп → финал гасит строку в done → сегментный tp5 теряется (инцидент 08.07 721641cad7c1 /
+        # job 23677e1473d1, porg-psm5h7q6). Нет кредов → НЕ ставим джобу, оставляем строку waiting с
+        # бэкоффом; демон повторит. Строка НЕ будет помечена done несуществующим финалом джобы.
+        if not _tok:
+            _deferred_bump_resume_at(did, 1)
+            _deferred_set_status(did, "waiting",
+                                 "токен-докрутка сегментного tp5 ждёт агентский токен (не найден) — повтор через 1ч")
+            return
+        _alive = _units_alive_for_login(login, ag or "")
+        if _alive is False:
+            from datetime import datetime, timezone
+            _now = datetime.now(timezone.utc)
+            _reset = _next_units_reset_utc()
+            _secs = (_reset - _now).total_seconds()
+            _hrs = max(1, int(_secs // 3600) + (1 if _secs % 3600 else 0))
+            _deferred_bump_resume_at(did, _hrs)
+            _deferred_set_status(did, "waiting",
+                                 f"токен есть, баллы Директа исчерпаны — ждём сброс ({_reset.isoformat()})")
+            return
+        # токен + баллы есть → добиваем ТОКЕНОМ (via_cookie НЕ ставим: сегментный tp5 пойдёт API-путём)
+    else:
+        body["via_cookie"] = True                          # докрутка ПО КУКЕ (без баллов) — не ждём полночь
     body["_deferred_id"] = did                             # финал джобы пометит остаток done (анти-цикл)
+    # Семён 2026-07-06: добивка — сразу (не в конец очереди) и без НОВОЙ карточки; _resume_of →
+    # воркер вольёт created/failed докрутки в родительскую джобу (row["job_id"] = исходная джоба).
+    body["_resume_of"] = row.get("job_id")
     sess = {"logged_in": True, "is_admin": True, "_resume": True}   # системная докрутка — авторизована заранее
     try:
         _ensure_create_worker(app)
-        jid = _job_new(len(items), login, body, sess)
+        jid = _job_new(len(items), login, body, sess, priority=True)
         body["_job_id"] = jid                              # как в api_create_set_async: воркер-путь + прогресс джобы
-        _deferred_set_status(did, "resumed", f"докрутка по куке #{body['_resume_count']} поставлена в очередь")
+        _path = "токеном" if body.get("_resume_via_token") else "по куке"
+        _deferred_set_status(did, "resumed", f"докрутка {_path} #{body['_resume_count']} поставлена в очередь (приоритет)")
     except Exception as e:  # noqa: BLE001
         _deferred_bump_resume_at(did, 1)
         _deferred_set_status(did, "waiting", f"ошибка постановки: {str(e)[:120]}")
@@ -1727,12 +2211,16 @@ def _deferred_enqueue_now(app, did: str) -> tuple | None:
     body["_resume_count"] = int(row.get("resume_count") or 0) + 1
     ag = row.get("agency") or body.get("agency") or ""
     body["agency"] = ag                                   # ключ партиционирования очереди
-    body["via_cookie"] = True                             # ЯВНОЕ согласие пользователя (попап) → token-типы по куке
+    # По куке ЭТИ пункты создать нельзя (см. _resume_via_token в _resume_one_deferred) — кнопка
+    # «сейчас» тут бессильна раньше сброса баллов, поэтому куку им не навязываем (тот же отказ).
+    if not body.get("_resume_via_token"):
+        body["via_cookie"] = True                         # ЯВНОЕ согласие пользователя (попап) → token-типы по куке
     body["_deferred_id"] = did                            # финал джобы пометит остаток done (анти-цикл)
+    body["_resume_of"] = row.get("job_id")                # → воркер вольёт created/failed в родительскую джобу
     sess = {"logged_in": True, "is_admin": True, "_resume": True}   # системная докрутка — авторизована
     _ensure_create_worker(app)
-    jid = _job_new(len(items), login, body, sess)         # _job_new сам проставит body["_job_id"]
-    _deferred_set_status(did, "resumed", "запущено вручную (куки/сейчас) — поставлено в очередь")
+    jid = _job_new(len(items), login, body, sess, priority=True)   # _job_new сам проставит body["_job_id"]
+    _deferred_set_status(did, "resumed", "запущено вручную (куки/сейчас) — поставлено в очередь (приоритет)")
     return jid, len(items), login, ag
 
 
@@ -1786,9 +2274,13 @@ def _job_kind(body: dict | None) -> str:
 
 
 def _job_new_web(total: int, login: str, body: dict, saved_session: dict,
-                 dedup_login: bool) -> str:
+                 dedup_login: bool, priority: bool = False) -> str:
     """web-роль: постановка джобы ТОЛЬКО в БД (status='queued', _web_posted=true, session в body).
-    Воркер-процесс заберёт её клеймом из БД. In-memory очередь web-процесса не используется."""
+    Воркер-процесс заберёт её клеймом из БД. In-memory очередь web-процесса не используется.
+
+    priority=True — добивка/доставка остатка: body['_priority']=true → воркер клеймит такие
+    джобы РАНЬШЕ обычных (см. _worker_claim_web_jobs) и ставит в НАЧАЛО in-memory очереди
+    (_worker_adopt_job). Семён 2026-07-06: «добивка сразу, а не в конец очереди»."""
     if dedup_login:
         existing = _job_db_active_by_login(login)
         if existing:
@@ -1799,6 +2291,8 @@ def _job_new_web(total: int, login: str, body: dict, saved_session: dict,
     if body is not None:
         body["_job_id"] = jid
         body["_web_posted"] = True                       # маркер: поллер воркера забирает только такие
+        if priority:
+            body["_priority"] = True                     # добивка: клейм и очередь — впереди обычных
         body["_session_snapshot"] = dict(saved_session or {})   # нужен для test_request_context в воркере
     job = {"status": "queued", "login": login, "done": 0,
            "total": int(total), "created": 0, "failed": 0,
@@ -1815,7 +2309,7 @@ def _job_new_web(total: int, login: str, body: dict, saved_session: dict,
 
 
 def _job_new(total: int, login: str, body: dict, saved_session: dict,
-             dedup_login: bool = False) -> str:
+             dedup_login: bool = False, priority: bool = False) -> str:
     """Регистрирует джобу в статусе 'queued' и ставит её в глобальную очередь.
 
     dedup_login=True (пользовательский submit) — АТОМАРНЫЙ дедуп: если по этому логину уже есть
@@ -1824,9 +2318,13 @@ def _job_new(total: int, login: str, body: dict, saved_session: dict,
     раньше эндпоинт сканировал и ОТПУСКАЛ лок до _job_new, два запроса успевали вставить обе копии).
     Внутренние постановки (докрутка/resume/delete_drafts) идут с dedup_login=False (намеренные).
 
+    priority=True — докрутка/остаток (152, resume): встаёт В НАЧАЛО очереди, а не в конец
+    (Семён 2026-07-06: «добивка сразу, а не в конец очереди»), НЕ ждёт своей очереди за новыми
+    наборами. web-роль: приоритет уезжает в БД флагом body['_priority'] (см. _job_new_web).
+
     web-роль: НЕ трогаем in-memory очередь — джоба уходит только в БД (её заберёт worker-процесс)."""
     if _direct_role() == "web":
-        return _job_new_web(total, login, body, saved_session, dedup_login)
+        return _job_new_web(total, login, body, saved_session, dedup_login, priority)
     jid = uuid.uuid4().hex[:12]
     with _CREATE_JOBS_LOCK:
         if dedup_login:
@@ -1854,7 +2352,10 @@ def _job_new(total: int, login: str, body: dict, saved_session: dict,
                "_id": jid, "body": body, "session": saved_session,
                "_heartbeat": time.time()}
         _CREATE_JOBS[jid] = job
-        _CREATE_QUEUE.append(jid)
+        if priority:
+            _CREATE_QUEUE.insert(0, jid)
+        else:
+            _CREATE_QUEUE.append(jid)
         # лёгкая чистка СТАРЫХ ЗАВЕРШЁННЫХ джоб (активные/очередь не трогаем), держим ~40
         terminal = [k for k, v in _CREATE_JOBS.items() if v["status"] in _JOB_TERMINAL]
         if len(terminal) > 40:
@@ -1988,9 +2489,18 @@ def _create_worker_loop(app):
         jid, job, body, saved = claimed
         agency = _job_agency(job)
         final_status = "error"
+        # Задача F (DIRECT_ASYNC_FINALIZE): открыть окно захвата финализации набора (по login).
+        # OFF → register вернёт None (no-op). Снятие — в finally (гарантированно, даже при падении).
+        _fin_login = str((body or {}).get("login") or "").strip()
+        _finalize_queue_module().register(_fin_login, jid, agency)   # окно захвата (OFF → no-op)
         try:
             _job_touch(job)
             _job_db_save(jid, job)                        # → 'running' в БД
+            # Дочерняя добивка (докрутка/доставка/recreate) стартовала → родитель снова «в работе»:
+            # его total растёт на объём добивки, прогресс-бар был 100% → снижается (Семён 2026-07-07).
+            _parent_ref = _child_parent_ref(body)
+            if _parent_ref and _parent_ref != jid:
+                _parent_absorb_child_start(_parent_ref, jid, int(job.get("total") or 0))
             # сам прогон — ВНЕ lock'а (долгий), прогресс джоба обновляет по ссылке внутри ядра
             if (body or {}).get("_kind") == "delete_drafts":
                 # Удаление черновиков в ОБЩЕЙ очереди — то же ядро, что и синхронный эндпоинт,
@@ -2053,9 +2563,35 @@ def _create_worker_loop(app):
             if _job_final is not None:
                 _job_db_save(jid, _job_final, full=True)   # финальный статус + result в БД
                 _ready_logins_track(jid, _job_final)       # вкладка «Готовые логины» (add/remove)
+                _merge_resume_into_parent(jid, _job_final, body)
                 if final_status == "done":
                     auto_queued = _auto_queue_recreate_after_done(jid, _job_final)
                     delayed_content = _schedule_delayed_content_repair_after_done(jid, _job_final)
+                    # Задача F: захваченные финализации → очередь finalize_set. Пока не докручены,
+                    # набор НЕ готов: держим карточку «running» (child fin:{did}) + finalize_pending
+                    # в result (summary не зелёный). Демон REPLAY-нёт → реконсиляция → зелёный.
+                    _finalize_enqueued = None
+                    _finalize_inline = None
+                    try:
+                        _rec = _finalize_queue_module().unregister(_fin_login) if _fin_login else None
+                        if _rec is not None and _rec.specs:
+                            _finalize_enqueued = _finalize_queue_module().enqueue(
+                                jid, _fin_login, agency, _rec.specs)
+                            if _finalize_enqueued:
+                                _parent_absorb_child_start(jid, f"fin:{_finalize_enqueued}", 0)
+                            else:
+                                # enqueue вернул None (ошибка БД / нет коннекта / ON CONFLICT): захваченную
+                                # финализацию НЕ терять — в синхронном пути она бы отработала. Inline-replay
+                                # ТЕМИ ЖЕ функциями, что delayed-демон (run_finalize_job → finalize_rsya/
+                                # finalize_search_via_grid), синхронно здесь. Идемпотентно (finalize —
+                                # UpdateCampaigns одними значениями). remaining>0 → ниже пометим finalize_pending.
+                                _finalize_inline = _finalize_queue_module().run_finalize_job(
+                                    {"result": {"specs": _rec.specs}})
+                                print(f"[finalize-queue] enqueue=None → inline-replay {_fin_login}: "
+                                      f"applied={_finalize_inline.get('applied')} "
+                                      f"remaining={_finalize_inline.get('remaining')}", flush=True)
+                    except Exception as _fe:  # noqa: BLE001 — постановка finalize best-effort
+                        print(f"[finalize-queue] done-enqueue {_fin_login}: {str(_fe)[:200]}", flush=True)
                     post_done_changed = False
                     if auto_queued:
                         with _CREATE_JOBS_LOCK:
@@ -2079,9 +2615,47 @@ def _create_worker_loop(app):
                                 _job_touch(j)
                                 _job_final = dict(j)
                                 post_done_changed = True
+                    if _finalize_enqueued:
+                        # DoD: набор ещё не финализирован → summary НЕ зелёный (finalize_pending).
+                        with _CREATE_JOBS_LOCK:
+                            j = _CREATE_JOBS.get(jid)
+                            if j is not None and isinstance(j.get("result"), dict):
+                                j["result"]["finalize_pending"] = {
+                                    "delayed_repair_id": _finalize_enqueued,
+                                    "specs": len(_rec.specs) if _rec else 0,
+                                }
+                                _job_touch(j)
+                                _job_final = dict(j)
+                                post_done_changed = True
+                    if _finalize_inline is not None and _finalize_inline.get("remaining"):
+                        # Inline-replay (enqueue вернул None) отработал ЧАСТИЧНО → набор финализирован
+                        # не полностью: summary НЕ зелёный, помечаем finalize_pending + ошибку, чтобы
+                        # повторный проход/ручная докрутка это подобрали (не выдаём невыполненную
+                        # финализацию за успех). remaining==0 → всё применено inline, зелёный корректен.
+                        with _CREATE_JOBS_LOCK:
+                            j = _CREATE_JOBS.get(jid)
+                            if j is not None and isinstance(j.get("result"), dict):
+                                j["result"]["finalize_pending"] = {
+                                    "inline_replay": True,
+                                    "applied": _finalize_inline.get("applied", 0),
+                                    "remaining": _finalize_inline.get("remaining", 0),
+                                    "failed": _finalize_inline.get("failed", []),
+                                    "error": "enqueue finalize вернул None; inline-replay выполнен частично",
+                                }
+                                _job_touch(j)
+                                _job_final = dict(j)
+                                post_done_changed = True
                     if post_done_changed and _job_final is not None:
                         _job_db_save(jid, _job_final, full=True)
         finally:
+            # Задача F: гарантированно закрыть окно захвата (при error/cancel done-блок не отработал →
+            # иначе recorder висит в реестре и глотает финализацию следующего набора того же login).
+            # Идемпотентно: если done-блок уже снял — pop вернёт None.
+            if _fin_login:
+                try:
+                    _finalize_queue_module().unregister(_fin_login)
+                except Exception:  # noqa: BLE001
+                    pass
             # освобождаем слот агентства и будим пул
             with _CREATE_COND:
                 active = max(0, int(_CREATE_ACTIVE_AGENCIES.get(agency, 0)) - 1)
@@ -2118,6 +2692,13 @@ def _ensure_create_worker(app):
     _jobs_db_init()
     if _direct_role() == "web":
         return                                            # web: только схема БД, никаких фоновых тредов
+    # СТОРОННИЙ процесс (ручной скрипт/агент, импортировавший blueprint БЕЗ явной роли и вне
+    # systemd) НЕ должен выполнять recover и поднимать воркеров/демонов: его recover помечал
+    # running-джобы ЖИВОГО воркера 'interrupted' и рвал прогоны (кейс 2026-07-06: контроль №2
+    # 53fd086ef597 прерван скриптом с ролью-дефолтом 'all'). Признак сервиса — systemd
+    # INVOCATION_ID или явно выставленный DIRECT_ROLE.
+    if not os.environ.get("DIRECT_ROLE") and not os.environ.get("INVOCATION_ID"):
+        return
     _jobs_db_recover()
     _ensure_create_watchdog()
     _create_watchdog_tick()
@@ -2162,7 +2743,8 @@ def _worker_claim_web_jobs() -> list:
                 "WHERE job_id IN ("
                 "    SELECT job_id FROM public.direct_automation_jobs "
                 "     WHERE status='queued' AND coalesce(body->>'_web_posted','')='true' "
-                "     ORDER BY created_at LIMIT 10 FOR UPDATE SKIP LOCKED) "
+                "     ORDER BY (coalesce(body->>'_priority','')='true') DESC, created_at "
+                "     LIMIT 10 FOR UPDATE SKIP LOCKED) "
                 "RETURNING job_id, login, total, body")
             rows = cur.fetchall() or []
             conn.commit()
@@ -2174,11 +2756,29 @@ def _worker_claim_web_jobs() -> list:
 
 
 def _worker_adopt_job(app, row) -> None:
-    """Завести заклеймленную web-джобу в in-memory очередь воркера (status back → 'queued')."""
+    """Завести заклеймленную web-джобу в in-memory очередь воркера (status back → 'queued').
+
+    ⚠️ Гейт «уже в памяти» проверяет РЕАЛЬНОЕ участие (в _CREATE_QUEUE или running), а не голое
+    наличие в _CREATE_JOBS: стартовый загрузчик истории (см. ~строка 716) поднимает из БД ВСЕ
+    незавершённые джобы как записи-карточки БЕЗ постановки в очередь → старый гейт `jid in
+    _CREATE_JOBS` молча пропускал адопт и джоба зависала в 'claimed' НАВСЕГДА (root-cause
+    инцидента f64fc17a3ae5, 2026-07-06: воспроизводилось при КАЖДОМ рестарте с queued web-джобой
+    в БД). Стале-запись перезаписываем и ставим в очередь."""
     jid = row["job_id"]
+    _term = None
     with _CREATE_JOBS_LOCK:
-        if jid in _CREATE_JOBS:
-            return                                        # уже адаптирована (перестраховка)
+        _mem = _CREATE_JOBS.get(jid)
+        if _mem is not None and (jid in _CREATE_QUEUE or _mem.get("status") == "running"):
+            return                                        # реально в очереди/исполняется
+        if _mem is not None and _mem.get("status") in _JOB_TERMINAL:
+            _term = dict(_mem)
+    if _term is not None:
+        # Джоба УЖЕ terminal в ЭТОМ процессе (done/error/cancelled), а в БД остался стале
+        # 'queued'/'claimed' (сбой финального _job_db_save / cancel без сейва) → НЕ переисполнять
+        # (повторный прогон = ДУБЛИ кампаний в кабинете клиента, ревью 06.07), а досинхронизировать
+        # терминальный статус в БД, чтобы поллер перестал её клеймить.
+        _job_db_save(jid, _term)
+        return
     body = row.get("body") or {}
     if isinstance(body, str):
         try:
@@ -2200,7 +2800,10 @@ def _worker_adopt_job(app, row) -> None:
                "step": None, "_id": jid, "body": body, "session": saved_session,
                "agency": body.get("agency"), "_heartbeat": time.time()}
         _CREATE_JOBS[jid] = job
-        _CREATE_QUEUE.append(jid)
+        if body.get("_priority"):
+            _CREATE_QUEUE.insert(0, jid)                  # добивка/доставка — впереди обычных наборов
+        else:
+            _CREATE_QUEUE.append(jid)
         _CREATE_COND.notify()
     _job_db_save(jid, job)                                # claimed → queued (running проставит воркер)
     try:
@@ -2249,6 +2852,7 @@ def _worker_apply_controls() -> None:
         jid = r["job_id"]
         ctrl = (r.get("control") or "").strip()
         if ctrl == "cancel":
+            _cancelled = None
             with _CREATE_COND:
                 j = _CREATE_JOBS.get(jid)
                 if j is not None:
@@ -2256,7 +2860,12 @@ def _worker_apply_controls() -> None:
                     if j.get("status") == "queued" and jid in _CREATE_QUEUE:
                         _CREATE_QUEUE.remove(jid)
                         j["status"] = "cancelled"; j["finished_at"] = time.time()
+                        _cancelled = dict(j)
                 _CREATE_COND.notify_all()
+            if _cancelled is not None:
+                # Персистим отмену в БД (ревью 06.07): без этого строка остаётся 'queued'
+                # (_web_posted) → поллер ре-клеймит её и отменённая джоба ИСПОЛНЯЕТСЯ.
+                _job_db_save(jid, _cancelled)
         # feed-решения web-роль применяет напрямую (status flip в БД), поэтому здесь только 'cancel'.
         try:
             conn = _victory_conn_rw()
@@ -2270,13 +2879,54 @@ def _worker_apply_controls() -> None:
             pass
 
 
+_CLAIMED_WATCHDOG_TS = {"t": 0.0}    # троттл watchdog'а зависших claimed (поллер крутится каждые 2с)
+
+
+def _worker_reclaim_stuck_claimed() -> None:
+    """Watchdog: джоба, заклеймленная (queued→claimed), но НЕ заведённая в in-memory очередь
+    (исключение в _worker_adopt_job / рестарт между клеймом и адоптом), зависает в 'claimed'
+    НАВСЕГДА: клейм берёт только status='queued', а стартовое рекавери claimed→queued работает
+    лишь при рестарте воркера. Живой кейс 2026-07-06: f64fc17a3ae5 (доставка остатка Щербаковой,
+    7 tp5) висела в claimed без прогресса. Возвращаем в 'queued' claimed старше 5 мин, которых
+    НЕТ в _CREATE_JOBS этого процесса (есть в памяти → доведёт адопт/исполнение, не трогаем).
+    Троттл 60с — не дёргать Victory каждый 2-секундный тик поллера."""
+    if time.time() - _CLAIMED_WATCHDOG_TS["t"] < 60:
+        return
+    _CLAIMED_WATCHDOG_TS["t"] = time.time()
+    try:
+        with _CREATE_JOBS_LOCK:
+            # «знакомые» = реально в работе (в очереди или исполняются); голая запись-карточка
+            # из стартового загрузчика истории — НЕ работа (см. гейт в _worker_adopt_job)
+            known = {j for j, v in _CREATE_JOBS.items()
+                     if j in _CREATE_QUEUE or (v or {}).get("status") == "running"}
+        conn = _victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT job_id FROM public.direct_automation_jobs "
+                        "WHERE status='claimed' AND updated_at < now() - interval '5 minutes'")
+            stale = [r[0] for r in (cur.fetchall() or []) if r[0] not in known]
+            if stale:
+                cur.execute("UPDATE public.direct_automation_jobs SET status='queued', "
+                            "updated_at=now() WHERE status='claimed' AND job_id = ANY(%s)", (stale,))
+                conn.commit()
+                print(f"[claimed-watchdog] зависшие claimed возвращены в очередь: {stale}", flush=True)
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 — watchdog best-effort, поллер не валим
+        pass
+
+
 def _worker_poll_once(app) -> None:
     _worker_expire_awaiting_feed()
     for row in _worker_claim_web_jobs():
         try:
             _worker_adopt_job(app, row)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _ae:  # noqa: BLE001
+            # НЕ молчим (фикс 2026-07-06): проглоченный адопт оставлял джобу в 'claimed' навсегда
+            # (кейс f64fc17a3ae5). След в журнале + вернёт claimed-watchdog ниже.
+            print(f"[worker-adopt] job {row.get('job_id')}: {type(_ae).__name__}: {str(_ae)[:200]}",
+                  flush=True)
+    _worker_reclaim_stuck_claimed()
     _worker_apply_controls()
 
 
@@ -2456,6 +3106,167 @@ def _filter_allowed_feed_rows(rows: list[dict]) -> list[dict]:
     return [f for f in (rows or []) if _feed_row_allowed(f, allowed)]
 
 
+# ── Минус-СЛОВА (минус-фразы): ЕДИНЫЙ глобальный источник минус-фраз кампаний/групп ────────────────
+# Все минус-фразы, которые вешаются на кампании/группы при создании (tp1–tp7), берутся ТОЛЬКО отсюда
+# (вкладка «Минус-слова» на /direct/automation → таблица public.direct_global_minus_words). Пак M3
+# (_minus.txt/_minus_shared.txt) и хардкод ["отзывы"] как источники минус-ФРАЗ отключены. Минус-ПЛОЩАДКИ
+# и минус-МАРКИ/МОДЕЛИ — отдельные сущности (свои таблицы/вкладки), сюда не относятся.
+_MINUS_WORDS_ENSURED = False                             # DDL/сид гоняем 1 раз на процесс
+_MINUS_WORDS_CACHE: dict[tuple, dict] = {}               # TTL-кэш: (geo, ct, campaign_level) → {ts, val}
+_MINUS_WORDS_TTL = 30.0                                   # сек
+
+
+def _minus_words_ensure(cur) -> None:
+    """DDL-миграция таблицы минус-слов: добавляет измерения geo+ct, пересоздаёт PK.
+    Идемпотентно: безопасно запускать на чистой БД, на старой (word PK) и на уже мигрированной."""
+    global _MINUS_WORDS_ENSURED
+    if _MINUS_WORDS_ENSURED:
+        return
+    # Фиксируем существование ДО CREATE TABLE (сид — только при первом создании):
+    cur.execute("SELECT to_regclass('public.direct_global_minus_words')")
+    _r = cur.fetchone()
+    existed = bool((_r["to_regclass"] if isinstance(_r, dict) else _r[0]) if _r else None)
+    # Чистая БД: создаём сразу с composite PK и колонками geo/ct:
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS public.direct_global_minus_words ("
+        "word text NOT NULL, geo text NOT NULL DEFAULT '*', ct text NOT NULL DEFAULT '*', "
+        "enabled boolean NOT NULL DEFAULT true, "
+        "sort integer NOT NULL DEFAULT 0, updated_at timestamptz NOT NULL DEFAULT now(), "
+        "PRIMARY KEY (word, geo, ct))"
+    )
+    # Существующая таблица без geo/ct: ADD COLUMN IF NOT EXISTS — no-op если уже есть:
+    cur.execute(
+        "ALTER TABLE public.direct_global_minus_words "
+        "ADD COLUMN IF NOT EXISTS geo text NOT NULL DEFAULT '*'"
+    )
+    cur.execute(
+        "ALTER TABLE public.direct_global_minus_words "
+        "ADD COLUMN IF NOT EXISTS ct text NOT NULL DEFAULT '*'"
+    )
+    # Пересоздать PK на (word, geo, ct) если текущий — по одной колонке (старый word PK):
+    cur.execute(
+        "SELECT conname, array_length(conkey, 1) AS ncols FROM pg_constraint "
+        "WHERE conrelid='public.direct_global_minus_words'::regclass AND contype='p'"
+    )
+    _pk = cur.fetchone()
+    if _pk:
+        _pk_name = _pk["conname"] if isinstance(_pk, dict) else _pk[0]
+        _pk_ncols = (_pk["ncols"] if isinstance(_pk, dict) else _pk[1]) or 1
+        if _pk_ncols < 3:
+            cur.execute(
+                f'ALTER TABLE public.direct_global_minus_words DROP CONSTRAINT "{_pk_name}"'
+            )
+            cur.execute(
+                "ALTER TABLE public.direct_global_minus_words ADD PRIMARY KEY (word, geo, ct)"
+            )
+    # Сид «отзывы» только при первом создании — существующие строки через DEFAULT '*' уже корректны:
+    if not existed:
+        cur.execute(
+            "INSERT INTO public.direct_global_minus_words(word, geo, ct, enabled, sort, updated_at) "
+            "VALUES('отзывы', '*', '*', true, 1, now()) ON CONFLICT(word, geo, ct) DO NOTHING"
+        )
+    _MINUS_WORDS_ENSURED = True
+
+
+def _global_minus_words() -> list[dict]:
+    """Все сохранённые минус-слова: [{word, enabled, sort}] (по sort, word). Только СОХРАНЁННЫЕ строки."""
+    import psycopg2.extras
+    conn = _victory_conn_rw()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        _minus_words_ensure(cur)
+        conn.commit()
+        cur.execute("SELECT word, enabled, sort FROM public.direct_global_minus_words ORDER BY sort, word")
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _global_minus_words_slice(geo: str = "*", ct: str = "*") -> list[dict]:
+    """Минус-слова конкретного среза (geo, ct): [{word, enabled, sort}] — для admin UI / GET-эндпоинта."""
+    import psycopg2.extras
+    conn = _victory_conn_rw()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        _minus_words_ensure(cur)
+        conn.commit()
+        cur.execute(
+            "SELECT word, enabled, sort FROM public.direct_global_minus_words "
+            "WHERE geo=%s AND ct=%s ORDER BY sort, word",
+            (geo, ct),
+        )
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _minus_words_fetch(geo: str, ct: str, campaign_level: bool) -> list[str]:
+    """Низкоуровневый TTL-кэшируемый читатель минус-слов с фильтром по (geo, ct, campaign_level).
+    campaign_level=True → ct='*' AND geo IN ('*', geo) (campaign минус).
+    campaign_level=False → ct=<ct> AND geo IN ('*', geo) (group-level delta; ct должен быть не '*')."""
+    cache_key = (geo, ct, campaign_level)
+    now = time.time()
+    entry = _MINUS_WORDS_CACHE.get(cache_key)
+    if entry and now - entry["ts"] < _MINUS_WORDS_TTL:
+        return list(entry["val"])
+    try:
+        conn = _victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            _minus_words_ensure(cur)
+            conn.commit()
+            if campaign_level:
+                cur.execute(
+                    "SELECT word FROM public.direct_global_minus_words "
+                    "WHERE enabled AND ct='*' AND (geo='*' OR geo=%s)",
+                    (geo,),
+                )
+            else:
+                cur.execute(
+                    "SELECT word FROM public.direct_global_minus_words "
+                    "WHERE enabled AND ct=%s AND (geo='*' OR geo=%s)",
+                    (ct, geo),
+                )
+            out: list[str] = []
+            seen: set[str] = set()
+            for row in cur.fetchall():
+                w = re.sub(r"\s+", " ", str(row[0] or "").strip())
+                if not w or len(w.split()) > 7:
+                    continue
+                k = w.lower()
+                if k not in seen:
+                    seen.add(k)
+                    out.append(w)
+        finally:
+            conn.close()
+        _MINUS_WORDS_CACHE[cache_key] = {"ts": now, "val": list(out)}
+        return out
+    except Exception as _exc:  # noqa: BLE001 — недоступность БД не валит создание
+        import logging as _log
+        _log.warning("[minus_words] _minus_words_fetch(%s,%s,%s) failed: %s", geo, ct, campaign_level, _exc)
+        entry = _MINUS_WORDS_CACHE.get(cache_key)
+        return list(entry["val"]) if entry else []
+
+
+def _minus_words_all(geo: str = "*") -> list[str]:
+    """Минус-слова уровня кампании: enabled, ct='*', geo IN ('*', <geo>) — дедупликация. TTL-кэш 30с."""
+    return _minus_words_fetch(geo, "*", campaign_level=True)
+
+
+def _minus_words_ct(geo: str = "*", ct: str = "*") -> list[str]:
+    """Минус-слова уровня группы (дельта): enabled, ct=<ct>, geo IN ('*', <geo>). При ct='*' → [].
+    TTL-кэш 30с. Используется как дополнение к _minus_words_all для ct-специфичных фраз."""
+    if ct == "*":
+        return []
+    return _minus_words_fetch(geo, ct, campaign_level=False)
+
+
+def _enabled_minus_words() -> list[str]:
+    """ЕДИНЫЙ источник минус-фраз кампаний/групп. Обратная совместимость → _minus_words_all('*').
+    Все существующие вызовы (tp1-tp7, feed/text/builders) продолжают работать без изменений."""
+    return _minus_words_all("*")
+
+
 # ── Минус-площадки РСЯ (#21): глобальный список URL, добавляется в disabledPlaces всех tp1 ─────────
 _MINUS_PLACES_ENSURED = False                            # DDL гоняем 1 раз на процесс, не на каждый вызов
 
@@ -2573,6 +3384,7 @@ def _enabled_minus_marks() -> list[str]:
 _MODELS_CATALOG_PATH = _HERE / "brand_models_catalog.json"
 _MINUS_MODELS_ENSURED = False
 _MINUS_MODELS_CACHE: dict = {"ts": 0.0, "val": []}
+_MINUS_MODEL_PAIRS_CACHE: dict = {"ts": 0.0, "val": []}  # companion для групп (с привязкой бренд→модель)
 _MINUS_MODELS_TTL = 30.0
 
 
@@ -2635,6 +3447,37 @@ def _enabled_minus_models() -> list[str]:
         return out
     except Exception:  # noqa: BLE001 — недоступность БД не валит создание
         return list(_MINUS_MODELS_CACHE["val"])
+
+
+def _enabled_minus_model_pairs() -> list[tuple[str, str]]:
+    """Пары (mark_canon, model_lower_collapsed) включённых минус-моделей для группового
+    минус-фильтра в create_set_tp1_builders (матч с привязкой к бренду, точное равенство).
+    Сигнатуру _enabled_minus_models() НЕ меняет — та остаётся для feedFilter (create_set_feeds).
+    Допущение: mark в БД уже в латинской канонике (baic/chery/mg/…) — _brand_canon идемпотентен.
+    TTL-кэш 30с. [] при сбое/пустом."""
+    now = time.time()
+    if now - _MINUS_MODEL_PAIRS_CACHE["ts"] < _MINUS_MODELS_TTL:
+        return list(_MINUS_MODEL_PAIRS_CACHE["val"])
+    try:
+        out: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for r in _global_minus_models():
+            if not r.get("enabled"):
+                continue
+            mark = str(r.get("mark") or "").strip()
+            model = str(r.get("model") or "").strip()
+            if not mark or not model:
+                continue
+            mark_c = _brand_canon(mark.lower())          # латиница → идемпотентно
+            model_l = " ".join(model.lower().split())    # схлопнуть повторные пробелы
+            key = (mark_c, model_l)
+            if key not in seen:
+                seen.add(key)
+                out.append(key)
+        _MINUS_MODEL_PAIRS_CACHE.update({"ts": now, "val": list(out)})
+        return out
+    except Exception:  # noqa: BLE001 — недоступность БД не валит создание
+        return list(_MINUS_MODEL_PAIRS_CACHE["val"])
 
 
 def _content_rules_ensure(cur) -> None:
@@ -2951,6 +3794,7 @@ register_reference_routes(
     load_json=_json,
     load_audiences=_load_audiences,
     victory_conn=_victory_conn,
+    ag_part1_map=_ag_part1_map,
 )
 
 register_overview_routes(
@@ -2990,6 +3834,8 @@ register_settings_routes(
     global_minus_places=_global_minus_places,
     minus_places_ensure=_minus_places_ensure,
     place_host=_place_host,
+    minus_words_slice=_global_minus_words_slice,
+    minus_words_ensure=_minus_words_ensure,
     global_minus_marks=_global_minus_marks,
     minus_marks_ensure=_minus_marks_ensure,
     known_brand_canons=lambda: sorted(_known_brand_canons()),
@@ -3389,6 +4235,23 @@ def _token_for_login(login: str, agency: str, tokens: dict) -> tuple[str | None,
     return None, None
 
 
+def _units_alive_for_login(login: str, agency: str = "") -> "bool | None":
+    """Живы ли баллы агентства для этого логина (хватит ≥1 кампании)? Политика «баллы первичны»
+    (Семён 2026-07-07): True → добивать ТОКЕНОМ немедленно; False → реальный 152 (только тогда
+    ждать сброса). None — не удалось прочитать остаток (нет токена/сеть) → трактуем как «не мешать»
+    (caller решает; для выбора resume_at None = не форсим ночную отложку)."""
+    try:
+        tok, _ag = _token_for_login(login, agency or "", _direct_tokens())
+        if not tok:
+            return None
+        u = _v5_units(tok, login)
+        if not u:
+            return None
+        return int(u.get("rest") or 0) >= int(_UNITS_PER_CAMPAIGN)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 register_deferred_routes(
     bp,
     _direct_access,
@@ -3493,12 +4356,15 @@ def _do_assets(login: str, agency: str):
         out["errors"]["all"] = "нет рабочего агентского токена для этого логина"
         return jsonify(out)
 
-    jf = _v5_get("feeds", token, login, ["Id", "Name", "BusinessType", "SourceType"])
+    jf = _v5_get("feeds", token, login, ["Id", "Name", "BusinessType", "SourceType", "Url"])
     if "error" in jf:
         out["errors"]["feeds"] = jf["error"].get("error_string")
     else:
+        raw_feeds = (jf.get("result") or {}).get("Feeds", [])
         out["feeds"] = [{"id": f["Id"], "name": f.get("Name"), "business_type": f.get("BusinessType"),
-                         "source_type": f.get("SourceType")} for f in (jf.get("result") or {}).get("Feeds", [])]
+                         "source_type": f.get("SourceType")} for f in raw_feeds]
+        # Количество разрешённых URL-фидов для предпланового бейджа tp5/tp7 (fan-out по фидам).
+        out["allowed_feeds_count"] = len(_filter_allowed_feed_rows(raw_feeds))
 
     ja = _v5_get("retargetinglists", token, login, ["Id", "Name", "Type", "Scope"], criteria={})
     if "error" in ja:
@@ -3573,10 +4439,11 @@ _SLEPOK_KEY = {"слепок_павлов": "pavlov", "слепок_щербак
                "слепок_караваев": "karavaev", "слепок_саламахин": "salamahin",
                "слепок_гордеева": "gordeeva", "слепок_зубакин": "zubakin",
                "слепок_чепелев": "chepelev", "слепок_тумашенко": "tumashenko",
-               "слепок_кудерко": "kuderko"}
+               "слепок_кудерко": "kuderko", "слепок_gen_ses": "gen_ses",
+               "слепок_dmp": "dmp"}
 _SLEPOK_CANONICAL = {"pavlov", "kryuchkova", "scherbakova", "terehov", "karavaev",
                       "salamahin", "gordeeva", "zubakin", "chepelev", "tumashenko",
-                      "kuderko"}
+                      "kuderko", "gen_ses", "dmp"}
 
 
 def _slepok_key_from_text(raw: str) -> str:
@@ -3673,44 +4540,49 @@ _M3_STATUS_TTL = 300                                      # кэш статус�
 
 
 
-# Расписание паузы создания при недоступном ИИ (решение Семёна 03.07, скрин #92):
-# 6 проверок по 10 минут, затем ещё одна через 1 час → всё ещё лежит → останавливаем набор.
-_M3_GATE_WAITS = [600] * 6 + [3600]
+# Одна короткая перепроверка ИИ перед фолбэком на слепок (Семён 09.07): раньше при обоих
+# лёгших провайдерах гейт висел 6×10мин+1ч и потом останавливал набор — часовой висяк.
+# Теперь: одна быстрая перепроверка (вдруг мигнуло), затем продолжаем создание на слепке.
+_M3_GATE_RECHECK_SEC = 20
 
 
 def _m3_gate_wait(job: dict | None = None) -> bool:
-    """Гейт создания РК: без ИИ контент не сгенерить — item'ы уходили бы в брак/деферред
-    десятками (лайв 03.07 18:44: туннель LLM умер, 7 пунктов Павлова отложено).
-    С 03.07 провайдера два: M3 лёг, но OpenRouter жив → НЕ паузим (двусторонний фолбэк
-    _llm_pair_for переключит генерацию сам). Пауза по _M3_GATE_WAITS — только когда
-    недоступны ОБА. True = генерация возможна; False = не дождались / джобу отменили."""
+    """Гейт создания РК. Провайдеров два (каскад _llm_pair_for): M3 и OpenRouter.
+    - M3 жив → True.
+    - M3 лёг, OpenRouter жив → True (фолбэк переключит генерацию на OpenRouter сам).
+    - Оба легли → НЕ висим 6×10мин+1ч (правило Семёна 09.07): делаем ОДНУ короткую
+      перепроверку (_M3_GATE_RECHECK_SEC) на случай моргания и продолжаем создание —
+      контент возьмётся из СЛЕПКА (run_gen_campaign_content: assemble_campaign + слепковый
+      фолбэк дают titles/texts/sitelinks детерминированно, без LLM).
+    True = продолжаем создание (на ИИ или на слепке); False = ТОЛЬКО если джобу отменили."""
     if _m3_llm_probe():
         return True
     if _openrouter_probe():
         print("[m3-gate] M3 недоступен, OpenRouter жив → контент пойдёт через "
               "DeepSeek V4 Flash (платно)", flush=True)
         return True
-    for _gi, _gw in enumerate(_M3_GATE_WAITS, 1):
-        print(f"[m3-gate] ИИ на M3 недоступен — пауза {_gw // 60} мин "
-              f"(проверка {_gi}/{len(_M3_GATE_WAITS)})", flush=True)
-        if job is not None:
-            job["note"] = f"пауза: ИИ на M3 недоступен, ждём (проверка {_gi}/{len(_M3_GATE_WAITS)})"
-        _t_end = time.time() + _gw
-        while time.time() < _t_end:
-            time.sleep(30)
-            try:
-                _touch_running_jobs_heartbeat()
-            except Exception:  # noqa: BLE001
-                pass
-            if job is not None and job.get("cancel"):
-                return False
-        if _m3_llm_probe() or _openrouter_probe():
-            print(f"[m3-gate] генерация снова доступна (проверка {_gi}) — продолжаем создание", flush=True)
-            if job is not None:
-                job.pop("note", None)
-            return True
-    print("[m3-gate] ни M3, ни OpenRouter не восстановились (6×10мин + 1ч) — набор остановлен", flush=True)
-    return False
+    # Оба провайдера легли. Короткая перепроверка, затем — на слепок (не висим часами).
+    print(f"[m3-gate] M3 и OpenRouter недоступны — короткая перепроверка "
+          f"{_M3_GATE_RECHECK_SEC} с перед фолбэком на слепок", flush=True)
+    if job is not None:
+        job["note"] = "ИИ недоступен (M3+OpenRouter) — перепроверка перед контентом из слепка"
+    _t_end = time.time() + _M3_GATE_RECHECK_SEC
+    while time.time() < _t_end:
+        time.sleep(5)
+        try:
+            _touch_running_jobs_heartbeat()
+        except Exception:  # noqa: BLE001
+            pass
+        if job is not None and job.get("cancel"):
+            return False
+    if job is not None:
+        job.pop("note", None)
+    if _m3_llm_probe() or _openrouter_probe():
+        print("[m3-gate] ИИ снова доступен после перепроверки — продолжаем на ИИ", flush=True)
+        return True
+    print("[m3-gate] ИИ по-прежнему недоступен — НЕ ждём, продолжаем создание на контенте "
+          "из слепка (детерминированный фолбэк run_gen_campaign_content)", flush=True)
+    return True
 
 
 _COOKIES_STATUS_CACHE: dict = {"at": 0.0, "data": None}
@@ -3719,8 +4591,10 @@ _COOKIES_STATUS_TTL = 300.0
 
 def _cookies_status_response():
     """Health агентских кук главпотока для бейджа в сайдбаре (под M3). {ok, alive, total, detail}.
-    Probe = UacClient.link_info по куке каждого агентства (локальная → главпоток), как в
-    pick_working_cookie. Кэш 5 мин; ?force=1 — обход кэша (кнопка «⟳ Обновить»)."""
+    Probe = UacClient.link_info по куке каждого агентства (локальная → главпоток). Живость решает
+    deny-лист: протухла ТОЛЬКО если получили однозначный need_reset/редирект в Паспорт; любая другая
+    ошибка (в т.ч. «нет прав»/"No rights" на конкретного клиента) = сессия жива. Кэш 5 мин;
+    ?force=1 — обход кэша (кнопка «⟳ Обновить»)."""
     now = time.time()
     _force = str(request.args.get("force") or "") in ("1", "true")
     cached = _COOKIES_STATUS_CACHE.get("data")
@@ -3728,11 +4602,22 @@ def _cookies_status_response():
         out = dict(cached)
         out["cached"] = True
         return jsonify(out)
-    # Probe агентской куки требует КЛИЕНТСКИЙ ulogin: до 3 клиентов на агентство из
+    # Probe агентской куки требует КЛИЕНТСКИЙ ulogin: до 5 клиентов на агентство из
     # local_gsheet_sites — ОДИН клиент давал ложные ✗, когда попадался отвязанный
-    # (victoryagency14/porg-23yivon2, факт 2026-07-03). Если клиентов нет (y-direct-victory) —
-    # probe «на само себя»: ответ 403 «Нет прав» (code 54) = сессия АВТОРИЗОВАНА → кука живая
-    # (протухшая даёт редирект в Паспорт/401, а не «Нет прав»).
+    # (victoryagency14/porg-23yivon2, факт 2026-07-03; victorylotsofads1, факт 2026-07-06 —
+    # Яндекс вернул «нет прав» ДВУМЯ разными формами: 403 {"code":54,"text":"Нет прав"} И
+    # 401 {"code":0,"text":"No rights"} — allow-лист конкретных текстов не поспевает за формами).
+    # Метод сменён на deny-лист: единственный ОДНОЗНАЧНЫЙ сигнал «кука мертва» — редирект в
+    # Паспорт/need_reset (`{"code":null,"text":"need_reset","recoveryUrl":".../passport.yandex.ru/..."}`,
+    # видели на протухшем `.secret/cookies.json`). Любая ДРУГАЯ ошибка (в т.ч. «нет прав»/"No rights"
+    # на конкретного клиента) означает, что сессия АВТОРИЗОВАНА — просто нет доступа к ЭТОМУ ulogin,
+    # это не признак протухания.
+    # login_key в local_gsheet_sites иногда мусор ("Нет"/"Да"/пустая заглушка вместо реального
+    # ulogin) — такой кандидат гарантированно даёт "чужую" ошибку (не "Нет прав"/code 54) и тратит
+    # одну из немногих попыток впустую, из-за чего при неудачном порядке выборки (без ORDER BY)
+    # аккаунт мог ошибочно попасть в "протухла", хотя кука рабочая. Пускаем в проверку только
+    # похожие на реальный ulogin строки (латиница/цифры/дефис/подчёркивание, без кириллицы).
+    _UAC_ULOGIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,}$")
     probe_logins: dict = {}
     try:
         conn = _victory_conn()
@@ -3740,10 +4625,12 @@ def _cookies_status_response():
             cur = conn.cursor()
             cur.execute("SELECT agency_account, login_key FROM public.local_gsheet_sites "
                         "WHERE coalesce(agency_account,'') NOT IN ('','None') "
-                        "AND coalesce(login_key,'')<>''")
+                        "AND coalesce(login_key,'')<>'' ORDER BY login_key")
             for a, l in cur.fetchall():
+                if not _UAC_ULOGIN_RE.match(l or ""):
+                    continue
                 lst = probe_logins.setdefault(a, [])
-                if l not in lst and len(lst) < 3:
+                if l not in lst and len(lst) < 5:
                     lst.append(l)
         finally:
             conn.close()
@@ -3762,18 +4649,27 @@ def _cookies_status_response():
                 cookie = None
             if not cookie:
                 continue
+            cookie_dead = False
             for ulogin in ulogins:
                 try:
                     cmc.UacClient(cookie, ulogin).link_info("https://ya.ru")
                     acc_ok = True
                     break
                 except Exception as pe:  # noqa: BLE001
-                    if "Нет прав" in str(pe) or '"code":54' in str(pe) or '"code": 54' in str(pe):
-                        acc_ok = True   # авторизована, просто нет прав на этот ulogin
+                    body = str(getattr(pe, "body", "") or pe)
+                    if "need_reset" in body or "Истек срок" in body or "Истёк срок" in body \
+                            or "passport.yandex.ru/auth" in body:
+                        cookie_dead = True   # ОДНОЗНАЧНЫЙ признак: сессия правда истекла
                         break
-                    continue            # кука не подошла этому клиенту → следующий
+                    continue              # любая другая ошибка ("нет прав"/"No rights" и т.п. на
+                                          # ЭТОГО клиента) — сессия жива, пробуем следующего ulogin
             if acc_ok:
                 src = label
+                break
+            if not cookie_dead:
+                # ни один ulogin не дал явного успеха, но и признака протухания не было —
+                # кука отвечает предметно (не редиректит в Паспорт), считаем живой
+                acc_ok, src = True, label
                 break
         alive += 1 if acc_ok else 0
         parts.append(f"{acc}: {'✓ ' + src if acc_ok else '✗ протухла'}")
@@ -4249,10 +5145,13 @@ def _account_prefill_response():
     if not counter_id:
         warnings.append("счётчик Метрики не найден ни в таблице, ни в metrika_goals")
 
-    region_id, region_used = _geo_id(row.get("city"), row.get("region"))
-    if not region_id:
-        region_id, region_used = 225, "Россия"
-        warnings.append("регион не распознан — поставил Россия (225)")
+    # Резолвим geoid ОБЛАСТИ (не города): city → Область через БД → geoid словаря Директа.
+    # Та же логика что _account_ctx (create_set_context.py); для мультигород-аккаунтов → 225.
+    acc_ctx = _account_ctx(login) or {}
+    region_id = acc_ctx.get("geoid") or 225
+    region_used = acc_ctx.get("oblast") or ("Россия" if region_id == 225 else None)
+    if region_id == 225 and row.get("city"):
+        warnings.append("регион не распознан по городу — поставил Россия (225)")
 
     # goal_id: приоритет — all_forms из metrika_goals; иначе цель «Все формы» из API Метрики
     goal_id = mg["goal_id"] if mg else None
@@ -5034,8 +5933,9 @@ _GENERIC_TEXT_FILLERS = [
     "Трейд-ин выше рынка. Оценим авто за 30 минут и зачтём в счёт нового кредита.",       # [76] трейд-ин
 ]
 _TP67_MIN_TEXT_LEN = 70
-_GENERIC_SITELINK_FILLERS = [  # все заголовки ≥ 22 симв (fix 1c, 2026-07-02)
-    {"title": "Автокредит от 9 000 ₽/мес", "description": "Подберем условия от банков-партнеров онлайн сегодня"},
+_GENERIC_SITELINK_FILLERS = [  # все заголовки ≥ 22 симв (fix 1c, 2026-07-02); кредит-тема — 1 слот
+    # «Автокредит от 9 000 ₽/мес» удалён: при наличии реального сitelink «Платёж от X ₽/мес»
+    # образовывал смысловой дубль (кредит+платёж = одна тема); остался «Первый взнос» как кредит-слот.
     {"title": "Первый взнос 0 ₽ онлайн", "description": "Оформим кредит без первоначального взноса онлайн"},
     {"title": "Оценка авто на трейд-ин", "description": "Оценим ваш автомобиль и зачтем в покупку онлайн"},
     {"title": "КАСКО на 1 год бесплатно", "description": "Условия действуют при покупке автомобиля в кредит"},
@@ -5175,6 +6075,7 @@ register_job_routes(
     job_db_web_resolve_feed=_job_db_web_resolve_feed,
     job_db_active_by_login=_job_db_active_by_login,
     job_db_list_recent=_job_db_list_recent,
+    cancel_children=_cancel_children_of,
 )
 
 
@@ -5335,6 +6236,9 @@ def _cached_upload_image(*args, **kwargs):
     _touch_running_jobs_heartbeat()   # аплоад картинки = прогресс (сотни на кампанию — анти-watchdog)
     return _create_set_feeds_module()._cached_upload_image(*args, **kwargs)
 
+def _parallel_upload_images(*args, **kwargs):
+    return _create_set_feeds_module()._parallel_upload_images(*args, **kwargs)
+
 def _homepage_url(*args, **kwargs):
     return _create_set_feeds_module()._homepage_url(*args, **kwargs)
 
@@ -5443,6 +6347,7 @@ _SLEPOK_MINUS_MODE: dict[str, str] = {
 def _create_set_minus_deps() -> dict:
     return {
         "_SLEPOK_KEY": _SLEPOK_KEY,
+        "_enabled_minus_words": _enabled_minus_words,
         "_v5_call": _v5_call,
         "_v5_err": _v5_err,
         "_v5_get": _v5_get,
@@ -5759,10 +6664,12 @@ def _create_set_text_builder_deps() -> dict:
         "_SLEPOK_KEY": _SLEPOK_KEY,
         "_UTM_TEMPLATE_TP1": _UTM_TEMPLATE_TP1,
         "_account_offer_prices": _account_offer_prices,
+        "_enabled_minus_words": _enabled_minus_words,
         "_account_offer_urls": _account_offer_urls,
         "_ag_part1_map": _ag_part1_map,
         "_brand_level_url": _brand_level_url,
         "_cached_upload_image": _cached_upload_image,
+        "_parallel_upload_images": _parallel_upload_images,
         "_chunks": _chunks,
         "_creative_images_for_ct": _creative_images_for_ct,
         "_ct_segment": _ct_segment,
@@ -5792,6 +6699,11 @@ def _create_set_text_builder_deps() -> dict:
         "_valid_pack_brand_name": _valid_pack_brand_name,
         "cmc": cmc,
         "kp": kp,
+        # gc/gf: token-путь tp2/tp4 (DIRECT_API_FIRST) — Фаза 1 создаёт группы АТОМАРНО через Grid
+        # AddUnifiedAdGroups(profile=search_tp2) + post-create Grid-репейр картинок/цен (Фаза 3.4).
+        # Раньше не прокидывались → Фаза 3.4 gf молча падала в except (флаг OFF — не исполнялась).
+        "gc": gc,
+        "gf": gf,
     }
 
 
@@ -5855,16 +6767,23 @@ def _create_set_tp1_builder_deps() -> dict:
         "_ag_part1_map": _ag_part1_map,
         "_ai_common_sitelinks": _ai_common_sitelinks,
         "_ai_sitelinks": _ai_sitelinks,
+        "_apply_campaign_direct_minus": _apply_campaign_direct_minus,
         "_apply_corrections": _apply_corrections,
+        "_brand_canon": _brand_canon,
         "_brand_level_url": _brand_level_url,
         "_cached_upload_image": _cached_upload_image,
+        "_parallel_upload_images": _parallel_upload_images,
         "_chunks": _chunks,
         "_coherent_payments": _coherent_payments,
         "_ensure_callout_exts": _ensure_callout_exts,   # ревью 03.07 #4: имени не было в deps → callouts-блок tp1 молча падал NameError
         "_touch_running_jobs_heartbeat": _touch_running_jobs_heartbeat,
         "_creative_images_for_ct": _creative_images_for_ct,
         "_ct_segment": _ct_segment,
+        "_enabled_minus_marks": _enabled_minus_marks,
+        "_enabled_minus_models": _enabled_minus_models,
+        "_enabled_minus_model_pairs": _enabled_minus_model_pairs,
         "_enabled_minus_places": _enabled_minus_places,
+        "_enabled_minus_words": _enabled_minus_words,
         "_feed_collections": _feed_collections,
         "_feed_models_from_collections": _feed_models_from_collections,
         "_feed_url_for_model": _feed_url_for_model,
@@ -5984,15 +6903,15 @@ def _norm_sitelinks_for_v501(sitelinks: list, href: str = "") -> list[dict]:
     """Нормализовать быстрые ссылки из M3/item/БД в формат sitelinks.add.
     Href у всех ссылок ведёт на главную аккаунта: /sl1.. давали 404."""
     from . import ai_agents as A
-    _title_min = A.SITELINK_TITLE_TARGET_MIN            # единый порог (=22), не magic number
+    _title_min = A.SITELINK_TITLE_MIN_ACCEPT            # порог приёмки; цель генерации = SITELINK_TITLE_TARGET_MIN
     base = (href or "").rstrip("/")
-    out, seen = [], set()
+    out, seen, seen_topics = [], set(), set()
     for s in list(sitelinks or []) + list(_GENERIC_SITELINK_FILLERS):
         if not isinstance(s, dict):
             continue
         title = _trim_to_word(_sanitize_content(s.get("Title") or s.get("title") or "", 30), 30).strip()
         desc = _trim_to_word(_sanitize_content(s.get("Description") or s.get("description") or "", 60), 60).strip()
-        if not title or len(title) < _title_min:  # fix 1c: last-resort gate (SITELINK_TITLE_TARGET_MIN)
+        if not title or len(title) < _title_min:  # порог приёмки: отсечь совсем короткие
             continue
         if _bad_ad_sitelink(title, desc):
             continue
@@ -6000,15 +6919,24 @@ def _norm_sitelinks_for_v501(sitelinks: list, href: str = "") -> list[dict]:
         if k in seen:
             continue
         seen.add(k)
+        # Семантический topic-дедуп: кредит/платёж/взнос — одна тема (не более 1 ссылки).
+        # Ловит дубль «Платёж от 9 000 ₽/мес» (реальный) + «Первый взнос 0 ₽» (филлер).
+        _t_lower = title.lower().replace("ё", "е")
+        _topic = "credit" if re.search(r"кредит|платеж|взнос|рассрочк", _t_lower) else None
+        if _topic and _topic in seen_topics:
+            continue
+        if _topic:
+            seen_topics.add(_topic)
         # Пустой Href → Яндекс отбивает валидацией → весь набор молча теряется.
         # Берём собственный href ссылки (если есть), иначе base, иначе пропускаем.
         sl_href = s.get("Href") or s.get("href") or s.get("url") or base
         if not sl_href:
             continue  # нет href ни у ссылки ни у base — не пускаем сломанный Href=''
         out.append({"Title": title, "Href": sl_href, "Description": desc})
-        if len(out) >= 8:
-            break
-    return out
+    # Порядок источников: реальные ссылки (sitelinks) — первыми, _GENERIC_SITELINK_FILLERS — добивка до 8.
+    # НЕ сортируем по длине: сортировка по длине выталкивала реальные ссылки (18-24 симв)
+    # вниз из-за более длинных филлеров (22-26 симв) — теперь source-order сохраняется.
+    return out[:8]
 
 
 def _get_or_reuse_sitelink_set(token: str, login: str, sitelinks: list) -> int | None:
@@ -6027,7 +6955,7 @@ def _get_or_reuse_sitelink_set(token: str, login: str, sitelinks: list) -> int |
         # 152 → fallthrough к Grid
     # Grid-путь (БЕЗ баллов): работает и при 0 units, и без token
     try:
-        gc = gf.GridClient(login)
+        gc = gf.get_grid_client(login)
         sid = gc.add_sitelink_set(sitelinks)
         if sid:
             return sid
@@ -6071,7 +6999,7 @@ def _resolve_campaign_assets(
             out = {"sitelinks": _slepok_sitelinks_for(slepok, site_type)[:8],
                    "callout_ids": [], "promos": []}
             try:
-                _gc_assets = gf.GridClient(login, cookie=grid_cookie)
+                _gc_assets = gf.get_grid_client(login, cookie=grid_cookie)
                 if _prefer_callout_ids:
                     out["callout_ids"] = _prefer_callout_ids[:8]
                 elif prefer_callout_texts:
@@ -6094,7 +7022,7 @@ def _resolve_campaign_assets(
     out["asset_sitelinks"] = asset_sl   # нормализованный шаблон для per-group наборов (#ФИКС-3)
     if asset_sl:
         try:
-            out["sitelink_set_id"] = gf.GridClient(login, cookie=grid_cookie).add_sitelink_set(asset_sl)
+            out["sitelink_set_id"] = gf.get_grid_client(login, cookie=grid_cookie).add_sitelink_set(asset_sl)
         except Exception:  # noqa: BLE001
             out["sitelink_set_id"] = _get_or_reuse_sitelink_set(token, login, asset_sl)
     return out
@@ -6425,11 +7353,34 @@ def _create_set_finalize_module():
     csfin.configure(_create_set_finalize_deps())
     return csfin
 
+
+_FINALIZE_QUEUE_CONFIGURED = {"done": False}
+
+
+def _finalize_queue_module():
+    """Модуль async-финализации (Задача F). Конфигурируем один раз: REAL finalize-функции
+    (без capture-обёртки — иначе replay в воркере снова захватился бы) + rw-conn."""
+    from . import create_set_finalize_queue as csfq
+    if not _FINALIZE_QUEUE_CONFIGURED["done"]:
+        csfin = _create_set_finalize_module()
+        csfq.configure({
+            "victory_conn_rw": _victory_conn_rw,
+            "finalize_rsya": csfin._finalize_rsya,
+            "finalize_search_via_grid": csfin._finalize_search_via_grid,
+        })
+        _FINALIZE_QUEUE_CONFIGURED["done"] = True
+    return csfq
+
 def _search_platforms(*args, **kwargs):
     return _create_set_finalize_module()._search_platforms(*args, **kwargs)
 
 
 def _finalize_rsya(*args, **kwargs):
+    # Задача F (DIRECT_ASYNC_FINALIZE): ON+активное окно захвата → финализацию НЕ исполняем
+    # инлайн (уходит в очередь finalize_set, replay в фоне). OFF → capture=False мгновенно →
+    # байт-в-байт прежнее инлайн-исполнение.
+    if _finalize_queue_module().capture_finalize("rsya", args, kwargs):
+        return []
     return _create_set_finalize_module()._finalize_rsya(*args, **kwargs)
 
 
@@ -6455,6 +7406,9 @@ def _grid_callout_ids(*args, **kwargs):
 
 
 def _finalize_search_via_grid(*args, **kwargs):
+    # Задача F (DIRECT_ASYNC_FINALIZE): см. _finalize_rsya. OFF → инлайн как раньше.
+    if _finalize_queue_module().capture_finalize("search", args, kwargs):
+        return []
     return _create_set_finalize_module()._finalize_search_via_grid(*args, **kwargs)
 
 
@@ -6474,6 +7428,14 @@ def _grid_account_image_hashes(*args, **kwargs):
     return _create_set_tp1_builder_module()._grid_account_image_hashes(*args, **kwargs)
 
 
+def _preupload_tp1_images(*args, **kwargs):
+    # Обёртка гарантирует, что cstp1.configure() (globals().update(deps)) исполнён ДО вызова
+    # _preupload_tp1_images — иначе набор-level прогрев в фон-потоке падал NameError на первом
+    # инъектируемом глобале (_SLEPOK_KEY/kp/gf/…), т.к. фон-поток импортил функцию сырьём в обход
+    # ленивого configure (инцидент IMG_PREUPLOAD_SLEPOK_KEY_UNDEF, 2026-07-09).
+    return _create_set_tp1_builder_module()._preupload_tp1_images(*args, **kwargs)
+
+
 def _tp1_pack_groups(*args, **kwargs):
     return _create_set_tp1_builder_module()._tp1_pack_groups(*args, **kwargs)
 
@@ -6489,15 +7451,18 @@ def _create_tp1_via_cookie(*args, **kwargs):
 def _create_set_feed_builder_deps() -> dict:
     return {
         "_SLEPOK_MINUS_MODE": _SLEPOK_MINUS_MODE,
+        "_apply_campaign_direct_minus": _apply_campaign_direct_minus,
         "_account_model_feeds": _account_model_feeds,
         "_account_offer_prices": _account_offer_prices,
         "_add_job_err": _add_job_err,
         "_add_listing_ads_v501": _add_listing_ads_v501,
         "_enabled_minus_places": _enabled_minus_places,   # ревью 03.07 #7/#8: NameError в tp3 (v5 падал целиком, куки — без финализации)
+        "_enabled_minus_words": _enabled_minus_words,    # #4/#5: глобальный минус на tp2/tp4 (DEPS.get в feed_builders:133,315)
         "_ai_common_sitelinks": _ai_common_sitelinks,
         "_allowed_feed_keys": _allowed_feed_keys,
         "_apply_corrections": _apply_corrections,
         "_build_tp1_from_pack": _build_tp1_from_pack,
+        "_build_text_from_pack": _build_text_from_pack,   # token-путь tp2/tp4 (DIRECT_API_FIRST) — наполнение групп v5
         "_bump_job": _bump_job,
         "_create_search_test_campaign": _create_search_test_campaign,
         "_ct_segment": _ct_segment,
@@ -6540,6 +7505,10 @@ def _create_set_feed_builder_module():
 
 def _create_text_via_cookie(*args, **kwargs):
     return _create_set_feed_builder_module()._create_text_via_cookie(*args, **kwargs)
+
+
+def _create_text_via_token(*args, **kwargs):
+    return _create_set_feed_builder_module()._create_text_via_token(*args, **kwargs)
 
 
 def _create_shopping_via_cookie(*args, **kwargs):
@@ -6638,7 +7607,8 @@ def _master_product_deps() -> dict:
         "_bad_ad_sitelink", "_bad_ad_text", "_bad_ad_title", "_brand_ct_from_coder", "_brand_title_set",
         "_build_name", "_bump_item", "_bump_job", "_cached_campaign_content", "_catalog_feed",
         "_coherent_discounts", "_coherent_payments", "_creative_images_for_ct", "_dedup_prefix_absorb",
-        "_discount_pcts", "_diverse_text_offers", "_drop_used_car", "_fallback_master_titles",
+        "_discount_pcts", "_diverse_text_offers", "_drop_used_car", "_enabled_minus_words",
+        "_fallback_master_titles",
         "_fill_title", "_fill_variants", "_has_number", "_image_ct_for_content", "_is_bad_start",
         "_is_bu_site", "_is_common_ct", "_is_site_domain_name", "_job_db_progress", "_lines",
         "_match_collection", "_num", "_own_brand_tokens", "_replace_emdash", "_replace_foreign_city",
@@ -6676,16 +7646,19 @@ def _create_set_orchestrator_deps() -> dict:
         "_busy_response", "_cached_campaign_content", "_callout_semantic_key", "_content_cache_key",
         "_content_copy", "_counter_foreign_owner", "_create_account_promo_from_slepok",
         "_create_set_live_verification", "_create_shopping_via_cookie", "_create_text_via_cookie",
+        "_create_text_via_token",   # DIRECT_API_FIRST: tp2/tp4 через баллы (token), фолбэк на cookie
         "_create_tp1_campaign", "_create_tp1_via_cookie", "_create_tp3_campaign", "_create_tp5_campaign",
         "_dedup_callouts", "_deferred_save", "_deferred_set_status", "_first_url_feed",
         "_get_or_create_minus_set", "_goal_vse_formy", "_grid_list_campaigns", "_ints", "_job_db_progress",
         "_job_new", "_m3_gate_wait", "_slepok_profile_excludes_tp",
         "_lines", "_load_corrections", "_metrika_goals_for", "_next_units_reset_utc", "_normalize_callout_text",
         "_num", "_preflight_creds", "_promo_content_lines", "_promo_usable_for_content",
+        "_preupload_tp1_images",   # набор-level прогрев картинок tp1 через configured-модуль (DI-инъекции)
         "_pull_begin", "_pull_end", "_repair_deps", "_resolve_region", "_rotated_content_window",
         "_rule_sets", "_run_master_product_item", "_selected_slepok_key", "_slepok_content_get",
         "_slepok_uses_shopping", "_templates_for",
-        "_auth_error_in_result", "_units_in_result", "_v5_get",
+        "_auth_error_in_result", "_units_in_result", "_v5_get", "_v5_call",
+        "_units_alive_for_login",   # баллы живы → сегментный tp5 добиваем токеном сразу (не ждём полночь)
     ]
     g = globals()
     return {name: g[name] for name in names}
@@ -6730,6 +7703,7 @@ def _create_set_repairing_deps() -> dict:
         "_templates_for": _templates_for,
         "_text_group_name": _text_group_name,
         "_token_for_login": _token_for_login,
+        "_units_alive_for_login": _units_alive_for_login,   # recreate: баллы живы → токеном, не по куке
         "_valid_pack_brand_name": _valid_pack_brand_name,
         "_vendor_value": _vendor_value,
         "gc": gc,
@@ -6740,6 +7714,7 @@ def _create_set_repairing_deps() -> dict:
         "vsvc": vsvc,
         # Repair image/price/text callbacks (добавлены 2026-07-03 для in-place repair executors)
         "_cached_upload_image": _cached_upload_image,
+        "_parallel_upload_images": _parallel_upload_images,
         "_creative_images_for_ct": _creative_images_for_ct,
         "_grid_update_adaptive_ads": _grid_update_adaptive_ads,
         "_grid_set_ad_prices": _grid_set_ad_prices,
@@ -6785,6 +7760,7 @@ _ce.configure({
     "_v5_call": _v5_call, "_v501_svc": _v501_svc, "_v5_err": _v5_err,
     "_token_for_login": _token_for_login, "_direct_tokens": _direct_tokens,
     "_resolve_agency_hint": _resolve_agency_hint, "_victory_conn_rw": _victory_conn_rw,
+    "_resolve_region": _resolve_region,   # город → (r_code, oblast) для ремапа кодера при копировании
     "_grid_list_campaigns": _grid_list_campaigns, "_grid_feeds": _grid_feeds,
     "_grid_feed_offer_prices": _grid_feed_offer_prices, "_group_ad_price": _group_ad_price,
     "_grid_set_ad_prices": _grid_set_ad_prices, "_grid_update_adaptive_ads": _grid_update_adaptive_ads,
@@ -6835,6 +7811,11 @@ def _spec_audit_deps() -> dict:
         "_repair_deps": _repair_deps,
         "_tp1_video_ads": _tp1_video_ads,   # deferred-video: добивка видео после создания
         "kp": kp,
+        # fix_generic_fallback_group: удаление DRAFT-пустышки + deferred токеном
+        "_deferred_save": _deferred_save,
+        "_next_units_reset_utc": _next_units_reset_utc,
+        "_units_alive_for_login": _units_alive_for_login,   # баллы живы → добивать сразу (не ждать полночь)
+        "_victory_conn_rw": _victory_conn_rw,
     }
 
 
@@ -6845,11 +7826,14 @@ def _configure_spec_audit():
     return csa
 
 
-def _run_spec_audit_and_fix(login: str, ctx: dict) -> dict:
+def _run_spec_audit_and_fix(login: str, ctx: dict, *, skip_recreate: bool = False) -> dict:
     """Run the declarative spec-audit for one account and auto-fix KEYWORDS_WRONG_GROUP in-place.
 
     Called from the delayed-repair cycle after the standard in-place actions. Returns a compact
     report {issues_by_code, fixed} — fixes go through repair_executor (no Direct create units).
+
+    skip_recreate=True: пропускает fix_generic_fallback_group (не запускает новое recreate).
+    Используется для ре-аудитов после recreate (kind='content_repair_post_recreate') — антицикл.
     """
     csa = _configure_spec_audit()
     body = (ctx or {}).get("body") or {}
@@ -6873,7 +7857,16 @@ def _run_spec_audit_and_fix(login: str, ctx: dict) -> dict:
         out["short_titles_fix"] = {
             "ok": fix_st.get("ok"), "campaigns_fixed": fix_st.get("campaigns_fixed"),
             "titles_extended": fix_st.get("titles_extended"),
+            "terminal": (fix_st.get("terminal") or [])[:5],   # SHORT_TITLES_UNFIXABLE (hard-fail)
             "errors": (fix_st.get("errors") or [])[:5],
+        }
+    brand_first = [it for it in (report.get("issues") or []) if it.get("code") == "BRAND_NOT_FIRST"]
+    if brand_first:
+        fix_bf = csa.fix_brand_not_first(login, ctx, brand_first)
+        out["brand_not_first_fix"] = {
+            "ok": fix_bf.get("ok"), "campaigns_fixed": fix_bf.get("campaigns_fixed"),
+            "terminal": (fix_bf.get("terminal") or [])[:5],   # BRAND_NOT_FIRST_UNFIXABLE (hard-fail)
+            "errors": (fix_bf.get("errors") or [])[:5],
         }
     btn = [it for it in (report.get("issues") or []) if it.get("code") == "BUTTON_MISSING"]
     if btn:
@@ -6895,6 +7888,10 @@ def _run_spec_audit_and_fix(login: str, ctx: dict) -> dict:
         out["video_missing_fix"] = {
             "ok": fix_vm.get("ok"), "campaigns_fixed": fix_vm.get("campaigns_fixed"),
             "campaigns": fix_vm.get("campaigns"),
+            # still_missing_total/requeue_needed прокидываем наверх — delayed-repair подмешивает
+            # их в remaining, чтобы «до нуля»-reschedule перезапустил докрутку видео (Семён 2026-07-08).
+            "still_missing_total": fix_vm.get("still_missing_total"),
+            "requeue_needed": fix_vm.get("requeue_needed"),
             "errors": (fix_vm.get("errors") or [])[:5],
         }
     nl = [it for it in (report.get("issues") or []) if it.get("code") == "NO_LISTING"]
@@ -6934,6 +7931,36 @@ def _run_spec_audit_and_fix(login: str, ctx: dict) -> dict:
             "ok": fix_slm.get("ok"), "campaigns_fixed": fix_slm.get("campaigns_fixed"),
             "set_id": fix_slm.get("set_id"), "errors": (fix_slm.get("errors") or [])[:5],
         }
+    gfb = [it for it in (report.get("issues") or []) if it.get("code") == "GENERIC_FALLBACK_GROUP"]
+    if gfb and not skip_recreate:
+        fix_gfb = csa.fix_generic_fallback_group(login, ctx, gfb)
+        out["generic_fallback_group_fix"] = {
+            "ok": fix_gfb.get("ok"), "campaigns_fixed": fix_gfb.get("campaigns_fixed"),
+            "deferred_ids": fix_gfb.get("deferred_ids"),
+            "skipped": (fix_gfb.get("skipped") or [])[:5],
+            "errors": (fix_gfb.get("errors") or [])[:5],
+        }
+    elif gfb and skip_recreate:
+        out["generic_fallback_group_fix"] = {
+            "ok": True, "campaigns_fixed": 0,
+            "note": "пропущено (skip_recreate=True, ре-аудит после recreate)",
+        }
+    fmk = [it for it in (report.get("issues") or []) if it.get("code") == "FOREIGN_MODEL_KEYWORDS"]
+    if fmk:
+        fix_fmk = csa.fix_foreign_model_keywords(login, ctx, fmk)
+        out["foreign_model_keywords_fix"] = {
+            "ok": fix_fmk.get("ok"), "deleted": fix_fmk.get("deleted"),
+            "adgroups_fixed": fix_fmk.get("adgroups_fixed"),
+            "note": fix_fmk.get("note"), "error": fix_fmk.get("error"),
+        }
+    lpf = [it for it in (report.get("issues") or []) if it.get("code") == "LISTING_POSITIVE_FILTER_MISSING"]
+    if lpf:
+        fix_lpf = csa.fix_listing_positive_filter(login, ctx, lpf)
+        out["listing_positive_filter_fix"] = {
+            "ok": fix_lpf.get("ok"), "campaigns_fixed": fix_lpf.get("campaigns_fixed"),
+            "campaigns": fix_lpf.get("campaigns"),
+            "errors": (fix_lpf.get("errors") or [])[:5],
+        }
     return out
 
 
@@ -6965,7 +7992,7 @@ def _legacy_create_response():
             display_name=(d.get("display_name") or "").strip() or None,
             campaign_type=d.get("campaign_type") or "master",
             feed_id=int(d["feed_id"]) if d.get("feed_id") else None,
-            minus_keywords=_lines(d.get("minus_keywords")) or ["отзывы"],
+            minus_keywords=_lines(d.get("minus_keywords")) or _enabled_minus_words(),
             audiences=d.get("audiences") or [],
             image_urls=_lines(d.get("image_urls")),
             video_urls=_lines(d.get("video_urls")),

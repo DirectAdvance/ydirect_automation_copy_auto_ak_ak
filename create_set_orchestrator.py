@@ -2,10 +2,28 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
+import threading
+
 from flask import jsonify, request
 
 from . import campaign as cmc
 from . import grid_finalize as gf
+
+
+def _api_first_enabled() -> bool:
+    """Флаг DIRECT_API_FIRST (default OFF): ON → tp2/tp4 создаются ТОКЕНОМ (баллы) с фолбэком на
+    куку, и 152-флип строже (только по подтверждённому исчерпанию баллов). OFF → прежнее поведение
+    байт-в-байт (tp2/tp4 по куке, флип по первому units-маркеру). Читается на каждый набор —
+    можно менять env без перекомпиляции модуля."""
+    return os.getenv("DIRECT_API_FIRST", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+# Порог строгого 152-флипа при API-first: столько РЕАЛЬНЫХ 152-провалов подряд (или подтверждённый
+# units≈0) до перевода остатка набора на куку. Мелкий/транзиентный/ложный 152 при живых баллах не
+# уводит на куку зря (у агентства баллов много — одиночный 152 обычно транзиент).
+_API_FIRST_FLIP_STREAK = 2
 
 
 def create_set_response(deps: dict):
@@ -42,6 +60,7 @@ def create_set_response(deps: dict):
     _create_set_live_verification = deps['_create_set_live_verification']
     _create_shopping_via_cookie = deps['_create_shopping_via_cookie']
     _create_text_via_cookie = deps['_create_text_via_cookie']
+    _create_text_via_token = deps.get('_create_text_via_token')   # DIRECT_API_FIRST: tp2/tp4 через баллы
     _create_tp1_campaign = deps['_create_tp1_campaign']
     _create_tp1_via_cookie = deps['_create_tp1_via_cookie']
     _create_tp3_campaign = deps['_create_tp3_campaign']
@@ -59,6 +78,7 @@ def create_set_response(deps: dict):
     _load_corrections = deps['_load_corrections']
     _metrika_goals_for = deps['_metrika_goals_for']
     _next_units_reset_utc = deps['_next_units_reset_utc']
+    _units_alive_for_login = deps.get('_units_alive_for_login')
     _normalize_callout_text = deps['_normalize_callout_text']
     _num = deps['_num']
     _preflight_creds = deps['_preflight_creds']
@@ -78,6 +98,7 @@ def create_set_response(deps: dict):
     _auth_error_in_result = deps.get('_auth_error_in_result')
     _units_in_result = deps['_units_in_result']
     _v5_get = deps['_v5_get']
+    _v5_call = deps.get('_v5_call')      # None → callouts пропускаются (graceful degrade)
     _job_new = deps.get('_job_new')              # немедленная постановка куки-джобы (может отсутствовать)
     body = request.json or {}
     from .create_set_input import normalize_create_set_input
@@ -111,6 +132,9 @@ def create_set_response(deps: dict):
     # Если via_cookie=False, token-типы всё равно идут API-first и АВТОМАТИЧЕСКИ переключаются
     # на cookie-path при error 152 (баллы Директа закончились).
     via_cookie = _input["via_cookie"]
+    # DIRECT_API_FIRST (default OFF): ON → tp2/tp4 создаём ТОКЕНОМ (баллы), фолбэк на куку по 152;
+    # 152-флип строже (только по подтверждённому исчерпанию). OFF → прежнее поведение байт-в-байт.
+    _API_FIRST = _api_first_enabled() and callable(_create_text_via_token)
     # stream_content: путь «Создать и опубликовать» БЕЗ предпросмотра — ИИ-контент М3 генерим
     # ПОИТЕМНО прямо здесь, перед созданием каждой РК (контент 1 РК → создаём 1 РК → следующая),
     # а НЕ всю пачку заранее во фронте. Прогресс виден сразу, при 152/сбое уже созданные сохранены.
@@ -212,11 +236,66 @@ def create_set_response(deps: dict):
         _st_token, _w_agency = _pf["token"], _pf["agency"]
         if _pf.get("cookie_only"):
             via_cookie = True   # нет токена (error 53) — весь набор через cookie-путь (без API-баллов)
+        elif _st_token and not via_cookie and callable(_units_alive_for_login):
+            # B3 (preflight-152): есть токен, но БАЛЛЫ Директа могут быть исчерпаны. Дёргаем остаток
+            # ДО старта — если баллов нет, сразу переводим ВЕСЬ набор на куки-путь (Grid/UAC, без
+            # баллов), не дожидаясь 152 в СЕРЕДИНЕ набора (там частичная РК удаляется + попап/deferred).
+            # None (не смогли прочитать остаток) → не мешаем: идём токеном, 152 отработает по-старому.
+            try:
+                if _units_alive_for_login(login, (_w_agency or "")) is False:
+                    via_cookie = True
+                    print(f"[preflight-units] {login}: баллы Директа исчерпаны на старте — "
+                          f"весь набор идёт по куке (без баллов)", flush=True)
+            except Exception:  # noqa: BLE001 — предполёт баллов best-effort, не критичен
+                pass
         # UAC-клиент на куке ТОГО ЖЕ агентства (предполёт уже подтвердил, что кука жива).
         try:
             client = cmc.build_client(login, account=(_w_agency or None))
         except Exception as e:  # noqa: BLE001
             return jsonify({"error": f"не удалось подобрать рабочую куку: {str(e)[:160]}"}), 502
+
+        # ── Гейт здоровья контент-пайплайна ─────────────────────────────────────────────
+        # Только для stream_content (ИИ-генерация поитемно). slepok_library / «ручной» контент
+        # (items уже содержат titles/texts/sitelinks) LLM не используют → гейт не нужен.
+        # Позиция: ДО run_create_set_precreate → ни одного объекта в Директе ещё не создано,
+        # abort чист без сирот. finally → _pull_end отработает штатно при любом return.
+        # Anti-false-positive: M3 проверяется 3×3 с (≥1 OK → жив); OR — 2×5 с (≥1 OK → жив);
+        # оба параллельно. Блокируем лишь при уверенно-мёртвых ОБОИХ (все попытки упали).
+        if stream_content and _stream_agent:
+            from .llm_providers import (check_content_pipeline_health as _cphealth,
+                                        arm_m3_breaker as _arm_m3_breaker,
+                                        m3_completion_preflight_ok as _m3_gen_preflight)
+            _cp = _cphealth()
+            # Completion-preflight: health GET (/v1/models) жив ≠ /chat/completions жив — живой баг
+            # 09.07: M3 не выдаёт НИ ОДНОГО токена, idle-таймаут срабатывает через 30-120с, до 4
+            # обращений на РК впустую. Реальный 1-токенный тест генерации ОДИН раз на набор → взводим
+            # circuit-breaker (весь контент → OpenRouter, БЕЗ повторных idle на мёртвый M3). Выбор
+            # провайдера в попапе сохранён: breaker — страховка поверх, не замена (юзер выбрал M3 и
+            # он мёртв → авто-фолбэк на OpenRouter на весь набор).
+            _m3_gen_ok = bool(_cp["m3_alive"]) and _m3_gen_preflight()
+            _arm_m3_breaker(body.get("_job_id") or login, tripped=(not _m3_gen_ok))
+            _or_ok = bool(_cp["or_alive"])
+            # Абортим ТОЛЬКО когда генерировать реально нечем: M3 completion мёртв И OpenRouter мёртв.
+            # (Раньше гейт смотрел any_alive по health GET — пропускал набор в 90с-таймауты на висящем
+            # completion. Теперь M3-completion-мёртв считается как мёртвый M3.)
+            if (not _m3_gen_ok) and (not _or_ok):
+                _cp_msg = (
+                    f"контент-пайплайн недоступен: M3 completion висит/мёртв И "
+                    f"OpenRouter недоступен ({_cp['message']}) — набор НЕ создан, повторите когда восстановится"
+                )
+                print(f"[content-pipeline-gate] СТОП — {_cp_msg}", flush=True)
+                _gate_job = (
+                    _CREATE_JOBS.get(body.get("_job_id")) if body.get("_job_id") else None
+                )
+                if _gate_job:
+                    _add_job_err(_gate_job, _cp_msg)
+                return jsonify({"error": _cp_msg, "abort_reason": "content_pipeline_dead"}), 503
+            if not _m3_gen_ok:
+                print("[m3-completion-preflight] M3 completion висит/мёртв (health GET мог быть жив) → "
+                      "circuit-breaker ВЗВЕДЁН, весь набор идёт на OpenRouter", flush=True)
+            else:
+                print("[m3-completion-preflight] M3 генерирует (1-токенный тест OK)", flush=True)
+            print(f"[content-pipeline-gate] OK — {_cp['message']}", flush=True)
 
         # Корректировки ставок из «Глобальных правил» по городу аккаунта (с фолбэком на глобальные '*').
         # Применяются ТОЛЬКО к tp1–tp5 (поисковые семейства). МК(tp6)/Товарка(tp7) — без корректировок.
@@ -229,14 +308,77 @@ def create_set_response(deps: dict):
         r_code_ctx, _ = _resolve_region(ctx.get("city"))
 
         results = []
-        _tp7_mf = None                                   # ленивый кэш фидов с коллекциями (tp7 фильтр)
         _job = _CREATE_JOBS.get(body.get("_job_id")) if body.get("_job_id") else None
         _units_block = False                             # сработал лимит баллов Директа (error 152)
         _units_pending = 0                               # сколько пунктов плана НЕ создано из-за лимита
         _units_from = None                               # индекс ПЕРВОГО несозданного пункта (для остатка/докрутки)
-        _units_seen = False                              # 152 встречался хоть раз (даже если inline-cookie спас пункт)
         _units_switched = False                          # на 152 ВЕСЬ остаток переведён на куки-путь (бесшовно)
-        _scan_i = 0                                      # курсор скана results на маркер 152 (учёт continue-веток)
+
+        # ── C1 (Фаза 2): параллельные НЕконкурирующие каналы создания (фича-флаг, дефолт OFF) ──
+        # ИДЕЯ: пока Канал A создаёт РК через Direct API v5 (тратит агентские БАЛЛЫ/units) — Канал B
+        # параллельно создаёт РК по КУКЕ/Grid/UAC (баллы НЕ тратит). Ресурсы не конкурируют →
+        # общий wall-clock ≈ max(A,B) вместо A+B. Внутри КАЖДОГО канала — строго ПОСЛЕДОВАТЕЛЬНО
+        # (гонка за баллами/152/rate-limit недопустима).
+        #   Канал A (units/API): tp1_rsy, rsya_gallery(tp3), search_gallery(tp5) — идут через
+        #     create_tp1_campaign / create_tp5_campaign / create_tp3_campaign (v501/token) когда есть
+        #     токен и not via_cookie; при 152 сами падают на куку. Пары (tp1 cpc+cpa, tp5) — ВНУТРИ
+        #     одного item-раннера, между каналами НЕ рвутся.
+        #   Канал B (без баллов): search_test(tp2), search_dynamic(tp4) — ВСЕГДА cookie/Grid
+        #     (run_create_set_text → create_text_via_cookie), и master/product tp6/tp7 — UAC/cookie.
+        # OFF (дефолт): единый последовательный проход одним каналом = ровно прежнее поведение.
+        _PARALLEL = os.environ.get("DIRECT_PARALLEL_CHANNELS", "0").strip().lower() in (
+            "1", "true", "on", "yes")
+        # _guard: сериализует мутации ОБЩЕГО состояния (job-счётчики, _generated_content_by_key,
+        # prefetch-словари). ON → RLock (реентерабельный: нет дедлока при случайной вложенности);
+        # OFF → nullcontext (нулевой оверхед, поведение байт-в-байт прежнее).
+        _guard = threading.RLock() if _PARALLEL else contextlib.nullcontext()
+        if _PARALLEL:
+            def _bj(job, ok: bool = True, n: int = 1):
+                with _guard:
+                    _bump_job(job, ok, n)
+
+            def _bi(job):
+                with _guard:
+                    _bump_item(job)
+
+            def _aje(job, err):
+                with _guard:
+                    _add_job_err(job, err)
+
+            def _jdp(job):
+                with _guard:
+                    _job_db_progress(job)
+        else:
+            # OFF: те же объекты-функции → путь исполнения идентичен прежнему (без обёрток/локов).
+            _bj, _bi, _aje, _jdp = _bump_job, _bump_item, _add_job_err, _job_db_progress
+
+        class _Chan:
+            """Изолированное состояние ОДНОГО канала: свой список результатов, курсор скана 152,
+            флаги units и локальный via_cookie. Раздельные списки результатов исключают гонку
+            append между потоками и изолируют скан-152 канала A от результатов канала B."""
+            __slots__ = ("results", "scan_i", "units_seen", "units_block",
+                         "units_switched", "via_cookie", "tp7_mf", "stop", "units_fail_streak")
+
+            def __init__(self, results_list, via_cookie_init):
+                self.results = results_list
+                self.scan_i = 0
+                self.units_seen = False
+                self.units_block = False
+                self.units_switched = False
+                self.via_cookie = via_cookie_init
+                self.units_fail_streak = 0               # API-first: подряд идущих РЕАЛЬНЫХ 152-провалов
+                self.tp7_mf = None                       # ленивый кэш фидов с коллекциями (tp7 фильтр)
+                self.stop = False                        # cancel/M3-гейт: стоп ПОСЛЕ текущей в этом канале
+
+        _UNITS_TYPES = {"tp1_rsy", "rsya_gallery", "search_gallery"}
+        # API-first: tp2/tp4 тоже начинают тратить баллы (token) → канал A (при параллельных каналах
+        # C1). OFF — множество прежнее (tp2/tp4 в канале B, cookie). Влияет ТОЛЬКО на распределение по
+        # каналам при DIRECT_PARALLEL_CHANNELS; при OFF-параллели порядок один и тот же.
+        _units_types_eff = (_UNITS_TYPES | {"search_test", "search_dynamic"}) if _API_FIRST else _UNITS_TYPES
+
+        def _channel_of(_it) -> str:
+            # A = тратит баллы (token/v501, 152→cookie фолбэк); B = всегда cookie/Grid/UAC (без баллов).
+            return "A" if (_it.get("type") or "") in _units_types_eff else "B"
         # RESUME-SKIP (по требованию): ОДИН раз bulk-читаем имена кампаний аккаунта (Grid, без баллов)
         # и дальше пропускаем пункты, чья кампания УЖЕ существует в Директе. Так «Продолжить» докручивает
         # только недостающее (вкл. ранее упавшие — их в Директе нет → создадутся), а не гонит набор с нуля.
@@ -284,6 +426,7 @@ def create_set_response(deps: dict):
             dedup_callouts=_dedup_callouts,
             callout_cap=_CALLOUT_PER_CAMPAIGN_CAP,
             grid_client_factory=gf.GridClient,
+            v5_call=_v5_call,
             v5_get=_v5_get,
             promo_usable_for_content=_promo_usable_for_content,
             create_account_promo_from_slepok=_create_account_promo_from_slepok,
@@ -308,6 +451,7 @@ def create_set_response(deps: dict):
             return dict(src or {})
 
         def _prefetch_content(idx: int) -> None:
+            nonlocal _content_executor
             if not (stream_content and _stream_agent and 0 <= idx < len(items)):
                 return
             src = items[idx]
@@ -320,31 +464,40 @@ def create_set_response(deps: dict):
                 _cached_ready = _CONTENT_CACHE.get(_ckey)
             if _cached_ready:
                 return
-            if _ckey in _content_futures_by_key:
-                _content_futures[idx] = _content_futures_by_key[_ckey]
-                return
-            nonlocal _content_executor
-            if _content_executor is None:
-                from concurrent.futures import ThreadPoolExecutor
-                _content_executor = ThreadPoolExecutor(max_workers=2)
-            fut = _content_executor.submit(
-                _cached_campaign_content,
-                login,
-                _stream_agent,
-                (agent or "").strip().lower(),
-                _stream_content_item(src),
-                eff_site,
-                ctx.get("city") or "",
-                [],
-                True,
-            )
-            _content_futures[idx] = fut
-            _content_futures_by_key[_ckey] = fut
+            # _guard: при ON два потребителя (Канал A/B) могут префетчить одновременно — мутации
+            # _content_futures / _content_futures_by_key / lazy-init executor сериализуем; дедуп по
+            # _ckey исключает двойной submit. OFF: _guard = nullcontext → идентично прежнему.
+            with _guard:
+                if _ckey in _content_futures_by_key:
+                    _content_futures[idx] = _content_futures_by_key[_ckey]
+                    return
+                if _content_executor is None:
+                    from concurrent.futures import ThreadPoolExecutor
+                    # Q3 (2026-07-08): 2→3 — глубже прячем LLM-латентность за Grid-I/O.
+                    # 4 рискует упереться в rate-limit OpenRouter; 3 — консервативный шаг.
+                    _content_executor = ThreadPoolExecutor(max_workers=3)
+                fut = _content_executor.submit(
+                    _cached_campaign_content,
+                    login,
+                    _stream_agent,
+                    (agent or "").strip().lower(),
+                    _stream_content_item(src),
+                    eff_site,
+                    ctx.get("city") or "",
+                    [],
+                    True,
+                )
+                _content_futures[idx] = fut
+                _content_futures_by_key[_ckey] = fut
 
         def _take_prefetched_content(idx: int, src: dict) -> dict | None:
             if not (stream_content and _stream_agent):
                 return None
-            fut = _content_futures.pop(idx, None)
+            # Забираем future ПОД локом (dict.pop), но .result() (может блокировать на LLM) — ВНЕ лока,
+            # чтобы не сериализовать каналы на ожидании генерации. idx у каналов не пересекаются
+            # (партиция по индексу), но кросс-канальный префетч возможен → pop защищаем.
+            with _guard:
+                fut = _content_futures.pop(idx, None)
             if fut is not None:
                 try:
                     return fut.result()
@@ -364,20 +517,48 @@ def create_set_response(deps: dict):
         for _pref_i in range(min(3, len(items))):
             _prefetch_content(_pref_i)
 
+        # ── Набор-level ПРЕД-ЗАЛИВКА картинок tp1 в фоне (не блокирует цикл) ─────────────────
+        # Собираем все уникальные пути картинок tp1 набора и грузим их в библиотеку аккаунта
+        # ОДИН раз параллельно ДО/во время цикла (прогрев процесс-глобального _GRID_IMG_HASH_CACHE).
+        # Per-РК заливка в _build_tp1_adgroups(Фаза 3.4)/_create_tp1_via_cookie переиспользует
+        # хэши БЕЗ повторной сети; кэш-промах → штатная per-РК заливка (грациозно). Демон: любой
+        # сбой прогрева НЕ трогает джобу. Только при наличии tp1_rsy (helper сам себя фильтрует).
+        try:
+            # ВАЖНО: через blueprint-обёртку (deps), а НЕ сырьём `from .create_set_tp1_builders import …`.
+            # Обёртка проходит _create_set_tp1_builder_module()→configure() → инъектирует DI-глобалы
+            # (_SLEPOK_KEY/kp/gf/_ct_segment/_creative_images_for_ct/_parallel_upload_images) в модуль.
+            # Сырой импорт в фон-потоке обходил ленивый configure → NameError на первом глобале
+            # (инцидент IMG_PREUPLOAD_SLEPOK_KEY_UNDEF, 2026-07-09).
+            _preup_imgs = deps.get('_preupload_tp1_images')
+            if callable(_preup_imgs) and any((_it.get("type") or "") == "tp1_rsy" for _it in items):
+                threading.Thread(
+                    target=lambda: _preup_imgs(login, items, eff_site, agent,
+                                               grid_cookie=_pf.get("cookie")),
+                    name="createset-preupload-images", daemon=True,
+                ).start()
+        except Exception:  # noqa: BLE001 — прогрев картинок best-effort, не критичен
+            pass
+
         # Типы пунктов → tp-код (для safety-net гейта строгого соответствия слепку ниже).
         _TYPE_TO_TP = {"tp1_rsy": "tp1", "search_test": "tp2", "rsya_gallery": "tp3",
                        "search_dynamic": "tp4", "search_gallery": "tp5"}
-        for _ci, it in enumerate(items):
-            # M3-гейт (Семён 03.07, скрин #92): без ИИ на M3 контент не сгенерить — вместо
-            # брака/массового deferred ПАУЗИМ набор (6×10 мин + 1 час, heartbeat внутри).
-            # Не дождались → останавливаемся; созданное цело, остаток доберёт повторный запуск.
+
+        def _run_item(_ci, it, ch):
+            # Обработка ОДНОГО пункта плана в контексте канала `ch`. break-точки прежнего цикла →
+            # ch.stop=True + return; continue → return. Всё общее состояние (results/units/via_cookie/
+            # tp7-кэш) — на ch (изолировано по каналу); job-счётчики/prefetch/контент-кэш — под _guard.
+            # M3-гейт (Семён 09.07): если ИИ (M3 и OpenRouter) недоступен, НЕ висим часами —
+            # гейт делает одну короткую перепроверку и возвращает True, создание продолжается
+            # на контенте из слепка (детерминированный фолбэк). False возвращается ТОЛЬКО при
+            # отмене джобы (job.cancel) → тогда штатно останавливаемся, созданное цело.
             _m3_gate = deps.get('_m3_gate_wait')
             if callable(_m3_gate) and not _m3_gate(_job):
-                _add_job_err(_job, "ИИ на M3 недоступен (ждали 6×10мин + 1ч) — создание "
-                                   "остановлено; остаток набора доберёт повторный запуск")
-                results.append({"ok": False, "name": it.get("name") or "",
-                                "error": "ИИ на M3 недоступен — набор остановлен на этом пункте"})
-                break
+                _aje(_job, "Набор отменён (job.cancel) на M3-гейте — создание "
+                           "остановлено; остаток доберёт повторный запуск")
+                ch.results.append({"ok": False, "name": it.get("name") or "",
+                                   "error": "Набор отменён — создание остановлено на этом пункте"})
+                ch.stop = True
+                return
             _prefetch_content(_ci + 1)
             _prefetch_content(_ci + 2)
             # Исчерпание суточного лимита баллов Директа (error 152): при ПЕРВОМ же маркере 152
@@ -387,27 +568,73 @@ def create_set_response(deps: dict):
             # inline-cookie (тогда он ok); если нет — остаётся failed, дубля не будет (повторный набор
             # пропустит уже созданные через set_plan). Это убирает требование ручного попапа-согласия
             # для системной/фоновой докрутки: 152 = автоматический переход на куки.
-            while _scan_i < len(results):
-                _r = results[_scan_i]; _scan_i += 1
+            _new_units_fail = False          # РЕАЛЬНЫЙ (failed/fallback) 152 среди новых результатов пункта
+            while ch.scan_i < len(ch.results):
+                _r = ch.results[ch.scan_i]; ch.scan_i += 1
+                # token_units_fallback: token-путь tp2/tp4 упёрся в баллы и добился кукой (res ok) —
+                # это подтверждённый 152, засчитываем в строгий streak (иначе fallback-успех скрыл бы 152).
+                if _r.get("token_units_fallback"):
+                    ch.units_seen = True
+                    _new_units_fail = True
                 if _units_in_result(_r) or (
                     _auth_error_in_result and (not _r.get("ok")) and _auth_error_in_result(_r)
                 ):
-                    _units_seen = True
+                    ch.units_seen = True
                     if not _r.get("ok"):
-                        _units_block = True
-            if _units_seen and not via_cookie:
-                via_cookie = True            # с этого пункта и до конца набора — только по куке (без баллов)
-                _units_switched = True
-                _units_block = False         # 152 больше НЕ блокирующий стоп: продолжаем по куке, не break
+                        ch.units_block = True
+                        _new_units_fail = True
+            # СТРОГИЙ флип (ON): _API_FIRST_FLIP_STREAK считает ТОЛЬКО ПОДРЯД идущие реальные 152.
+            # Пункт, завершившийся БЕЗ нового units-маркера (успех token-пути / не-152), ОБРЫВАЕТ
+            # серию → сбрасываем счётчик в 0. Иначе два транзиентных 152, разделённых успешными
+            # token-созданиями, накопили бы streak и ложно флипнули ВЕСЬ набор на куку (замысел и
+            # комментарий ниже — подтверждённое ИСЧЕРПАНИЕ, а не разрозненные сбои). После реального
+            # флипа via_cookie уже True → инкремент/сброс роли не играют. Гейт _API_FIRST: при OFF
+            # ветка инкремента не исполняется, streak=0 всегда → поведение байт-в-байт.
+            if _API_FIRST and not _new_units_fail:
+                ch.units_fail_streak = 0
+            if ch.units_seen and not ch.via_cookie:
+                if not _API_FIRST:
+                    # OFF — прежнее поведение байт-в-байт: флип по ПЕРВОМУ units-маркеру.
+                    ch.via_cookie = True     # с этого пункта и до конца набора — только по куке (без баллов)
+                    ch.units_switched = True
+                    ch.units_block = False   # 152 больше НЕ блокирующий стоп: продолжаем по куке, не break
+                else:
+                    # ON — СТРОГИЙ флип: у агентства много баллов, одиночный/транзиентный 152 при живых
+                    # баллах НЕ уводит на куку зря. Флипаем ТОЛЬКО при подтверждённом исчерпании:
+                    # (а) units_alive прочитал units≈0 (False), ИЛИ (б) N реальных 152-провалов подряд.
+                    _confirmed = False
+                    if _new_units_fail:
+                        ch.units_fail_streak += 1
+                        try:
+                            if callable(_units_alive_for_login) and \
+                                    _units_alive_for_login(login, (_w_agency or "")) is False:
+                                _confirmed = True
+                        except Exception:  # noqa: BLE001 — чтение остатка best-effort
+                            pass
+                        if ch.units_fail_streak >= _API_FIRST_FLIP_STREAK:
+                            _confirmed = True
+                    if _confirmed:
+                        ch.via_cookie = True
+                        ch.units_switched = True
+                        ch.units_block = False
+                    else:
+                        # Не подтверждено (транзиент/ложный маркер/успех с inline-восстановлением):
+                        # НЕ флипаем, сбрасываем sticky-флаги — следующий пункт переоценивается заново.
+                        # Пункт, реально упавший по 152, остаётся failed и добирается по имени в
+                        # deferred/resume (units_failed_names) — семантика сохранения остатка цела.
+                        ch.units_seen = False
+                        ch.units_block = False
             if _job and _job.get("cancel"):              # отмена: стоп ПОСЛЕ текущей (не рвём кампанию на полпути)
-                break
+                ch.stop = True
+                return
             # Примечание: явные CPA-пункты (pay=cpa: tp2/tp4/tp6/tp7) гейтит ПРЕВЬЮ (галочка «под стиль
             # сайта» снимает их отметки → во фронт не уходят), поэтому здесь их НЕ пропускаем — уважаем
             # ручной выбор пользователя. no_cpa тут гасит только cpa-половину пар-движков tp1/tp5
             # (у них отдельной строки в превью нет).
             if _job:                                     # done = обработано ПУНКТОВ плана; created/failed —
-                _job["done"] = _ci                       # по ФАКТУ каждой созданной кампании (fan-out даёт
-                _job_db_progress(_job)                   # N кампаний на 1 пункт), бампается ниже _bump_job().
+                with _guard:                             # по ФАКТУ каждой созданной кампании (fan-out даёт
+                    _job["done"] = _ci                   # N кампаний на 1 пункт), бампается ниже _bj().
+                _jdp(_job)
             name = it.get("name") or ""
             # Строгое соответствие слепку (ревью A4, баг porg-psm5h7q6): ПРЕВЬЮ гейтит план, но путь
             # СОЗДАНИЯ берёт items из тела как есть (флоу «без предпросмотра», deferred/resume, повтор
@@ -416,8 +643,8 @@ def create_set_response(deps: dict):
             _it_tp = _TYPE_TO_TP.get(it.get("type") or "")
             if callable(_excl_tp) and _it_tp and _excl_tp(agent, eff_site, _it_tp):
                 print(f"[strict-slepok] {_it_tp} пропущен (нет в боевом профиле {agent}): {name}", flush=True)
-                _bump_item(_job)
-                continue
+                _bi(_job)
+                return
             # RESUME-SKIP: кампания пункта УЖЕ есть в Директе → не пересоздаём (и не тратим M3-генерацию).
             # Пропускаем БЫСТРО (heartbeat тикает в _bump_item → watchdog не считает джобу зависшей).
             # ⚠ tp1_rsy — МУЛЬТИ-ФИД fan-out ({name} — {feed1}, {name} — {feed2}): item-level prefix-skip
@@ -426,12 +653,12 @@ def create_set_response(deps: dict):
             if (it.get("type") != "tp1_rsy"
                     and already_in_direct(name, _existing_names)
                     and not force_recreate(name, _repair_force_names)):
-                results.append({"ok": True, "name": name, "skipped": True,
-                                "note": "уже создана в Директе — пропущена при докрутке"})
-                _bump_item(_job)
+                ch.results.append({"ok": True, "name": name, "skipped": True,
+                                   "note": "уже создана в Директе — пропущена при докрутке"})
+                _bi(_job)
                 if _job:
-                    _job_db_progress(_job)
-                continue
+                    _jdp(_job)
+                return
             _it_ckey = _content_cache_key((agent or "").strip().lower(), eff_site, ctx.get("city") or "", it)
 
             # Для парных кампаний и дублей с тем же st/ct/brand в рамках ОДНОГО набора не
@@ -454,7 +681,8 @@ def create_set_response(deps: dict):
             # упадёт на слепок/шаблоны (фолбэк), набор не валим.
             if stream_content and _stream_agent and not (it.get("titles") and it.get("texts") and it.get("sitelinks")):
                 if _job:
-                    _job["step"] = "generating"          # UI: «генерирую контент…»
+                    with _guard:
+                        _job["step"] = "generating"      # UI: «генерирую контент…»
                 try:
                     _c = _take_prefetched_content(_ci, it) or {}
                     if _c.get("titles") and not it.get("titles"):
@@ -468,25 +696,27 @@ def create_set_response(deps: dict):
                 except Exception:  # noqa: BLE001 — генерация не критична: фолбэк на слепок/шаблоны
                     pass
                 if _job:
-                    _job["step"] = "creating"            # UI: «создаю кампанию…»
+                    with _guard:
+                        _job["step"] = "creating"        # UI: «создаю кампанию…»
 
             if it.get("titles") and it.get("texts") and it.get("sitelinks"):
-                _generated_content_by_key[_it_ckey] = {
-                    "titles": list(it.get("titles") or []),
-                    "texts": list(it.get("texts") or []),
-                    "sitelinks": _content_copy({"sitelinks": it.get("sitelinks") or []}).get("sitelinks", []),
-                    "title2": it.get("title2") or "",
-                }
+                with _guard:
+                    _generated_content_by_key[_it_ckey] = {
+                        "titles": list(it.get("titles") or []),
+                        "texts": list(it.get("texts") or []),
+                        "sitelinks": _content_copy({"sitelinks": it.get("sitelinks") or []}).get("sitelinks", []),
+                        "title2": it.get("title2") or "",
+                    }
 
             # ── tp1 РСЯ: ЕПК v501 mode=network_cpa с бренд-группами из пака M3 ──────
             if it.get("type") == "tp1_rsy":
                 from .create_set_tp1 import run_create_set_tp1
-                results.extend(run_create_set_tp1(
+                ch.results.extend(run_create_set_tp1(
                     it=it, name=name,
                     login=login, slepok=agent, site_type=eff_site, w_agency=(_w_agency or ""),
                     city=(ctx.get("city") or ""), r_code=r_code_ctx, href=href, region_ids=region_ids,
                     counter_id=counter_id, goal_id=goal_id,
-                    st_token=_st_token, via_cookie=via_cookie, no_cpa=no_cpa, single_feed=single_feed,
+                    st_token=_st_token, via_cookie=ch.via_cookie, no_cpa=no_cpa, single_feed=single_feed,
                     grid_cookie=_pf.get("cookie"),
                     tpl_titles=tpl_titles, tpl_texts=tpl_texts, rs=rs,
                     corr=corr, ret_map=ret_map, callouts=callouts, callout_ids=precreated_callout_ids,
@@ -502,22 +732,22 @@ def create_set_response(deps: dict):
                     units_in_result=_units_in_result,
                     auth_error_in_result=_auth_error_in_result,
                     apply_corrections=_apply_corrections,
-                    job_db_progress=_job_db_progress,
-                    add_job_err=_add_job_err,
-                    bump_job=_bump_job,
-                    bump_item=_bump_item,
+                    job_db_progress=_jdp,
+                    add_job_err=_aje,
+                    bump_job=_bj,
+                    bump_item=_bi,
                 ))
-                continue
+                return
 
             if it.get("type") == "rsya_gallery":
                 from .create_set_gallery import run_create_set_gallery
-                results.extend(run_create_set_gallery(
+                ch.results.extend(run_create_set_gallery(
                     kind="tp3",
                     it=it, name=name,
                     login=login, slepok=agent, site_type=eff_site, w_agency=(_w_agency or ""),
                     city=(ctx.get("city") or ""), r_code=r_code_ctx, href=href, region_ids=region_ids,
                     counter_id=counter_id, goal_id=goal_id,
-                    st_token=_st_token, via_cookie=via_cookie, no_cpa=no_cpa, single_feed=single_feed,
+                    st_token=_st_token, via_cookie=ch.via_cookie, no_cpa=no_cpa, single_feed=single_feed,
                     grid_cookie=_pf.get("cookie"),
                     tpl_titles=tpl_titles, tpl_texts=tpl_texts, rs=rs,
                     corr=corr, ret_map=ret_map, callouts=callouts, callout_ids=precreated_callout_ids,
@@ -527,23 +757,26 @@ def create_set_response(deps: dict):
                     create_tp3_campaign=_create_tp3_campaign,
                     create_shopping_via_cookie=_create_shopping_via_cookie,
                     units_in_result=_units_in_result,
-                    add_job_err=_add_job_err,
-                    bump_job=_bump_job,
-                    job_db_progress=_job_db_progress,
-                    bump_item=_bump_item,
+                    add_job_err=_aje,
+                    bump_job=_bj,
+                    job_db_progress=_jdp,
+                    bump_item=_bi,
+                    deferred_save=_deferred_save,
+                    next_units_reset_utc=_next_units_reset_utc,
+                    units_alive=_units_alive_for_login,
                 ))
-                continue
+                return
 
             # ── tp5 «Поиск + Товарная галерея»: комбинированная (TextAd+ListingAd+ShoppingAd, эталон Щербаковой) ──
             if it.get("type") == "search_gallery":
                 from .create_set_gallery import run_create_set_gallery
-                results.extend(run_create_set_gallery(
+                ch.results.extend(run_create_set_gallery(
                     kind="tp5",
                     it=it, name=name,
                     login=login, slepok=agent, site_type=eff_site, w_agency=(_w_agency or ""),
                     city=(ctx.get("city") or ""), r_code=r_code_ctx, href=href, region_ids=region_ids,
                     counter_id=counter_id, goal_id=goal_id,
-                    st_token=_st_token, via_cookie=via_cookie, no_cpa=no_cpa, single_feed=single_feed,
+                    st_token=_st_token, via_cookie=ch.via_cookie, no_cpa=no_cpa, single_feed=single_feed,
                     grid_cookie=_pf.get("cookie"),
                     tpl_titles=tpl_titles, tpl_texts=tpl_texts, rs=rs,
                     corr=corr, ret_map=ret_map, callouts=callouts, callout_ids=precreated_callout_ids,
@@ -553,21 +786,24 @@ def create_set_response(deps: dict):
                     create_tp3_campaign=_create_tp3_campaign,
                     create_shopping_via_cookie=_create_shopping_via_cookie,
                     units_in_result=_units_in_result,
-                    add_job_err=_add_job_err,
-                    bump_job=_bump_job,
-                    job_db_progress=_job_db_progress,
-                    bump_item=_bump_item,
+                    add_job_err=_aje,
+                    bump_job=_bj,
+                    job_db_progress=_jdp,
+                    bump_item=_bi,
+                    deferred_save=_deferred_save,
+                    next_units_reset_utc=_next_units_reset_utc,
+                    units_alive=_units_alive_for_login,
                 ))
-                continue
+                return
 
             # Текстовые кампании v5 TextCampaign: tp2 Поиск + tp4 Поиск+Динамика (тот же движок;
             # LIVE Кудерко: tp4 = TEXT_CAMPAIGN, Search=AVERAGE_CPA, Network=OFF — как tp2).
             _TEXT_ENGINE = {"search_test": ("tp2", "search"), "search_dynamic": ("tp4", "search")}
             if it.get("type") in _TEXT_ENGINE:
-                # tp2/tp4 создаём ВСЕГДА по cookie/Grid (#1). Историческая v5/v501-ветка была за
-                # `if True: … continue` (недостижима) — при выносе опущена как мёртвый код (см. git).
+                # tp2/tp4: OFF → cookie/Grid (#1, прежнее поведение). DIRECT_API_FIRST ON → token/API
+                # (баллы) с грациозным фолбэком на куку по 152 — маршрут выбирает run_create_set_text.
                 from .create_set_text import run_create_set_text
-                results.extend(run_create_set_text(
+                ch.results.extend(run_create_set_text(
                     it=it, name=name, tp_code=_TEXT_ENGINE[it["type"]][0],
                     login=login, slepok=agent, site_type=eff_site, r_code=r_code_ctx,
                     city=(ctx.get("city") or ""), href=href, region_ids=region_ids,
@@ -578,23 +814,76 @@ def create_set_response(deps: dict):
                     job=_job,
                     lines=_lines, num=_num,
                     create_text_via_cookie=_create_text_via_cookie,
+                    create_text_via_token=_create_text_via_token,
+                    api_first=_API_FIRST,
+                    via_cookie=ch.via_cookie,
                     slepok_minus_mode=_SLEPOK_MINUS_MODE,
                     apply_campaign_direct_minus=_apply_campaign_direct_minus,
                     get_or_create_minus_set=_get_or_create_minus_set,
                     attach_minus_set_to_text_campaign=_attach_minus_set_to_text_campaign,
-                    add_job_err=_add_job_err,
-                    bump_job=_bump_job,
-                    job_db_progress=_job_db_progress,
-                    bump_item=_bump_item,
+                    add_job_err=_aje,
+                    bump_job=_bj,
+                    job_db_progress=_jdp,
+                    bump_item=_bi,
                 ))
-                continue
-            _prod_results, _tp7_mf = _run_master_product_item(
+                return
+            _prod_results, ch.tp7_mf = _run_master_product_item(
                 it=it, name=name, href=href, region_ids=region_ids, counter_id=counter_id,
                 goal_id=goal_id, cpa=cpa, launch=launch, client=client, agent=agent,
                 eff_site=eff_site, ctx=ctx, tpl_titles=tpl_titles, tpl_texts=tpl_texts,
                 tpl_sitelinks=tpl_sitelinks, rs=rs, login=login, _st_token=_st_token,
-                _w_agency=_w_agency, _stream_agent=_stream_agent, _job=_job, _tp7_mf=_tp7_mf)
-            results.extend(_prod_results)
+                _w_agency=_w_agency, _stream_agent=_stream_agent, _job=_job, _tp7_mf=ch.tp7_mf)
+            ch.results.extend(_prod_results)
+
+        # ── Драйвер: OFF = последовательный проход одним каналом (прежнее поведение);
+        #    ON = два НЕконкурирующих канала в двух потоках, общий wall-clock ≈ max(A,B). ─────────
+        if not _PARALLEL:
+            # OFF: единственный канал получает СУЩЕСТВУЮЩИЙ список results (тот же объект) → все
+            # append/extend попадают прямо в него; порядок и семантика (152→via_cookie флип, cancel,
+            # skip, fan-out, deferred) идентичны прежнему циклу for _ci, it in enumerate(items).
+            _chan = _Chan(results, via_cookie)
+            for _ci, it in enumerate(items):
+                _run_item(_ci, it, _chan)
+                if _chan.stop:                           # прежний break (cancel / M3-гейт-отмена)
+                    break
+            _units_switched = _chan.units_switched
+        else:
+            # ON: партиция по индексу — Канал A (units) и Канал B (cookie) не пересекаются по items.
+            # Раздельные списки результатов → нет гонки append и скан-152 канала A видит ТОЛЬКО свои
+            # результаты (результаты канала B на via_cookie/units не влияют). 152 в A: остаток A с
+            # этого пункта уходит по куке (ch_A.via_cookie=True) — БЕЗ гонки с B (B уже cookie и
+            # игнорирует via_cookie); финальный сбор остатка в deferred/авто-куки-джобу — как прежде,
+            # по именам из общего results. Каждый канал внутри себя строго ПОСЛЕДОВАТЕЛЕН.
+            ch_A = _Chan([], via_cookie)
+            ch_B = _Chan([], via_cookie)
+            _idx_A = [i for i, _it in enumerate(items) if _channel_of(_it) == "A"]
+            _idx_B = [i for i, _it in enumerate(items) if _channel_of(_it) == "B"]
+
+            def _run_channel(ch, idxs):
+                for _ci in idxs:
+                    if ch.stop:
+                        break
+                    try:
+                        _run_item(_ci, items[_ci], ch)
+                    except Exception as _e:              # noqa: BLE001 — падение пункта не валит канал/набор
+                        _aje(_job, f"[parallel-channel] пункт #{_ci} упал: {str(_e)[:200]}")
+                        ch.results.append({"ok": False, "name": (items[_ci].get("name") or ""),
+                                           "error": f"исключение канала создания: {str(_e)[:200]}"})
+                    if ch.stop:
+                        break
+
+            _tA = threading.Thread(target=_run_channel, args=(ch_A, _idx_A),
+                                   name="createset-chanA-units", daemon=True)
+            _tB = threading.Thread(target=_run_channel, args=(ch_B, _idx_B),
+                                   name="createset-chanB-cookie", daemon=True)
+            _tA.start(); _tB.start()
+            _tA.join(); _tB.join()
+            # Слияние: считалки (created/failed/skipped) порядко-независимы; собираем в исходном
+            # порядке пунктов для стабильного отчёта (A-пункты и B-пункты по возрастанию индекса).
+            results.extend(ch_A.results)
+            results.extend(ch_B.results)
+            _units_switched = ch_A.units_switched or ch_B.units_switched
+
         if _content_executor is not None:
             try:
                 _content_executor.shutdown(wait=False, cancel_futures=True)
@@ -624,11 +913,21 @@ def create_set_response(deps: dict):
         if _defer_names:
             _defer_items = items_for_result_names(items, _defer_names)
             _rc_def = int(body.get("_resume_count") or 0)
+            _ddid = None
             if _defer_items and _rc_def < _RESUME_MAX:
                 _ddid = _deferred_save(login, (_w_agency or body.get("agency") or ""),
                                        body, _defer_items, body.get("_job_id"), resume_count=_rc_def)
                 if _ddid:
-                    _add_job_err(_job, f"M3-пак пуст у {len(_defer_items)} пунктов → отложено на докрутку ({_ddid})")
+                    _add_job_err(_job, f"{len(_defer_items)} пунктов отложено на докрутку ({_ddid})")
+            if _defer_items and not _ddid:
+                # Кап докруток (_RESUME_MAX) или сбой сохранения деферреда → НЕ теряем молча
+                # (ревью 06.07: пункт исчезал без failed и без ошибки): честный failed + запись.
+                failed += len(_defer_items)
+                if _job:
+                    _job["failed"] = failed
+                _add_job_err(_job, f"докрутка НЕ запланирована для {len(_defer_items)} пунктов "
+                                   f"(resume_count={_rc_def}/{_RESUME_MAX} или сбой сохранения) — "
+                                   f"нужен ручной перезапуск набора")
         # Промо: сначала берём пригодное из библиотеки аккаунта. Если промо нет (или все конфликтуют
         # с контентом), создаём одно промо по слепку/M3 в библиотеке клиента и сразу привязываем
         # к созданным кампаниям. Создание промо НЕ публикует кампании: РК остаются черновиками.
@@ -687,6 +986,83 @@ def create_set_response(deps: dict):
         live_verification = post.get("live_verification")
         repair_gate_summary = post.get("repair_gate")
         auto_repair = post.get("auto_repair")
+        # ── BATCH АСПЕКТЫ (dual-write, фаза 1) ─────────────────────────────────────────
+        # Гейт: DIRECT_BATCH_ASPECTS=off (дефолт) — батч не запускается.
+        #        dual  — батч + инлайн (parity-проверка). only — (будущее) только батч.
+        # Инлайн-финализация (_finalize_rsya / _finalize_search_via_grid) уже применила те
+        # же кампаний-уровневые аспекты пер-кампанию. Батч повторяет идемпотентно — один
+        # Grid-вызов на ВСЕ созданные РК вместо N вызовов. Фаза 1 = дуал-райт (parity).
+        # Сбой батч-фазы НЕ роняет набор: ошибки логируются best-effort.
+        # _enabled_minus_places / _grid_minus_pack_id пока нет в orchestrator deps →
+        # disabled_places/minus_set_ids пусты до добавления в _create_set_orchestrator_deps.
+        import os as _os
+        _BATCH_MODE = _os.environ.get("DIRECT_BATCH_ASPECTS", "off").lower().strip()
+        _batch_report: dict | None = None
+        if _BATCH_MODE in ("dual", "only"):
+            try:
+                from .campaign_result import created_campaigns as _extract_created
+                from .create_set_apply_batches import apply_campaign_aspects
+                _batch_created = _extract_created(results)
+                if _batch_created:
+                    # Sitelinks: первый item с непустым списком быстрых ссылок
+                    _batch_sitelinks = None
+                    for _bi in (items or []):
+                        _sl = _bi.get("sitelinks")
+                        if isinstance(_sl, list) and _sl:
+                            _batch_sitelinks = _sl
+                            break
+                    # Ages (bidmods): из corr.demographic — все ненулевые (включая -100 для исключений)
+                    _GRID_AGE_MAP = {
+                        "AGE_0_17": "_0_17", "AGE_18_24": "_18_24",
+                        "AGE_25_34": "_25_34", "AGE_35_44": "_35_44",
+                        "AGE_45_54": "_45_54", "AGE_55": "_55_",
+                    }
+                    _batch_ages: dict = {}
+                    for _d in (corr.get("demographic") or []):
+                        if _d.get("kind") == "age" and int(_d.get("pct") or 0) != 0:
+                            _ga = _GRID_AGE_MAP.get(_d.get("key") or "")
+                            if _ga:
+                                _batch_ages[_ga] = int(_d["pct"])
+                    # Optional deps: disabled_places и minus_set_ids (не в текущих orchestrator deps)
+                    _batch_dp_fn = deps.get("_enabled_minus_places")
+                    _batch_disabled = _batch_dp_fn() if callable(_batch_dp_fn) else []
+                    _batch_mp_fn = deps.get("_grid_minus_pack_id")
+                    _batch_minus: list = []
+                    if callable(_batch_mp_fn):
+                        _mpid = _batch_mp_fn(login)
+                        if _mpid:
+                            _batch_minus = [_mpid]
+                    _batch_spec = {
+                        "callouts": callouts,
+                        "callout_cap": _CALLOUT_PER_CAMPAIGN_CAP,
+                        "promo_ctx": {
+                            "body": body,
+                            "agency": (_w_agency or body.get("agency") or ""),
+                        },
+                        "promo_id": (precreated_promo_id or None),
+                        "sitelinks": _batch_sitelinks,
+                        "disabled_places": _batch_disabled,
+                        "ages_percent": _batch_ages,
+                        "minus_set_ids": _batch_minus,
+                        "agency": (_w_agency or body.get("agency") or ""),
+                    }
+                    _batch_report = apply_campaign_aspects(
+                        login, _batch_created, _batch_spec, _repair_deps()
+                    )
+                    import logging as _blog
+                    _blog.getLogger("direct.batches").info(
+                        "[batch-aspects] login=%s campaigns=%s aspects=%s",
+                        login,
+                        _batch_report.get("campaign_count", 0),
+                        {k: v.get("applied", v.get("skipped", "?"))
+                         for k, v in (_batch_report.get("aspects") or {}).items()},
+                    )
+            except Exception as _batch_ex:
+                import logging as _blog
+                _blog.getLogger("direct.batches").error(
+                    "[batch-aspects] login=%s exception: %s", login, str(_batch_ex)[:300]
+                )
+        # ── конец batch-аспектов ─────────────────────────────────────────────────────────
         # Лимит баллов Директа (152): человекочитаемое предупреждение + сколько НЕ создано.
         units_note = None
         deferred_id = None
@@ -704,14 +1080,18 @@ def create_set_response(deps: dict):
                 # _RESUME_MAX (cookie-путь не тратит баллов; дублей нет — RESUME-SKIP пропустит созданные).
                 if _job_new:
                     try:
+                        _parent_jid_now = body.get("_job_id")
                         _cb = dict(body)
                         _cb.pop("_job_id", None)
                         _cb["items"] = _remaining
                         _cb["via_cookie"] = True
                         _cb["_resume_count"] = _rc + 1
                         _cb["_deferred_id"] = None       # новая цепочка; parent_did закрывается ниже
+                        # Семён 2026-07-06: добивка — сразу (не в конец очереди) и без НОВОЙ карточки;
+                        # _resume_of → воркер вольёт created/failed докрутки в родительскую джобу.
+                        _cb["_resume_of"] = _parent_jid_now
                         _sess = {"logged_in": True, "is_admin": True, "_resume": True}
-                        _auto_cookie_jid = _job_new(len(_remaining), login, _cb, _sess)
+                        _auto_cookie_jid = _job_new(len(_remaining), login, _cb, _sess, priority=True)
                     except Exception:  # noqa: BLE001
                         _auto_cookie_jid = None
                 # Fallback: демон-deferred (если _job_new недоступен или упал).
@@ -744,9 +1124,19 @@ def create_set_response(deps: dict):
         # direct_deferred_creates терминально, чтобы рестарт не реанимировал её повторно (анти-цикл).
         _parent_did = body.get("_deferred_id")
         if _parent_did:
+            # defer_keep: сегментный tp5 в токен-докрутке НЕ смог пойти токеном (нет токена/баллов) и
+            # НАМЕРЕННО не создавался по куке (сегменты кука не умеет). Нельзя гасить строку в done
+            # без реального прогресса — иначе tp5 теряется молча (инцидент 08.07 721641cad7c1 /
+            # job 23677e1473d1, porg-psm5h7q6). Возвращаем строку в waiting: демон повторит ТОКЕНОМ,
+            # когда появятся токен+баллы (_resume_one_deferred сам сделает бэкофф). Уже созданные в
+            # этой же строке пункты не задублируются — set_plan/RESUME-SKIP пропустит их по имени.
+            _defer_keep = any((r or {}).get("defer_keep") for r in results)
             try:
                 if deferred_id:
                     _deferred_set_status(_parent_did, "done", f"остаток перенесён → {deferred_id}")
+                elif _defer_keep:
+                    _deferred_set_status(_parent_did, "waiting",
+                                         "токен/баллы не готовы — отложено, демон повторит токеном")
                 else:
                     _deferred_set_status(_parent_did, "done",
                                          f"докручено по куке: создано {created}, не создано {failed}")
@@ -775,6 +1165,7 @@ def create_set_response(deps: dict):
             precreate_report=precreate_report,
             repair_gate_summary=repair_gate_summary,
             auto_repair=auto_repair,
+            skipped_existing=skipped_existing,
         ))
     finally:
         if not _worker_path:

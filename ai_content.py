@@ -16,6 +16,7 @@ from .promo_gen import (
 from .llm_providers import (
     _m3_complete, _llm_pair_for,
     _M3_LLM_URL_72B, _M3_LLM_URLS_14B, _M3_LLM_TIMEOUT_14B, _M3_LLM_REPAIR_TIMEOUT,
+    _M3_CONTENT_IDLE_TIMEOUT,
 )
 from .text_norm import _bad_ad_title, _bad_ad_text, _bad_ad_sitelink
 from .city_morph import _content_city, _RU_CITIES
@@ -181,6 +182,7 @@ def _gen_campaign_content(login: str, agent: dict, agent_key: str, item: dict,
         _slepok_content_get=_slepok_content_get, _title2_blocklist=_title2_blocklist,
         _variant_norm_key=_variant_norm_key,
         _M3_LLM_REPAIR_TIMEOUT=_M3_LLM_REPAIR_TIMEOUT, _M3_LLM_TIMEOUT_14B=_M3_LLM_TIMEOUT_14B,
+        _M3_CONTENT_IDLE_TIMEOUT=_M3_CONTENT_IDLE_TIMEOUT,
         _M3_LLM_URLS_14B=_M3_LLM_URLS_14B, _M3_LLM_URL_72B=_M3_LLM_URL_72B, _RU_CITIES=_RU_CITIES,
     )
 

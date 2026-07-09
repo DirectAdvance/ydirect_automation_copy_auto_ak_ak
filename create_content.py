@@ -32,6 +32,7 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
                              # injected constants (DI)
                              _M3_LLM_REPAIR_TIMEOUT: Any,
                              _M3_LLM_TIMEOUT_14B: Any,
+                             _M3_CONTENT_IDLE_TIMEOUT: Any = 30.0,
                              _M3_LLM_URLS_14B: Any,
                              _M3_LLM_URL_72B: Any,
                              _RU_CITIES: Any) -> dict:
@@ -162,9 +163,10 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
     _kw14b = {"max_tokens": 280, "temperature": 0.72, "top_p": 0.9,
               "repetition_penalty": 1.15,
               "tries": 1 if fast_mode else 2,
-              # fast_mode 12с был откалиброван под 14B (~28 ток/с); на одной 72B (~6.5 ток/с,
-              # 03.07) прогрев со 12с падал в 100% и молча заливал шаблонный корпус (ревью 03.07)
-              "timeout": min(_M3_LLM_TIMEOUT_14B, 90 if fast_mode else _M3_LLM_TIMEOUT_14B)}
+              # IDLE-таймаут (пауза между токенами при стриминге E), НЕ wall-clock. Живой M3
+              # стримит ~6.5 ток/с (гэп <1с) → idle=30с не рвёт рабочую генерацию, только висящий
+              # M3 (0 токенов). Раньше 90с(fast)/360с висели на мёртвом completion (баг 09.07).
+              "timeout": _M3_CONTENT_IDLE_TIMEOUT}
     urls14 = _M3_LLM_URLS_14B
     par_results = _m3_complete_parallel([
         (urls14[0], msgs_t,  _kw14b),
@@ -356,7 +358,7 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
                 agent, ctx, item=item, avoid=(avoid0 + good_t), brand=brand, extra_rules=title_retry_rules)
             text_t_retry, err_t_retry = _m3_complete_url(
                 urls14[0], msgs_t_retry, max_tokens=280, temperature=0.92, top_p=0.92,
-                repetition_penalty=1.17, tries=1, timeout=_M3_LLM_REPAIR_TIMEOUT)
+                repetition_penalty=1.17, tries=1, timeout=_M3_CONTENT_IDLE_TIMEOUT)
             if not err_t_retry:
                 raw_t_retry = _promo_extract_json(text_t_retry) or {}
                 retry_titles, retry_title2 = _extract_title_candidates(raw_t_retry)
@@ -383,7 +385,7 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
             text_x_retry, err_x_retry = _m3_complete_url(
                 urls14[1 % len(urls14)], msgs_x_retry, max_tokens=240,
                 temperature=0.92, top_p=0.92, repetition_penalty=1.17,
-                tries=1, timeout=_M3_LLM_REPAIR_TIMEOUT)
+                tries=1, timeout=_M3_CONTENT_IDLE_TIMEOUT)
             if not err_x_retry:
                 raw_x_retry = _promo_extract_json(text_x_retry) or {}
                 for x in _extract_text_candidates(raw_x_retry):
@@ -403,7 +405,7 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
             text_sl_retry, err_sl_retry = _m3_complete_url(
                 urls14[2 % len(urls14)], msgs_sl_retry, max_tokens=420,
                 temperature=0.92, top_p=0.92, repetition_penalty=1.17,
-                tries=1, timeout=_M3_LLM_REPAIR_TIMEOUT)
+                tries=1, timeout=_M3_CONTENT_IDLE_TIMEOUT)
             if not err_sl_retry:
                 raw_sl_retry = _promo_extract_json(text_sl_retry) or {}
                 for s in (raw_sl_retry.get("sitelinks") or []):
@@ -440,7 +442,8 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
     if need_72b:
         msgs72 = A.build_campaign_messages(agent, ctx, item=item, avoid=avoid0, brand=brand)
         text72, err72 = _m3_complete_url(_M3_LLM_URL_72B, msgs72, max_tokens=800,
-                                         temperature=0.7, top_p=0.9, repetition_penalty=1.15)
+                                         temperature=0.7, top_p=0.9, repetition_penalty=1.15,
+                                         timeout=_M3_CONTENT_IDLE_TIMEOUT)
         if err72:
             last_err = err72
         else:
@@ -493,7 +496,7 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
                 text_t_repair, err_t_repair = _m3_complete_url(
                     urls14[_repair_i % len(urls14)], msgs_t_repair,
                     max_tokens=320, temperature=0.95, top_p=0.92, repetition_penalty=1.2,
-                    tries=1, timeout=_M3_LLM_REPAIR_TIMEOUT)
+                    tries=1, timeout=_M3_CONTENT_IDLE_TIMEOUT)
                 if not err_t_repair:
                     raw_t_repair = _promo_extract_json(text_t_repair) or {}
                     repair_titles, repair_title2 = _extract_title_candidates(raw_t_repair)
@@ -520,7 +523,7 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
                 text_x_repair, err_x_repair = _m3_complete_url(
                     urls14[(_repair_i + 1) % len(urls14)], msgs_x_repair,
                     max_tokens=260, temperature=0.95, top_p=0.92, repetition_penalty=1.2,
-                    tries=1, timeout=_M3_LLM_REPAIR_TIMEOUT)
+                    tries=1, timeout=_M3_CONTENT_IDLE_TIMEOUT)
                 if not err_x_repair:
                     raw_x_repair = _promo_extract_json(text_x_repair) or {}
                     for x in _extract_text_candidates(raw_x_repair):
@@ -539,7 +542,7 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
                 text_sl_repair, err_sl_repair = _m3_complete_url(
                     urls14[(_repair_i + 2) % len(urls14)], msgs_sl_repair,
                     max_tokens=440, temperature=0.95, top_p=0.92, repetition_penalty=1.2,
-                    tries=1, timeout=_M3_LLM_REPAIR_TIMEOUT)
+                    tries=1, timeout=_M3_CONTENT_IDLE_TIMEOUT)
                 if not err_sl_repair:
                     raw_sl_repair = _promo_extract_json(text_sl_repair) or {}
                     for s in (raw_sl_repair.get("sitelinks") or []):
@@ -793,7 +796,7 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
                     continue
                 title = A._clean_line(raw.get("title") or "", A.SITELINK_TITLE_MAX, sitelink=True)
                 desc = A._clean_line(raw.get("description") or "", A.SITELINK_DESC_MAX, sitelink=True)
-                if (not title or not desc or len(title) < A.SITELINK_TITLE_TARGET_MIN  # fix 1b: min 22
+                if (not title or not desc or len(title) < A.SITELINK_TITLE_MIN_ACCEPT  # порог приёмки (≥18); цель генерации = SITELINK_TITLE_TARGET_MIN
                         or _bad_ad_sitelink(title, desc)
                         or _bad_num(title) or _bad_num(desc) or _has_salon(title) or _has_salon(desc)
                         or _bad_inventory(title) or _bad_inventory(desc)
@@ -874,7 +877,46 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
             warns = [f"⚠ M3 недоступна — контент из БД-библиотеки слепка «{agent['name']}»"]
         else:
             warns = [f"⚠ M3 недоступна ({last_err or 'нет валидного ответа'}) — контент собран из слепка «{agent['name']}»"] + warns
+    # ── C. LLM-судья УТП-дублей/релевантности (тот же _llm_pair_for), НА ГЕНЕРАЦИИ ──────
+    # Осознанно НА ГЕНЕРАЦИИ, а не на live-чтении каждой проверки набора: +1 короткий LLM-вызов
+    # на РК (~центы OpenRouter, ~2-4с), вместо повторного прогона по всему аккаунту. Судья
+    # fail-open (недоступен → контент как есть); при неодобрении после ретраев — warn-маркер
+    # UTP_RELEVANCE_FAILED (не роняем создание черновика, но сигнал виден). Пропуск: fast_mode,
+    # item.skip_utp_judge, фолбэк-контент, пустые заголовки/тексты.
+    utp_judge = None
+    _titles_now = content.get("titles") or []
+    _texts_now = content.get("texts") or []
+    if (not fast_mode and not fallback and not item.get("skip_utp_judge")
+            and _titles_now and _texts_now):
+        try:
+            from . import content_quality as CQ
+            provider = str(item.get("llm_provider") or "openrouter")
+            site_ctx = {"domain": ctx.get("domain") or "", "site_type": st,
+                        "city": ctx.get("city") or "", "brand": brand}
+            jr = CQ.audit_and_regen_utp(agent, ctx, brand=brand, titles=_titles_now,
+                                        texts=_texts_now, site_ctx=site_ctx, provider=provider)
+            utp_judge = {"judged": jr.get("judged"), "attempts": jr.get("attempts"),
+                         "hard_fail": jr.get("hard_fail"), "issues": (jr.get("issues") or [])[:5]}
+            if jr.get("judged") and not jr.get("hard_fail") and jr.get("attempts"):
+                # судья одобрил ПОСЛЕ регенерации → прогоняем новые тексты через тот же
+                # инвариант-гард (_final_fill), берём только если счётчики полные.
+                cand = dict(content)
+                cand["titles"] = jr.get("titles") or _titles_now
+                cand["texts"] = jr.get("texts") or _texts_now
+                cand = _final_fill_campaign_content(cand)
+                if (len(cand.get("titles") or []) >= title_target_n
+                        and len(cand.get("texts") or []) >= A.TEXTS_N):
+                    if good_t2:
+                        cand["title2"] = good_t2
+                    content = cand
+                    warns = list(warns) + [f"UTP-судья: контент перегенерирован ({jr.get('attempts')} поп.)"]
+            elif jr.get("hard_fail"):
+                warns = list(warns) + [
+                    "⚠ UTP_RELEVANCE_FAILED: судья не одобрил дубли/релевантность после "
+                    f"{jr.get('attempts')} попыток — {'; '.join((jr.get('issues') or [])[:3])}"]
+        except Exception as e:  # noqa: BLE001  (fail-open: судья не должен ронять генерацию)
+            utp_judge = {"error": str(e)[:160]}
     return {"ok": True, "agent": agent["name"], "login": login, "item": item,
             "brand": brand, "content": content,
-            "title2": content.get("title2", ""),
+            "title2": content.get("title2", ""), "utp_judge": utp_judge,
             "warnings": warns, "fallback": fallback, "m3_debug": m3_debug}
