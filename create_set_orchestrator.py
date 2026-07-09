@@ -749,6 +749,36 @@ def create_set_response(deps: dict):
                     except Exception:  # noqa: BLE001 — кэширование не критично
                         pass
 
+            # R2-4 2026-07-10 (c2+d): account-pass — ЕДИНАЯ сумма платежа (d, дефолт ON) и, под
+            # флагом DIRECT_SITELINK_REUSE_ACCOUNT (c2, дефолт OFF), ОДИН согласованный набор
+            # сайтлинков на весь аккаунт (текстовые tp1/tp2/tp5 идут этим путём; tp6/tp7 UAC —
+            # в create_set_master_product). Применяем к готовому контенту ПЕРЕД созданием.
+            if it.get("titles") and it.get("texts"):
+                try:
+                    from . import ai_content as _AC
+                    _reuse_sl = _AC._account_sitelinks_get(login)
+                    if _reuse_sl and len(_reuse_sl) >= 8 and it.get("sitelinks"):
+                        # pct-safety: не подставляем эталон с «%», если заголовки item несут «%»
+                        # (per-item инвариант «нет %-сайтлинка при %-заголовке»).
+                        from . import text_gen as _tg2
+                        _title_pct = bool(_tg2._discount_pcts(list(it.get("titles") or [])))
+                        _reuse_has_pct = any(
+                            "%" in f"{s.get('title','')} {s.get('description','')}"
+                            for s in _reuse_sl if isinstance(s, dict))
+                        if not (_title_pct and _reuse_has_pct):
+                            it["sitelinks"] = _content_copy(
+                                {"sitelinks": _reuse_sl}).get("sitelinks", [])
+                    _nt, _nx, _nsl = _AC._account_pay_unify(
+                        login, list(it.get("titles") or []), list(it.get("texts") or []),
+                        list(it.get("sitelinks") or []))
+                    it["titles"], it["texts"] = _nt, _nx
+                    if _nsl:
+                        it["sitelinks"] = _nsl
+                    if it.get("sitelinks"):
+                        _AC._account_sitelinks_put(login, it.get("sitelinks"))
+                except Exception:  # noqa: BLE001 — account-pass reuse не критичен: локальный набор
+                    pass
+
             # ── tp1 РСЯ: ЕПК v501 mode=network_cpa с бренд-группами из пака M3 ──────
             if it.get("type") == "tp1_rsy":
                 from .create_set_tp1 import run_create_set_tp1

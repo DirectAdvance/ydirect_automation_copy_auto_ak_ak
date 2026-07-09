@@ -386,6 +386,20 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     if len(it_texts) < 3:
         it_texts = _diverse_text_offers(
             _dedup_prefix_absorb(it_texts + list(_GENERIC_TEXT_FILLERS)), 3)
+    # R2-4 2026-07-10 (c1): topic/semantic-дедуп быстрых ссылок ВСЕГДА (не только при <8).
+    # UAC-путь (tp6/tp7) собирал 8 сайтлинков с дедупом ТОЛЬКО по ТОЧНОЙ строке title+desc →
+    # кредитный дубль «Платеж от 9 000 ₽/мес» + «Автокредит от 9 000 ₽/мес» проходил как две
+    # разные строки (bucket credit≤2 их пропускал), хотя _coherent_payments свёл ОБЕ суммы к 9000
+    # → семантически это ОДИН оффер (credit_pay|9000). _dedup_sitelinks (bucket-лимиты +
+    # _sitelink_semantic_key) их схлопывает, но раньше вызывался ТОЛЬКО в ветке <8 → при полном
+    # комплекте 8 не отрабатывал = «UAC мимо дедупа». Порядок diversify→dedup — как на tp1/tp2/tp5.
+    try:
+        from . import ai_agents as _A
+        _dl = _A._dedup_sitelinks(_A.diversify_sitelink_utp(it_sitelinks, 8), eff_site, 8)
+        if _dl:
+            it_sitelinks = _dl
+    except Exception:  # noqa: BLE001
+        pass
     if len(it_sitelinks) < 8:
         _sl_candidates = list(it_sitelinks or [])
         for _s in _GENERIC_SITELINK_FILLERS:
@@ -400,6 +414,34 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             it_sitelinks = _A._dedup_sitelinks(_sl_candidates, eff_site, 8)
         except Exception:  # noqa: BLE001
             it_sitelinks = _sl_candidates[:8]
+    # R2-4 2026-07-10 (c2+d): account-pass — единая сумма платежа (d, дефолт ON) и, под флагом
+    # DIRECT_SITELINK_REUSE_ACCOUNT (c2, дефолт OFF), ОДИН согласованный набор сайтлинков на
+    # весь аккаунт (tp1/tp2/tp5/tp6/tp7). Сайтлинки эталона re-фильтруем per-item гардами
+    # (pct/BU/лимит) — несовместимый эталон → остаёмся на своём наборе (brand-first/лимиты целы).
+    try:
+        from . import ai_content as _AC
+        _reuse_sl = _AC._account_sitelinks_get(login)
+        if _reuse_sl:
+            _rf: list = []
+            for _s in _reuse_sl:
+                if not isinstance(_s, dict):
+                    continue
+                _st = str(_s.get("title") or "").strip()
+                _sd = str(_s.get("description") or "").strip()
+                if not _st or _bad_ad_sitelink(_st, _sd) or not _common_content_ok(f"{_st} {_sd}"):
+                    continue
+                if not _is_bu_site(eff_site) and _BU_RE.search(f"{_st} {_sd}"):
+                    continue
+                if _title_has_pct and _sitelink_has_pct({"title": _st, "description": _sd}):
+                    continue
+                _rf.append({"title": _st, "description": _sd})
+            if len(_rf) >= 8:
+                it_sitelinks = _rf[:8]
+        it_titles, it_texts, it_sitelinks = _AC._account_pay_unify(
+            login, it_titles, it_texts, it_sitelinks)
+        _AC._account_sitelinks_put(login, it_sitelinks)
+    except Exception:  # noqa: BLE001 — account-pass reuse не критичен: фолбэк на локальный набор
+        pass
     # Картинки: СНАЧАЛА картинки ЭТОГО слепка (read_slepok_images по канону слепка), потом
     # общий пул по типу сайта. Иначе пул Мультибренда общий на ВСЕ слепки → Павлов брал бы
     # картинки Кудерко (баг: read_images ключ = тип сайта, не слепок). ВИДЕО — по логину.

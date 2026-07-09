@@ -17,20 +17,38 @@ def configure(deps: dict) -> None:
     globals().update(deps)
 
 
+def _build_minus_mod_by_brand(pairs: list) -> dict:
+    """Строит карту {mark_canon: set(model_lower_collapsed)} из пар (mark_canon, model_lower).
+    Допущение: марки автодилеров односложные (BAIC/Chery/MG/Lada) — первый токен raw_brand = бренд.
+    Точное равенство (не подстрока) предотвращает over-match для коротких моделей («5», «J7»)."""
+    out: dict = {}
+    for mark_c, model_l in (pairs or []):
+        out.setdefault(mark_c, set()).add(model_l)
+    return out
+
+
 def _tp1_group_name(ct: str, r_code: str, brand: str, with_shopping: bool = False,
-                    autotarget: bool = False) -> str:
-    """Имя группы tp1 по CANON CODER.md (правило «кодер = реальный состав»).
+                    autotarget: bool = False, tp_code: str = "tp1") -> str:
+    """Имя группы tp1/tp5 по CANON CODER.md (правило «кодер = реальный состав»).
     Суффикс _NN (было _11/_21/_22) убран по решению директолога (A2, 2026-06-22).
 
     with_shopping=False (TextAd only):  ct{N}_{aon/aoff}_n000_{r}_ct001_ag011_g00 — {Бренд}
-    with_shopping=True  (TextAd+ListingAd+ShoppingAd = «Т+Л+ТОВ»):
+    with_shopping=True, tp_code!="tp5"  (TextAd+ListingAd+ShoppingAd = «Т+Л+ТОВ», tp1/tp3):
+                        ct{N}_aon_n000_{r}_ct010_ag011_g00 — {Бренд}
+    with_shopping=True, tp_code=="tp5"  (TextAd+ListingAd+ShoppingAd = «Т+Л+ТОВ», как tp1/tp3):
                         ct{N}_aon_n000_{r}_ct010_ag011_g00 — {Бренд}
     Источник: справочник local_gsheet_naming (ag_part5): ct010 = «Комбинированный: ТГО + каталог/фид»,
-    ct009 = «Товарное (Фид/каталог)» — БЕЗ TextAd. Группа с TextAd+ListingAd+ShoppingAd → ct010.
-    ag011 (24-55+) — демо-таргетинг TextAd несёт корректировки по возрасту. Совпадает с эталоном Щербаковой.
+    ct009 = «Товарное (Фид/каталог)» — БЕЗ TextAd; ag011 = с демо-корректировками TextAd, ag001 = без.
+    Автотаргетинг для tp5+shopping: всегда aon (чекбоксы включены, autotarget-флаг для brand-групп=False
+    означает «бренд-ключи вместо чистого автотаргетинга», но галки relevanceMatch ставятся отдельно).
     """
     aud_code = "aon" if autotarget else "aoff"
     if with_shopping:
+        if tp_code == "tp5":
+            # tp5: TextAd+ShoppingAd+ListingAd (комбинированный «Т+Л+ТОВ»); aon — автотаргетинг
+            # включён независимо от autotarget-флага (brand-группы имеют ключи + relevanceMatch).
+            # (2026-07-07: убрана ветка ct009_ag001/без-TextAd — неверное промежуточное решение.)
+            return f"{ct}_aon_n000_{r_code}_ct010_ag011_g00 — {brand}"
         return f"{ct}_{aud_code}_n000_{r_code}_ct010_ag011_g00 — {brand}"
     return f"{ct}_{aud_code}_n000_{r_code}_ct001_ag011_g00 — {brand}"
 
@@ -82,28 +100,31 @@ def _tp1_video_ads(login: str, created_ad_meta: list, grid_cookie: str | None = 
             _uc["c"] = cmc.UacClient(grid_cookie or cmc.pick_working_cookie(login), login)
         return _uc["c"]
 
-    _breaker = {"open": False}   # circuit-breaker: первый таймаут → фаза видео прерывается
+    # Per-ct failed tracker (заменяет глобальный circuit-breaker 03.07.2026):
+    # таймаут ОДНОГО ct больше не прерывает ВСЮ видео-фазу — только помечает ct как failed.
+    # Другие ct продолжаются. Решение Семёна 2026-07-08.
+    _failed_cts: set = set()
 
-    def _creatives_for_ct(ct: str) -> list:
+    def _creatives_for_ct(ct: str, brand_hint: str = "") -> list:
         ct = (ct or "").strip().lower()
         if not ct or ct == "ct0000":
             return []
-        _ck = (login, ct)
+        _ck = (login, ct, brand_hint)           # brand_hint в ключе: пустой hint не блокирует непустой
         if _ck in _VIDEO_CREATIVE_CACHE:                  # уже качали/грузили в этом процессе
             return _VIDEO_CREATIVE_CACHE[_ck]
-        if _breaker["open"]:                              # Яндекс таймаутит → не мучаем остальные ct
+        if ct in _failed_cts:                             # этот ct уже таймаутил — не повторяем
             return []
         if not _budget_left():                            # бюджет фазы исчерпан — новые ct не качаем
             return []
         cids: list = []
         _pool_read_ok = True
         try:
-            paths = kp.videos_for_ct(login, ct, limit=limit_per_group) or []
+            paths = kp.videos_for_ct(login, ct, limit=limit_per_group, brand_hint=brand_hint) or []
         except Exception as e:  # noqa: BLE001
             paths, _ = [], rep["warnings"].append(f"videos_for_ct {ct}: {str(e)[:80]}")
             _pool_read_ok = False   # транзиентный сбой чтения M3 ≠ «пул пуст» — не кэшировать
         for p in (paths or [])[:limit_per_group]:
-            if not _budget_left() or _breaker["open"]:
+            if not _budget_left() or ct in _failed_cts:
                 break
             try:
                 # видео-загрузка = прогресс: без heartbeat долгая легальная загрузка выглядела
@@ -118,22 +139,23 @@ def _tp1_video_ads(login: str, created_ad_meta: list, grid_cookie: str | None = 
             except Exception as e:  # noqa: BLE001
                 rep["warnings"].append(f"upload {_os.path.basename(str(p))}: {str(e)[:80]}")
                 if "timeout" in str(e).lower():
-                    # circuit-breaker (решение Семёна 03.07): Яндекс «не в духе» — прерываем
-                    # ВСЮ видео-фазу, не мучая остальные ролики; добьётся следующим аудитом.
-                    _breaker["open"] = True
-                    rep["warnings"].append("видео-фаза прервана по таймауту — добьётся аудитом")
+                    # Per-ct failed (решение Семёна 2026-07-08, заменяет глобальный breaker 03.07):
+                    # только ЭТОТ ct помечается failed — остальные ct продолжают обработку.
+                    _failed_cts.add(ct)
+                    rep["warnings"].append(
+                        f"upload timeout для {ct} — ct помечен failed, другие ct продолжают")
         # Кэшируем ТОЛЬКО достоверный результат: есть креативы, либо пул ЛЕГИТИМНО пуст
-        # (чтение M3 прошло и вернуло 0 путей). Пустоту от сбоя чтения / открытого breaker /
+        # (чтение M3 прошло и вернуло 0 путей). Пустоту от failed ct / сбоя чтения /
         # проваленных аплоадов НЕ кэшируем — иначе fix_video_missing в том же процессе
         # навсегда получал бы [] и «все видео в итоге загружены» не сходилось (ревью 03.07).
-        if cids or (_pool_read_ok and not paths and not _breaker["open"]):
+        if cids or (_pool_read_ok and not paths and ct not in _failed_cts):
             _VIDEO_CREATIVE_CACHE[_ck] = cids
         return cids
 
     attach_items, seen = [], set()
     for _rec in created_ad_meta:
         meta = _rec.get("meta") or {}
-        cids = _creatives_for_ct(meta.get("ct") or "")
+        cids = _creatives_for_ct(meta.get("ct") or "", brand_hint=meta.get("brand") or "")
         if not cids:
             continue
         ad_id = _rec.get("id")
@@ -173,6 +195,7 @@ def _build_tp1_adgroups(
     products_only: bool = False,
     grid_cookie: str | None = None,
     base_sitelinks: list | None = None,
+    tp_code: str = "tp1",
 ) -> dict:
     """Наполнить РСЯ (tp1 ЕПК) группами БАТЧЕМ через v501:
     adgroups.add (с TrackingParams и minus) → keywords.add → adimages.add → ads.add(TextAd+Image).
@@ -192,39 +215,71 @@ def _build_tp1_adgroups(
         rep["deferred"] = len(groups) - _AC_GROUP_CAP
         groups = groups[:_AC_GROUP_CAP]
 
-    # ── Фаза 1: adgroups.add с TrackingParams ────────────────────────────────
-    # v501 ЕПК: TrackingParams на уровне группы (#2 инвариант — UTM)
-    # РСЯ (tp1): минуса на группе НЕ ставим — в сетях они режут охват без пользы.
-    # Минус-слова для поисковых (tp2/tp4) — в _build_tp2_adgroups (отдельный путь).
-    specs = []
-    for g in groups:
-        ag: dict = {
-            "Name": (g.get("name") or "группа")[:255],
-            "CampaignId": int(campaign_id),
-            "RegionIds": rids,
-            "TrackingParams": _UTM_TEMPLATE_TP1,   # #2 UTM на уровне группы
-        }
-        specs.append(ag)
+    # ── Фаза 1: adgroups — создание групп ────────────────────────────────────
+    if tp_code == "tp5":
+        # tp5 (Поиск + товарная галерея): группы через Grid AddUnifiedAdGroups с relevanceMatch
+        # АТОМАРНО (EXACT_V2_MARK + WITHOUT_BRAND) — как tp2 через grid_create.create_full.
+        # v501 adgroups.add не умеет relevanceMatchCategories → Яндекс ставит дефолт (все 5 + 3
+        # бренда). Grid профиль search_tp2 ставится при создании — lag-проблемы нет.
+        # Фаза 1.5 (post-create UpdateUnifiedAdGroups) упразднена (v3 решение, 2026-07-08).
+        _gcl5 = gc.GridCreateClient(login, cookie=grid_cookie)
+        _g5_items = [gc.build_adgroup(
+            campaign_id=int(campaign_id),
+            name=(g.get("name") or "группа")[:255],
+            region_ids=rids,
+            keywords=[],           # ключи — ТОЛЬКО через Фазу 2 (AddKeywords), без дублей
+            minus_keywords=[],     # групповой минус для поиска не ставим (кампанийный уровень)
+            autotargeting_profile="search_tp2",  # EXACT_V2_MARK + WITHOUT_BRAND атомарно
+        ) for g in groups]
+        try:
+            ag_ids = _gcl5.add_adgroups(_g5_items)
+            # Позиционный сдвиг: Grid пропускает упавшие группы (не возвращает null-заглушку)
+            # → список может быть короче входного → выравниваем по имени (аналог create_full:615).
+            if len(ag_ids) != len(groups):
+                _n2id5 = _gcl5._read_adgroup_name_to_id(int(campaign_id))
+                if _n2id5:
+                    ag_ids = [_n2id5.get(g.get("name") or "") for g in groups]
+                else:
+                    ag_ids = list(ag_ids) + [None] * (len(groups) - len(ag_ids))
+                    rep["errors"].append("tp5 Grid: позиционный сдвиг групп — ключи могут быть смещены")
+            rep["adgroups"] = sum(1 for x in ag_ids if x)
+            rep["relevance_match_set"] = rep["adgroups"]  # атомарно при создании
+        except gc.GridCreateError as _g5e:
+            rep["errors"].append(f"adgroups(Grid tp5): {str(_g5e)[:200]}")
+            return rep
+    else:
+        # ── v501 ЕПК: TrackingParams на уровне группы (#2 инвариант — UTM) ──────────────────
+        # РСЯ (tp1): минуса на группе НЕ ставим — в сетях они режут охват без пользы.
+        # Минус-слова для поисковых (tp2/tp4) — в _build_tp2_adgroups (отдельный путь).
+        specs = []
+        for g in groups:
+            ag: dict = {
+                "Name": (g.get("name") or "группа")[:255],
+                "CampaignId": int(campaign_id),
+                "RegionIds": rids,
+                "TrackingParams": _UTM_TEMPLATE_TP1,   # #2 UTM на уровне группы
+            }
+            specs.append(ag)
 
-    ag_ids = [None] * len(groups)
-    idx = 0
-    for chunk in _chunks(specs, _AC_CHUNK_AG):
-        ja = _v5_call("adgroups", "add", token, login, {"AdGroups": chunk})
-        if "error" in ja:
-            rep["errors"].append(f"adgroups.add {_v5_err(ja)}")
-            idx += len(chunk)
+        ag_ids = [None] * len(groups)
+        idx = 0
+        for chunk in _chunks(specs, _AC_CHUNK_AG):
+            ja = _v5_call("adgroups", "add", token, login, {"AdGroups": chunk})
+            if "error" in ja:
+                rep["errors"].append(f"adgroups.add {_v5_err(ja)}")
+                idx += len(chunk)
+                time.sleep(_AC_BATCH_SLEEP)
+                continue
+            for r in (ja.get("result") or {}).get("AddResults", []):
+                errs = r.get("Errors") or []
+                if r.get("Id") and not errs:
+                    ag_ids[idx] = r["Id"]
+                    rep["adgroups"] += 1
+                else:
+                    nm = groups[idx].get("name", "?") if idx < len(groups) else "?"
+                    rep["errors"].append(f"{nm}: adgroup " + ("; ".join(e.get("Message", "") for e in errs) or "нет Id"))
+                idx += 1
             time.sleep(_AC_BATCH_SLEEP)
-            continue
-        for r in (ja.get("result") or {}).get("AddResults", []):
-            errs = r.get("Errors") or []
-            if r.get("Id") and not errs:
-                ag_ids[idx] = r["Id"]
-                rep["adgroups"] += 1
-            else:
-                nm = groups[idx].get("name", "?") if idx < len(groups) else "?"
-                rep["errors"].append(f"{nm}: adgroup " + ("; ".join(e.get("Message", "") for e in errs) or "нет Id"))
-            idx += 1
-        time.sleep(_AC_BATCH_SLEEP)
 
     # ── Фаза 2: keywords.add (ключи на группу ≤200) ──────────────────────────
     # autotarget=True → спецключ "---autotargeting" (1/группу) вместо реальных ключей (РСЯ-Автотаргет).
@@ -233,7 +288,13 @@ def _build_tp1_adgroups(
         if not ag_ids[i]:
             continue
         if autotarget:
-            kw_items.append({"Keyword": _AUTOTARGET_KW, "AdGroupId": int(ag_ids[i])})
+            # tp5: автотаргет УЖЕ включён атомарно в Grid build_adgroup(search_tp2) с категориями
+            # EXACT_V2_MARK+WITHOUT_BRAND (Фаза 1). v501-ключ "---autotargeting" повторно включил бы
+            # автотаргет с ДЕФОЛТными категориями (все 5 + 3 бренда) → WRONG_AUTOTARGET на
+            # -Автотаргетинг tp5 (пофикшено 2026-07-09: раньше сбрасывался в дефолт; -КС не страдал,
+            # т.к. там реальные ключи вместо этого спецключа).
+            if tp_code != "tp5":
+                kw_items.append({"Keyword": _AUTOTARGET_KW, "AdGroupId": int(ag_ids[i])})
             continue
         for k in _kw_clean(g.get("keywords") or [], 200):
             kw_items.append({"Keyword": k, "AdGroupId": int(ag_ids[i])})
@@ -316,30 +377,35 @@ def _build_tp1_adgroups(
     if created_ad_meta:
         try:
             import os as _os3
-            _gc_img = gf.GridClient(login, cookie=grid_cookie)
+            _gc_img = gf.get_grid_client(login, cookie=grid_cookie)
+            # ── Параллельная заливка картинок ──────────────────────────────────────────
+            # Собираем все уникальные пути ПЕРЕД циклом, заливаем 8 потоками.
+            # tp5 — только тексты, картинки у ShoppingAd/ListingAd → пропускаем.
             _uploaded_by_name: dict[str, str] = {}
+            if tp_code != "tp5":
+                _all_img_paths = [_pth for _rec in created_ad_meta
+                                  for _pth in (_rec["meta"].get("image_paths") or [])]
+                _uploaded_by_name = _parallel_upload_images(_gc_img, login, _all_img_paths)
             _upd_items = []
             for _rec in created_ad_meta:
                 _meta = _rec["meta"]
                 _hashes = list(dict.fromkeys(_meta.get("image_hashes") or []))
-                for _pth in (_meta.get("image_paths") or []):
-                    if len(_hashes) >= 5:
-                        break
-                    if not _pth or not _os3.path.isfile(_pth):
-                        continue
-                    _bn = _os3.path.basename(_pth)
-                    _h = _uploaded_by_name.get(_bn)
-                    if not _h:
-                        _h = _cached_upload_image(_gc_img, login, _pth)
-                        if _h:
-                            _uploaded_by_name[_bn] = _h
-                    if _h and _h not in _hashes:
-                        _hashes.append(_h)
-                if _hashes:
-                    _meta["image_hashes"] = _hashes[:5]
+                # tp5 комбинаторные — только тексты; картинки/видео остаются у ShoppingAd/ListingAd.
+                if tp_code != "tp5":
+                    for _pth in (_meta.get("image_paths") or []):
+                        if len(_hashes) >= 5:
+                            break
+                        if not _pth or not _os3.path.isfile(_pth):
+                            continue
+                        _bn = _os3.path.basename(_pth)
+                        _h = _uploaded_by_name.get(_bn)
+                        if _h and _h not in _hashes:
+                            _hashes.append(_h)
+                    if _hashes:
+                        _meta["image_hashes"] = _hashes[:5]
                 _upd = {"id": _rec["id"], "href": _meta["href"],
                         "titles": _meta["titles"], "bodies": _meta["bodies"]}
-                if _meta.get("image_hashes") is not None:
+                if tp_code != "tp5" and _meta.get("image_hashes") is not None:
                     _upd["image_hashes"] = _meta.get("image_hashes") or []
                 _upd_items.append(_upd)
             if _upd_items:
@@ -384,7 +450,8 @@ def _build_tp1_adgroups(
     # ── Фаза 3.6: ВИДЕО РСЯ → creativeIds на комбинаторные объявления (Grid, по куке, без баллов).
     # ПОСЛЕ цены: adPrice-апдейт шлёт creativeIds:[] и затёр бы видео, поэтому attach — последним.
     # _VIDEO_AT_CREATE=False: видео вынесено в добивку (спека-аудит VIDEO_MISSING) — каркас не ждёт.
-    if created_ad_meta and _VIDEO_AT_CREATE:
+    # tp5 комбинаторные — видео не нужно (только ShoppingAd/ListingAd); пропускаем целиком.
+    if created_ad_meta and _VIDEO_AT_CREATE and tp_code != "tp5":
         try:
             _vr = _tp1_video_ads(login, created_ad_meta, grid_cookie=grid_cookie,
                                 campaign_id=campaign_id)
@@ -395,7 +462,7 @@ def _build_tp1_adgroups(
                 rep.setdefault("warnings", []).extend(_vr["warnings"])
         except Exception as _e:  # noqa: BLE001 — видео best-effort, объявления уже созданы
             rep.setdefault("warnings", []).append(f"tp1 video: {str(_e)[:100]}")
-    elif created_ad_meta:
+    elif created_ad_meta and tp_code != "tp5":
         rep["videos_deferred"] = True   # добьётся аудитом (VIDEO_MISSING) после создания
 
     # ── Фаза 4: товарные по фиду (как в слепках Щербаковой): ListingAd (динамика) + ShoppingAd (товарное)
@@ -469,7 +536,16 @@ def _build_tp1_adgroups(
         # каждая группа уже имеет TextAd; товарка докрутится ретраем — не валим кампанию.
         if _grid_shop_items:
             try:
-                _ids = gf.GridClient(login, cookie=grid_cookie).add_shopping_ads(_grid_shop_items)
+                # token→Grid replication lag: кампания+группы созданы через v501 (token), а
+                # add_shopping_ads — Grid-мутация на ДРУГОЙ реплике, которая свежую кампанию/группы
+                # ещё не догнала → *_NOT_FOUND → пустой shopping_ad_ids → gate «создана без ShoppingAd»
+                # удалял часть tp5 одного аккаунта (2026-07-06 группа C: psm5h7q6/7bqj56f4/lzjk6p5m).
+                # Реплика догоняет за <~2с — ретраим с бэкоффом; прочие ошибки — сразу в except ниже.
+                # Ретрай replication-lag живёт ВНУТРИ add_shopping_ads (почанковый, только при
+                # полном отказе чанка — grid_finalize). Внешний ретрай целого батча здесь
+                # ДУБЛИРОВАЛ ShoppingAd уже успешных чанков при >50 групп, а матч по подстроке
+                # 'NOT_FOUND' ловил перманентный FEED_NOT_FOUND (ревью 06.07) — убран.
+                _ids = gf.get_grid_client(login, cookie=grid_cookie).add_shopping_ads(_grid_shop_items)
                 rep["shopping_ad_ids"] = [int(x) for x in _ids if x]
                 rep["shopping_ads"] = len(rep["shopping_ad_ids"])
                 for _li, (_raw_id, _src) in enumerate(zip(_ids, _grid_shop_items)):
@@ -491,9 +567,9 @@ def _build_tp1_adgroups(
                         if _mvals:
                             _conds.append({"field": _mf, "operator": "CONTAINS_ANY",
                                            "stringValue": json.dumps(_mvals, ensure_ascii=False)})
-                    if not _conds and _src.get("collection_id"):
-                        _conds.append({"field": "collectionId", "operator": "EQUALS_ANY",
-                                       "stringValue": json.dumps([str(_src["collection_id"])], ensure_ascii=False)})
+                    # collectionId-фолбэк удалён (2026-07-07): collection_id всегда None;
+                    # ListingAd фильтр = name CONTAINS_ANY [марка] через _grid_add_listings_with_name_filters.
+                    # Для Общих/несегментированных групп без name_value — листинг без фильтра (весь каталог).
                     try:                                 # глобальные минус-марки: используем тот же brand_field
                         from . import create_set_feeds as _csf
                         _conds.extend(_csf._minus_marks_grid_conditions(brand_field=_bf, model_field=_mf))
@@ -574,6 +650,13 @@ def _build_tp1_from_pack(
 
     # Строим группы ТОЛЬКО для ct-папок у которых есть ключи scherbakova
     groups = []
+    # Минус-марки/модели: вычисляем один раз на кампанию для O(1) проверки.
+    # Марки: канонизируем в латиницу (_brand_canon), чтобы устоять против будущих кириллических записей.
+    # Модели: карта {mark_canon → set(model_lower)} — точное равенство в пределах бренда,
+    #   предотвращает over-match для коротких имён («5», «J7»). Срез [1:] = первый токен = бренд
+    #   (допущение: марки автодилеров односложные — BAIC/Chery/MG/Lada).
+    _minus_m_set: set = {_brand_canon(str(m).strip().lower()) for m in (_enabled_minus_marks() or []) if str(m).strip()}
+    _minus_mod_by_brand: dict = _build_minus_mod_by_brand(_enabled_minus_model_pairs() or [])
     _img_rr = 0                                   # round-robin по пулу картинок ct (Павлов: «разбавить однотипными»)
     for ct in sorted(pack.keys()):
         data = pack.get(ct) or {}
@@ -582,10 +665,20 @@ def _build_tp1_from_pack(
         if segment and _ct_segment(ct) != segment:
             continue                           # сегментный фильтр (Марки/Модели как в боевых)
         raw_brand = ct_name.get(ct) or ct_model.get(ct) or ct
+        # Минус-фильтр групп: марка/модель отмечена в «Глобальных правилах» → группа не создаётся
+        if _minus_m_set or _minus_mod_by_brand:
+            _rb_tok = (raw_brand or "").strip().split()[0].lower()
+            _rb_canon = _brand_canon(_rb_tok) if _rb_tok else ""
+            _model_portion = " ".join((raw_brand or "").strip().split()[1:]).lower()
+            if ((_rb_canon and _rb_canon in _minus_m_set) or
+                    (_rb_canon and _model_portion and
+                     _model_portion in _minus_mod_by_brand.get(_rb_canon, set()))):
+                print(f"[minus-filter] group skipped: ct={ct} brand={raw_brand!r} tp={tp_code}", flush=True)
+                continue
         brand = _valid_pack_brand_name(ct, raw_brand)   # логический бренд: пустой для «Общее»
         group_label = _pack_group_display_name(ct, raw_brand, brand)
         group_name = _tp1_group_name(ct, r_code, group_label, with_shopping=with_shopping,
-                                     autotarget=autotarget)
+                                     autotarget=autotarget, tp_code=tp_code)
         # Картинки: общие ct0000-ct0014 → общий пул ct0000; кузова ct0015-ct0018 → свой ct;
         # модели/марки → свой ct.
         all_images = _creative_images_for_ct(site_type, tp_code, ct, key)
@@ -618,9 +711,9 @@ def _build_tp1_from_pack(
             "name": group_name,
             "ct": ct,
             "brand": brand,
-            # БАГ-13: для «Марки» — убрать ключи «марка+модель» (напр. «Chery Tiggo 8 Pro»)
-            "keywords": _filter_group_keywords(data.get("positive", []), _ct_segment(ct), brand, city, site_type),
-            "minus": data.get("minus", []),
+            # БАГ-13: для «Марки» — убрать ключи «марка+модель»; model= защищает «Модели» от чужих моделей
+            "keywords": _filter_group_keywords(data.get("positive", []), _ct_segment(ct), brand, city, site_type, model=brand),
+            "minus": [],   # v5: _build_tp1_adgroups игнорирует g["minus"] (РСЯ/поиск — без охват-режущих группов. минусов)
             "titles": g_titles or ([title, brand] if brand else [title]),
             "texts": g_texts or ([text0] if text0 else []),
             "title": title, "title2": ttl2, "text": text0,   # совместимость
@@ -712,12 +805,15 @@ def _build_tp1_from_pack(
     except Exception:  # noqa: BLE001
         co_pool = {}
 
+    # products_only (Смарт-Баннер/Фиды «без ТГО»): пропускаем Phase 3 (TextAd/ComboAd).
+    # tp5 TextAd/комбинированные создаются в той же Фазе 3 — условие tp5 убрано (2026-07-07).
+    _skip_text_ads = products_only
     rep = _build_tp1_adgroups(token, login, campaign_id, region_ids, href, groups,
                                sitelink_set_id=sitelink_set_id,
                                base_sitelinks=base_sitelinks or None,
                                feed_id=feed_id, with_shopping=with_shopping, feed_models=feed_models,
-                               autotarget=autotarget, products_only=products_only,
-                               grid_cookie=grid_cookie)
+                               autotarget=autotarget, products_only=_skip_text_ads,
+                               grid_cookie=grid_cookie, tp_code=tp_code)
     rep["cts"] = len(pack)
     rep["groups_built"] = len(groups)
     rep["callouts_pool"] = len(co_pool)
@@ -744,9 +840,10 @@ def _grid_add_listings_with_name_filters(gcl, shop_ids: list, build: dict,
     try:
         _rows = gcl.add_listing_ads_by_shopping_ads(shop_ids) or []
         build["listing_ads"] = len(_rows)
-        _agid_to_nv = {str(it["adgroup_id"]): it.get("name_value")
-                       for it in (build.get("listing_build_items") or [])
-                       if it.get("adgroup_id") and it.get("name_value")}
+        # fix-3 (08.07.2026): addListingAdsByShoppingAds теперь возвращает shoppingAdId.
+        # listing_name_by_shop{shop_id→name_value} собирается при add_shopping_ads (до вызова).
+        # adGroupId нет в GdUpdateListingAdInput → идентификатор листинга через id.
+        _name_by_shop = {int(k): v for k, v in (build.get("listing_name_by_shop") or {}).items() if v}
         # Глобальные минус-марки для ListingAd — тот же brand_field/model_field что у ShoppingAd.
         _lad_minus_conds: list = []
         try:
@@ -758,27 +855,26 @@ def _grid_add_listings_with_name_filters(gcl, shop_ids: list, build: dict,
             pass
         _lf_items = []
         _lad_general_lids: list = []   # listing ad IDs без name-фильтра (Общее группы)
-        for _idx, _row in enumerate(_rows):
+        for _row in _rows:
             _lid = _row.get("id") if isinstance(_row, dict) else _row
-            _agid = str(_row.get("adGroupId") or "") if isinstance(_row, dict) else ""
-            _val = _agid_to_nv.get(_agid)
-            if not _val and _idx < len(shop_ids):
-                _val = (build.get("listing_name_by_shop") or {}).get(int(shop_ids[_idx]))
-            if _lid and _val:
-                _ent = {"id": _lid, "feed_id": feed_id, "value": _val, "bodies": [default_text]}
-                if _lad_minus_conds:
-                    _ent["extra_conds"] = _lad_minus_conds
-                _lf_items.append(_ent)
-            elif _lid and _lad_minus_conds:
+            _said = int(_row.get("shoppingAdId") or 0) if isinstance(_row, dict) else 0
+            if not _lid:
+                continue
+            _val = _name_by_shop.get(_said) if _said else None
+            if _val:
+                # R2-4 2026-07-10 (b): брендовая группа = ПОЗИТИВНЫЙ name CONTAINS_ANY [своя марка]
+                # ТОЛЬКО. Раньше сюда добавлялся негативный _lad_minus_conds (NOT_CONTAINS_ALL ~8
+                # чужих марок) как extra_conds → если позитив падал (D4: AUTO_RU yandex.xml feed
+                # 3537034 — поле name/folder_id не резолвится в fieldsForUseAs), в кабинете оставался
+                # ТОЛЬКО негатив «Название каталога НЕ содержит knewstar,moskvich,omoda,…» (176/198
+                # стр.) вместо «содержит BAIC». Позитив CONTAINS уже ограничивает страницы своей
+                # маркой → негатив избыточен и вреден (для BAIC-группы должно быть «содержит BAIC»).
+                # Общее/ct0000 (_val=None → ветка else) — негатив-глоб-минус сохранён без изменений.
+                _lf_items.append({"id": _lid, "feed_id": feed_id, "value": _val,
+                                  "bodies": [default_text]})
+            else:
+                # Без name-фильтра (Общее/ct0000): только глобальные минус-марки (весь каталог минус чужие).
                 _lad_general_lids.append(_lid)
-        if not _lf_items and _agid_to_nv:
-            # saveDraft:True → addedAds пуст; строим по adGroupId (фильтр ставится на группу)
-            for _agid_s, _val in _agid_to_nv.items():
-                _ent = {"adgroup_id": _agid_s, "feed_id": feed_id,
-                        "value": _val, "bodies": [default_text]}
-                if _lad_minus_conds:
-                    _ent["extra_conds"] = _lad_minus_conds
-                _lf_items.append(_ent)
         if _lf_items:
             build["listing_name_set"] = gcl.set_listing_name_filters(_lf_items)
         # Общее группы (нет name-фильтра): проставляем только минус-марки через set_product_feed_filters.
@@ -858,6 +954,7 @@ def _create_tp1_single(
     autotarget: bool = False,
     products_only: bool = False,
     grid_cookie: str | None = None,
+    job=None,
 ) -> dict:
     """Создать ОДНУ кампанию tp1 (РСЯ) через ЕПК v501 с указанным mode.
 
@@ -916,6 +1013,16 @@ def _create_tp1_single(
             except Exception as e:  # noqa: BLE001
                 counter_note = f"счётчик {counter_id} не привязался: {str(e)[:120]}"
 
+        # Глобальные минус-слова campaign-level через v5 campaigns.update (все режимы).
+        # UnifiedCampaignSpec не имеет поля minus_keywords → закрываем дыру здесь (best-effort).
+        # _build_tp1_adgroups игнорирует g["minus"] (РСЯ: минуса режут охват без пользы) →
+        # единственный надёжный путь для tp1 v5 = прямой v5 campaigns.update после создания.
+        _minus_note = None
+        try:
+            _minus_note = _apply_campaign_direct_minus(token, login, campaign_id, slepok, site_type, "tp1")
+        except Exception as _me:  # noqa: BLE001 — best-effort, не валим кампанию
+            _minus_note = f"minus upd упал: {str(_me)[:120]}"
+
         # Наполняем бренд-группами из пака M3.
         tp1_build = _build_tp1_from_pack(
             token, login, campaign_id, slepok, site_type, region_ids,
@@ -952,8 +1059,19 @@ def _create_tp1_single(
             # Оставляем как РСЯ без товарки + warning (hard-fail остаётся только «группы не созданы»).
             tp1_build.setdefault("warnings", []).append(
                 "товарка не создана: фид без ShoppingAd — оставлена РСЯ без товарных объявлений")
+        # Отмена до листингов: кампания+объявления уже в Директе (достаточно консистентны),
+        # товарку и ассеты пропускаем — аудит добьёт при необходимости.
+        if job and job.get("cancel"):
+            print(f"[cancel] {name}: прервано пользователем перед листингами (cid={campaign_id})", flush=True)
+            _rd = {"ok": True, "name": name, "campaign_id": campaign_id, "launched": False,
+                   "tp1_build": tp1_build, "cancelled_mid": "listings",
+                   "url": f"https://direct.yandex.ru/dna/campaign/{campaign_id}?ulogin={login}"}
+            if counter_note:
+                _rd["counter_note"] = counter_note
+            return _rd
         if _shop_ids and feed_id:
-            _gcl = gf.GridClient(login, cookie=grid_cookie)
+            # A3: cookie-only — ShoppingAd создан Grid'ом по куке, token→Grid lag отсутствует → без пауз.
+            _gcl = gf.get_grid_client(login, cookie=grid_cookie, cookie_only=True)
             # G review: set_default_text в СВОЁМ try — падение (Яндекс 500) НЕ должно блокировать листинги
             # (раньше оба в одном try → текст падал → листинги пропускались → 0 ListingAd).
             try:
@@ -972,12 +1090,27 @@ def _create_tp1_single(
             # готовых офферов) → НЕ удаляем кампанию, оставляем товарку без листингов + warning.
             tp1_build.setdefault("warnings", []).append(
                 "листинги каталога: 0 ListingAd (по by-shopping) — оставлена товарка без листингов")
+        # Гейт (fix-1): ListingAd созданы, но name-фильтр не выставлен ни на одном → каталог
+        # показывает весь фид вместо бренда. Детектируется аудитом LISTING_POSITIVE_FILTER_MISSING.
+        if (with_shopping and feed_id and _shop_ids
+                and int(tp1_build.get("listing_ads") or 0)
+                and not int(tp1_build.get("listing_name_set") or 0)):
+            tp1_build.setdefault("warnings", []).append(
+                "листинги каталога: ListingAd созданы, name-фильтр (listing_name_set=0) НЕ выставлен"
+                " — весь фид в каталоге; добьёт аудит LISTING_POSITIVE_FILTER_MISSING")
 
         result_d = {"ok": True, "name": name, "campaign_id": campaign_id,
                     "launched": False, "tp1_build": tp1_build,
                     "url": f"https://direct.yandex.ru/dna/campaign/{campaign_id}?ulogin={login}"}
         if counter_note:
             result_d["counter_note"] = counter_note
+        if _minus_note:
+            result_d["minus_note"] = _minus_note
+        # Отмена до ассетов: листинги уже выполнены (или пропущены), кампания консистентна.
+        if job and job.get("cancel"):
+            print(f"[cancel] {name}: прервано пользователем перед ассетами (cid={campaign_id})", flush=True)
+            result_d["cancelled_mid"] = "assets"
+            return result_d
 
         # ── Grid-докрутка РСЯ: уточнения/промо/быстрые ссылки на УРОВНЕ КАМПАНИИ ──
         # БАГ-1 FIX (2026-06-24): вынесена в ОТДЕЛЬНЫЙ try/except (ранее была внутри общего
@@ -1080,7 +1213,7 @@ def _create_tp1_campaign(
         ai_title2=ai_title2, sitelinks=sitelinks,
         callout_texts=callout_texts, callout_ids=callout_ids,
         autotarget=autotarget, products_only=products_only,
-        grid_cookie=grid_cookie,
+        grid_cookie=grid_cookie, job=job,
     )
     cpa_result = None
     # no_cpa → пропускаем вариант оплаты за конверсии; отмена → cpa тоже пропускаем (cpc уже достроен).
@@ -1095,7 +1228,7 @@ def _create_tp1_campaign(
             ai_title2=ai_title2, sitelinks=sitelinks,
             callout_texts=callout_texts, callout_ids=callout_ids,
             autotarget=autotarget, products_only=products_only,
-            grid_cookie=grid_cookie,
+            grid_cookie=grid_cookie, job=job,
         )
     # Сводный результат: ok=True если хоть одна создалась
     ok = cpc_result.get("ok") or (bool(cpa_result) and cpa_result.get("ok"))
@@ -1174,12 +1307,93 @@ def _grid_account_image_hashes(login: str) -> dict:
                     out.setdefault(im["name"], im["imageHash"])
     return out
 
+
+def _preupload_tp1_images(login: str, items: list, site_type: str, slepok: str,
+                          grid_cookie: str | None = None) -> dict:
+    """Набор-level ПРЕД-ЗАЛИВКА картинок tp1 (РСЯ) в библиотеку аккаунта ОДИН раз, ДО цикла
+    создания РК, чтобы создание каждой РК не блокировалось на аплоаде ассетов.
+
+    Собирает уникальные пути картинок ВСЕХ tp1-пунктов набора ТЕМ ЖЕ резолвером, что и цикл
+    (_creative_images_for_ct по ct пака M3, лимит 5/ct — резолвинг НЕ меняем, переносим только
+    момент заливки раньше), дедупит против уже залитых в аккаунт (_grid_account_image_hashes,
+    0 баллов) и догружает недостающее параллельно через _parallel_upload_images (Grid/куки,
+    без баллов). Побочный эффект — прогрев процесс-глобального _GRID_IMG_HASH_CACHE
+    (ключ login+realpath): per-РК заливка в цикле (Фаза 3.4 _build_tp1_adgroups и куки-путь
+    _create_tp1_via_cookie) переиспользует хэши БЕЗ повторной сети.
+
+    ⚠ Только tp1_rsy: реальную Grid-заливку креативов делает лишь tp1 — tp5 картинки не грузит
+    (они у ShoppingAd/ListingAd), tp2/tp4 картинки запрещены правилом, tp3 без креативов.
+
+    Грациозность: любой сбой = частичный/пустой прогрев, а цикл сам зальёт недостающее per-РК
+    (кэш-промах → штатная заливка, НЕ падаем). Идемпотентно и почти no-op на «созревшем»
+    аккаунте (всё уже в account_map)."""
+    out = {"cts": 0, "paths": 0, "resolved": 0}
+    try:
+        tp1_items = [it for it in (items or [])
+                     if isinstance(it, dict) and (it.get("type") or "") == "tp1_rsy"]
+        if not tp1_items:
+            return out
+        key = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
+        # Сегменты, реально запрошенные пунктами (None = без сегментного фильтра → все ct).
+        segments = {it.get("tp1_segment") for it in tp1_items}
+        want_all = None in segments
+        seg_set = {s for s in segments if s}
+        try:
+            pack = kp.gather(key, site_type, "tp1") or {}     # тот же ssh-вызов к M3, что и цикл
+        except Exception:  # noqa: BLE001
+            pack = {}
+        if not pack:
+            return out
+        seen_ct: set = set()
+        all_paths: list = []
+        for ct in pack.keys():
+            data = pack.get(ct) or {}
+            if not data.get("positive"):
+                continue                                      # цикл пропускает ct без ключей — тоже
+            if not want_all and seg_set and _ct_segment(ct) not in seg_set:
+                continue                                      # тот же сегментный фильтр, что в цикле
+            if ct in seen_ct:
+                continue
+            seen_ct.add(ct)
+            try:
+                paths = _creative_images_for_ct(site_type, "tp1", ct, key) or []  # резолвинг как есть
+            except Exception:  # noqa: BLE001
+                paths = []
+            all_paths.extend(paths[:5])                       # лимит 5 картинок/ct — как в цикле
+        out["cts"] = len(seen_ct)
+        out["paths"] = len(all_paths)
+        if not all_paths:
+            return out
+        # Дедуп против уже залитых В АККАУНТ (0 баллов): _parallel_upload_images(account_map=…)
+        # переиспользует их хэши без сетевой заливки, догружает только недостающее.
+        try:
+            account_map = _grid_account_image_hashes(login) or {}
+        except Exception:  # noqa: BLE001
+            account_map = {}
+        gc_img = gf.get_grid_client(login, cookie=grid_cookie)    # per-thread клиент (как per-РК)
+        resolved = _parallel_upload_images(gc_img, login, all_paths, account_map=account_map)
+        out["resolved"] = len(resolved or {})
+        try:
+            print(f"[img-preupload] {login}: tp1 набор — ct={out['cts']} paths={out['paths']} "
+                  f"resolved={out['resolved']} (account_lib={len(account_map)}) — кэш прогрет", flush=True)
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception as e:  # noqa: BLE001 — прогрев не смеет ронять/трогать джобу
+        try:
+            print(f"[img-preupload] {login}: прогрев картинок не удался (best-effort): {str(e)[:160]}",
+                  flush=True)
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
 def _tp1_pack_groups(login: str, slepok: str, site_type: str, r_code: str, href: str,
                      titles: list | None, texts: list,
                      segment: str | None = None, ai_title2: str = "", city: str = "",
                      with_shopping: bool = False, tp_code: str = "tp1",
                      image_map: dict | None = None, autotarget: bool = False,
-                     feed_url_by_model: dict | None = None) -> list:
+                     feed_url_by_model: dict | None = None,
+                     only_cts: list[str] | None = None) -> list:
     """Бренд-группы tp1/tp5 из пака M3 — ЧИСТО данные (без API-вызовов, без баллов). Зеркало
     группо-сборки _build_tp1_from_pack (см. там), вынесено для куки-пути (grid_create.create_full).
     image_map (РСЯ tp1): {basename→imageHash} уже залитых картинок аккаунта — переиспользуем хэши
@@ -1200,14 +1414,35 @@ def _tp1_pack_groups(login: str, slepok: str, site_type: str, r_code: str, href:
     ct_model = kp.feeds_ct_model()
     ct_name = _ag_part1_map()
     _sc_titles = _slepok_campaign_content(slepok, site_type).get("titles") or []  # пул слепка — 1 раз
+    # Минус-марки/модели: вычисляем один раз на кампанию для O(1) проверки.
+    # Марки: канонизируем в латиницу (_brand_canon). Модели: карта {mark_canon → set(model_lower)}.
+    # Допущение: марки односложные (BAIC/Chery/MG/Lada) — split()[0] = бренд, split()[1:] = модель.
+    _minus_m_set: set = {_brand_canon(str(m).strip().lower()) for m in (_enabled_minus_marks() or []) if str(m).strip()}
+    _minus_mod_by_brand: dict = _build_minus_mod_by_brand(_enabled_minus_model_pairs() or [])
+    # only_cts (split-driven слепки, напр. dmp/tp2): наполняем ТОЛЬКО ct-кодами этого split-блока
+    # из плана (create_set_plan "tp2_split_cts"). Без него cookie-путь брал ВСЕ ct пака (34 у dmp)
+    # в каждую split-кампанию. None → авто-слепки, поведение неизменно (весь пул × segment-фильтр).
+    _only_cts = {c for c in (only_cts or []) if c} or None
     groups = []
     for ct in sorted(pack.keys()):
         data = pack.get(ct) or {}
         if not data.get("positive"):
             continue
+        if _only_cts is not None and ct not in _only_cts:
+            continue
         if segment and _ct_segment(ct) != segment:
             continue
         raw_brand = ct_name.get(ct) or ct_model.get(ct) or ct
+        # Минус-фильтр групп: марка/модель отмечена в «Глобальных правилах» → группа не создаётся
+        if _minus_m_set or _minus_mod_by_brand:
+            _rb_tok = (raw_brand or "").strip().split()[0].lower()
+            _rb_canon = _brand_canon(_rb_tok) if _rb_tok else ""
+            _model_portion = " ".join((raw_brand or "").strip().split()[1:]).lower()
+            if ((_rb_canon and _rb_canon in _minus_m_set) or
+                    (_rb_canon and _model_portion and
+                     _model_portion in _minus_mod_by_brand.get(_rb_canon, set()))):
+                print(f"[minus-filter] group skipped: ct={ct} brand={raw_brand!r} tp={tp_code}", flush=True)
+                continue
         brand = _valid_pack_brand_name(ct, raw_brand)
         group_label = _pack_group_display_name(ct, raw_brand, brand)
         # tp2/tp4 — поисковые группы: в кодере используем aoff, не сетевой tp1-формат.
@@ -1215,7 +1450,7 @@ def _tp1_pack_groups(login: str, slepok: str, site_type: str, r_code: str, href:
         group_name = (_text_group_name(ct, r_code, group_label)
                       if _is_search_tp
                       else _tp1_group_name(ct, r_code, group_label, with_shopping=with_shopping,
-                                           autotarget=autotarget))
+                                           autotarget=autotarget, tp_code=tp_code))
         # deep-link: сначала реальный URL из фида, фолбэк на формульный слаг (#ФИКС-2).
         # ФИКС A: Марки → /auto/{brand} (первые 2 сегмента), Модели → полный путь без query. (#ФИКС-A)
         _raw_feed_url = (_feed_url_for_model(feed_url_by_model, brand) if feed_url_by_model else None)
@@ -1239,9 +1474,9 @@ def _tp1_pack_groups(login: str, slepok: str, site_type: str, r_code: str, href:
         _gt, _gx, _sl_dummy, _pay_changed = _coherent_payments(_gt, _gx, [])
         g = {
             "name": group_name, "ct": ct, "brand": brand, "seg": _ct_segment(ct),  # 'Марки' → цена=МИН по марке
-            # БАГ-13: для «Марки» — убрать ключи «марка+модель»
-            "keywords": _filter_group_keywords(data.get("positive", []), _ct_segment(ct), brand, city, site_type),
-            "minus": data.get("minus", []),
+            # БАГ-13: для «Марки» — убрать ключи «марка+модель»; model= защищает «Модели» от чужих моделей
+            "keywords": _filter_group_keywords(data.get("positive", []), _ct_segment(ct), brand, city, site_type, model=brand),
+            "minus": [],   # группа: минуса сняты — campaign-level через spec (tp1 куки) / _apply_campaign_direct_minus (tp1/tp5 v5)
             "titles": _gt or [t for t in ([title, brand] if brand else [title]) if t],
             "texts": _gx or ([text0] if text0 else []),
             "href": model_href,
@@ -1362,7 +1597,8 @@ def _create_tp1_via_cookie(
         spec = {"name": nm, "counter_id": counter_id or 0, "goal_id": goal_id or 0,
                 "cpa": int(cpc_cpa), "weekly_budget": wkl, "start_date": start_date,
                 "network": True, "search": False, "pay_for_conversion": pay_conv,
-                "disabled_places": _mp_disabled}             # #21 → build_unified_campaign.disabledPlaces
+                "disabled_places": _mp_disabled,             # #21 → build_unified_campaign.disabledPlaces
+                "minus_keywords": _enabled_minus_words()}    # глобальные минус-слова кампании (tp1 куки)
         try:
             rep = gc.create_full(login, campaign_spec=spec, groups=groups,
                                  region_ids=region_ids, href=href, goal_id=goal_id or 0,
@@ -1392,6 +1628,18 @@ def _create_tp1_via_cookie(
                 continue
             _shop_ids: list[int] = []
             _listing_ids: list[int] = []
+            if job and job.get("cancel"):           # отмена: кампания+объявления созданы, товарку/ассеты пропускаем
+                print(f"[cancel] {nm}: прервано пользователем перед товаркой (cid={cid})", flush=True)
+                out_campaigns.append({
+                    "ok": ok, "name": nm, "campaign_id": cid, "launched": False,
+                    "via": "cookie", "cancelled_mid": "shopping",
+                    "tp1_build": {"groups": rep.get("groups"), "ads": rep.get("ads"),
+                                  "shopping_ads": 0, "listing_ads": 0,
+                                  "errors": rep.get("errors", [])[:5],
+                                  "warnings": rep.get("warnings", [])[:5]},
+                    "url": (f"https://direct.yandex.ru/dna/campaign/{cid}?ulogin={login}" if cid else ""),
+                })
+                break
             if ok and with_shopping and feed_id:
                 _grid_shop_items = []
                 # Bug A fix: резолвим имена полей бренда/модели для ЭТОГО фида (AUTO_RU: mark_id/folder_id;
@@ -1434,7 +1682,7 @@ def _create_tp1_via_cookie(
                     _shop_name_vals.append(_name_val)
                 if _grid_shop_items:
                     try:
-                        _gcl_shop = gf.GridClient(login)
+                        _gcl_shop = gf.get_grid_client(login)
                         _add_ids = _gcl_shop.add_shopping_ads(_grid_shop_items) or []
                         _shop_ids = [int(x) for x in _add_ids if x]
                         # карта shopping_ad_id → name_value (для name-фильтра листинга)
@@ -1489,25 +1737,21 @@ def _create_tp1_via_cookie(
                             _listing_rows = (_gcl_shop.add_listing_ads_by_shopping_ads(_shop_ids) or [])
                             _listing_ids = []
                             _lf_items = []
-                            for _idx2, _row in enumerate(_listing_rows):
+                            for _row in _listing_rows:
                                 try:
                                     _lid = _row.get("id") if isinstance(_row, dict) else _row
-                                    _agid = str(_row.get("adGroupId") or "") if isinstance(_row, dict) else ""
+                                    _said2 = int(_row.get("shoppingAdId") or 0) if isinstance(_row, dict) else 0
                                     if _lid:
                                         _listing_ids.append(int(_lid))
-                                    _val = _agid_to_nv2.get(_agid)
-                                    if not _val and _idx2 < len(_shop_name_vals):
-                                        _val = _shop_name_vals[_idx2]
+                                    _val = _name_by_shop.get(_said2) if _said2 else None
                                     if _lid and _val:
                                         _lf_items.append({"id": _lid, "feed_id": int(feed_id),
                                                           "value": _val, "bodies": [_default_text]})
                                 except Exception:  # noqa: BLE001
                                     continue
-                            if not _lf_items and _agid_to_nv2:
-                                # saveDraft:True → addedAds пуст; строим по adGroupId (фильтр ставится на группу)
-                                for _agid_s, _val in _agid_to_nv2.items():
-                                    _lf_items.append({"adgroup_id": _agid_s, "feed_id": int(feed_id),
-                                                      "value": _val, "bodies": [_default_text]})
+                            # adGroupId-фолбэк убран (fix-3 08.07.2026): adGroupId нет в
+                            # GdUpdateListingAdInput; shoppingAdId-матч надёжен (addedAds
+                            # непуст при saveDraft:True — подтверждено 03.07 после фикса query).
                             # name-фильтр «Страницы каталога» (HAR36; by-shopping фильтр не наследует)
                             if _lf_items:
                                 try:
@@ -1564,11 +1808,18 @@ def _create_tp1_via_cookie(
                 # Если reuse image_hashes не сработал (новый аккаунт) — пробуем довесить картинки
                 # ПО ГРУППАМ, чтобы не размазывать один и тот же хэш на все бренды кампании.
                 _ad_ids = rep.get("ad_ids") or []
-                if _ad_ids:
+                if _ad_ids and not (job and job.get("cancel")):  # отмена: ассеты выставлены, картинки пропускаем
                     try:
                         import os as _os2
-                        _gc_img = gf.GridClient(login)
-                        _uploaded_by_name: dict[str, str] = {}
+                        _gc_img = gf.get_grid_client(login)
+                        # ── Параллельная заливка картинок ──────────────────────────────
+                        # Собираем все пути по всем группам ПЕРЕД циклом, заливаем параллельно.
+                        _all_img_paths2 = [_pth for _grp in groups
+                                           for _pth in (_grp.get("image_paths") or [])]
+                        # account_map=_img_map (basename→hash уже залитых) → warm-up/пост-рестарт
+                        # переиспользует хэши «оттуда», не грузит повторно по сети.
+                        _uploaded_by_name: dict[str, str] = _parallel_upload_images(
+                            _gc_img, login, _all_img_paths2, account_map=_img_map)
                         _upd_items = []
                         # ad_ids теперь 1:1 с groups (None = объявление группы не создано) —
                         # zip больше не смещает пары (ревью 03.07 #5/#21)
@@ -1584,10 +1835,6 @@ def _create_tp1_via_cookie(
                                     continue
                                 _bn = _os2.path.basename(_pth)
                                 _h = _uploaded_by_name.get(_bn)
-                                if not _h:
-                                    _h = _cached_upload_image(_gc_img, login, _pth)
-                                    if _h:
-                                        _uploaded_by_name[_bn] = _h
                                 if _h and _h not in _hashes:
                                     _hashes.append(_h)
                             _upd = {"id": _aid, "href": _grp.get("href") or href,
@@ -1640,7 +1887,7 @@ def _create_tp1_via_cookie(
                             "ad_price_payload": _grid_ad_price_payload(_vcur, _vold),
                         }
                     })
-                if _cookie_ad_meta and _VIDEO_AT_CREATE:
+                if _cookie_ad_meta and _VIDEO_AT_CREATE and not (job and job.get("cancel")):  # отмена: видео пропускаем
                     try:
                         _vr2 = _tp1_video_ads(login, _cookie_ad_meta, grid_cookie=None,
                                               campaign_id=cid)

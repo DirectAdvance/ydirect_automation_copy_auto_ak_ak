@@ -28,7 +28,7 @@
 | 1.3 | Все поисковые группы С ключами | `NO_KEYWORDS_LIVE` | Grid: `keyword_count` группы | keyword_repair (докрутка); корень — Phase 2 при создании | ⬜ |
 | 1.4 | Глоб. минус-слова («отзывы») на уровне КАМПАНИИ (tp2/tp4/tp5) | `GLOBAL_MINUS_CAMPAIGN_MISSING` | Grid unified-payload → `minusKeywords`+`libraryMinusKeywordsIds` | `_enabled_minus_words` в deps (create) + **пост-аудит** `_audit_global_minus_campaign` → `fix_global_minus_campaign` (Grid `set_campaign_minus_keywords`, in-place, D6 2026-07-09) | ✅ |
 | 1.5 | Каталог tp7 (ct0000) подхватывает страницы (не 0) | — (визуально в кабинете) | UI «Страницы каталога» / фид | `it_lff=[]` для ct0000 (сделано) | ✅ |
-| 1.6 | Быстрые ссылки = 8, без смысловых дублей | — | объявление в кабинете | source-order + topic-дедуп (сделано) | ✅ |
+| 1.6 | Быстрые ссылки = 8, без смысловых дублей | — | объявление в кабинете | source-order + topic-дедуп; **R2-4 (в1) 2026-07-10: UAC-путь (tp6/tp7) теперь тоже гонит `_dedup_sitelinks(diversify_…)` ВСЕГДА** (был под гейтом `<8` → кредит-дубль «Платеж от 9 000»+«Автокредит от 9 000» проскакивал). Опц. reuse ОДНОГО набора на аккаунт — флаг `DIRECT_SITELINK_REUSE_ACCOUNT` (дефолт OFF) | 🟡 (UAC-дедуп — live не проверено) |
 | 1.7 | Видео на видео-марках (BAIC/Belgee/Haval/Москвич) | `VIDEO_MISSING` | докрутка read-back `hasVideo` | brand-fallback + докрутка (сделано, 155/16 верно) | ✅ |
 | 1.8 | adPrice на фидовых группах | `NO_ADPRICE_LIVE` | Grid | adprice_repair (докрутка) | 🟡 |
 | 1.9 | Нет `adGroupId not defined` (listing) | — (лог воркера) | `journalctl direct-worker` | shoppingAdId→lid (сделано) | ✅ |
@@ -156,7 +156,7 @@
 | `CT_SLEPOK_IMAGES_EMPTY` | warn | брендовый ct без картинок в слепке → общий пул (D5 2026-07-09, minimum) | `_audit_ct_slepok_images` | ⬜ **report-only** (наполнить слепок — контент) |
 | `IMAGES_FORBIDDEN` | medium | картинки на поисковом TextAd (запрещены) | :385 | ✅ `execute_images_forbidden_repair` (:2178) |
 | `FEED_FILTER_MISSING_GRID` | medium | фидовая группа без минус-марок (Grid) | :494 | ✅ `fix_feed_filters_grid` (:1702) |
-| `LISTING_POSITIVE_FILTER_MISSING` | high | ListingAd без позитивного фильтра каталога | :506 | ✅ `fix_listing_positive_filter` (:1802) |
+| `LISTING_POSITIVE_FILTER_MISSING` | high | ListingAd без позитивного фильтра каталога | :506 | ✅ `fix_listing_positive_filter` (:1802). **R2-4 (б) 2026-07-10:** брендовая группа = ТОЛЬКО позитив name CONTAINS_ANY [своя марка]; убран негативный `_lad_minus_conds` (NOT_CONTAINS_ALL 8 чужих) из `_grid_add_listings_with_name_filters` (при провале позитива в кабинете оставался только негатив «не содержит knewstar,…» 176/198). Общее/ct0000 — негатив-глоб-минус как есть. ⚠️ **follow-up:** AUTO_RU фид **3537034** (yandex.xml) — поле листинга не в `fieldsForUseAs` → позитив-фильтр для этого фида невозможен текущим API |
 | `PLACEMENTS_WRONG` | medium | `placementTypes` ≠ эталону tp5 | :556 | ✅ `fix_placements_wrong` (:1847) |
 | `GENERIC_FALLBACK_GROUP` | high | группа собралась на generic-фолбэке | :590 | ✅ `fix_generic_fallback_group` (:1880) |
 | `EXTRA_TP_NOT_IN_SLEPOK` | medium | создан tp, которого нет в слепке | :637 | ⬜ (флаг; удаление ручное) |
@@ -371,6 +371,14 @@
   добивается `adprice_repair` (докрутка, статус 🟡). ⚠️ на tp1 мутация объявления без `ad_price_payload`
   ЗАТИРАЕТ цену (см. 2.4 про видео-attach).
 - **Лимит:** `priceOld` показываем ТОЛЬКО если `old > current` (иначе Яндекс отвергает).
+
+**Консистентность суммы платежа по АККАУНТУ (R2-4 (г) 2026-07-10):** `unify_utp_numbers`/`_coherent_payments`
+сводят сумму «от N ₽/мес» ТОЛЬКО ВНУТРИ item (канон = первое-встреченное) → между объявлениями аккаунта
+был разнобой («Платеж от 9 000» vs «Кредит от 12 000 ₽/мес»). Добавлен аккаунт-канон
+`ai_content._account_pay_unify(login,…)`: первая валидная сумма 9-15к на проход воркера фиксируется и
+применяется ко ВСЕМ объявлениям (той же атомарной заменой `text_gen._apply_payment_amount`). Флаг
+`DIRECT_PAY_CANON_ACCOUNT` (дефолт **ON**). Wired в orchestrator (tp1/tp2/tp5) + master_product (tp6/tp7).
+🟡 live не проверено.
 
 **UAC (tp6/tp7) — бюджет/pricing/период** (`uac_verifier.py`, все → пересоздание при нарушении):
 - `pricing`: `cpc`→**PER_CLICK**, `cpa`→**PER_CONVERSION**; иначе `UAC_PRICING_MISMATCH` (error, :79/:83).
