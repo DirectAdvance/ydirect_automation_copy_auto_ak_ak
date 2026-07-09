@@ -2038,6 +2038,7 @@ def _delayed_repair_daemon_loop(app) -> None:
         # ПРАВКА P2: watchdog — строки в status='running' дольше порога → помечать failed.
         # Только реально просроченные по updated_at (активная строка обновляется set_status).
         _wd_failed_finalize: list[tuple] = []
+        _wd_failed_content: list[tuple] = []
         try:
             _wconn = _victory_conn_rw()
             try:
@@ -2052,8 +2053,11 @@ def _delayed_repair_daemon_loop(app) -> None:
                     RETURNING id, parent_job_id, kind
                 """, (str(_DELAYED_REPAIR_STUCK_TIMEOUT_SECONDS // 60),
                       str(_DELAYED_REPAIR_STUCK_TIMEOUT_SECONDS)))
-                _wd_failed_finalize = [(r[0], r[1]) for r in (_wcur.fetchall() or [])
+                _wd_all = _wcur.fetchall() or []
+                _wd_failed_finalize = [(r[0], r[1]) for r in _wd_all
                                        if (r[2] or "") == "finalize_set"]
+                _wd_failed_content = [(r[0], r[1]) for r in _wd_all
+                                      if (r[2] or "").startswith("content_repair")]
                 _wconn.commit()
             finally:
                 _wconn.close()
@@ -2082,6 +2086,26 @@ def _delayed_repair_daemon_loop(app) -> None:
                 except Exception:  # noqa: BLE001
                     pass
                 _parent_absorb_child_progress(_fparent, f"fin:{_fdid}", 0, 0, 0, final=True)
+        # К1 (2026-07-09): watchdog пометил застрявшую content_repair-строку failed (напр. spec_audit-
+        # фиксер завис на мёртвом M3 до фикса idle/circuit-breaker — тогда весь delayed-repair
+        # цикл вис, строка не доходила до терминала), но child dcr:{did} остаётся ОТКРЫТ →
+        # карточка вечно «running» (осиротевший delayed-repair). Закрываем child как терминальный
+        # (тот же вызов, что все терминальные ветки _run_delayed_content_repair:
+        # _parent_absorb_child_progress final=True) + фиксируем провал в result-хвосте. Иначе
+        # delayed content_repair не доходит до терминала. content_repair_post_recreate покрыт
+        # startswith. finalize_set сюда НЕ попадает (обработан выше отдельным блоком).
+        if _wd_failed_content:
+            for _cdid, _cparent in _wd_failed_content:
+                if not _cparent:
+                    continue
+                try:
+                    _record_delayed_content_repair(_cparent, {
+                        "id": _cdid, "status": "failed", "uses_direct_units": False,
+                        "error": ("watchdog: content_repair stuck running >"
+                                  f"{_DELAYED_REPAIR_STUCK_TIMEOUT_SECONDS // 60} мин без прогресса")})
+                except Exception:  # noqa: BLE001
+                    pass
+                _parent_absorb_child_progress(_cparent, f"dcr:{_cdid}", 0, 0, 0, final=True)
         rows = []
         try:
             conn = _victory_conn_rw()

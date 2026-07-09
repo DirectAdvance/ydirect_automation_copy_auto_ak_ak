@@ -24,6 +24,66 @@
 
 ## Активные / недавние ошибки
 
+### UNAVAILABLE_FIELD_LISTING_FILTER — name-фильтр «Страницы каталога» валит чанк, каталог = весь фид (D4, 2026-07-09)
+- Симптом (live porg-psm5h7q6, кампания 712605238): «Страницы каталога» tp5 показывают ВЕСЬ фид вместо
+  бренда. `listing_name_set=0`. В логе (если дошло) — Grid `updateListingAds` отвергал чанк
+  `PerformanceFilterDefects.UNAVAILABLE_FIELD`, чанк молча терялся («chunk потерян, skip»).
+- Где: `grid_finalize.py:set_listing_name_filters` (~1573); вызовы —
+  `create_set_tp1_builders.py:_grid_add_listings_with_name_filters` (~873) и cookie-путь (~1634).
+- Root-cause: захардкоженное условие фильтра `{"field":"name","operator":"CONTAINS_ANY",...}`. У авто-фида
+  yandex.xml (AUTO_RU) поля `name` в `fieldsForUseAs` НЕТ → Grid отвергает весь чанк `UNAVAILABLE_FIELD` →
+  chunking-обёртка ловит `GridFinalizeError` и `skip` (тихая потеря) → `listing_name_set=0` → листинг без
+  позитивного name-фильтра → каталог = весь фид. brand/model в соседних фильтрах УЖЕ резолвятся через
+  `_resolve_feed_field` (`create_set_tp1_builders.py:851-852` → mark_id/folder_id), а `name` — нет. Это
+  backlog-запись H (резолвить name через fieldsForUseAs) — до сих пор не сделано.
+- Решение (2026-07-09):
+  - `create_set_feeds._resolve_feed_field` расширен семантикой `'name'` (`_NAME_FIELD_SYNONYMS =
+    ("name","model","modification","folder_id")` — Market-фиды: `name`; AUTO_RU: текстовое имя каталога).
+  - `set_listing_name_filters`: поле условия резолвится per-feed через `_resolve_feed_field(login,feed_id,
+    "name")`, фолбэк `'name'` (Market/сбой резолва). НЕ терять чанк молча: при `UNAVAILABLE_FIELD`/
+    `UNKNOWN_FIELD`/`INVALID_FIELD` в validationResult — лог + ретрай чанка со следующим полем-кандидатом
+    (per-feed резолв → доступные текстовые поля фида из `_feed_filter_fields` → явный `'name'`);
+    исчерпаны кандидаты → `GridFinalizeError` (chunking-обёртка залогирует, но теперь это редкий терминал,
+    а не тихий первый отказ). Фикс внутри метода → оба пути-вызова (grid/cookie) чинятся автоматически.
+- Статус: 🟡 фикс на Mac (py_compile OK; pyflakes — только штатные DI-«undefined» модуля, новых нет),
+  ждёт живого прогона (единый рестарт после Фазы 1). Верификация: live tp1/tp5 с фидом — `listing_name_set>0`,
+  «Страницы каталога» показывают ТОЛЬКО бренд группы; в логе при AUTO_RU — «UNAVAILABLE_FIELD → ретрай с
+  полем …» вместо «chunk потерян, skip». **live не проверено.**
+- НЕ помогло ранее: (запись `LISTING_NAME_FILTER_ADGROUPID_UNDEFINED`, 08.07) чинила `id` vs `adGroupId` —
+  другой корень (идентификатор листинга); поле `name` там не резолвилось. fix-2 (adgroup_id→adGroupId)
+  — GraphQL-схема поля не знает. Это отдельный дефект того же метода.
+
+### DELAYED_CONTENT_REPAIR_STUCK_RUNNING — delayed content_repair зависает в running, добивка не завершается (К1, 2026-07-09)
+- Симптом (Victory DB): delayed-строки `978fc858255f`/`43c6046ebc77` (kind=content_repair) застряли в
+  `running` навсегда (note «повторная Grid-first проверка перед авто-добивкой»). Система #2 (spec_audit
+  качества контента) НЕ отработала → brand-first/short-titles/видео-tp1/чужие-ключи не добились; карточка
+  набора вечно «running».
+- Где: `blueprint.py:_delayed_repair_daemon_loop` watchdog (~2038); терминалы `_run_delayed_content_repair`
+  (~1776, child `dcr:{did}` через `_parent_absorb_child_progress(...,final=True)`).
+- Root-cause: LLM-фиксеры (`_run_spec_audit_and_fix` → regen_titles/brand-first через `_llm_pair_for`) висли
+  на мёртвом M3 (до фикса `M3_COMPLETION_HANG_CIRCUIT_BREAKER`) → весь delayed-repair цикл блокировался, строка
+  не доходила до терминала. Watchdog-UPDATE `running→failed` (>30 мин) kind-агностичен и флипал БД-строку, но
+  child-closure в watchdog был реализован ТОЛЬКО для `finalize_set` (задача F) → у content_repair child
+  `dcr:{did}` оставался ОТКРЫТ → карточка вечно `running` даже после флипа строки в failed (осиротевший
+  delayed-repair).
+- Решение (2026-07-09):
+  - Watchdog `_delayed_repair_daemon_loop` теперь собирает из `RETURNING` не только `finalize_set`, но и
+    `content_repair*` строки (`startswith("content_repair")`, покрывает `content_repair_post_recreate`).
+    Для них — тот же терминал, что у finalize_set: `_record_delayed_content_repair(..., status="failed")` +
+    `_parent_absorb_child_progress(parent, f"dcr:{did}", 0,0,0, final=True)` → child закрыт, карточка
+    доходит до терминала. finalize_set-блок не тронут (обрабатывается отдельно, выше).
+  - Тайм-бокс: B2-бюджет `_DELAYED_REPAIR_TIME_BUDGET_SECONDS=1200` (< watchdog 1800) УЖЕ покрывает основной
+    цикл content_repair (`_run_delayed_content_repair:1839`, чистый partial без reschedule при исчерпании).
+    Остаточный `_run_spec_audit_and_fix` (после цикла, не под B2) теперь ограничен пофиксерно idle-таймаутом
+    30с + M3 circuit-breaker'ом (`M3_COMPLETION_HANG_CIRCUIT_BREAKER`) → «один завис фиксер» больше не вешает
+    весь проход, а любой остаточный застрявший `running` закрывается watchdog'ом.
+- Статус: 🟡 фикс на Mac (py_compile OK, blueprint 0 новых undefined-name), ждёт живого прогона (единый
+  рестарт после Фазы 1). Верификация: искусственно застрявший content_repair `running`>30 мин → watchdog
+  флипает строку в failed И закрывает `dcr:{did}` (карточка терминальна, не вечный running); нормальный
+  delayed-repair и finalize_set watchdog (F) не затронуты; reschedule cap не тронут. **live не проверено.**
+- НЕ помогло ранее: сам по себе watchdog-UPDATE (running→failed) — флипал БД-строку, но не закрывал child
+  content_repair → карточка всё равно висла running.
+
 ### M3_COMPLETION_HANG_CIRCUIT_BREAKER — висящий M3-completion = 90-120с налога на каждой РК (2026-07-09)
 - Симптом (боевой прогон 09.07, job 2ec305f1c3cc): M3 completion висит — НЕ присылает ни одного
   токена. Стрим-idle-таймаут срабатывает через 90с (14B fast) / 120с (72B repair), потом фолбэк на

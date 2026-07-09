@@ -232,12 +232,21 @@ def _offer_price_keys(name: str) -> set:
 
 
 def _merge_price(prev: tuple | None, new: tuple) -> tuple:
-    """Выбрать лучшую пару (current, old): чистый МИНИМУМ current; при равном — больший old
-    (зачёркнутая цена). Приоритет скидки НЕ даём — цена «от X» важнее наличия crossed-out."""
+    """Выбрать лучшую пару (current, old) при мердже фидов.
+
+    ПРИОРИТЕТ ПАРЫ (Семён 2026-07-07: «везде должна быть старая И новая цена»): оффер с ОБЕИМИ
+    ценами всегда бьёт оффер без old — раньше min-current из фида БЕЗ <oldprice> (yandex.xml)
+    затирал полноценную пару из соседнего фида (заброни/распродажи) → 156/318 моделей psm без
+    старой цены при том, что пары были в других фидах. Внутри одного класса (обе пары / обе
+    без old) — прежняя логика: МИНИМУМ current, при равенстве — больший old."""
     cur, old = new
     if prev is None:
         return new
     prev_cur, prev_old = prev
+    new_pair = cur > 0 and old > 0
+    prev_pair = prev_cur > 0 and prev_old > 0
+    if new_pair != prev_pair:
+        return new if new_pair else prev
     if cur < prev_cur or (cur == prev_cur and old > prev_old):
         return new
     return prev
@@ -249,7 +258,7 @@ def _grid_feed_offer_prices(login: str, feed_id: int) -> dict:
     if not feed_id:
         return {}
     try:
-        gc = gf.GridClient(login)
+        gc = gf.get_grid_client(login)
         gc._bootstrap_csrf()
         v = {"feedId": int(feed_id), "filterConditions": [], "filterMobileAppOffers": False,
              "bannerId": None, "campaignId": None}
@@ -295,7 +304,7 @@ def _grid_feed_offer_urls(login: str, feed_id: int) -> dict:
     if _hit and (time.time() - _hit[1]) < _OFFER_PRICE_TTL:
         return _hit[0]
     try:
-        gc = gf.GridClient(login)
+        gc = gf.get_grid_client(login)
         gc._bootstrap_csrf()
         v = {"feedId": int(feed_id), "filterConditions": [], "filterMobileAppOffers": False,
              "bannerId": None, "campaignId": None}
@@ -560,6 +569,65 @@ def _cached_upload_image(gc_img, login: str, path: str):
     return _h
 
 
+def _parallel_upload_images(gc_img, login: str, paths: list, workers: int = 8,
+                            account_map: dict | None = None) -> dict:
+    """Параллельно залить картинки в библиотеку логина через ThreadPoolExecutor.
+    Принимает список путей (может содержать дубли), возвращает {basename: imageHash}.
+    Каждый уникальный basename загружается РОВНО ОДИН РАЗ — дедупликация встроена.
+    Ошибки отдельных файлов не роняют весь батч (one-failure-tolerant).
+    Потокобезопасно: _cached_upload_image несёт собственный lock на кеш.
+
+    `account_map` = {basename: imageHash} картинок, УЖЕ загруженных в аккаунт
+    (`_grid_account_image_hashes`). Ускорение (warm-up / пережил рестарт воркера):
+    basename, который уже есть в аккаунте, НЕ грузим повторно по сети — берём готовый
+    хэш «оттуда». На fresh-аккаунте map пуст → полная заливка (без регресса)."""
+    import os as _os_pu
+    from concurrent.futures import ThreadPoolExecutor, as_completed as _asc
+    unique: dict[str, str] = {}   # basename -> первый валидный путь
+    for p in (paths or []):
+        if p:
+            try:
+                if _os_pu.path.isfile(p):
+                    bn = _os_pu.path.basename(p)
+                    if bn not in unique:
+                        unique[bn] = p
+            except Exception:  # noqa: BLE001
+                pass
+    if not unique:
+        return {}
+    result: dict[str, str] = {}
+    _amap = account_map or {}
+    _to_upload: dict[str, str] = {}
+    _reused = 0
+    for bn, p in unique.items():
+        _h0 = _amap.get(bn)
+        if _h0:
+            result[bn] = _h0          # reuse «оттуда» — без сетевой заливки
+            _reused += 1
+        else:
+            _to_upload[bn] = p
+    if _reused:
+        try:
+            print(f"[img-reuse] account-library reuse={_reused}/{len(unique)} "
+                  f"upload={len(_to_upload)} {login}", flush=True)
+        except Exception:  # noqa: BLE001
+            pass
+    if not _to_upload:
+        return result
+    with ThreadPoolExecutor(max_workers=min(workers, len(_to_upload))) as _exe:
+        _fmap = {_exe.submit(_cached_upload_image, gc_img, login, p): bn
+                 for bn, p in _to_upload.items()}
+        for _fut in _asc(_fmap):
+            _bn2 = _fmap[_fut]
+            try:
+                _h2 = _fut.result()
+                if _h2:
+                    result[_bn2] = _h2
+            except Exception:  # noqa: BLE001
+                pass
+    return result
+
+
 def _homepage_url(href: str) -> str:
     """Главная сайта (scheme://host) из любого URL объявления — для кнопки «Получить скидку»."""
     m = re.match(r"(https?://[^/]+)", (href or "").strip())
@@ -601,7 +669,7 @@ def _grid_set_ad_prices(login: str, items: list) -> int:
     if not upd:
         return 0
     try:
-        gc = gf.GridClient(login)
+        gc = gf.get_grid_client(login)
         gc._bootstrap_csrf()
         v = {"updateInput": {"adUpdateItems": upd, "saveDraft": True}}
         r = gc._post("UpdateAdaptiveTextAds", _UPD_ADAPTIVE_Q, v)
@@ -635,7 +703,7 @@ def _grid_update_adaptive_ads(login: str, items: list[dict],
             ad_ids = [int(it["id"]) for it in (items or []) if it.get("id")]
             cids = [int(c) for c in (campaign_ids or []) if c]
             if cids and ad_ids:
-                current_map = gf.GridClient(login).adaptive_ads_for_update(cids, ad_ids)
+                current_map = gf.get_grid_client(login).adaptive_ads_for_update(cids, ad_ids)
         except Exception:  # noqa: BLE001 — fall-safe: при сбое чтения шлём как есть
             current_map = {}
 
@@ -700,7 +768,7 @@ def _grid_update_adaptive_ads(login: str, items: list[dict],
     if not upd:
         return 0
     try:
-        gc = gf.GridClient(login)
+        gc = gf.get_grid_client(login)
         gc._bootstrap_csrf()
         v = {"updateInput": {"adUpdateItems": upd, "saveDraft": True}}
         r = gc._post("UpdateAdaptiveTextAds", _UPD_ADAPTIVE_Q, v)
@@ -758,7 +826,7 @@ def _grid_price_feed(login: str, url: str = "") -> int:
     """Фид аккаунта для ЦЕН (по куке, без баллов): как веб-UI — defaultFeedId по домену (url),
     иначе фид с наибольшим числом офферов. 0 при сбое. url = https://домен аккаунта."""
     try:
-        gc = gf.GridClient(login)
+        gc = gf.get_grid_client(login)
         gc._bootstrap_csrf()
         # url → КОРЕНЬ домена (homepage): deep-link (/auto/baic) сузил бы фиды по пути и вернул 0
         # (фиды на корне) → цена не считалась бы. Корень = ВСЕ фиды аккаунта (как при заполнении товаров).
@@ -789,7 +857,7 @@ def _price_feeds_for(login: str, url: str = "") -> list:
     """ID фидов для ЦЕН в порядке предпочтения пользователя (_PRICE_FEED_PREFS) — у них чистые имена
     офферов. Фолбэк: defaultFeedId / фид с макс. офферов. → [feed_id, ...] (без баллов, по куке)."""
     try:
-        gc = gf.GridClient(login)
+        gc = gf.get_grid_client(login)
         gc._bootstrap_csrf()
         # url → КОРЕНЬ домена (homepage): deep-link (/auto/baic) сузил бы фиды по пути и вернул 0
         # (фиды на корне) → цена не считалась бы. Корень = ВСЕ фиды аккаунта (как при заполнении товаров).
@@ -838,6 +906,55 @@ _OFFER_PRICE_CACHE: dict = {}                             # (login,url) → (pri
 _OFFER_PRICE_TTL = 20 * 60
 
 
+def _auto_feed_discount_prices(url: str) -> dict:
+    """Пары цен из авто-фида яндекса <homepage>/yandex.xml (Семён 2026-07-07): новая цена =
+    <price>, старая = <price> + <max_discount> (živой фид autos-kemerovo.site: Vesta price=749000,
+    max_discount=809000 → old=1 558 000). Закрывает модели, у которых <oldprice> нет ни в одном
+    товарном фиде (вся Lada, модификации 2026). → {ключ: (current, old)} как у
+    _grid_feed_offer_prices (ключи через _offer_price_keys). {} при сбое/отсутствии фида."""
+    home = _homepage_url(url) or ""
+    if not home:
+        return {}
+    feed_url = home.rstrip("/") + "/yandex.xml"
+    text = ""
+    for _try in range(3):                       # tries+backoff — HTTP-правило проекта
+        try:
+            import requests as _rq
+            r = _rq.get(feed_url, timeout=20)
+            if r.status_code == 200 and r.text:
+                text = r.text
+                break
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(1.5 * (_try + 1))
+    if not text:
+        return {}
+    out: dict = {}
+    try:
+        import xml.etree.ElementTree as _ET
+        root = _ET.fromstring(text)
+        for car in root.iter("car"):
+            def _t(tag: str) -> str:
+                el = car.find(tag)
+                return (el.text or "").strip() if el is not None and el.text else ""
+            try:
+                price = int(re.sub(r"\D", "", _t("price")) or 0)
+                disc = int(re.sub(r"\D", "", _t("max_discount")) or 0)
+            except ValueError:
+                continue
+            if price <= 0:
+                continue
+            old = price + disc if disc > 0 else 0
+            name = f"{_t('mark_id')} {_t('folder_id')}".strip().lower()
+            if not name:
+                continue
+            for k in _offer_price_keys(name):
+                out[k] = _merge_price(out.get(k), (price, old))
+    except Exception:  # noqa: BLE001 — битый XML → без доливки
+        return {}
+    return out
+
+
 def _account_offer_prices(login: str, url: str = "") -> dict:
     """Объединённая карта цен {ключ: (current, old)} из ВСЕХ фидов аккаунта (мердж; на конфликте —
     самый дешёвый оффер «от X»). Покрывает ВСЕ марки (раньше брался один фид → у baic/belgee цены не
@@ -850,6 +967,20 @@ def _account_offer_prices(login: str, url: str = "") -> dict:
     for fid in _price_feeds_for(login, url):
         for k, val in _grid_feed_offer_prices(login, fid).items():
             out[k] = _merge_price(out.get(k), val)
+    # Доливка пар из авто-фида yandex.xml (price + max_discount = старая цена, Семён 2026-07-07):
+    # _merge_price отдаёт приоритет паре → закрывает модели без <oldprice> в товарных фидах.
+    for k, val in _auto_feed_discount_prices(url).items():
+        out[k] = _merge_price(out.get(k), val)
+    # Пост-проход: годовой/модификационный ключ без old («lada vesta cross 2026») наследует
+    # ПАРУ своего без-годового варианта («lada vesta cross» из yandex.xml) — иначе lookup по
+    # полному имени группы берёт цену без old, не доходя до без-годового ключа с парой.
+    for k, (c, o) in list(out.items()):
+        if c > 0 and o <= 0:
+            k2 = re.sub(r"\s+", " ", re.sub(r"\s*\b20\d\d\b", " ", k)).strip()
+            if k2 != k:
+                c2, o2 = out.get(k2) or (0, 0)
+                if c2 > 0 and o2 > 0:
+                    out[k] = (c2, o2)
     # НЕ кэшируем пустую карту: транзиентный сбой фида/куки (403/таймаут/152) дал бы {} на 20 мин →
     # adPrice не проставился бы на ВСЕ объявления аккаунта. Пустой → следующий вызов перечитает.
     if out:
@@ -1188,28 +1319,78 @@ def _minus_models_enabled() -> list[str]:
         return []
 
 
-def _minus_marks_grid_conditions(brand_field: str = "vendor", model_field: str = "model") -> list[dict]:
+def _dedup_conditions(conds: list[dict]) -> list[dict]:
+    """Убирает буквальные дубли condition-объектов (одинаковые field+operator+значение) —
+    Yandex API валит create/update HTTP 400 MUST_NOT_CONTAIN_DUPLICATED_ELEMENTS, если один и тот
+    же фильтр (напр. минус-марка) случайно попал в список дважды (совпадение марки/модели по
+    значению при объединении positive- и минус-условий). Порядок сохраняется, первое вхождение."""
+    seen: set = set()
+    out: list[dict] = []
+    for c in conds:
+        key = (c.get("field"), c.get("operator"), c.get("value") or c.get("stringValue"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    return out
+
+
+def _minus_values_ci(vals: list) -> list[str]:
+    """Дедуп значений минус-условия без учёта регистра/пробелов (J7 есть у jac И jaecoo —
+    Яндекс сравнивает значения условий case-insensitive → MUST_NOT_CONTAIN_DUPLICATED_ELEMENTS)."""
+    seen: set = set()
+    out: list[str] = []
+    for v in vals or []:
+        s = str(v).strip()
+        k = s.lower()
+        if s and k not in seen:
+            seen.add(k)
+            out.append(s)
+    return out
+
+
+def _minus_marks_grid_conditions(brand_field: str = "vendor", model_field: str | None = "model") -> list[dict]:
     """Grid feedFilter-условия «НЕ содержит …» для включённых минус-марок И минус-моделей.
     brand_field / model_field: разрешённые имена полей фида ('vendor'/'model', 'mark_id'/'folder_id')
     — берутся из _resolve_feed_field(login, feed_id, 'brand'|'model'). Default для обратной совместимости.
     Марка → исключает ВСЕ её модели (по vendor); модель → исключает конкретную модель (по model).
-    Одно условие на элемент, AND → offer исключается если совпал с любым. Добавляется К brand/model-
-    conditions товарки, НЕ заменяет их. UNKNOWN_FIELD (AUTO_RU без 'model') — авто-стрип в create."""
-    out = [{"field": brand_field, "operator": "NOT_CONTAINS_ALL",
-            "stringValue": json.dumps([m], ensure_ascii=False)} for m in _minus_marks_enabled()]
-    out += [{"field": model_field, "operator": "NOT_CONTAINS_ALL",
-             "stringValue": json.dumps([md], ensure_ascii=False)} for md in _minus_models_enabled()]
+
+    ОДНО условие на ПОЛЕ со ВСЕМИ значениями массивом (регрессия 2026-07-06: по-условию-на-значение
+    при 8 марок + 78 моделей давало 86 условий → Grid INVALID_COLLECTION_SIZE maxSize:30 отбрасывал
+    ВЕСЬ feed-filter, UAC валил create дублями). Семантика подтверждена: значения ВНУТРИ условия
+    объединяются ИЛИ (yard.yandex.ru/courses/direct-prodvinutyy/filtry-v-fidah: «несколько диапазонов
+    в одном условии объединяются оператором ИЛИ»; лимит «до 22 условий, объединённых И»), т.е.
+    NOT_CONTAINS_ALL [A,B] = «не содержит НИ ОДНОЙ из подстрок» — парный к CONTAINS_ANY
+    (grid_create.py:830 использует CONTAINS_ANY с multi-массивом variants). Прежний комментарий
+    «одно условие со всеми = другая семантика» (ревью 03.07) — ошибка, опровергнут докой.
+    Добавляется К brand/model-conditions товарки, НЕ заменяет их. UNKNOWN_FIELD — авто-стрип в create."""
+    out: list[dict] = []
+    marks = _minus_values_ci(_minus_marks_enabled())
+    models = _minus_values_ci(_minus_models_enabled())
+    if marks:
+        out.append({"field": brand_field, "operator": "NOT_CONTAINS_ALL",
+                    "stringValue": json.dumps(marks, ensure_ascii=False)})
+    if model_field is not None and models:
+        out.append({"field": model_field, "operator": "NOT_CONTAINS_ALL",
+                    "stringValue": json.dumps(models, ensure_ascii=False)})
     return out
 
 
 def _minus_marks_uac_conditions(brand_field: str = "vendor", model_field: str = "model") -> list[dict]:
     """UAC feed_filters-условия (формат с value, не stringValue) для минус-марок И минус-моделей tp7:
     «Производитель/Модель НЕ содержит …». Добавляется К conditions товарного фильтра мастера.
-    brand_field / model_field: имена полей фида из _resolve_feed_field. Default для обратной совместимости."""
-    out = [{"field": brand_field, "operator": "NOT_CONTAINS",
-            "value": json.dumps([m], ensure_ascii=False)} for m in _minus_marks_enabled()]
-    out += [{"field": model_field, "operator": "NOT_CONTAINS",
-             "value": json.dumps([md], ensure_ascii=False)} for md in _minus_models_enabled()]
+    brand_field / model_field: имена полей фида из _resolve_feed_field. Default для обратной совместимости.
+    ОДНО условие на поле со всеми значениями (см. _minus_marks_grid_conditions — фикс регрессии
+    2026-07-06 MUST_NOT_CONTAIN_DUPLICATED_ELEMENTS: UAC отвергал 86 однотипных условий)."""
+    out: list[dict] = []
+    marks = _minus_values_ci(_minus_marks_enabled())
+    models = _minus_values_ci(_minus_models_enabled())
+    if marks:
+        out.append({"field": brand_field, "operator": "NOT_CONTAINS",
+                    "value": json.dumps(marks, ensure_ascii=False)})
+    if models:
+        out.append({"field": model_field, "operator": "NOT_CONTAINS",
+                    "value": json.dumps(models, ensure_ascii=False)})
     return out
 
 
@@ -1222,6 +1403,10 @@ def _minus_marks_uac_conditions(brand_field: str = "vendor", model_field: str = 
 
 _BRAND_FIELD_SYNONYMS: tuple = ("vendor", "mark_id", "brand", "make")
 _MODEL_FIELD_SYNONYMS: tuple = ("model", "folder_id", "modification")
+# Поле фильтра «Страницы каталога» (ListingAd) по имени каталога. Market-фиды: `name`;
+# AUTO_RU yandex.xml — поля `name` в fieldsForUseAs НЕТ (D4/backlog H, 2026-07-09) → резолвим на
+# текстовое имя каталога (model/folder). Порядок: сначала `name`, затем AUTO_RU-синонимы.
+_NAME_FIELD_SYNONYMS: tuple = ("name", "model", "modification", "folder_id")
 _FEED_FIELDS_CACHE: dict = {}   # (login, feed_id) → (frozenset[str], ts)
 _FEED_FIELDS_TTL = 600          # 10 мин
 
@@ -1245,7 +1430,7 @@ def _feed_filter_fields(login: str, feed_id: int) -> frozenset:
         _gf = globals().get("gf")
         if _gf is None:
             from . import grid_finalize as _gf  # noqa: F811
-        _gcl = _gf.GridClient(login)
+        _gcl = _gf.get_grid_client(login)
         _gcl._bootstrap_csrf()   # CSRF обязателен; без него первый _post → 403 → пустой rowset
         _r = _gcl._post("FeedsFields", _FEED_FIELDS_QUERY,
                         {"login": login, "lo": {"limit": 1, "offset": 0},
@@ -1260,11 +1445,16 @@ def _feed_filter_fields(login: str, feed_id: int) -> frozenset:
 
 
 def _resolve_feed_field(login: str, feed_id: int, semantic: str) -> str | None:
-    """Разрешает имя поля feedFilter для семантики ('brand' или 'model') по fieldsForUseAs фида.
+    """Разрешает имя поля feedFilter для семантики ('brand', 'model' или 'name') по fieldsForUseAs фида.
     Возвращает первый подходящий синоним или None (фолбэк: без поля → только collectionId или предупреждение).
     При пустом fieldsForUseAs (сбой запроса) возвращает первый синоним (vendor/model) — UNKNOWN_FIELD retry
     в add_shopping_ads/set_default_text отработает как страховка."""
-    synonyms = _BRAND_FIELD_SYNONYMS if semantic == "brand" else _MODEL_FIELD_SYNONYMS
+    if semantic == "brand":
+        synonyms = _BRAND_FIELD_SYNONYMS
+    elif semantic == "name":
+        synonyms = _NAME_FIELD_SYNONYMS
+    else:
+        synonyms = _MODEL_FIELD_SYNONYMS
     available = _feed_filter_fields(login, int(feed_id))
     if not available:                  # probe failed → assume primary, let UNKNOWN_FIELD retry handle
         return synonyms[0]
@@ -1309,28 +1499,55 @@ def _tp7_product_feed_filters(brand_model: str, ct: str,
             conditions.append({"field": _mf, "operator": "CONTAINS",
                                "value": json.dumps(variants, ensure_ascii=False)})
     conditions.extend(minus)                 # минус-марки К бренд-условию (AND) или самостоятельно
+    conditions = _dedup_conditions(conditions)
     if not conditions:
         return []
     return [{"conditions": conditions}]
 
 
 def _tp7_listings_minus_filters(login: str, feed_id: int, agency: str = "") -> list[dict]:
-    """UAC listings_feed_filters «минус-марки» для «Страниц каталога» tp7 (правило Семёна:
-    глобальные минус-марки действуют и на каталог, не только на товарную часть).
-    Листинги фильтруются ТОЛЬКО по collectionId (campaign.py: по имени не фильтрует) →
-    маппим каждую включённую минус-марку на её mark-коллекцию фида (id НЕ 'model_*')
-    через _brand_level_collection_id. Марка без коллекции в фиде — пропускается
-    (её страниц в каталоге и так нет). Одно NOT_CONTAINS-условие на марку, AND."""
+    """UAC listings_feed_filters «минус-марки» для «Страниц каталога» tp7.
+
+    Позитивный allow-list: все бренд-уровневые (mark_*) коллекции фида МИНУС исключённые
+    марки. NOT_CONTAINS в UAC listings_feed_filters НЕ работает — API принимает фильтр без
+    ошибки, но NOT_CONTAINS обрабатывается как CONTAINS, и условия AND-ятся: страница
+    должна одновременно принадлежать ВСЕМ минус-маркам → 0 страниц (дефект 2026-07-07,
+    porg-psm5h7q6, обе ct0000 tp7, 0 из 198 страниц). Используем CONTAINS с массивом
+    разрешённых mark_* id — тот же оператор и формат, что в позитивном фильтре брендовых
+    tp7 (create_set_master_product.py:474, HAR-реверс). CONTAINS для collectionId — exact
+    member-of-set, не подстрока (id = mark_N, подтверждено live 2026-07-07).
+
+    Края:
+    - нет минус-марок → [] (не слать; весь каталог)
+    - ни одна минус-марка не нашла mark-коллекцию в фиде → [] (нечего вычитать)
+    - после вычета allowed пуст → [] + warning (лучше весь каталог, чем 0 страниц)
+    """
     marks = _minus_marks_enabled()
     if not marks or not feed_id:
         return []
     cols = _feed_collections(login, int(feed_id), agency)
     if not cols:
         return []
-    conditions: list[dict] = []
+    # Все бренд-уровневые коллекции фида (id НЕ начинается с 'model_')
+    all_mark_ids = [str(c["id"]) for c in cols
+                    if c.get("id") and not str(c["id"]).startswith("model_")]
+    if not all_mark_ids:
+        return []
+    # Коллекции исключаемых марок
+    minus_ids: set[str] = set()
     for m in marks:
         cid = _brand_level_collection_id(m, cols)
         if cid:
-            conditions.append({"field": "collectionId", "operator": "NOT_CONTAINS",
-                               "value": json.dumps([cid], ensure_ascii=False)})
-    return [{"conditions": conditions}] if conditions else []
+            minus_ids.add(str(cid))
+    if not minus_ids:
+        # Ни одна из минус-марок не нашлась в фиде → фильтр не нужен
+        return []
+    allowed = [cid for cid in all_mark_ids if cid not in minus_ids]
+    if not allowed:
+        import logging as _log
+        _log.getLogger(__name__).warning(
+            "tp7 listings allow-list пуст после вычета минус-марок (feed_id=%s, "
+            "login=%s): фильтр НЕ применён, каталог показывается целиком", feed_id, login)
+        return []
+    return [{"conditions": [{"field": "collectionId", "operator": "CONTAINS",
+                              "value": json.dumps(allowed, ensure_ascii=False)}]}]

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -109,15 +110,60 @@ class GridFinalizeError(RuntimeError):
     pass
 
 
+# A2: переиспользование GridClient (сессия + CSRF) на протяжении набора/кампании вместо создания
+# нового инстанса на КАЖДЫЙ из ~28 вызовов в цикле create_set (каждый новый инстанс = новый
+# requests.Session + повторный _bootstrap_csrf POST). Кэш ключуется по (login, cookie, thread_ident):
+#   • thread_ident → каждый поток пула A1 получает СВОЙ клиент (requests.Session не потокобезопасна —
+#     нельзя шарить один Session между воркерами);
+#   • cookie → явная агентская кука (copy_engine/UAC-сессии) не смешивается с дефолтной;
+#   • cookie_only включён в ключ (см. ниже) — cookie_only=True и False дают разные инстансы,
+#     иначе первый вызов с cookie_only=True необратимо переключал бы флаг у общего инстанса.
+_GRID_CLIENT_CACHE: dict = {}
+_GRID_CLIENT_LOCK = threading.Lock()
+
+
+def get_grid_client(login: str, cookie: str | None = None,
+                    cookie_only: bool = False) -> "GridClient":
+    """Переиспользуемый GridClient для (login, cookie, cookie_only, текущий поток). Держит
+    сессию и CSRF между вызовами → нет повторного bootstrap-POST и нового TCP-пула на каждую
+    Grid-операцию. Потокобезопасно: ключ включает thread ident, поэтому воркеры пула A1 не
+    делят один Session. cookie_only входит в ключ: разные режимы не отравляют кэш друг друга."""
+    key = (login, cookie or "", cookie_only, threading.get_ident())
+    with _GRID_CLIENT_LOCK:
+        cli = _GRID_CLIENT_CACHE.get(key)
+        if cli is None:
+            cli = GridClient(login, cookie=cookie, cookie_only=cookie_only)
+            _GRID_CLIENT_CACHE[key] = cli
+    return cli
+
+
+def reset_grid_client_cache(login: str | None = None) -> None:
+    """Сбросить кэш клиентов (например после протухания куки/force_refresh). None → весь кэш."""
+    with _GRID_CLIENT_LOCK:
+        if login is None:
+            _GRID_CLIENT_CACHE.clear()
+        else:
+            for k in [k for k in _GRID_CLIENT_CACHE if k[0] == login]:
+                _GRID_CLIENT_CACHE.pop(k, None)
+
+
 class GridClient:
     """Тонкий клиент web-api/grid/api на агентских куках (CSRF добирается сам)."""
 
-    def __init__(self, login: str, cookie: str | None = None):
+    def __init__(self, login: str, cookie: str | None = None, cookie_only: bool = False):
         self.login = login
         self.cookie = cookie or cmc.pick_working_cookie(login)
         self.csrf: str | None = None
         self.sess = requests.Session()
         self.sess.verify = False
+        # cookie_only=True → кампания/группы созданы САМИМ Grid (create_full по куке), а не токеном
+        # v501, поэтому token→Grid replication lag ОТСУТСТВУЕТ: пред-эмптивные паузы можно пропустить
+        # (A3). На токен-пути (cookie_only=False) паузы остаются — там лаг реален.
+        self._cookie_only = bool(cookie_only)
+        # A2-heal: отслеживаем, была ли кука передана явно (копировщик / UAC) или взята через
+        # pick_working_cookie. При протухании куки (стаканный 403) _reauth обновит куку только
+        # для не-явного пути (pick_working_cookie снова); для явного — только сбросит CSRF.
+        self._explicit_cookie = bool(cookie)
 
     def _post(self, op: str, query: str, variables: dict) -> requests.Response:
         headers = {
@@ -132,20 +178,60 @@ class GridClient:
         # БЕЗ транспортного ретрая: add_shopping_ads/add_listing_ads/add_callouts/add_keywords —
         # НЕ идемпотентны (обрыв ответа после commit + ретрай = ДУБЛЬ). Идемпотентные RMW-сеттеры
         # (disabledPlaces/age/callouts full-RMW) переживают единичный обрыв через ре-ран джобы.
+        _had_csrf = self.csrf is not None   # A2-heal: различаем bootstrap-403 и stale-cookie-403
         r = self.sess.post(url, json={"operationName": op, "query": query, "variables": variables},
                            headers=headers, timeout=40)
         m = re.search(r"_direct_csrf_token=([^;,\s]+)", r.headers.get("Set-Cookie", ""))
         tok = r.cookies.get("_direct_csrf_token") or (m.group(1) if m else None)
         if tok:
             self.csrf = tok
+        # A2-heal: если CSRF уже был установлен, но всё равно 403 — кука протухла после
+        # кэширования (ротация сессии Яндекса). Переподхватываем куку + CSRF и повторяем ОДИН раз.
+        # Случай первого bootstrap-403 (_had_csrf=False) сюда не попадает — им управляет
+        # _bootstrap_csrf (ретрай снаружи). Рекурсии нет: _reauth обнуляет self.csrf → вложенный
+        # вызов _post из _bootstrap_csrf видит _had_csrf=False и не заходит в эту ветку.
+        if r.status_code == 403 and _had_csrf:
+            print(f"[grid] stale-cookie 403 {self.login}/{op}: reauth → retry", flush=True)
+            self._reauth()
+            headers["Cookie"] = self.cookie
+            if self.csrf:
+                headers["x-csrf-token"] = self.csrf
+            r = self.sess.post(url, json={"operationName": op, "query": query, "variables": variables},
+                               headers=headers, timeout=40)
+            m2 = re.search(r"_direct_csrf_token=([^;,\s]+)", r.headers.get("Set-Cookie", ""))
+            tok2 = r.cookies.get("_direct_csrf_token") or (m2.group(1) if m2 else None)
+            if tok2:
+                self.csrf = tok2
         return r
 
     def _bootstrap_csrf(self) -> None:
+        # A2: идемпотентность — CSRF-токен добывается ОДИН раз на инстанс (переиспользуемый через
+        # get_grid_client клиент держит его между вызовами finalize/add_*/set_*), повторный bootstrap
+        # = лишний Grid-POST на каждой операции.
+        if self.csrf:
+            return
         q = ("query Callouts($login:String!){callouts(input:{searchBy:{login:$login}"
              "filter:{deleted:false}}){id}}")
         r = self._post("Callouts", q, {"login": self.login})
         if r.status_code == 403:                       # первый POST даёт CSRF → ретрай
             self._post("Callouts", q, {"login": self.login})
+
+    def _reauth(self) -> None:
+        """A2-heal: сброс CSRF + обновление куки при stale-cookie-403.
+
+        Вызывается из _post когда: csrf уже был установлен (сессия кэшировалась), но
+        пришёл 403 (кука протухла во время набора, ротация сессии Яндекса).
+
+        Для не-явной куки (pick_working_cookie путь, типичный finalize) — подхватываем
+        свежую рабочую куку. Для явной куки (copy_engine / UAC) — только сбрасываем CSRF
+        (куку контролирует вызывающий, мы её не меняем).
+        После сброса вызываем _bootstrap_csrf — он видит csrf=None → выполняет полный
+        bootstrap-POST. _post внутри bootstrap видит _had_csrf=False → не заходит в _reauth
+        повторно (нет рекурсии)."""
+        self.csrf = None
+        if not self._explicit_cookie:
+            self.cookie = cmc.pick_working_cookie(self.login)
+        self._bootstrap_csrf()
 
     def finalize(self, campaign_id: int, *, name: str, goal_id: int,
                  cpa_rub: int | float, weekly_rub: int | float, counter_ids: list[int],
@@ -162,6 +248,13 @@ class GridClient:
         """
         self._bootstrap_csrf()
         uc = json.loads(json.dumps(_TEMPLATE))         # deepcopy шаблона
+        # startDate: в шаблоне ЗАХАРДКОЖЕНА дата съёма HAR (2026-06-21) → как только календарь
+        # ушёл дальше, КАЖДЫЙ finalize валился DateDefectIds.MUST_BE_GREATER_THAN_OR_EQUAL_TO_MIN
+        # (min=сегодня) → места показа/автотаргет НЕ выставлялись → verifier ставил
+        # WRONG_AUTOTARGET и сносил свежие tp5 на пересоздание (карусель 2026-07-06).
+        # Черновик стартует не раньше сегодня — всегда «сегодня по МСК» (таймзона Директа).
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        uc["startDate"] = _dt.now(_tz(_td(hours=3))).strftime("%Y-%m-%d")
         uc["id"] = str(campaign_id)
         uc["name"] = name
         uc["strategyId"] = None                        # пересоберётся по strategyData
@@ -345,11 +438,19 @@ class GridClient:
         notification.setdefault("emailSettings", {})
         notification["emailSettings"].setdefault("stopByReachDailyBudget", True)
         notification["emailSettings"].setdefault("email", "")
+        _sd = bm.get("startDate")
+        if not _sd:
+            # Кампания ещё не видна read-реплике (token→Grid lag) → bm=дефолт БЕЗ startDate →
+            # UpdateCampaigns валится DateDefectIds.MUST_BE_GREATER_THAN_OR_EQUAL_TO_MIN
+            # (живой кейс tp5 2026-07-06, min=сегодня). Grid требует дату ≥ сегодня — ставим
+            # сегодня по МСК (таймзона Директа).
+            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+            _sd = _dt.now(_tz(_td(hours=3))).strftime("%Y-%m-%d")
         return {
             "id": str(cid),
             "name": str(bm.get("name") or ""),
             "state": bm.get("state") or "COMPLETE",
-            "startDate": bm.get("startDate"),
+            "startDate": _sd,
             "endDate": bm.get("endDate"),
             "timeTarget": bm.get("timeTarget"),
             "notification": notification,
@@ -478,6 +579,19 @@ class GridClient:
     @classmethod
     def _unified_campaign_update_from_edit_row(cls, row: dict) -> dict:
         """Build browser-shaped GdUnifiedCampaignInput from CampaignsEditData."""
+        # startDate: у свежесозданной (token) кампании CampaignsEditData может отставать
+        # (реплика) и отдать пустую/прошлую дату → UpdateCampaigns валится
+        # DateDefectIds.MUST_BE_GREATER_THAN_OR_EQUAL_TO_MIN (min=сегодня; живой кейс tp5
+        # 2026-07-06, вторая точка после _narrow_campaign_base). Поднимаем до «сегодня по МСК»
+        # ТОЛЬКО пустую дату или прошлую у ЧЕРНОВИКА (primaryStatus DRAFT): у запущенной
+        # кампании прошлый startDate легитимен, менять его нельзя.
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        _today_msk = _dt.now(_tz(_td(hours=3))).strftime("%Y-%m-%d")
+        _sd = str(row.get("startDate") or "")
+        _is_draft = str(row.get("primaryStatus") or "").upper() == "DRAFT"
+        if not _sd or (_is_draft and _sd < _today_msk):
+            row = dict(row)
+            row["startDate"] = _today_msk
         promo = row.get("promoExtension") or {}
         callouts = (row.get("inheritableCallouts") or {}).get("assetValue") or []
         sitelink_set_id = (row.get("inheritableSitelinkSet") or {}).get("assetValue")
@@ -758,6 +872,137 @@ class GridClient:
         if data.get("errors") or vr.get("errors"):
             raise GridFinalizeError(
                 "Grid set-disabled-places: " + json.dumps(
+                    data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
+        return res.get("updatedCampaigns") or []
+
+    def read_campaign_invariants(self, campaign_ids: list[int]) -> dict[int, dict]:
+        """Read campaign-level invariant галочки (blacklist toggles) via CampaignsEditData.
+
+        Возвращает ``{cid: {field: tri-state}}`` для DoD-инвариантов кампании tp1–tp5:
+        персонализация / расш.гео / «Директ помогает» / ценовые рек. / Карты (enableCompanyInfo) /
+        Карты-платформа (yandexMaps) / список организаций (serpGeoWizard) / стратегия
+        (payForConversion) + libraryMinusKeywordsIds. Каждое булево — **tri-state**: реальный
+        ``True``/``False`` только если Grid вернул поле; иначе ``None`` (fail-safe — верификатор такое
+        НЕ флагает, чтобы Grid-лаг/FieldUndefined не породил ложный детект и ложный ремонт, журнал I).
+        ⚠️ ``hasSiteMonitoring`` (#4) в read-схеме Grid ОТСУТСТВУЕТ (нет в grid_campaigns_edit_data.graphql
+        и в CampaignsBroadMatch) → не читается и НЕ детектируется отдельно; его лишь идемпотентно
+        переставляет ``set_campaign_invariants`` (=True) при любом другом инвариант-ремонте.
+        Fail-safe: любая ошибка запроса → пропуск кампании (её нет в ответе → verifier молчит)."""
+        ids: list[int] = []
+        for raw in campaign_ids or []:
+            try:
+                cid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if cid > 0 and cid not in ids:
+                ids.append(cid)
+        if not ids:
+            return {}
+        self._bootstrap_csrf()
+
+        def _tri(v):
+            return bool(v) if isinstance(v, bool) else None
+
+        out: dict[int, dict] = {}
+        for chunk in [ids[i:i + 50] for i in range(0, len(ids), 50)]:
+            inp = {
+                "filter": {"campaignIdIn": [str(cid) for cid in chunk]},
+                "orderBy": [{"field": "ID", "order": "ASC"}],
+                "statRequirements": {"preset": "TODAY"},
+                "limitOffset": {"offset": 0, "limit": len(chunk)},
+            }
+            r = self._post("CampaignsEditData", _CAMPAIGNS_EDIT_DATA_Q, {
+                "login": self.login,
+                "campaignInput": inp,
+            })
+            data = r.json()
+            rows = (((data.get("data") or {}).get("client") or {})
+                    .get("campaigns") or {}).get("rowset") or []
+            # Частичные GraphQL-ошибки (strategyLearningStatus и пр. падают у Яндекса на батчах) не
+            # мешают чтению rowset — фатально только полное отсутствие данных (тогда raise → guarded).
+            if data.get("errors") and not rows:
+                raise GridFinalizeError(
+                    "Grid read-campaign-invariants: " + json.dumps(data.get("errors"), ensure_ascii=False)[:400])
+            for row in rows:
+                if row.get("__typename") != "GdUnifiedCampaign":
+                    continue
+                try:
+                    cid = int(row.get("id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if cid <= 0:
+                    continue
+                strat = row.get("strategy") if isinstance(row.get("strategy"), dict) else {}
+                pf = strat.get("platforms") if isinstance(strat.get("platforms"), dict) else {}
+                out[cid] = {
+                    "is_alternative_texts_enabled": _tri(row.get("isAlternativeTextsEnabled")),
+                    "has_extended_geo_targeting": _tri(row.get("hasExtendedGeoTargeting")),
+                    "enable_company_info": _tri(row.get("enableCompanyInfo")),
+                    "is_recommendations_management_enabled": _tri(row.get("isRecommendationsManagementEnabled")),
+                    "is_price_recommendations_management_enabled": _tri(row.get("isPriceRecommendationsManagementEnabled")),
+                    "yandex_maps_enabled": _tri(pf.get("yandexMaps")),
+                    "serp_geo_wizard_enabled": _tri(pf.get("serpGeoWizard")),
+                    "pay_for_conversion": _tri(strat.get("payForConversion")),
+                    "library_minus_ids": [str(x) for x in (row.get("libraryMinusKeywordsIds") or [])],
+                }
+        return out
+
+    def set_campaign_invariants(self, campaign_ids: list[int]) -> list:
+        """Идемпотентно переставить кампанийные инварианты-галочки tp1–tp5 (in-place, БЕЗ баллов).
+
+        Ремонт дыры P0 (DOD §1.c): re-apply кампанийного инвариант-блока финализации через узкий
+        ``UpdateCampaigns`` (РК всегда DRAFT). Шаблон = ``set_campaign_disabled_places`` /
+        ``set_campaign_placement_types``: читаем полный unified-payload из edit-view и переписываем
+        ТОЛЬКО инвариантные поля (персонализация OFF, мониторинг ON, расш.гео OFF, «Директ помогает»
+        OFF, ценовые рек. OFF, Карты/организации OFF), остальное (стратегия/ключи/места) — без
+        изменений. Значения — те же константы, что при создании (``create_set_finalize:211-216`` /
+        ``grid_finalize.finalize:280-291``) → идемпотентно, повторный вызов не меняет корректную РК.
+        Блик-радиус ложного детекта = один безвредный повторный UpdateCampaigns (НЕ удаление, в отличие
+        от recreate-ремонтов, журнал I)."""
+        ids: list[int] = []
+        for raw in campaign_ids or []:
+            try:
+                cid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if cid > 0 and cid not in ids:
+                ids.append(cid)
+        if not ids:
+            return []
+        payloads = self._read_unified_campaign_update_payloads(ids)
+        q = ("mutation UpdateCampaigns($input:GdUpdateCampaignsInput!$login:String!){"
+             "updateCampaigns(input:$input){updatedCampaigns{id}"
+             "validationResult{errors{code params path}warnings{code params path}}}"
+             "getClientMutationId(input:{login:$login}){mutationId}}")
+        bases, skipped = self._narrow_bases(payloads, ids, "Grid set-invariants")
+        for _cid, _why in skipped.items():
+            print(f"[grid] set-invariants: кампания {_cid} пропущена — стратегия «{_why}»", flush=True)
+        items = []
+        for cid, base in bases.items():
+            base["isAlternativeTextsEnabled"] = False          # #3 персонализация ВЫКЛ
+            base["hasSiteMonitoring"] = True                   # #4 мониторинг сайта ВКЛ
+            base["hasExtendedGeoTargeting"] = False            # #5 расш.гео ВЫКЛ
+            base["isRecommendationsManagementEnabled"] = False  # #6 «Директ помогает» ВЫКЛ
+            base["isPriceRecommendationsManagementEnabled"] = False
+            base["enableCompanyInfo"] = False                  # Карты/список организаций ВЫКЛ
+            bs = base.get("biddingStategyWithPlatforms") if isinstance(base.get("biddingStategyWithPlatforms"), dict) else {}
+            pf = bs.get("platforms") if isinstance(bs.get("platforms"), dict) else {}
+            pf["yandexMaps"] = False                           # Карты — платформа ВЫКЛ
+            pf["serpGeoWizard"] = False                        # список организаций (гео-колдунщик) ВЫКЛ
+            bs["platforms"] = pf
+            base["biddingStategyWithPlatforms"] = bs
+            items.append({"unifiedCampaign": base})
+        if not items:
+            return []
+        data = self._post_json_retry("UpdateCampaigns", q, {
+            "login": self.login,
+            "input": {"campaignUpdateItems": items},
+        })
+        res = (data.get("data") or {}).get("updateCampaigns") or {}
+        vr = res.get("validationResult") or {}
+        if data.get("errors") or vr.get("errors"):
+            raise GridFinalizeError(
+                "Grid set-invariants: " + json.dumps(
                     data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
         return res.get("updatedCampaigns") or []
 
@@ -1082,6 +1327,14 @@ class GridClient:
                 if ff:
                     item["feedFilter"] = ff
             items.append(item)
+        # token→Grid replication lag: свежесозданный ShoppingAd ещё не виден UpdateShoppingAds
+        # → «внутренняя ошибка сервера» на первых 1-2 попытках (подтверждено логами, 2026-07-07).
+        # Q2 (2026-07-08): снизили с 1.2с до 0.2с (безусловный пре-сон убирал ~60-90с на tp5/tp7).
+        # Первая попытка сразу, 0.2с — минимальная страховка от ShoppingAd→Grid lag;
+        # ретрай-петля ниже (_sdt_wait=(2,5)) ловит транзиентные ошибки если lag ещё жив.
+        # A3: cookie-only — ShoppingAd создан САМИМ Grid, лага нет, пауза не нужна.
+        if not self._cookie_only:
+            time.sleep(0.2)
         _sdt_wait = (2, 5)
         for _sdt_att in range(3):
             r = self._post("UpdateShoppingAds", _SHOPPING_MUTATION,
@@ -1185,11 +1438,24 @@ class GridClient:
         q = ("mutation AddShoppingAds($addShoppingInput:GdAddShoppingAdsInput!){"
              "addShoppingAds(input:$addShoppingInput){addedAds{id}"
              "validationResult{errors{code params path}}}}")
-        r = self._post("AddShoppingAds", q,
-                       {"addShoppingInput": {"adAddItems": ad_items, "saveDraft": True}})
-        data = r.json()
-        res = (data.get("data") or {}).get("addShoppingAds") or {}
-        vr_errors = (res.get("validationResult") or {}).get("errors") or []
+        # token→Grid replication lag (группа C 2026-07-06): свежесозданная токеном кампания/группа
+        # ещё не видна мутации → *_NOT_FOUND. Ретраим ЗДЕСЬ, на уровне ЧАНКА (метод почанковый,
+        # ≤50 items) и ТОЛЬКО при полном отказе (addedAds пуст) — внешний ретрай целого батча в
+        # caller'е дублировал ShoppingAd уже успешных чанков (ревью 06.07). Узкие коды: FEED_NOT_
+        # EXIST/UNKNOWN_FIELD не транзиентны, их лечат свои ветки ниже.
+        for _lag_try in range(3):
+            r = self._post("AddShoppingAds", q,
+                           {"addShoppingInput": {"adAddItems": ad_items, "saveDraft": True}})
+            data = r.json()
+            res = (data.get("data") or {}).get("addShoppingAds") or {}
+            vr_errors = (res.get("validationResult") or {}).get("errors") or []
+            _lag = any(any(t in str(e.get("code") or "") for t in
+                           ("CAMPAIGN_NOT_FOUND", "ADGROUP_NOT_FOUND", "AD_GROUP_NOT_FOUND"))
+                       for e in vr_errors)
+            if _lag and not (res.get("addedAds") or []) and _lag_try < 2:
+                time.sleep(1.2 * (_lag_try + 1))
+                continue
+            break
         if data.get("errors") or vr_errors:
             # UNKNOWN_FIELD: фид не поддерживает одно или несколько полей условия (model, vendor
             # или иное — зависит от формата: yandex.xml авто не имеет <vendor>).
@@ -1290,10 +1556,10 @@ class GridClient:
         self._bootstrap_csrf()
         # ⛔ adGroupId в addedAds НЕ запрашивать: GdAddListingAdByShoppingAdItem его НЕ имеет —
         # FieldUndefined валил ВСЮ мутацию (инцидент 03.07 15:36-41: ListingAd=0 на новых
-        # кампаниях; live-откат проверен — листинг создался). Матчинг name-фильтров живёт
-        # индексным фолбэком (#ФИКС-1), addedAds{id} при saveDraft возвращается непустым.
+        # кампаниях; live-откат проверен — листинг создался). shoppingAdId — валидное поле
+        # (fix-3 08.07.2026): позволяет матчить листинг → name_value без adGroupId.
         q = ("mutation AddListingAdsByShoppingAds($input:GdAddListingAdsByShoppingAdsInput!){"
-             "addListingAdsByShoppingAds(input:$input){addedAds{id}"
+             "addListingAdsByShoppingAds(input:$input){addedAds{id shoppingAdId}"
              "validationResult{errors{code params path}}}}")
         r = self._post("AddListingAdsByShoppingAds", q,
                        {"input": {"shoppingAds": [{"id": i} for i in ids], "saveDraft": True}})
@@ -1311,6 +1577,8 @@ class GridClient:
         Grid by-shopping листинг фильтр НЕ наследует → ставим явно ПОСЛЕ создания. Полный item обязателен
         (permalinkWithPhone/bodies/inheritable* — иначе internal error). items:[{id,feed_id,value,bodies}].
         → число обновлённых. Бросает GridFinalizeError при ошибке."""
+        import logging as _log_lnf
+        _lnf_log = _log_lnf.getLogger("direct.finalize")
         # F review: чанкинг — приватный Grid падает 500 на больших пачках (как set_default_text/add_shopping_ads).
         if len(items or []) > _GRID_MUTATION_CHUNK:
             total = 0
@@ -1318,63 +1586,118 @@ class GridClient:
                 try:
                     total += self.set_listing_name_filters(items[i:i + _GRID_MUTATION_CHUNK])
                 except GridFinalizeError as _lnf_ce:
-                    import logging as _log_lnf
-                    _log_lnf.getLogger("direct.finalize").warning(
-                        "set_listing_name_filters chunk %d потерян (server error), skip: %s",
+                    _lnf_log.warning(
+                        "set_listing_name_filters chunk %d потерян, skip: %s",
                         i // _GRID_MUTATION_CHUNK + 1, str(_lnf_ce)[:200])
                 time.sleep(0.15)
             return total
-        upd = []
-        for it in (items or []):
-            val = (it.get("value") or "").strip()
-            _item_id = it.get("id")
-            _item_agid = it.get("adgroup_id")
-            # поддержка adgroup_id как ключа (saveDraft:True → addedAds пуст, фильтр ставится на группу)
-            if (not _item_id and not _item_agid) or not it.get("feed_id") or not val:
-                continue
-            _lnf_conds = [{"field": "name", "operator": "CONTAINS_ANY",
-                           "stringValue": json.dumps([val], ensure_ascii=False)}]
-            if it.get("extra_conds"):
-                _lnf_conds.extend(it["extra_conds"])
-            _entry: dict = {
-                "permalinkWithPhone": {"policy": "CLEAR"},
-                "fieldsToUseAsBody": None, "fieldsToUseAsName": None,
-                "feedId": str(it["feed_id"]),
-                "feedFilter": {"tab": "CONDITION", "conditions": _lnf_conds},
-                "bodies": list(it.get("bodies") or []),
-                "hrefParams": "",
-                "inheritableCallouts": {"policy": "INHERIT"},
-                "inheritableSitelinkSet": {"policy": "INHERIT"},
-            }
-            if _item_id:
-                _entry["id"] = str(_item_id)
-            else:
-                _entry["adGroupId"] = str(_item_agid)
-            upd.append(_entry)
-        if not upd:
-            return 0
+        # D4 (backlog H, 2026-07-09): поле name-фильтра резолвим через _resolve_feed_field(...,'name')
+        # тем же механизмом, что brand/model. У AUTO_RU yandex.xml поля `name` в fieldsForUseAs НЕТ →
+        # захардкоженный {field:'name'} валил updateListingAds с UNAVAILABLE_FIELD, чанк терялся молча
+        # (listing_name_set=0, «Страницы каталога» = весь фид). Фолбэк — 'name' (Market-фиды).
+        _name_field_cache: dict = {}
+
+        def _resolve_name_field(_fid) -> str:
+            _fid = int(_fid or 0)
+            if _fid in _name_field_cache:
+                return _name_field_cache[_fid]
+            _fld = "name"
+            try:
+                from . import create_set_feeds as _csf_nf
+                _fld = _csf_nf._resolve_feed_field(self.login, _fid, "name") or "name"
+            except Exception:  # noqa: BLE001 — фолбэк на 'name' при сбое резолва
+                _fld = "name"
+            _name_field_cache[_fid] = _fld
+            return _fld
+
+        def _build_upd(field_override) -> list:
+            _u: list = []
+            for it in (items or []):
+                val = (it.get("value") or "").strip()
+                _item_id = it.get("id")
+                # adGroupId отсутствует в GdUpdateListingAdInput (fix-3 08.07.2026) — id листинга
+                # обязан приходить через ключ "id" (shoppingAdId-матч); без id — пропуск.
+                if not _item_id or not it.get("feed_id") or not val:
+                    continue
+                _fld = field_override or _resolve_name_field(it["feed_id"])
+                _lnf_conds = [{"field": _fld, "operator": "CONTAINS_ANY",
+                               "stringValue": json.dumps([val], ensure_ascii=False)}]
+                if it.get("extra_conds"):
+                    _lnf_conds.extend(it["extra_conds"])
+                _u.append({
+                    "id": str(_item_id),
+                    "permalinkWithPhone": {"policy": "CLEAR"},
+                    "fieldsToUseAsBody": None, "fieldsToUseAsName": None,
+                    "feedId": str(it["feed_id"]),
+                    "feedFilter": {"tab": "CONDITION", "conditions": _lnf_conds},
+                    "bodies": list(it.get("bodies") or []),
+                    "hrefParams": "",
+                    "inheritableCallouts": {"policy": "INHERIT"},
+                    "inheritableSitelinkSet": {"policy": "INHERIT"},
+                })
+            return _u
+
+        def _errs_have_unavailable_field(_errs) -> bool:
+            for _e in (_errs or []):
+                _c = str((_e or {}).get("code") or "")
+                if "UNAVAILABLE_FIELD" in _c or "UNKNOWN_FIELD" in _c or "INVALID_FIELD" in _c:
+                    return True
+            return False
+
+        # НЕ терять чанк молча при UNAVAILABLE_FIELD: последовательность полей-кандидатов —
+        # per-feed резолв (override=None) → доступные текстовые поля фида → явный 'name' (last-resort).
+        _first_fid = int((items[0] or {}).get("feed_id") or 0) if items else 0
+        _alt_overrides: list = [None]
+        try:
+            from . import create_set_feeds as _csf_af
+            _avail_f = _csf_af._feed_filter_fields(self.login, _first_fid)
+            for _cand in ("name", "model", "modification", "folder_id"):
+                if _cand in _avail_f and _cand not in _alt_overrides:
+                    _alt_overrides.append(_cand)
+        except Exception:  # noqa: BLE001
+            pass
+        if "name" not in _alt_overrides:
+            _alt_overrides.append("name")
+
         self._bootstrap_csrf()
         q = ("mutation updateListingAds($updateListingInput:GdUpdateListingAdsInput!){"
              "updateListingAds(input:$updateListingInput){updatedAds{id}"
              "validationResult{errors{code params path}}}}")
         _lnf_wait = (2, 5)
-        for _lnf_att in range(3):
-            r = self._post("updateListingAds", q,
-                           {"updateListingInput": {"adUpdateItems": upd, "saveDraft": True}})
-            data = r.json()
-            if data.get("errors") and _is_transient_data_error(data["errors"]) and _lnf_att < 2:
-                import logging as _log_lnf2
-                _log_lnf2.getLogger("direct.finalize").warning(
-                    "set_listing_name_filters server error attempt %d, retry in %ds; login=%s",
-                    _lnf_att + 1, _lnf_wait[_lnf_att], self.login)
-                time.sleep(_lnf_wait[_lnf_att])
-                continue
-            break
-        res = (data.get("data") or {}).get("updateListingAds") or {}
-        if data.get("errors") or (res.get("validationResult") or {}).get("errors"):
-            raise GridFinalizeError("updateListingAds(name-filter): " + json.dumps(
-                data.get("errors") or res.get("validationResult"), ensure_ascii=False)[:400])
-        return len(res.get("updatedAds") or [])
+        _last_err = None
+        for _oi, _ovr in enumerate(_alt_overrides):
+            upd = _build_upd(_ovr)
+            if not upd:
+                return 0
+            data: dict = {}
+            for _lnf_att in range(3):
+                r = self._post("updateListingAds", q,
+                               {"updateListingInput": {"adUpdateItems": upd, "saveDraft": True}})
+                data = r.json()
+                if data.get("errors") and _is_transient_data_error(data["errors"]) and _lnf_att < 2:
+                    _lnf_log.warning(
+                        "set_listing_name_filters server error attempt %d, retry in %ds; login=%s",
+                        _lnf_att + 1, _lnf_wait[_lnf_att], self.login)
+                    time.sleep(_lnf_wait[_lnf_att])
+                    continue
+                break
+            res = (data.get("data") or {}).get("updateListingAds") or {}
+            _verrs = (res.get("validationResult") or {}).get("errors") or []
+            if data.get("errors") or _verrs:
+                _last_err = data.get("errors") or _verrs
+                # UNAVAILABLE_FIELD → ретрай чанка со следующим полем-кандидатом (не терять молча).
+                if _errs_have_unavailable_field(_verrs) and _oi + 1 < len(_alt_overrides):
+                    _lnf_log.warning(
+                        "set_listing_name_filters UNAVAILABLE_FIELD (field=%s feed=%s login=%s) → "
+                        "ретрай с полем '%s'",
+                        _ovr or _resolve_name_field(_first_fid), _first_fid, self.login,
+                        _alt_overrides[_oi + 1] or "resolved")
+                    continue
+                raise GridFinalizeError("updateListingAds(name-filter): " + json.dumps(
+                    _last_err, ensure_ascii=False)[:400])
+            return len(res.get("updatedAds") or [])
+        raise GridFinalizeError("updateListingAds(name-filter): " + json.dumps(
+            _last_err, ensure_ascii=False)[:400])
 
     def set_product_feed_filters(self, items: list, *, listing: bool = False) -> int:
         """Проставить ПРОИЗВОЛЬНЫЙ feedFilter товарным (updateShoppingAds) или каталожным
