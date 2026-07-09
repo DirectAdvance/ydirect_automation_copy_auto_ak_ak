@@ -24,6 +24,39 @@
 
 ## Активные / недавние ошибки
 
+### DELETE_DRAFTS_FREEZE_IN_CREATE_POSTPROCESS — джоба удаления заходила в create-done-блок → морозила воркер (R2-5, 2026-07-10)
+- Симптом: джоба `kind=delete_drafts` после «удалено 14/14» висит `running` 2+ мин (воркер CPU 0.3%,
+  лог молчит) — тот же постпроцесс-фриз, что у создания. Для УДАЛЕНИЯ постпроцесс бессмыслен —
+  удалять нечего верифицировать/финализировать.
+- Где: `blueprint.py:_create_worker_loop`. Для delete_drafts `data = _delete_drafts_core(...)`
+  (удаление, БЕЗ create-постпроцесса) — корректно. НО дальше done-блок `if final_status == "done":`
+  (~2655) исполнялся для ЛЮБОЙ done-джобы, включая delete: `_auto_queue_recreate_after_done` +
+  `_schedule_delayed_content_repair_after_done` + finalize-очередь (`unregister`/`enqueue`/
+  `run_finalize_job` — Grid СЕТЕВЫЕ вызовы). Для delete всё это мусорно и вешало поток на
+  подвисшем recv() финализации несуществующей РК.
+- Root-cause: done-блок не отличал delete от create — гейт был только по `final_status == "done"`.
+  `_delete_drafts_core` сам постпроцесс не звал (это `_create_set_response`), но done-блок воркера —
+  общий для всех kind → delete проваливалась в create-финализацию/добивку.
+- Решение (2026-07-10, R2-5): в `_create_worker_loop` после клейма вычисляется
+  `_is_delete_drafts = (body or {}).get("_kind") == "delete_drafts"`; гейт done-блока изменён на
+  `if final_status == "done" and not _is_delete_drafts:`. Delete-джоба после `_delete_drafts_core`
+  и `_job_db_save(full=True)` (терминал `done` уже записан ДО блока) идёт сразу в `finally`
+  (release слота), минуя auto-recreate/delayed-repair/finalize. Create-путь (`kind=set`) не тронут
+  байт-в-байт — тот же блок, тот же порядок; финализ-register в начале цикла для delete безвреден
+  (OFF→no-op, идемпотентный unregister в finally). #21 finalize-watchdog не тронут.
+- UI-лейбл: НЕ баг фронта. Фронт уже ветвит по `j.kind==='delete_drafts'` во всех состояниях
+  («удалено черновиков», не «создано»/«финализация»), баннер (index.html:3757) уже предпочитает
+  `result.deleted`; kind персистится в body._kind → переживает поллинг/recovery (`_job_kind`).
+  Конвенция `created=deleted` в result используется delete-веткой фронта (3678/3706) → менять
+  бэкенд-поле НЕЛЬЗЯ (сломает delete-дисплей). `deleted` уже отдельным полем есть. Follow-up только
+  если реальный мислейбл всплывёт live.
+- Статус: 🟡 код на Mac (py_compile OK; pyflakes 0 undefined). НЕ деплоено. **live не проверено** —
+  проверит прогон: delete_drafts после «удалено N/N» флипается в `done` сразу, воркер не морозится,
+  create-джобы (постпроцесс/добивка/finalize) без изменений.
+- НЕ помогло ранее: #17 (таймбокс постпроцесса) + R2-1 (finalize-watchdog) чинили ФАЗУ финализации
+  СОЗДАНИЯ; delete в неё вообще не должна была заходить — здесь корень «зашла и зависла» устранён
+  гейтом, а не таймбоксом.
+
 ### R2-4_QUALITY_BUNDLE — Э-ключи + каталог-негатив + UAC-сайтлинк-дубль + разнобой сумм (R2-4, 2026-07-10)
 Бандл из 4 остаточных дефектов прогона e05fbc86e8ca (нашёл Семён). Свои файлы, НЕ деплоено, live не проверено.
 

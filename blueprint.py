@@ -2573,6 +2573,10 @@ def _create_worker_loop(app):
         jid, job, body, saved = claimed
         agency = _job_agency(job)
         final_status = "error"
+        # delete_drafts НЕ проходит create-постпроцесс (verify/finalize/delayed-repair): удалять
+        # нечего верифицировать/финализировать. Флаг гейтит done-блок ниже (иначе воркер морозится
+        # на Grid-финализации/добивке несуществующей РК — R2-5, 2026-07-10).
+        _is_delete_drafts = (body or {}).get("_kind") == "delete_drafts"
         # Задача F (DIRECT_ASYNC_FINALIZE): открыть окно захвата финализации набора (по login).
         # OFF → register вернёт None (no-op). Снятие — в finally (гарантированно, даже при падении).
         _fin_login = str((body or {}).get("login") or "").strip()
@@ -2648,7 +2652,7 @@ def _create_worker_loop(app):
                 _job_db_save(jid, _job_final, full=True)   # финальный статус + result в БД
                 _ready_logins_track(jid, _job_final)       # вкладка «Готовые логины» (add/remove)
                 _merge_resume_into_parent(jid, _job_final, body)
-                if final_status == "done":
+                if final_status == "done" and not _is_delete_drafts:
                     auto_queued = _auto_queue_recreate_after_done(jid, _job_final)
                     delayed_content = _schedule_delayed_content_repair_after_done(jid, _job_final)
                     # Задача F: захваченные финализации → очередь finalize_set. Пока не докручены,
