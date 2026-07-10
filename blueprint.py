@@ -109,6 +109,24 @@ from . import repair_gate as rgate  # read-only repair-gate helpers
 from . import repair_executor as rex  # scoped repair executors (cookie/Grid-first)
 from . import repair_auto as rauto  # repair orchestration without Flask/DB wiring
 from . import verification_service as vsvc  # live verification orchestration without Flask
+from . import blueprint_targeting as _btg  # ct→сегмент классификатор + профиль таргетинга (DI ниже)
+from .blueprint_targeting import (         # ре-экспорт: внутр. вызовы + внешний from direct.blueprint import _ct_segment
+    _gc_ct, _ct_is_model_map, _ct_segment_map, _ct_segment, _seg_canon, _model_cts,
+    _segment_donor, _targeting_profile, _slepok_tp_modes, _slepok_profile_excludes_tp,
+    _slepki_structure_for_ui, _donor_tp4_models_map, _pack_for_item,
+)
+from . import blueprint_metrika as _bmt    # Метрика (счётчики/цели) + гео-справочник Директа (DI ниже)
+from .blueprint_metrika import (           # ре-экспорт: внутр. вызовы (routes/DI-словари)
+    _parse_counter_ids, _metrika_goals_for, _counter_foreign_owner,
+    _geo_load, _geo_id, _metrika_token, _goal_vse_formy,
+)
+from . import blueprint_content_rules as _bcr  # правила вкладки «Контент» + фильтрация ассетов (DI ниже)
+from .blueprint_content_rules import (     # ре-экспорт: внутр. вызовы + route-registration (_CONTENT_RULES_CACHE)
+    _content_rules_ensure, _content_rules_map, _asset_key_from_local, _manual_rule_lookup_key,
+    _content_rule_key, _ct_allowed_for, _content_allowed_list, _content_slepok_list,
+    _slepok_allowed_for, _content_only_this_ct, _filter_content_assets, _prioritized_content_assets,
+    _explicit_content_assets_for, _ahash_distance, _dedupe_content_assets_for_ui, _CONTENT_RULES_CACHE,
+)
 
 _HERE = Path(__file__).resolve().parent
 
@@ -3588,269 +3606,8 @@ def _enabled_minus_model_pairs() -> list[tuple[str, str]]:
         return list(_MINUS_MODEL_PAIRS_CACHE["val"])
 
 
-def _content_rules_ensure(cur) -> None:
-    cur.execute(
-        "CREATE TABLE IF NOT EXISTS public.direct_content_asset_rules ("
-        "asset_key text PRIMARY KEY, asset_type text NOT NULL, source_segment text NOT NULL, "
-        "source_tp text NOT NULL, source_ct text NOT NULL, asset_path text NOT NULL, "
-        "name text NOT NULL DEFAULT '', enabled boolean NOT NULL DEFAULT true, "
-        "allowed_for jsonb NOT NULL DEFAULT '[]'::jsonb, updated_at timestamptz NOT NULL DEFAULT now())"
-    )
-    cur.execute("ALTER TABLE public.direct_content_asset_rules "
-                "ADD COLUMN IF NOT EXISTS source_slepok text NOT NULL DEFAULT ''")
-    cur.execute("ALTER TABLE public.direct_content_asset_rules "
-                "ADD COLUMN IF NOT EXISTS allowed_slepki jsonb NOT NULL DEFAULT '[]'::jsonb")
-
-
-_CONTENT_RULES_CACHE: dict = {"ts": 0.0, "rows": {}}
-
-
-def _content_rules_map(force: bool = False) -> dict:
-    now = time.monotonic()
-    if not force and _CONTENT_RULES_CACHE["rows"] and now - _CONTENT_RULES_CACHE["ts"] < 60:
-        return _CONTENT_RULES_CACHE["rows"]
-    import psycopg2.extras
-    conn = _victory_conn_rw()
-    try:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        _content_rules_ensure(cur)
-        conn.commit()
-        cur.execute(
-            "SELECT asset_key, asset_type, source_segment, source_tp, source_ct, asset_path, "
-            "name, enabled, allowed_for, source_slepok, allowed_slepki "
-            "FROM public.direct_content_asset_rules"
-        )
-        rows = {str(r["asset_key"]): dict(r) for r in cur.fetchall()}
-        _CONTENT_RULES_CACHE.update({"ts": now, "rows": rows})
-        return rows
-    finally:
-        conn.close()
-
-
-def _asset_key_from_local(path: str) -> str:
-    return os.path.splitext(os.path.basename(str(path or "")))[0]
-
-
-def _manual_rule_lookup_key(path: str, ct: str) -> tuple[str, str, str, str, str] | None:
-    """Scoped-key для локального Manual-файла.
-
-    Во вкладке «Контент» Manual хранится как remote-файл M3
-    /Users/Shared/agency/creatives/Manual/{ct}/{file}.png, а в создании кампаний мы читаем
-    локальный mount /opt/creatives/Manual/{ct}/{file}.png. Чтобы выключения/allowed_for работали
-    одинаково, строим тот же scoped asset_key.
-    """
-    try:
-        import os as _os
-        from . import kontent_pack as _kp
-        p = str(path or "")
-        manual_root = str(MANUAL_CREATIVES_DIR).rstrip("/")
-        if not p.startswith(manual_root + "/"):
-            return None
-        ct_norm = _gc_ct(ct) or _gc_ct(_os.path.basename(_os.path.dirname(p))) or "ct0000"
-        remote = posixpath.join(getattr(_kp, "M3_MANUAL_ROOT", "/Users/Shared/agency/creatives/Manual"),
-                                ct_norm, _os.path.basename(p))
-        original_key = _kp.remote_asset_key(remote)
-        return ("Общее", "manual", ct_norm, original_key, "")
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _content_rule_key(segment: str, tp: str, ct: str, asset_key: str, source_slepok: str = "") -> str:
-    """Scope правила контента: тип сайта + tp + ct + слепок + файл.
-
-    Один и тот же файл может лежать в одинаковом ct у разных типов сайтов; правило
-    отключения/allowed_for не должно протекать между ними. Слепок также входит в scope,
-    чтобы включение/выключение в одном слепке не меняло тот же ct у другого слепка.
-    """
-    raw = "|".join([
-        str(segment or "").strip(),
-        str(tp or "").strip(),
-        (_gc_ct(ct) or str(ct or "").strip().lower()),
-        str(source_slepok or "").strip().lower(),
-        str(asset_key or "").strip(),
-    ])
-    return hashlib.md5(raw.encode("utf-8")).hexdigest()
-
-
-def _ct_allowed_for(rule: dict, target_ct: str) -> bool:
-    target_ct = _gc_ct(target_ct) or str(target_ct or "").strip().lower()
-    allowed = _content_allowed_list(rule)
-    source_ct = str(rule.get("source_ct") or "").strip().lower()
-    if not allowed:
-        return not target_ct or target_ct == source_ct
-    if "*" in allowed:
-        return True
-    if "common" in allowed and target_ct in _COMMON_IMAGE_CTS:
-        return True
-    return target_ct in allowed
-
-
-def _content_allowed_list(rule: dict) -> list[str]:
-    allowed = rule.get("allowed_for") or []
-    if isinstance(allowed, str):
-        try:
-            allowed = json.loads(allowed)
-        except Exception:  # noqa: BLE001
-            allowed = [x.strip() for x in allowed.split(",") if x.strip()]
-    return [str(x).strip().lower() for x in (allowed or []) if str(x).strip()]
-
-
-def _content_slepok_list(rule: dict) -> list[str]:
-    allowed = rule.get("allowed_slepki") or []
-    if isinstance(allowed, str):
-        try:
-            allowed = json.loads(allowed)
-        except Exception:  # noqa: BLE001
-            allowed = [x.strip() for x in re.split(r"[,;\s]+", allowed) if x.strip()]
-    return [str(x).strip().lower() for x in (allowed or []) if str(x).strip()]
-
-
-def _slepok_allowed_for(rule: dict, target_slepok: str) -> bool:
-    target = str(target_slepok or "").strip().lower()
-    source = str(rule.get("source_slepok") or "").strip().lower()
-    allowed = _content_slepok_list(rule)
-    if not allowed:
-        return (not source) or (not target) or source == target
-    if "*" in allowed:
-        return True
-    if "common" in allowed and not target:
-        return True
-    return target in allowed
-
-
-def _content_only_this_ct(rule: dict, target_ct: str) -> bool:
-    target_ct = _gc_ct(target_ct) or str(target_ct or "").strip().lower()
-    source_ct = str(rule.get("source_ct") or "").strip().lower()
-    if source_ct != target_ct:
-        return False
-    allowed = _content_allowed_list(rule)
-    if not allowed:
-        return True
-    return len(allowed) == 1 and allowed[0] == target_ct
-
-
-def _filter_content_assets(paths: list, target_ct: str, *, source_segment: str = "", source_tp: str = "",
-                           source_ct: str = "", target_slepok: str = "", source_slepok: str = "") -> list:
-    """Применить вкладку «Контент»: выключенные ассеты режем, allowed_for ограничивает целевой ct.
-    Если правила на файл нет — сохраняем старое поведение и пропускаем."""
-    if not paths:
-        return []
-    try:
-        rules = _content_rules_map()
-    except Exception:  # noqa: BLE001
-        return list(paths)
-    out = []
-    for p in paths:
-        file_key = _asset_key_from_local(p)
-        r = None
-        manual_scope = _manual_rule_lookup_key(p, source_ct or target_ct)
-        if manual_scope:
-            r = rules.get(_content_rule_key(*manual_scope))
-        if source_segment and source_tp and source_ct:
-            r = r or rules.get(_content_rule_key(source_segment, source_tp, source_ct, file_key, source_slepok))
-            if not r and source_slepok:
-                r = rules.get(_content_rule_key(source_segment, source_tp, source_ct, file_key, ""))
-        if not r and not (source_segment and source_tp and source_ct):
-            r = rules.get(file_key)
-        if r:
-            if not r.get("enabled"):
-                continue
-            if not _ct_allowed_for(r, target_ct):
-                continue
-            if not _slepok_allowed_for(r, target_slepok):
-                continue
-        out.append(p)
-    return out
-
-
-def _prioritized_content_assets(paths: list, target_ct: str, *, source_segment: str, source_tp: str,
-                                source_ct: str, target_slepok: str = "", source_slepok: str = "",
-                                limit: int = 5) -> list:
-    """Отфильтровать ассеты и поднять наверх выбранные «только этот ct».
-
-    Если таких приоритетных ассетов больше limit, берём случайные limit штук.
-    """
-    if not paths:
-        return []
-    try:
-        rules = _content_rules_map()
-    except Exception:  # noqa: BLE001
-        return list(dict.fromkeys(paths))[:limit]
-    priority: list = []
-    regular: list = []
-    seen: set[str] = set()
-    for p in paths:
-        if p in seen:
-            continue
-        seen.add(p)
-        file_key = _asset_key_from_local(p)
-        manual_scope = _manual_rule_lookup_key(p, source_ct or target_ct)
-        r = rules.get(_content_rule_key(*manual_scope)) if manual_scope else None
-        r = r or rules.get(_content_rule_key(source_segment, source_tp, source_ct, file_key, source_slepok))
-        if not r and source_slepok:
-            r = rules.get(_content_rule_key(source_segment, source_tp, source_ct, file_key, ""))
-        if r:
-            if not r.get("enabled"):
-                continue
-            if not _ct_allowed_for(r, target_ct):
-                continue
-            if not _slepok_allowed_for(r, target_slepok):
-                continue
-            if _content_only_this_ct(r, target_ct):
-                priority.append(p)
-                continue
-        regular.append(p)
-    if len(priority) >= limit:
-        return random.sample(priority, limit)
-    return (priority + [p for p in regular if p not in priority])[:limit]
-
-
-def _explicit_content_assets_for(target_ct: str, *, target_slepok: str = "",
-                                 asset_types: set[str] | None = None, limit: int = 5) -> list:
-    """Ассеты, явно разрешённые во вкладке «Контент» для другого/общего ct."""
-    try:
-        rules = _content_rules_map()
-    except Exception:  # noqa: BLE001
-        return []
-    out = []
-    for r in rules.values():
-        if not r.get("enabled") or not _ct_allowed_for(r, target_ct):
-            continue
-        if not _slepok_allowed_for(r, target_slepok):
-            continue
-        if asset_types and str(r.get("asset_type") or "") not in asset_types:
-            continue
-        p = kp.fetch_remote_asset(r.get("asset_path") or "")
-        if p and p not in out:
-            out.append(p)
-        if len(out) >= limit:
-            break
-    return out
-
-
-def _ahash_distance(a: int, b: int) -> int:
-    return bin(int(a) ^ int(b)).count("1")
-
-
-def _dedupe_content_assets_for_ui(assets: list[dict], threshold: int = 18) -> tuple[list[dict], int]:
-    """Быстрый дедуп для вкладки «Контент».
-
-    Визуальный pHash требует скачать/декодировать каждую картинку с M3. На больших папках это
-    блокирует первый экран, поэтому в интерактивном API скрываем только точные дубли по remote/token.
-    Визуальную чистку дублей надо делать отдельной фоновой задачей, а не при каждом клике по ct.
-    """
-    kept: list[dict] = []
-    seen: set[str] = set()
-    hidden = 0
-    for a in assets or []:
-        key = str(a.get("remote") or a.get("original_asset_key") or a.get("asset_key") or a.get("token") or "")
-        if key and key in seen:
-            hidden += 1
-            continue
-        if key:
-            seen.add(key)
-        kept.append(a)
-    return kept, hidden
+# Правила вкладки «Контент» + фильтрация ассетов вынесены в blueprint_content_rules
+# (ре-экспорт выше); _CONTENT_RULES_CACHE/_content_rule_key/_filter_content_assets и др.
 
 
 # ── Аккаунты (Victory DB local_gsheet_sites, direction='Авто') ─────────────────
@@ -3970,62 +3727,7 @@ register_settings_routes(
     victory_conn_rw=_victory_conn_rw,
 )
 
-def _parse_counter_ids(text) -> list[int]:
-    """'[103879503, 94543727]' → [103879503, 94543727]. Кривое/пустое → []."""
-    if not text:
-        return []
-    try:
-        arr = json.loads(text)
-    except Exception:  # noqa: BLE001
-        return []
-    out = []
-    for x in (arr if isinstance(arr, list) else []):
-        s = str(x).strip()
-        if s.lstrip("-").isdigit():
-            out.append(int(s))
-    return out
-
-
-def _metrika_goals_for(login: str):
-    """Счётчики Метрики и цель «Все формы» из public.metrika_goals (внешняя таблица Victory).
-    → {counters:[int,...], goal_id:int|None} либо None, если строки по логину нет."""
-    if not login:
-        return None
-    conn = _victory_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT counter_ids, all_forms FROM public.metrika_goals "
-                    "WHERE account_login=%s LIMIT 1", (login,))
-        row = cur.fetchone()
-    finally:
-        conn.close()
-    if not row:
-        return None
-    return {"counters": _parse_counter_ids(row[0]),
-            "goal_id": int(row[1]) if row[1] is not None else None}
-
-
-def _counter_foreign_owner(counter_id: int, login: str):
-    """Если счётчик Метрики закреплён в public.metrika_goals за ДРУГИМ аккаунтом (не `login`) —
-    вернуть логин-владельца, иначе None. Counter расшарен и на сам `login` → None (легитимно).
-    Anti-footgun: ловит «вставили счётчик/цель от ДРУГОГО аккаунта» ДО трат M3 и campaigns.add."""
-    if not counter_id:
-        return None
-    try:
-        conn = _victory_conn()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT account_login, counter_ids FROM public.metrika_goals "
-                        "WHERE counter_ids LIKE %s", (f"%{int(counter_id)}%",))
-            rows = cur.fetchall()
-        finally:
-            conn.close()
-    except Exception:  # noqa: BLE001
-        return None
-    owners = [lk for lk, ct in rows if int(counter_id) in _parse_counter_ids(ct)]  # точное вхождение
-    if not owners or login in owners:      # ничей / принадлежит самому аккаунту → не блокируем
-        return None
-    return owners[0]                       # счётчик есть только у чужого аккаунта
+# _parse_counter_ids/_metrika_goals_for/_counter_foreign_owner вынесены в blueprint_metrika.
 
 
 _LIVE_V4 = "https://api.direct.yandex.ru/live/v4/json/"
@@ -4043,6 +3745,14 @@ def _direct_tokens() -> dict:
         if tok:
             out[ag] = tok
     return out
+
+
+# DI для blueprint_metrika: _victory_conn (выше) + _direct_tokens (последняя зависимость).
+# _V5 — модульная константа внутри blueprint_metrika (совпадает с _V5 ниже по файлу).
+_bmt.configure({
+    "_victory_conn": _victory_conn,
+    "_direct_tokens": _direct_tokens,
+})
 
 
 def _do_balance(_rqs, ThreadPoolExecutor, as_completed):
@@ -4854,11 +4564,7 @@ def _m3_status_response():
 
 
 # ── Резолвер контента группы из пака M3 (по нашему ct) ──────────────────────────
-def _gc_ct(gc: str) -> str:
-    """Первый ctNNNN из кодера группы (gc) = ag_part1 = бренд/модель."""
-    m = re.search(r"ct\d{4}", gc or "")
-    return m.group(0) if m else ""
-
+# _gc_ct и классификатор ct→сегмент вынесены в blueprint_targeting (ре-экспорт выше).
 
 register_content_routes(
     bp,
@@ -4873,206 +4579,6 @@ register_content_routes(
     victory_conn_rw=_victory_conn_rw,
     content_rules_cache=_CONTENT_RULES_CACHE,
 )
-
-
-_CT_MODEL_CACHE: dict | None = None
-
-
-def _ct_is_model_map() -> dict:
-    """ct → True если МОДЕЛЬ (бренд+модель), False если МАРКА или ТЕМА.
-
-    Модель = существует более короткое имя ag_part1, являющееся СЛОВЕСНЫМ префиксом
-    данного («BAIC» → «BAIC X35», «Great Wall» → «Great Wall Poer»). Бренды («BAIC»)
-    и темы («Авито», «Автокредит/кредит», «Седаны», «кластер запросов…») своего
-    бренда-префикса не имеют → Марки. Источник — gsheet_naming(ag_part1), кэш на процесс.
-    Это РОВНО та раскладка, что в боевых аккаунтах Щербаковой (РСЯ-Марки / РСЯ-Модели)."""
-    global _CT_MODEL_CACHE
-    if _CT_MODEL_CACHE is not None:
-        return _CT_MODEL_CACHE
-    low = {ct: (nm or "").strip().lower() for ct, nm in _ag_part1_map().items()}
-    vals = set(low.values())
-    out: dict = {}
-    for ct, ln in low.items():
-        toks = ln.split()
-        out[ct] = any(" ".join(toks[:i]) in vals for i in range(1, len(toks)))
-    _CT_MODEL_CACHE = out
-    return out
-
-
-_CT_SEG_CACHE: dict | None = None
-def _ct_segment_map() -> dict:
-    """ct → сегмент: 'Модели' | 'Марки' | 'Общее' (как в БОЕВЫХ аккаунтах: Поиск/РСЯ делятся на
-    Марки / Модели / Общее). Робастная классификация по справочнику gsheet_naming(ag_part1):
-      • БРЕНД (Марки)  = слово ведёт ≥2 модельных имён ИЛИ есть как одиночная категория и ведёт ≥1
-        (ловит и бренды без отдельной ct-категории: «Jac», «Solaris»).
-      • МОДЕЛЬ (Модели) = многословное имя, чьё ПЕРВОЕ слово — бренд («BAIC X35», «Jac J7»).
-      • ТЕМА (Общее)   = не бренд и не модель («Авито», «Автосалон/салон/Дилер», «Авто/Автомобили»).
-    Кэш на процесс."""
-    global _CT_SEG_CACHE
-    if _CT_SEG_CACHE is not None:
-        return _CT_SEG_CACHE
-    from collections import Counter
-    low = {ct: (nm or "").strip().lower() for ct, nm in _ag_part1_map().items()}
-    lead: Counter = Counter()
-    single: set = set()
-    for ln in low.values():
-        parts = ln.split()
-        if len(parts) >= 2:
-            lead[parts[0]] += 1
-        elif ln:
-            single.add(ln)
-
-    def _is_brand(tok: str) -> bool:
-        return lead.get(tok, 0) >= 2 or (lead.get(tok, 0) >= 1 and tok in single)
-
-    out: dict = {}
-    for ct, ln in low.items():
-        parts = ln.split()
-        if len(parts) >= 2 and _is_brand(parts[0]):
-            out[ct] = "Модели"
-        elif ln and _is_brand(ln):
-            out[ct] = "Марки"
-        else:
-            out[ct] = "Общее"
-    _CT_SEG_CACHE = out
-    return out
-
-
-def _ct_segment(ct: str) -> str:
-    """Сегмент группы по её ct/кодеру: 'Модели' | 'Марки' | 'Общее' (единый источник — _ct_segment_map)."""
-    return _ct_segment_map().get(_gc_ct(ct), "Марки")
-
-
-def _seg_canon(s: str) -> str:
-    """Канон сегмента для сверки классификатора с профилем: общие темы → 'общая'
-    (классификатор даёт «Общее», профиль из живых имён — «общая»/«Общие запросы»)."""
-    s = (s or "").strip().lower()
-    return "общая" if s.startswith("общ") else s
-
-
-def _model_cts() -> list:
-    """Список модельных ct (совместимость; новый единый источник — _ct_segment_map)."""
-    return [ct for ct, seg in _ct_segment_map().items() if seg == "Модели"]
-
-
-# Слепок-донор сегмента: если у целевого слепка НЕТ своих ct сегмента (напр. Терехов tp4 без
-# «Моделей») — берём структуру и контент сегмента у донора («как в других слепках»). Щербакова —
-# самый полный модельный слепок (tp4 = 138 модельных ct). Расширяемо при необходимости.
-_SEGMENT_DONORS = {"Модели": ["scherbakova"]}
-
-
-def _segment_donor(segment: str, tp_code: str, site_type: str, exclude: str = "") -> str | None:
-    """Первый донор, у которого ЕСТЬ ct данного сегмента для (tp_code, site_type). Иначе None."""
-    for donor in _SEGMENT_DONORS.get(segment, []):
-        if donor == exclude:
-            continue
-        if any(_ct_segment(ct) == segment for ct in _struct_cts(donor, site_type, tp_code)):
-            return donor
-    return None
-
-
-_TARGETING_PROFILE_CACHE: dict | None = None
-
-
-def _targeting_profile() -> dict:
-    """Профиль таргетинга слепков из боевых аккаунтов: {slepok:{site_type:{tp:{segment:{mode:cnt}}}}}.
-    Источник — targeting_profile.json (сгенерён из raw_grid). Кэшируется."""
-    global _TARGETING_PROFILE_CACHE
-    if _TARGETING_PROFILE_CACHE is None:
-        _TARGETING_PROFILE_CACHE = _json("targeting_profile.json") or {}
-    return _TARGETING_PROFILE_CACHE
-
-
-def _slepok_tp_modes(slepok: str, site_type: str, tp: str, segment: str) -> list | None:
-    """Какие режимы таргетинга (КС/Автотаргет) реально ведёт слепок для (site_type, tp, segment).
-
-    None  → нет данных (слепка нет в профиле ИЛИ этого tp нет у слепка) → дефолт (как раньше).
-    []    → tp у слепка ЕСТЬ, но именно ЭТОГО сегмента нет → НЕ строить (гейт-вниз, «не лишнее»).
-    [...] → строить ровно эти режимы (в порядке КС, Автотаргет).
-    """
-    skey = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
-    prof = _targeting_profile()
-    if skey not in prof:
-        return None
-    tps = prof.get(skey, {}).get(site_type, {}) or {}
-    if tp not in tps:                       # нет данных по этому tp у слепка → дефолт, не гейт
-        return None
-    # Сегмент сверяем КАНОНИЧЕСКИ: «Общее» (классификатор) ↔ «общая» (профиль из живых имён).
-    seg_tps = tps.get(tp, {}) or {}
-    sc = _seg_canon(segment)
-    modes = next((v for k, v in seg_tps.items() if _seg_canon(k) == sc), {}) or {}
-    return [m for m in ("КС", "Автотаргет") if m in modes]
-
-
-def _slepok_profile_excludes_tp(slepok: str, site_type: str, tp: str) -> bool:
-    """True, если у слепка ЕСТЬ боевой профиль для site_type, но данного tp в нём НЕТ.
-
-    Смысл — «строгое соответствие набору слепка» (баг porg-psm5h7q6: просочился tp4).
-    Профиль (targeting_profile.json) — слепок РЕАЛЬНЫХ боевых аккаунтов; если он есть, он
-    АВТОРИТЕТЕН по составу типов. Структура (slepki_structure.json) может содержать tp для
-    ДОНОРСКИХ целей (напр. scherbakova держит tp4 как донор «Моделей» для др. слепков,
-    _SEGMENT_DONORS), но сам слепок его не ведёт → строить его в СВОЁМ аккаунте нельзя.
-    Слепка/типа сайта нет в профиле → False (профиль не авторитетен, поведение как раньше —
-    не ломаем слепки без профиля, напр. Терехов).
-    """
-    skey = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
-    st = _targeting_profile().get(skey, {}).get(site_type)
-    if not st:
-        return False
-    return tp not in st
-
-
-def _slepki_structure_for_ui() -> dict:
-    """Копия slepki_structure для чекбоксов набора в UI с ФИЛЬТРОМ по боевому профилю:
-    у слепка, у которого есть targeting_profile для site_type, скрываем tp, которых в профиле
-    НЕТ (донорские tp — напр. scherbakova держит tp4 «Модели» как донор, но в СВОЙ аккаунт его
-    не ведёт; gate _slepok_profile_excludes_tp его всё равно молча режет → нельзя предлагать в UI).
-    Слепок без профиля (напр. Терехов) — не трогаем, tp остаются (он реально их создаёт).
-    ВАЖНО: донорская логика (_donor_tp4_models_map / _segment_donor / _struct_cts) читает
-    slepki_structure.json С ДИСКА напрямую — этот фильтр её НЕ затрагивает."""
-    import copy
-    out = copy.deepcopy(_json("slepki_structure.json"))
-    for d in out.get("directologists", []):
-        key = d.get("key") or ""
-        for st in d.get("site_types", []):
-            stype = st.get("name") or ""
-            st["tp"] = [t for t in st.get("tp", [])
-                        if not _slepok_profile_excludes_tp(key, stype, t.get("code") or "")]
-    return out
-
-
-def _donor_tp4_models_map() -> dict:
-    """{slepok_key: [site_type,...]} — где у слепка НЕТ своих tp4-«Моделей», но донор их покрывает.
-    UI по этой карте показывает донорский чекбокс «Модели» для tp4 (напр. Терехов)."""
-    out: dict = {}
-    for d in _json("slepki_structure.json").get("directologists", []):
-        key = d.get("key")
-        if not key:
-            continue
-        for st in d.get("site_types", []):
-            stype = st.get("name")
-            if not any(t.get("code") == "tp4" for t in st.get("tp", [])):
-                continue
-            own_models = any(_ct_segment(ct) == "Модели" for ct in _struct_cts(key, stype, "tp4"))
-            if not own_models and _segment_donor("Модели", "tp4", stype, exclude=key):
-                out.setdefault(key, []).append(stype)
-    return out
-
-
-def _pack_for_item(slepok: str, site_type: str, tp: str, gc: str) -> dict:
-    """Контент пака для одной группы набора (по нашему ct из gc).
-
-    → {ct, model, keywords, minus, callouts, images, from}.
-    ct0000/пусто → from='fallback' (берём корпус слепка вне пака)."""
-    ct = _gc_ct(gc)
-    kw = kp.read_keywords(site_type, tp, ct, slepok)
-    co = kp.read_callouts(site_type, tp, ct, slepok)
-    im = kp.read_images(site_type, tp, ct)
-    has = bool(kw["positive"] or kw["minus"] or co or im)
-    return {"ct": ct, "model": kp.feeds_ct_model().get(ct, ""),
-            "keywords": kw["positive"], "minus": kw["minus"],
-            "callouts": co, "images": im,
-            "from": "pack" if has else "fallback"}
 
 
 def _pack_preview_response():
@@ -5186,76 +4692,8 @@ register_pack_routes(
 
 # ── Автоподстановка значений из БД (тип сайта/город/счётчик/цель/тексты) ────────
 
-_GEO_LOCK = threading.Lock()
-_GEO_BY_NAME: dict = {}                       # lower(имя региона) → GeoRegionId (словарь Директа, кэш)
-
-
-def _geo_load() -> dict:
-    """Словарь GeoRegions Директа (имя→id), грузится один раз на процесс."""
-    global _GEO_BY_NAME
-    if _GEO_BY_NAME:
-        return _GEO_BY_NAME
-    with _GEO_LOCK:
-        if _GEO_BY_NAME:
-            return _GEO_BY_NAME
-        import requests as _rqs
-        tok = next(iter(_direct_tokens().values()), None)
-        if not tok:
-            return {}
-        try:
-            r = _rqs.post(_V5 + "dictionaries",
-                          headers={"Authorization": "Bearer " + tok, "Accept-Language": "ru",
-                                   "Content-Type": "application/json; charset=utf-8"},
-                          json={"method": "get", "params": {"DictionaryNames": ["GeoRegions"]}}, timeout=60)
-            geos = (r.json().get("result") or {}).get("GeoRegions", [])
-        except Exception:  # noqa: BLE001
-            return {}
-        d: dict = {}
-        for g in geos:                        # города идут раньше областей — приоритет точному совпадению
-            nm = (g.get("GeoRegionName") or "").strip().lower()
-            if nm and nm not in d:
-                d[nm] = g.get("GeoRegionId")
-        _GEO_BY_NAME = d
-        return d
-
-
-def _geo_id(city: str | None, region: str | None):
-    """city → id (приоритет), иначе region → id. Возвращает (id, имя) или (None, None)."""
-    d = _geo_load()
-    for nm in (city, region):
-        if nm:
-            gid = d.get(nm.strip().lower())
-            if gid:
-                return gid, nm.strip()
-    return None, None
-
-
-def _metrika_token() -> str | None:
-    sd = str(cmc._find_secret_dir())
-    if sd not in sys.path:
-        sys.path.insert(0, sd)
-    from loader import load_yandex_metrika  # noqa: E402
-    m = load_yandex_metrika()
-    return m.get("oauth_token") if isinstance(m, dict) else None
-
-
-def _goal_vse_formy(counter_id: int | None):
-    """Цель «Все формы» счётчика Метрики → (goal_id, name) или (None, None)."""
-    tok = _metrika_token()
-    if not tok or not counter_id:
-        return None, None
-    import requests as _rqs
-    try:
-        r = _rqs.get(f"https://api-metrika.yandex.net/management/v1/counter/{counter_id}/goals",
-                     headers={"Authorization": "OAuth " + tok}, timeout=30)
-        if r.status_code != 200:
-            return None, None
-        for g in r.json().get("goals", []):
-            if "все формы" in (g.get("name") or "").strip().lower():
-                return g.get("id"), g.get("name")
-    except Exception:  # noqa: BLE001
-        return None, None
-    return None, None
+# Гео-справочник (_geo_load/_geo_id) + Метрика-токен/цель (_metrika_token/_goal_vse_formy)
+# вынесены в blueprint_metrika (ре-экспорт выше).
 
 
 def _account_prefill_response():
@@ -6890,6 +6328,16 @@ def _build_tp2_from_pack(*args, **kwargs):
     return _create_set_text_builder_module()._build_tp2_from_pack(*args, **kwargs)
 
 
+# DI для blueprint_targeting: все зависимости определены выше (_json, _ag_part1_map, _SLEPOK_KEY)
+# и _struct_cts (шим выше по файлу) — инъектим ПОСЛЕ последней (_struct_cts).
+_btg.configure({
+    "_json": _json,
+    "_ag_part1_map": _ag_part1_map,
+    "_struct_cts": _struct_cts,
+    "_SLEPOK_KEY": _SLEPOK_KEY,
+})
+
+
 # ── Движок tp1 (РСЯ): создание кампании + бренд-групп из пака M3 ─────────────
 # Отличия от tp2:
 #  - stратегия: ЕПК mode=network_cpa (AVERAGE_CPA), НЕ TextCampaign/HIGHEST_POSITION
@@ -7278,6 +6726,14 @@ _COMMON_IMAGE_CTS = {
     "ct0007", "ct0008", "ct0009", "ct0010", "ct0013", "ct0014",
 }
 _BODY_IMAGE_CTS = {"ct0015", "ct0016", "ct0017", "ct0018"}
+
+# DI для blueprint_content_rules: _victory_conn_rw (выше) + _COMMON_IMAGE_CTS (последняя зависимость).
+# MANUAL_CREATIVES_DIR — модульная константа внутри blueprint_content_rules; _gc_ct он берёт из
+# blueprint_targeting напрямую (без DI).
+_bcr.configure({
+    "_victory_conn_rw": _victory_conn_rw,
+    "_COMMON_IMAGE_CTS": _COMMON_IMAGE_CTS,
+})
 
 
 def _image_ct_for_content(ct: str) -> str:
