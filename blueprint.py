@@ -4168,43 +4168,57 @@ def _v5_units(token: str, login: str) -> dict | None:
     return None
 
 
+# requests(timeout=N) — это таймаут МЕЖДУ чтениями сокета, а не дедлайн на весь запрос:
+# если сервер трickлит ответ мелкими порциями, каждое отдельное чтение укладывается в лимит,
+# а весь вызов может зависнуть на неопределённое время (инцидент 2026-07-10: заливка цен
+# Тумашенко зависла на 17+ минут на одном ad_id при timeout=60). Поэтому оборачиваем каждый
+# POST отдельным потоком с жёстким wall-clock дедлайном через future.result(timeout=...).
+import concurrent.futures as _cf
+
+_HTTP_HARD_TIMEOUT = 90  # сек — общий дедлайн на весь вызов, включая зависшие чтения
+_HTTP_EXECUTOR = _cf.ThreadPoolExecutor(max_workers=32, thread_name_prefix="v5http")
+
+
+def _bounded_post(url: str, headers: dict, body: dict) -> dict:
+    """POST с жёстким общим дедлайном (см. комментарий выше). При превышении — возвращает
+    error-dict как при обычном исключении; поток запроса может остаться висеть в фоне
+    (leaked), но вызывающий код гарантированно разблокируется."""
+    import requests as _rqs
+
+    def _do():
+        return _rqs.post(url, headers=headers, json=body, timeout=60).json()
+
+    try:
+        return _HTTP_EXECUTOR.submit(_do).result(timeout=_HTTP_HARD_TIMEOUT)
+    except _cf.TimeoutError:
+        return {"error": {"error_string": f"hard timeout {_HTTP_HARD_TIMEOUT}s exceeded"}}
+    except Exception as e:  # noqa: BLE001
+        return {"error": {"error_string": str(e)[:120]}}
+
+
 def _v5_call(svc: str, method: str, token: str, login: str, params: dict) -> dict:
     """Универсальный вызов v5 (get/suspend/…). Возвращает распарсенный JSON."""
-    import requests as _rqs
     h = {"Authorization": "Bearer " + token, "Client-Login": login,
          "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8",
          "Use-Operator-Units": "true"}
-    try:
-        return _rqs.post(_V5 + svc, headers=h, json={"method": method, "params": params}, timeout=60).json()
-    except Exception as e:  # noqa: BLE001
-        return {"error": {"error_string": str(e)[:120]}}
+    return _bounded_post(_V5 + svc, h, {"method": method, "params": params})
 
 
 def _v501_call(method: str, token: str, login: str, params: dict) -> dict:
     """Вызов v501 (campaigns.update и т.д.). Возвращает распарсенный JSON."""
-    import requests as _rqs
     h = {"Authorization": "Bearer " + token, "Client-Login": login,
          "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8",
          "Use-Operator-Units": "true"}
-    try:
-        return _rqs.post(_V501 + "campaigns", headers=h,
-                         json={"method": method, "params": params}, timeout=60).json()
-    except Exception as e:  # noqa: BLE001
-        return {"error": {"error_string": str(e)[:120]}}
+    return _bounded_post(_V501 + "campaigns", h, {"method": method, "params": params})
 
 
 def _v501_svc(svc: str, method: str, token: str, login: str, params: dict) -> dict:
     """Вызов произвольного сервиса v501 (ads/adgroups/…). Для ResponsiveAd (Комбинаторное)
     обязателен v501 — v5 отвечает «не поддерживается, используйте v501»."""
-    import requests as _rqs
     h = {"Authorization": "Bearer " + token, "Client-Login": login,
          "Accept-Language": "ru", "Content-Type": "application/json; charset=utf-8",
          "Use-Operator-Units": "true"}
-    try:
-        return _rqs.post(_V501 + svc, headers=h,
-                         json={"method": method, "params": params}, timeout=60).json()
-    except Exception as e:  # noqa: BLE001
-        return {"error": {"error_string": str(e)[:120]}}
+    return _bounded_post(_V501 + svc, h, {"method": method, "params": params})
 
 
 def _v5_err(j: dict) -> str:

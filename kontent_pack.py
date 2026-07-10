@@ -773,6 +773,7 @@ SLEPOK_LABELS = {
     "chepelev": "Слепок Чепелев",
     "tumashenko": "Слепок Тумашенко",
     "kuderko": "Слепок Кудерко",
+    "dmp": "Слепок_dmp",
 }
 
 
@@ -854,7 +855,7 @@ def content_tree(force_refresh: bool = False) -> dict:
     slepki = []
     order = {"common": 0, "pavlov": 1, "scherbakova": 2, "kryuchkova": 3, "terehov": 4, "karavaev": 5,
               "salamahin": 6, "gordeeva": 7, "zubakin": 8, "chepelev": 9, "tumashenko": 10,
-              "kuderko": 11}
+              "kuderko": 11, "dmp": 12}
     for slp in sorted(slepok_tree, key=lambda x: (order.get(x, 99), x)):
         segments = []
         for segment in sorted(slepok_tree[slp]):
@@ -938,7 +939,7 @@ def content_assets(segment: str, tp: str, ct: str, slepok: str = "") -> list[dic
 SEGMENTS = ("Монобренд", "Мультибренд", "Квиз", "Мульти + БУ", "С пробегом")
 SLEPOK_KEYS = ("pavlov", "scherbakova", "kryuchkova", "terehov", "karavaev",
                "salamahin", "gordeeva", "zubakin", "chepelev", "tumashenko",
-               "kuderko")
+               "kuderko", "dmp")
 # БАГ-7: слепки директологов, у которых ЕСТЬ б/у-сайты («С пробегом», «Мульти+БУ»).
 # При создании РК для НЕ-б/у-сайта (Мультибренд/Монобренд/Квиз) картинки этих слепков
 # могут содержать б/у-авто — исключаем их через exclude_bu_slepoks=True.
@@ -1082,6 +1083,11 @@ def read_any_slepok_images(segment: str, tp: str, ct: str, prefer: str = "",
     их картинки могут содержать б/у-авто (хэшированные имена — _BU_IMG_RE не спасает).
     Фолбэк — глобальные фид-картинки для того же ct.
     ЗАПРЕЩЕНО менять ct: ct0000 и другие марки не используются."""
+    # dmp — не-авто вертикаль (B2B лидоген): НИКОГДА не подмешивать картинки других (авто)
+    # слепков и глобальные фид-картинки (тоже авто). Только собственные картинки dmp или пусто
+    # (картинки dmp Семён добавит позже). Исключение, 2026-07-10.
+    if prefer == "dmp":
+        return read_slepok_images(segment, tp, ct, "dmp")
     keys = ([prefer] + [k for k in SLEPOK_KEYS if k != prefer]) if prefer else list(SLEPOK_KEYS)
     if exclude_bu_slepoks:
         # prefer-слепок оставляем даже если он в _BU_SLEPOKS: caller запросил именно его

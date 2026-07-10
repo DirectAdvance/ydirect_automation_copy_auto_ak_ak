@@ -171,11 +171,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ BAIC BJ60",
-           "gc": "ct0305_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Belgee S50",
            "gc": "ct0306_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -223,11 +218,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Changan CS75Plus",
            "gc": "ct0034_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Changan CS35 MAX",
-           "gc": "ct0315_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -406,11 +396,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Jaecoo J6",
-           "gc": "ct0318_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Jetour Dashing",
            "gc": "ct0144_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -503,11 +488,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ KIA Sportage",
            "gc": "ct0177_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ KIA Sorento",
-           "gc": "ct0175_aon_n027_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -907,11 +887,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск BAIC BJ60",
-           "gc": "ct0305_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Belgee S50",
            "gc": "ct0306_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -959,11 +934,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Changan CS75Plus",
            "gc": "ct0034_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Changan CS35 MAX",
-           "gc": "ct0315_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -1142,11 +1112,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Jaecoo J6",
-           "gc": "ct0318_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Jetour Dashing",
            "gc": "ct0144_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -1239,11 +1204,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск KIA Sportage",
            "gc": "ct0177_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KIA Sorento",
-           "gc": "ct0175_aon_n027_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -1810,11 +1770,6 @@
           },
           {
            "c": "tp5_cpc_site",
-           "t": "SMA BAIC BJ60",
-           "gc": "ct0305_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
            "t": "SMA Belgee S50",
            "gc": "ct0306_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -1862,11 +1817,6 @@
            "c": "tp5_cpc_site",
            "t": "SMA Changan CS75Plus",
            "gc": "ct0034_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Changan CS35 MAX",
-           "gc": "ct0315_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp5_cpc_site",
@@ -2045,11 +1995,6 @@
           },
           {
            "c": "tp5_cpc_site",
-           "t": "SMA Jaecoo J6",
-           "gc": "ct0318_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
            "t": "SMA Jetour Dashing",
            "gc": "ct0144_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -2142,11 +2087,6 @@
            "c": "tp5_cpc_site",
            "t": "SMA KIA Sportage",
            "gc": "ct0177_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA KIA Sorento",
-           "gc": "ct0175_aon_n027_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp5_cpc_site",
@@ -2708,10 +2648,6 @@
            "t": "МК - BAIC BJ40 - КС"
           },
           {
-           "c": "tp6_cpc_site_ct0305_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - BAIC BJ60 - КС"
-          },
-          {
            "c": "tp6_cpc_site_ct0306_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - Belgee S50 - КС"
           },
@@ -2746,10 +2682,6 @@
           {
            "c": "tp6_cpc_site_ct0034_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - Changan CS75Plus - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0315_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Changan CS35 MAX - КС"
           },
           {
            "c": "tp6_cpc_site_ct0054_aon_n029_r0000_ct001_ag011_g00",
@@ -2884,10 +2816,6 @@
            "t": "МК - Jaecoo J7 - КС"
           },
           {
-           "c": "tp6_cpc_site_ct0318_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Jaecoo J6 - КС"
-          },
-          {
            "c": "tp6_cpc_site_ct0144_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - Jetour Dashing - КС"
           },
@@ -2962,10 +2890,6 @@
           {
            "c": "tp6_cpc_site_ct0177_aon_n027_r0000_ct001_ag011_g00",
            "t": "МК - KIA Sportage - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0175_aon_n027_r0000_ct001_ag011_g00",
-           "t": "МК - KIA Sorento - КС"
           },
           {
            "c": "tp6_cpc_site_ct0181_aon_n025_r0000_ct001_ag011_g00",
@@ -3991,16 +3915,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Renault Logan",
            "gc": "ct0213_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Toyota Camry",
-           "gc": "ct0316_aon_n047_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Toyota RAV4",
-           "gc": "ct0317_aon_n047_r0000_ct001_ag011_g00"
           }
          ]
         },
@@ -4202,16 +4116,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Renault Logan",
            "gc": "ct0213_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Toyota Camry",
-           "gc": "ct0316_aon_n047_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Toyota RAV4",
-           "gc": "ct0317_aon_n047_r0000_ct001_ag011_g00"
           }
          ]
         },
@@ -4495,16 +4399,6 @@
            "c": "tp5_cpc_site",
            "t": "SMA Renault Logan",
            "gc": "ct0213_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Toyota Camry",
-           "gc": "ct0316_aon_n047_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Toyota RAV4",
-           "gc": "ct0317_aon_n047_r0000_ct001_ag011_g00"
           }
          ]
         }
@@ -4762,14 +4656,6 @@
           {
            "c": "tp6_cpc_site_ct0213_aon_n044_r0000_ct001_ag011_g00",
            "t": "МК - Renault Logan - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0316_aon_n047_r0000_ct001_ag011_g00",
-           "t": "МК - Toyota Camry - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0317_aon_n047_r0000_ct001_ag011_g00",
-           "t": "МК - Toyota RAV4 - КС"
           }
          ]
         }
@@ -6777,7 +6663,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -6883,7 +6770,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -6922,7 +6810,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -6943,7 +6832,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -6958,7 +6848,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       }
@@ -8892,7 +8783,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -8908,7 +8800,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -9067,7 +8960,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -9140,7 +9034,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -9192,7 +9087,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -9220,7 +9116,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -9250,7 +9147,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -9265,7 +9163,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       }
@@ -11199,7 +11098,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -11215,7 +11115,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -11312,7 +11213,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -11354,7 +11256,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -11447,7 +11350,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -11525,7 +11429,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -11555,7 +11460,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       }
@@ -13489,7 +13395,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -13505,7 +13412,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -13575,7 +13483,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -13639,7 +13548,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -13664,7 +13574,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -13692,7 +13603,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -13713,7 +13625,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -13728,7 +13641,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       }
@@ -16961,7 +16875,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -16982,7 +16897,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       }
@@ -20270,7 +20186,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -20285,7 +20202,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -20355,7 +20273,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -20370,7 +20289,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -20391,7 +20311,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -20412,7 +20333,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       }
@@ -23630,7 +23552,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       }
@@ -25510,7 +25433,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -25525,7 +25449,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -25546,7 +25471,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       }
@@ -27429,7 +27355,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -27450,7 +27377,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       }
@@ -31177,7 +31105,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -31198,7 +31127,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       }
@@ -33074,7 +33004,7 @@
           {
            "c": "tp2_cpc_kviz",
            "t": "Поиск Solaris",
-           "gc": "ct0221_aoff_n000_r0088_ct001_ag011_g00"
+           "gc": "ct0221_aon_n000_r0088_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -35030,6 +34960,68 @@
             }
            ]
           }
+         ],
+         "items": [
+          {
+           "c": "tp6_cpa_site_ct0014_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - КС"
+          },
+          {
+           "c": "tp6_cpa_site_ct0014_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - Автотаргетинг"
+          },
+          {
+           "c": "tp6_cpc_site_ct0006_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - Кредит"
+          },
+          {
+           "c": "tp6_cpc_site_ct0006_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - Кредит (АТ)"
+          },
+          {
+           "c": "tp6_cpc_site_ct0000_aon_n068_r0000_ct001_ag011_g00",
+           "t": "МК - Интересы"
+          },
+          {
+           "c": "tp6_cpc_site_ct0319_aon_n000_r0000_ct010_ag011_g00",
+           "t": "МК - КС"
+          },
+          {
+           "c": "tp6_cpc_site_ct0006_aon_n055_r0000_ct001_ag011_g00",
+           "t": "МК - Кредит (Интересы)"
+          },
+          {
+           "c": "tp6_cpc_kviz_ct0319_aon_n000_r0000_ct010_ag011_g00",
+           "t": "МК - Автотаргетинг"
+          },
+          {
+           "c": "tp6_cpc_site_ct0014_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - КС"
+          },
+          {
+           "c": "tp6_cpc_site_ct0014_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - Автотаргетинг"
+          },
+          {
+           "c": "tp6_cpc_site_ct0014_aon_n068_r0000_ct001_ag011_g00",
+           "t": "МК - Автотаргетинг"
+          },
+          {
+           "c": "tp6_cpc_kviz_ct0014_aon_n068_r0000_ct001_ag011_g00",
+           "t": "МК - Автотаргетинг"
+          },
+          {
+           "c": "tp6_cpc_site_ct0319_aon_n068_r0000_ct001_ag011_g00",
+           "t": "МК - КС"
+          },
+          {
+           "c": "tp6_cpc_site_ct0006_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - КС"
+          },
+          {
+           "c": "tp6_cpc_site_ct0006_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - Автотаргетинг"
+          }
          ]
         },
         {
@@ -35045,7 +35037,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -35101,6 +35094,56 @@
              "t": "Автотаргетинг"
             }
            ]
+          }
+         ],
+         "items": [
+          {
+           "c": "tp7_cpa_site_ct0014_aon_n000_r0000_ct010_ag011_g00",
+           "t": "Каталог - КС"
+          },
+          {
+           "c": "tp7_cpa_site_ct0014_aon_n000_r0000_ct010_ag011_g00",
+           "t": "МК - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpc_site_ct0006_aon_n000_r0000_ct010_ag011_g00",
+           "t": "Каталог - Кредит"
+          },
+          {
+           "c": "tp7_cpc_kviz_ct0319_aon_n000_r0000_ct010_ag011_g00",
+           "t": "Каталог - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpc_site_ct0007_aon_n000_r0000_ct010_ag011_g00",
+           "t": "Каталог - Трейд-ин"
+          },
+          {
+           "c": "tp7_cpc_site_ct0014_aon_n000_r0000_ct010_ag011_g00",
+           "t": "Каталог - КС"
+          },
+          {
+           "c": "tp7_cpc_site_ct0014_aon_n000_r0000_ct001_ag011_g00",
+           "t": "Каталог - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpc_site_ct0014_aon_n068_r0000_ct010_ag011_g00",
+           "t": "Каталог - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpc_site_ct0006_aon_n000_r0000_ct010_ag011_g00",
+           "t": "Каталог - КС"
+          },
+          {
+           "c": "tp7_cpc_site_ct0006_aon_n000_r0000_ct010_ag011_g00",
+           "t": "Каталог - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpc_kviz_ct0014_aon_n000_r0000_ct001_ag011_g00",
+           "t": "Каталог - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpc_site_ct0319_aon_n068_r0000_ct010_ag011_g00",
+           "t": "Каталог - КС"
           }
          ]
         }
@@ -35607,6 +35650,48 @@
             }
            ]
           }
+         ],
+         "items": [
+          {
+           "c": "tp6_cpa_site_ct0111_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - КС (общая)"
+          },
+          {
+           "c": "tp6_cpc_site_ct0111_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - Автотаргетинг (общая)"
+          },
+          {
+           "c": "tp6_cpa_site_ct0119_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - КС"
+          },
+          {
+           "c": "tp6_cpc_site_ct0119_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - Автотаргетинг"
+          },
+          {
+           "c": "tp6_cpa_site_ct0120_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - КС"
+          },
+          {
+           "c": "tp6_cpc_site_ct0120_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - Автотаргетинг"
+          },
+          {
+           "c": "tp6_cpa_site_ct0115_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - КС"
+          },
+          {
+           "c": "tp6_cpa_site_ct0115_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - Автотаргетинг"
+          },
+          {
+           "c": "tp6_cpc_site_ct0006_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - КС"
+          },
+          {
+           "c": "tp6_cpa_site_ct0006_aon_n000_r0000_ct001_ag011_g00",
+           "t": "МК - Автотаргетинг"
+          }
          ]
         }
        ]
@@ -35727,6 +35812,28 @@
             }
            ]
           }
+         ],
+         "items": [
+          {
+           "c": "tp7_cpc_site_ct0111_aon_n000_r0000_ct010_ag011_g00",
+           "t": "Каталог - Автотаргетинг (общая)"
+          },
+          {
+           "c": "tp7_cpa_site_ct0111_aon_n000_r0000_ct010_ag011_g00",
+           "t": "Каталог - КС (общая)"
+          },
+          {
+           "c": "tp7_cpc_site_ct0119_aon_n000_r0000_ct010_ag011_g00",
+           "t": "Каталог - КС"
+          },
+          {
+           "c": "tp7_cpa_site_ct0120_aon_n000_r0000_ct010_ag011_g00",
+           "t": "Каталог - КС"
+          },
+          {
+           "c": "tp7_cpc_quiz_ct0111_aon_n000_r0000_ct010_ag011_g00",
+           "t": "Каталог - КС"
+          }
          ]
         }
        ]
@@ -35802,22 +35909,6 @@
           {
            "c": "tp1_cpc_site",
            "gc": "ct0215_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "gc": "ct0259_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "gc": "ct0264_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "gc": "ct0271_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "gc": "ct0283_aon_n000_r0000_ct001_ag011_g00"
           }
          ]
         }
@@ -35889,22 +35980,6 @@
           {
            "c": "tp2_cpc_site",
            "gc": "ct0215_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "gc": "ct0259_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "gc": "ct0264_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "gc": "ct0271_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "gc": "ct0283_aon_n000_r0000_ct001_ag011_g00"
           }
          ]
         }
@@ -35928,7 +36003,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -35944,7 +36020,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -35983,7 +36060,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -35998,7 +36076,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -36074,7 +36153,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -36144,7 +36224,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       }
@@ -36219,22 +36300,6 @@
           {
            "c": "tp1_cpc_site",
            "gc": "ct0215_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "gc": "ct0259_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "gc": "ct0264_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "gc": "ct0271_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "gc": "ct0283_aon_n000_r0000_ct001_ag011_g00"
           }
          ]
         }
@@ -36306,22 +36371,6 @@
           {
            "c": "tp2_cpc_site",
            "gc": "ct0215_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "gc": "ct0259_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "gc": "ct0264_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "gc": "ct0271_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "gc": "ct0283_aon_n000_r0000_ct001_ag011_g00"
           }
          ]
         }
@@ -36345,7 +36394,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -36361,7 +36411,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -36413,7 +36464,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -36437,7 +36489,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -36513,7 +36566,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -36583,7 +36637,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       }
@@ -36737,11 +36792,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Tenet марка",
-           "gc": "ct0300_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Volkswagen марка",
            "gc": "ct0238_aon_n049_r0000_ct001_ag011_g00"
           }
@@ -36754,21 +36804,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ BAIC U5 Plus",
            "gc": "ct0021_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ BAIC BJ40",
-           "gc": "ct0020_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ BAIC BJ60",
-           "gc": "ct0305_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Belgee S50",
-           "gc": "ct0306_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -36817,11 +36852,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Changan CS35 MAX",
-           "gc": "ct0315_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Chery Tiggo 8 Pro",
            "gc": "ct0054_aon_n029_r0000_ct001_ag011_g00"
           },
@@ -36839,11 +36869,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Chery Tiggo 4",
            "gc": "ct0046_aon_n029_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Chery Tiggo 7L",
-           "gc": "ct0052_aon_n029_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -36947,11 +36972,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Haval Dargo X",
-           "gc": "ct0299_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Haval H3",
            "gc": "ct0115_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -36997,11 +37017,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Jaecoo J6",
-           "gc": "ct0318_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Jetour Dashing",
            "gc": "ct0144_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -37024,11 +37039,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Jetour X70",
            "gc": "ct0147_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Jetour T1",
-           "gc": "ct0307_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -37059,11 +37069,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ KGM TIVOLI",
            "gc": "ct0162_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ KIA Picanto",
-           "gc": "ct0171_aon_n027_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -37267,21 +37272,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Tenet T4",
-           "gc": "ct0301_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Tenet T7",
-           "gc": "ct0302_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Tenet T8",
-           "gc": "ct0303_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Volkswagen Polo",
            "gc": "ct0241_aon_n049_r0000_ct001_ag011_g00"
           },
@@ -37314,11 +37304,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Geely модели-квиз - клики",
            "gc": "ct0097_aon_n033_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Tenet модели-квиз - клики",
-           "gc": "ct0300_aon_n000_r0000_ct001_ag011_g00"
           }
          ]
         },
@@ -37473,11 +37458,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Tenet марка",
-           "gc": "ct0300_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Volkswagen марка",
            "gc": "ct0238_aon_n049_r0000_ct001_ag011_g00"
           }
@@ -37490,21 +37470,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск BAIC U5 Plus",
            "gc": "ct0021_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск BAIC BJ40",
-           "gc": "ct0020_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск BAIC BJ60",
-           "gc": "ct0305_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Belgee S50",
-           "gc": "ct0306_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -37553,11 +37518,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Changan CS35 MAX",
-           "gc": "ct0315_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Chery Tiggo 8 Pro",
            "gc": "ct0054_aon_n029_r0000_ct001_ag011_g00"
           },
@@ -37575,11 +37535,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Chery Tiggo 4",
            "gc": "ct0046_aon_n029_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Chery Tiggo 7L",
-           "gc": "ct0052_aon_n029_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -37683,11 +37638,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Haval Dargo X",
-           "gc": "ct0299_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Haval H3",
            "gc": "ct0115_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -37733,11 +37683,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Jaecoo J6",
-           "gc": "ct0318_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Jetour Dashing",
            "gc": "ct0144_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -37760,11 +37705,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Jetour X70",
            "gc": "ct0147_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jetour T1",
-           "gc": "ct0307_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -37795,11 +37735,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск KGM TIVOLI",
            "gc": "ct0162_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KIA Picanto",
-           "gc": "ct0171_aon_n027_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -38003,21 +37938,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Tenet T4",
-           "gc": "ct0301_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Tenet T7",
-           "gc": "ct0302_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Tenet T8",
-           "gc": "ct0303_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Volkswagen Polo",
            "gc": "ct0241_aon_n049_r0000_ct001_ag011_g00"
           },
@@ -38050,11 +37970,6 @@
            "c": "tp2_cpc_site",
            "t": "Geely марка-квиз - клики",
            "gc": "ct0097_aon_n033_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Tenet марка-квиз - клики",
-           "gc": "ct0300_aon_n000_r0000_ct001_ag011_g00"
           }
          ]
         }
@@ -38209,11 +38124,6 @@
           },
           {
            "c": "tp5_cpc_site",
-           "t": "SMA Tenet марка",
-           "gc": "ct0300_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
            "t": "SMA Volkswagen марка",
            "gc": "ct0238_aon_n049_r0000_ct001_ag011_g00"
           }
@@ -38226,21 +38136,6 @@
            "c": "tp5_cpc_site",
            "t": "SMA BAIC U5 Plus",
            "gc": "ct0021_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA BAIC BJ40",
-           "gc": "ct0020_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA BAIC BJ60",
-           "gc": "ct0305_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Belgee S50",
-           "gc": "ct0306_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp5_cpc_site",
@@ -38289,11 +38184,6 @@
           },
           {
            "c": "tp5_cpc_site",
-           "t": "SMA Changan CS35 MAX",
-           "gc": "ct0315_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
            "t": "SMA Chery Tiggo 8 Pro",
            "gc": "ct0054_aon_n029_r0000_ct001_ag011_g00"
           },
@@ -38311,11 +38201,6 @@
            "c": "tp5_cpc_site",
            "t": "SMA Chery Tiggo 4",
            "gc": "ct0046_aon_n029_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Chery Tiggo 7L",
-           "gc": "ct0052_aon_n029_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp5_cpc_site",
@@ -38419,11 +38304,6 @@
           },
           {
            "c": "tp5_cpc_site",
-           "t": "SMA Haval Dargo X",
-           "gc": "ct0299_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
            "t": "SMA Haval H3",
            "gc": "ct0115_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -38469,11 +38349,6 @@
           },
           {
            "c": "tp5_cpc_site",
-           "t": "SMA Jaecoo J6",
-           "gc": "ct0318_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
            "t": "SMA Jetour Dashing",
            "gc": "ct0144_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -38496,11 +38371,6 @@
            "c": "tp5_cpc_site",
            "t": "SMA Jetour X70",
            "gc": "ct0147_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Jetour T1",
-           "gc": "ct0307_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp5_cpc_site",
@@ -38531,11 +38401,6 @@
            "c": "tp5_cpc_site",
            "t": "SMA KGM TIVOLI",
            "gc": "ct0162_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA KIA Picanto",
-           "gc": "ct0171_aon_n027_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp5_cpc_site",
@@ -38736,21 +38601,6 @@
            "c": "tp5_cpc_site",
            "t": "SMA Tank 300",
            "gc": "ct0234_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Tenet T4",
-           "gc": "ct0301_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Tenet T7",
-           "gc": "ct0302_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Tenet T8",
-           "gc": "ct0303_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp5_cpc_site",
@@ -39075,18 +38925,6 @@
            "t": "МК - Tank - Интересы"
           },
           {
-           "c": "tp6_cpc_site_ct0300_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Tenet - Автоматическая"
-          },
-          {
-           "c": "tp6_cpc_site_ct0300_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Tenet - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0300_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Tenet - Интересы"
-          },
-          {
            "c": "tp6_cpc_site_ct0238_aon_n049_r0000_ct001_ag011_g00",
            "t": "МК - Volkswagen - Автоматическая"
           },
@@ -39106,18 +38944,6 @@
           {
            "c": "tp6_cpc_site_ct0021_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - BAIC U5 Plus - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0020_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - BAIC BJ40 - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0305_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - BAIC BJ60 - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0306_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Belgee S50 - КС"
           },
           {
            "c": "tp6_cpc_site_ct0041_aon_n000_r0000_ct001_ag011_g00",
@@ -39152,10 +38978,6 @@
            "t": "МК - Changan CS75Plus - КС"
           },
           {
-           "c": "tp6_cpc_site_ct0315_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Changan CS35 MAX - КС"
-          },
-          {
            "c": "tp6_cpc_site_ct0054_aon_n029_r0000_ct001_ag011_g00",
            "t": "МК - Chery Tiggo 8 Pro - КС"
           },
@@ -39170,10 +38992,6 @@
           {
            "c": "tp6_cpc_site_ct0046_aon_n029_r0000_ct001_ag011_g00",
            "t": "МК - Chery Tiggo 4 - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0052_aon_n029_r0000_ct001_ag011_g00",
-           "t": "МК - Chery Tiggo 7L - КС"
           },
           {
            "c": "tp6_cpc_site_ct0072_aon_n000_r0000_ct001_ag011_g00",
@@ -39248,10 +39066,6 @@
            "t": "МК - Haval M6 - КС"
           },
           {
-           "c": "tp6_cpc_site_ct0299_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Haval Dargo X - КС"
-          },
-          {
            "c": "tp6_cpc_site_ct0115_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - Haval H3 - КС"
           },
@@ -39288,10 +39102,6 @@
            "t": "МК - Jaecoo J7 - КС"
           },
           {
-           "c": "tp6_cpc_site_ct0318_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Jaecoo J6 - КС"
-          },
-          {
            "c": "tp6_cpc_site_ct0144_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - Jetour Dashing - КС"
           },
@@ -39310,10 +39120,6 @@
           {
            "c": "tp6_cpc_site_ct0147_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - Jetour X70 - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0307_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Jetour T1 - КС"
           },
           {
            "c": "tp6_cpc_site_ct0152_aon_n000_r0000_ct001_ag011_g00",
@@ -39338,10 +39144,6 @@
           {
            "c": "tp6_cpc_site_ct0162_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - KGM TIVOLI - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0171_aon_n027_r0000_ct001_ag011_g00",
-           "t": "МК - KIA Picanto - КС"
           },
           {
            "c": "tp6_cpc_site_ct0166_aon_n027_r0000_ct001_ag011_g00",
@@ -39504,18 +39306,6 @@
            "t": "МК - Tank 300 - КС"
           },
           {
-           "c": "tp6_cpc_site_ct0301_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Tenet T4 - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0302_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Tenet T7 - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0303_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Tenet T8 - КС"
-          },
-          {
            "c": "tp6_cpc_site_ct0241_aon_n049_r0000_ct001_ag011_g00",
            "t": "МК - Volkswagen Polo - КС"
           },
@@ -39532,27 +39322,227 @@
        "title": "Товарка",
        "groups": [
         {
-         "name": "ТК · общие",
+         "name": "ТК · по марке (Товарная-Автотаргетинг)",
          "items": [
           {
-           "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Автоматическая"
+           "c": "tp7_cpa_site_ct0019_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Baic - Автотаргетинг"
           },
           {
-           "c": "tp7_cpc_site_ct0009_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Авито"
+           "c": "tp7_cpa_site_ct0029_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Changan - Автотаргетинг"
           },
           {
-           "c": "tp7_cpc_site_ct0010_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Дром"
+           "c": "tp7_cpa_site_ct0044_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Chery - Автотаргетинг"
           },
           {
-           "c": "tp7_cpc_site_ct0000_aon_n052_r0000_ct009_ag001_g00",
-           "t": "ТК - Авто ру"
+           "c": "tp7_cpa_site_ct0076_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Exeed - Автотаргетинг"
           },
           {
-           "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-           "t": "TK - Интересы"
+           "c": "tp7_cpa_site_ct0081_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Faw - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0097_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Geely - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0111_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Haval - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0121_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Hyundai - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0140_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Jaecoo - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0143_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Jetour - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0150_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Jetta - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0154_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Kaiyi - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0164_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Kia - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0181_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Lada - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0191_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Livan - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0252_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Москвич - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0199_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Nissan - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0204_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Omoda - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0209_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Renault - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0215_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Skoda - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0256_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - УАЗ - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0238_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Volkswagen - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0067_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Dongfeng - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0130_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Jac - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0089_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - GAC - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0229_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - SWM - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0221_aon_n000_r0000_ct003_ag011_g00",
+           "t": "Товарная - Solaris - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0019_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Baic - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0099_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Changan - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0044_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Chery - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0076_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Exeed - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0081_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Faw - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0097_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Geely - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0111_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Haval - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0121_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Hyundai - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0140_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Jaecoo - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0143_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Jetour - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0150_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Jetta - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0154_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Kaiyi - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0164_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Kia - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0181_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Lada - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0191_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Livan - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0252_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Москвич - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0199_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Nissan - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0204_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Omoda - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0209_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Renault - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0215_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Skoda - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0256_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - УАЗ - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0238_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Volkswagen - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0067_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Dongfeng - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0130_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Jac - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0089_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - GAC - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0229_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - SWM - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0221_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Solaris - Автотаргетинг"
+          },
+          {
+           "c": "tp7_cpa_site_ct0233_aon_n000_r0000_ct009_ag011_g00",
+           "t": "Товарная - Tank - Автотаргетинг"
           }
          ]
         }
@@ -39637,11 +39627,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Changan CS35 MAX",
-           "gc": "ct0315_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Geely Atlas Pro",
            "gc": "ct0099_aon_n033_r0000_ct001_ag011_g00"
           },
@@ -39679,11 +39664,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Haval M6",
            "gc": "ct0120_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Haval Dargo X",
-           "gc": "ct0299_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -39783,11 +39763,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Changan CS35 MAX",
-           "gc": "ct0315_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Geely Atlas Pro",
            "gc": "ct0099_aon_n033_r0000_ct001_ag011_g00"
           },
@@ -39825,11 +39800,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Haval M6",
            "gc": "ct0120_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Haval Dargo X",
-           "gc": "ct0299_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -39929,11 +39899,6 @@
           },
           {
            "c": "tp5_cpc_site",
-           "t": "SMA Changan CS35 MAX",
-           "gc": "ct0315_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
            "t": "SMA Geely Atlas Pro",
            "gc": "ct0099_aon_n033_r0000_ct001_ag011_g00"
           },
@@ -39971,11 +39936,6 @@
            "c": "tp5_cpc_site",
            "t": "SMA Haval M6",
            "gc": "ct0120_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Haval Dargo X",
-           "gc": "ct0299_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp5_cpc_site",
@@ -40084,10 +40044,6 @@
            "t": "МК - Changan UNI-T - КС"
           },
           {
-           "c": "tp6_cpc_site_ct0315_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Changan CS35 MAX - КС"
-          },
-          {
            "c": "tp6_cpc_site_ct0099_aon_n033_r0000_ct001_ag011_g00",
            "t": "МК - Geely Atlas Pro - КС"
           },
@@ -40118,10 +40074,6 @@
           {
            "c": "tp6_cpc_site_ct0120_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - Haval M6 - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0299_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Haval Dargo X - КС"
           },
           {
            "c": "tp6_cpc_site_ct0183_aon_n025_r0000_ct001_ag011_g00",
@@ -40322,11 +40274,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Tenet марка",
-           "gc": "ct0300_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Volkswagen марка",
            "gc": "ct0238_aon_n049_r0000_ct001_ag011_g00"
           }
@@ -40339,21 +40286,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ BAIC U5 Plus",
            "gc": "ct0021_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ BAIC BJ40",
-           "gc": "ct0020_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ BAIC BJ60",
-           "gc": "ct0305_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Belgee S50",
-           "gc": "ct0306_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -40402,11 +40334,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Changan CS35 MAX",
-           "gc": "ct0315_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Chery Tiggo 8 Pro",
            "gc": "ct0054_aon_n029_r0000_ct001_ag011_g00"
           },
@@ -40424,11 +40351,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Chery Tiggo 4",
            "gc": "ct0046_aon_n029_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Chery Tiggo 7L",
-           "gc": "ct0052_aon_n029_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -40532,11 +40454,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Haval Dargo X",
-           "gc": "ct0299_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Haval H3",
            "gc": "ct0115_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -40582,11 +40499,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Jaecoo J6",
-           "gc": "ct0318_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Jetour Dashing",
            "gc": "ct0144_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -40609,11 +40521,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Jetour X70",
            "gc": "ct0147_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Jetour T1",
-           "gc": "ct0307_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -40644,11 +40551,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ KGM TIVOLI",
            "gc": "ct0162_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ KIA Picanto",
-           "gc": "ct0171_aon_n027_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -40852,21 +40754,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Tenet T4",
-           "gc": "ct0301_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Tenet T7",
-           "gc": "ct0302_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Tenet T8",
-           "gc": "ct0303_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Volkswagen Polo",
            "gc": "ct0241_aon_n049_r0000_ct001_ag011_g00"
           },
@@ -40899,11 +40786,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Geely модели-квиз - клики",
            "gc": "ct0097_aon_n033_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Tenet модели-квиз - клики",
-           "gc": "ct0300_aon_n000_r0000_ct001_ag011_g00"
           }
          ]
         },
@@ -41058,11 +40940,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Tenet марка",
-           "gc": "ct0300_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Volkswagen марка",
            "gc": "ct0238_aon_n049_r0000_ct001_ag011_g00"
           }
@@ -41075,21 +40952,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск BAIC U5 Plus",
            "gc": "ct0021_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск BAIC BJ40",
-           "gc": "ct0020_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск BAIC BJ60",
-           "gc": "ct0305_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Belgee S50",
-           "gc": "ct0306_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -41138,11 +41000,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Changan CS35 MAX",
-           "gc": "ct0315_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Chery Tiggo 8 Pro",
            "gc": "ct0054_aon_n029_r0000_ct001_ag011_g00"
           },
@@ -41160,11 +41017,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Chery Tiggo 4",
            "gc": "ct0046_aon_n029_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Chery Tiggo 7L",
-           "gc": "ct0052_aon_n029_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -41268,11 +41120,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Haval Dargo X",
-           "gc": "ct0299_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Haval H3",
            "gc": "ct0115_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -41318,11 +41165,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Jaecoo J6",
-           "gc": "ct0318_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Jetour Dashing",
            "gc": "ct0144_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -41345,11 +41187,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Jetour X70",
            "gc": "ct0147_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jetour T1",
-           "gc": "ct0307_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -41380,11 +41217,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск KGM TIVOLI",
            "gc": "ct0162_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KIA Picanto",
-           "gc": "ct0171_aon_n027_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -41588,21 +41420,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Tenet T4",
-           "gc": "ct0301_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Tenet T7",
-           "gc": "ct0302_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Tenet T8",
-           "gc": "ct0303_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Volkswagen Polo",
            "gc": "ct0241_aon_n049_r0000_ct001_ag011_g00"
           },
@@ -41635,11 +41452,6 @@
            "c": "tp2_cpc_site",
            "t": "Geely марка-квиз - клики",
            "gc": "ct0097_aon_n033_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Tenet марка-квиз - клики",
-           "gc": "ct0300_aon_n000_r0000_ct001_ag011_g00"
           }
          ]
         }
@@ -41689,11 +41501,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Mazda марка",
-           "gc": "ct0283_aon_n039_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Ford марка",
            "gc": "ct0259_aon_n032_r0000_ct001_ag011_g00"
           },
@@ -41796,16 +41603,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Renault Logan",
            "gc": "ct0213_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Toyota Camry",
-           "gc": "ct0316_aon_n047_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Toyota RAV4",
-           "gc": "ct0317_aon_n047_r0000_ct001_ag011_g00"
           }
          ]
         },
@@ -41897,11 +41694,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Toyota марка",
            "gc": "ct0271_aon_n047_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Mazda марка",
-           "gc": "ct0283_aon_n039_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -42007,16 +41799,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Renault Logan",
            "gc": "ct0213_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Toyota Camry",
-           "gc": "ct0316_aon_n047_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Toyota RAV4",
-           "gc": "ct0317_aon_n047_r0000_ct001_ag011_g00"
           }
          ]
         },
@@ -42167,18 +41949,6 @@
            "t": "МК - Toyota - Интересы"
           },
           {
-           "c": "tp6_cpc_site_ct0283_aon_n039_r0000_ct001_ag011_g00",
-           "t": "МК - Mazda - Автоматическая"
-          },
-          {
-           "c": "tp6_cpc_site_ct0283_aon_n039_r0000_ct001_ag011_g00",
-           "t": "МК - Mazda - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0283_aon_n039_r0000_ct001_ag011_g00",
-           "t": "МК - Mazda - Интересы"
-          },
-          {
            "c": "tp6_cpc_site_ct0259_aon_n032_r0000_ct001_ag011_g00",
            "t": "МК - Ford - Автоматическая"
           },
@@ -42294,14 +42064,6 @@
           {
            "c": "tp6_cpc_site_ct0213_aon_n044_r0000_ct001_ag011_g00",
            "t": "МК - Renault Logan - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0316_aon_n047_r0000_ct001_ag011_g00",
-           "t": "МК - Toyota Camry - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0317_aon_n047_r0000_ct001_ag011_g00",
-           "t": "МК - Toyota RAV4 - КС"
           }
          ]
         }
@@ -42313,28 +42075,7 @@
        "groups": [
         {
          "name": "ТК · общие",
-         "items": [
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Автоматическая"
-          },
-          {
-           "c": "tp7_cpc_site_ct0009_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Авито"
-          },
-          {
-           "c": "tp7_cpc_site_ct0010_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Дром"
-          },
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n052_r0000_ct009_ag001_g00",
-           "t": "ТК - Авто ру"
-          },
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-           "t": "TK - Интересы"
-          }
-         ]
+         "items": []
         }
        ]
       }
@@ -42382,11 +42123,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Mazda марка",
-           "gc": "ct0283_aon_n039_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Ford марка",
            "gc": "ct0259_aon_n032_r0000_ct001_ag011_g00"
           },
@@ -42489,16 +42225,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Renault Logan",
            "gc": "ct0213_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Toyota Camry",
-           "gc": "ct0316_aon_n047_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Toyota RAV4",
-           "gc": "ct0317_aon_n047_r0000_ct001_ag011_g00"
           }
          ]
         },
@@ -42590,11 +42316,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Toyota марка",
            "gc": "ct0271_aon_n047_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Mazda марка",
-           "gc": "ct0283_aon_n039_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -42700,16 +42421,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Renault Logan",
            "gc": "ct0213_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Toyota Camry",
-           "gc": "ct0316_aon_n047_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Toyota RAV4",
-           "gc": "ct0317_aon_n047_r0000_ct001_ag011_g00"
           }
          ]
         },
@@ -42860,18 +42571,6 @@
            "t": "МК - Toyota - Интересы"
           },
           {
-           "c": "tp6_cpc_site_ct0283_aon_n039_r0000_ct001_ag011_g00",
-           "t": "МК - Mazda - Автоматическая"
-          },
-          {
-           "c": "tp6_cpc_site_ct0283_aon_n039_r0000_ct001_ag011_g00",
-           "t": "МК - Mazda - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0283_aon_n039_r0000_ct001_ag011_g00",
-           "t": "МК - Mazda - Интересы"
-          },
-          {
            "c": "tp6_cpc_site_ct0259_aon_n032_r0000_ct001_ag011_g00",
            "t": "МК - Ford - Автоматическая"
           },
@@ -42987,14 +42686,6 @@
           {
            "c": "tp6_cpc_site_ct0213_aon_n044_r0000_ct001_ag011_g00",
            "t": "МК - Renault Logan - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0316_aon_n047_r0000_ct001_ag011_g00",
-           "t": "МК - Toyota Camry - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0317_aon_n047_r0000_ct001_ag011_g00",
-           "t": "МК - Toyota RAV4 - КС"
           }
          ]
         }
@@ -43006,28 +42697,7 @@
        "groups": [
         {
          "name": "ТК · общие",
-         "items": [
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Автоматическая"
-          },
-          {
-           "c": "tp7_cpc_site_ct0009_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Авито"
-          },
-          {
-           "c": "tp7_cpc_site_ct0010_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Дром"
-          },
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n052_r0000_ct009_ag001_g00",
-           "t": "ТК - Авто ру"
-          },
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-           "t": "TK - Интересы"
-          }
-         ]
+         "items": []
         }
        ]
       }
@@ -43061,33 +42731,8 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Автокредит/кредит",
-           "gc": "ct0006_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Trade-in/трейд-ин",
-           "gc": "ct0007_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Автору",
-           "gc": "ct0008_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Авито",
-           "gc": "ct0009_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Дром",
            "gc": "ct0010_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Автосалон/салон/Дилер",
-           "gc": "ct0013_aoff_n000_r0100_ct010_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -43363,16 +43008,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Faw Bestune T99",
            "gc": "ct0086_aoff_n000_r0002_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpa_site",
-           "t": "РСЯ FAW X40",
-           "gc": "ct0087_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpa_site",
-           "t": "РСЯ FAW X80",
-           "gc": "ct0088_aon_n000_r0068_ct003_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -43666,11 +43301,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ KGM REXTON",
-           "gc": "ct0161_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ KGM TIVOLI",
            "gc": "ct0162_aoff_n000_r0086_ct001_ag011_g00"
           },
@@ -43818,11 +43448,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ nissan obshaya",
            "gc": "ct0199_aoff_n000_r0088_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpa_site",
-           "t": "РСЯ Nissan Murano",
-           "gc": "ct0200_aon_n000_r0068_ct003_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -44065,11 +43690,6 @@
            "gc": "ct0256_aoff_n000_r0088_ct001_ag011_g00— УАЗ"
           },
           {
-           "c": "tp1_cpa_site",
-           "t": "РСЯ UAZ Hunter",
-           "gc": "ct0257_aon_n000_r0068_ct003_ag011_g00"
-          },
-          {
            "c": "tp1_cpc_site",
            "t": "РСЯ UAZ Patriot",
            "gc": "ct0258_aoff_n000_r0058_ct003_ag011_g00"
@@ -44154,11 +43774,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск группа",
            "gc": "ct0000_aon_n000_r0074_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Автокредит",
-           "gc": "ct0006_aon_n000_r0088_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -44903,7 +44518,7 @@
           {
            "c": "tp2_cpc_kviz",
            "t": "Поиск Solaris",
-           "gc": "ct0221_aoff_n000_r0088_ct001_ag011_g00"
+           "gc": "ct0221_aon_n000_r0088_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -45327,16 +44942,6 @@
            "gc": "ct0086_aon_n000_r0002_ct001_ag011_g00"
           },
           {
-           "c": "tp5_cpa_site",
-           "t": "Поиск + Динамика + Товарная галерея FAW X40",
-           "gc": "ct0087_aon_n000_r0072_ct001_ag011_g00— FAW X40"
-          },
-          {
-           "c": "tp5_cpa_site",
-           "t": "Поиск + Динамика + Товарная галерея FAW X80",
-           "gc": "ct0088_aon_n000_r0072_ct001_ag011_g00— FAW X80"
-          },
-          {
            "c": "tp5_cpc_kviz",
            "t": "Поиск + Динамика + Товарная галерея Gac empow",
            "gc": "ct0090_aon_n000_r0002_ct001_ag011_g00"
@@ -45737,11 +45342,6 @@
            "gc": "ct0199_aoff_n000_r0088_ct001_ag011_g00"
           },
           {
-           "c": "tp5_cpa_site",
-           "t": "Поиск + Динамика + Товарная галерея Nissan Murano",
-           "gc": "ct0200_aon_n000_r0072_ct001_ag011_g00"
-          },
-          {
            "c": "tp5_cpc_site",
            "t": "Поиск + Динамика + Товарная галерея Nissan Qashqai",
            "gc": "ct0201_aoff_n000_r0088_ct001_ag011_g00"
@@ -45947,11 +45547,6 @@
            "gc": "ct0256_aon_n000_r0072_ct001_ag011_g00"
           },
           {
-           "c": "tp5_cpa_site",
-           "t": "Поиск + Динамика + Товарная галерея UAZ Hunter",
-           "gc": "ct0257_aon_n000_r0072_ct001_ag011_g00"
-          },
-          {
            "c": "tp5_cpc_kviz",
            "t": "Поиск + Динамика + Товарная галерея УАЗ Patriot",
            "gc": "ct0258_aon_n000_r0002_ct001_ag011_g00"
@@ -45985,10 +45580,6 @@
           {
            "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - Автоматическая"
-          },
-          {
-           "c": "tp6_cpc_site_ct0009_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Авито"
           },
           {
            "c": "tp6_cpc_site_ct0010_aon_n000_r0000_ct001_ag011_g00",
@@ -46323,10 +45914,6 @@
            "t": "ТК - Автоматическая"
           },
           {
-           "c": "tp7_cpc_site_ct0009_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Авито"
-          },
-          {
            "c": "tp7_cpc_site_ct0010_aon_n000_r0000_ct009_ag001_g00",
            "t": "ТК - Дром"
           },
@@ -46366,33 +45953,8 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Автокредит/кредит",
-           "gc": "ct0006_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Trade-in/трейд-ин",
-           "gc": "ct0007_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Автору",
-           "gc": "ct0008_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Авито",
-           "gc": "ct0009_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Дром",
            "gc": "ct0010_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Автосалон/салон/Дилер",
-           "gc": "ct0013_aoff_n000_r0100_ct010_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -46668,16 +46230,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Faw Bestune T99",
            "gc": "ct0086_aoff_n000_r0002_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpa_site",
-           "t": "РСЯ FAW X40",
-           "gc": "ct0087_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpa_site",
-           "t": "РСЯ FAW X80",
-           "gc": "ct0088_aon_n000_r0068_ct003_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -46971,11 +46523,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ KGM REXTON",
-           "gc": "ct0161_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ KGM TIVOLI",
            "gc": "ct0162_aoff_n000_r0086_ct001_ag011_g00"
           },
@@ -47123,11 +46670,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ nissan obshaya",
            "gc": "ct0199_aoff_n000_r0088_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpa_site",
-           "t": "РСЯ Nissan Murano",
-           "gc": "ct0200_aon_n000_r0068_ct003_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -47370,11 +46912,6 @@
            "gc": "ct0256_aoff_n000_r0088_ct001_ag011_g00— УАЗ"
           },
           {
-           "c": "tp1_cpa_site",
-           "t": "РСЯ UAZ Hunter",
-           "gc": "ct0257_aon_n000_r0068_ct003_ag011_g00"
-          },
-          {
            "c": "tp1_cpc_site",
            "t": "РСЯ UAZ Patriot",
            "gc": "ct0258_aoff_n000_r0058_ct003_ag011_g00"
@@ -47459,11 +46996,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск группа",
            "gc": "ct0000_aon_n000_r0074_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Автокредит",
-           "gc": "ct0006_aon_n000_r0088_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -48208,7 +47740,7 @@
           {
            "c": "tp2_cpc_kviz",
            "t": "Поиск Solaris",
-           "gc": "ct0221_aoff_n000_r0088_ct001_ag011_g00"
+           "gc": "ct0221_aon_n000_r0088_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -48632,16 +48164,6 @@
            "gc": "ct0086_aon_n000_r0002_ct001_ag011_g00"
           },
           {
-           "c": "tp5_cpa_site",
-           "t": "Поиск + Динамика + Товарная галерея FAW X40",
-           "gc": "ct0087_aon_n000_r0072_ct001_ag011_g00— FAW X40"
-          },
-          {
-           "c": "tp5_cpa_site",
-           "t": "Поиск + Динамика + Товарная галерея FAW X80",
-           "gc": "ct0088_aon_n000_r0072_ct001_ag011_g00— FAW X80"
-          },
-          {
            "c": "tp5_cpc_kviz",
            "t": "Поиск + Динамика + Товарная галерея Gac empow",
            "gc": "ct0090_aon_n000_r0002_ct001_ag011_g00"
@@ -49042,11 +48564,6 @@
            "gc": "ct0199_aoff_n000_r0088_ct001_ag011_g00"
           },
           {
-           "c": "tp5_cpa_site",
-           "t": "Поиск + Динамика + Товарная галерея Nissan Murano",
-           "gc": "ct0200_aon_n000_r0072_ct001_ag011_g00"
-          },
-          {
            "c": "tp5_cpc_site",
            "t": "Поиск + Динамика + Товарная галерея Nissan Qashqai",
            "gc": "ct0201_aoff_n000_r0088_ct001_ag011_g00"
@@ -49252,11 +48769,6 @@
            "gc": "ct0256_aon_n000_r0072_ct001_ag011_g00"
           },
           {
-           "c": "tp5_cpa_site",
-           "t": "Поиск + Динамика + Товарная галерея UAZ Hunter",
-           "gc": "ct0257_aon_n000_r0072_ct001_ag011_g00"
-          },
-          {
            "c": "tp5_cpc_kviz",
            "t": "Поиск + Динамика + Товарная галерея УАЗ Patriot",
            "gc": "ct0258_aon_n000_r0002_ct001_ag011_g00"
@@ -49290,10 +48802,6 @@
           {
            "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - Автоматическая"
-          },
-          {
-           "c": "tp6_cpc_site_ct0009_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Авито"
           },
           {
            "c": "tp6_cpc_site_ct0010_aon_n000_r0000_ct001_ag011_g00",
@@ -49412,10 +48920,6 @@
            "t": "ТК - Автоматическая"
           },
           {
-           "c": "tp7_cpc_site_ct0009_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Авито"
-          },
-          {
            "c": "tp7_cpc_site_ct0010_aon_n000_r0000_ct009_ag001_g00",
            "t": "ТК - Дром"
           },
@@ -49488,33 +48992,8 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Автокредит/кредит",
-           "gc": "ct0006_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Trade-in/трейд-ин",
-           "gc": "ct0007_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Автору",
-           "gc": "ct0008_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Авито",
-           "gc": "ct0009_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Дром",
            "gc": "ct0010_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Автосалон/салон/Дилер",
-           "gc": "ct0013_aoff_n000_r0100_ct010_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -49790,16 +49269,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Faw Bestune T99",
            "gc": "ct0086_aoff_n000_r0002_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpa_site",
-           "t": "РСЯ FAW X40",
-           "gc": "ct0087_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpa_site",
-           "t": "РСЯ FAW X80",
-           "gc": "ct0088_aon_n000_r0068_ct003_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -50093,11 +49562,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ KGM REXTON",
-           "gc": "ct0161_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ KGM TIVOLI",
            "gc": "ct0162_aoff_n000_r0086_ct001_ag011_g00"
           },
@@ -50245,11 +49709,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ nissan obshaya",
            "gc": "ct0199_aoff_n000_r0088_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpa_site",
-           "t": "РСЯ Nissan Murano",
-           "gc": "ct0200_aon_n000_r0068_ct003_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -50492,11 +49951,6 @@
            "gc": "ct0256_aoff_n000_r0088_ct001_ag011_g00— УАЗ"
           },
           {
-           "c": "tp1_cpa_site",
-           "t": "РСЯ UAZ Hunter",
-           "gc": "ct0257_aon_n000_r0068_ct003_ag011_g00"
-          },
-          {
            "c": "tp1_cpc_site",
            "t": "РСЯ UAZ Patriot",
            "gc": "ct0258_aoff_n000_r0058_ct003_ag011_g00"
@@ -50581,11 +50035,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск группа",
            "gc": "ct0000_aon_n000_r0074_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Автокредит",
-           "gc": "ct0006_aon_n000_r0088_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -51330,7 +50779,7 @@
           {
            "c": "tp2_cpc_kviz",
            "t": "Поиск Solaris",
-           "gc": "ct0221_aoff_n000_r0088_ct001_ag011_g00"
+           "gc": "ct0221_aon_n000_r0088_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -51754,16 +51203,6 @@
            "gc": "ct0086_aon_n000_r0002_ct001_ag011_g00"
           },
           {
-           "c": "tp5_cpa_site",
-           "t": "Поиск + Динамика + Товарная галерея FAW X40",
-           "gc": "ct0087_aon_n000_r0072_ct001_ag011_g00— FAW X40"
-          },
-          {
-           "c": "tp5_cpa_site",
-           "t": "Поиск + Динамика + Товарная галерея FAW X80",
-           "gc": "ct0088_aon_n000_r0072_ct001_ag011_g00— FAW X80"
-          },
-          {
            "c": "tp5_cpc_kviz",
            "t": "Поиск + Динамика + Товарная галерея Gac empow",
            "gc": "ct0090_aon_n000_r0002_ct001_ag011_g00"
@@ -52164,11 +51603,6 @@
            "gc": "ct0199_aoff_n000_r0088_ct001_ag011_g00"
           },
           {
-           "c": "tp5_cpa_site",
-           "t": "Поиск + Динамика + Товарная галерея Nissan Murano",
-           "gc": "ct0200_aon_n000_r0072_ct001_ag011_g00"
-          },
-          {
            "c": "tp5_cpc_site",
            "t": "Поиск + Динамика + Товарная галерея Nissan Qashqai",
            "gc": "ct0201_aoff_n000_r0088_ct001_ag011_g00"
@@ -52374,11 +51808,6 @@
            "gc": "ct0256_aon_n000_r0072_ct001_ag011_g00"
           },
           {
-           "c": "tp5_cpa_site",
-           "t": "Поиск + Динамика + Товарная галерея UAZ Hunter",
-           "gc": "ct0257_aon_n000_r0072_ct001_ag011_g00"
-          },
-          {
            "c": "tp5_cpc_kviz",
            "t": "Поиск + Динамика + Товарная галерея УАЗ Patriot",
            "gc": "ct0258_aon_n000_r0002_ct001_ag011_g00"
@@ -52414,10 +51843,6 @@
            "t": "МК - Автоматическая"
           },
           {
-           "c": "tp6_cpc_site_ct0009_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Авито"
-          },
-          {
            "c": "tp6_cpc_site_ct0010_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - Дром"
           },
@@ -52443,10 +51868,6 @@
           {
            "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
            "t": "ТК - Автоматическая"
-          },
-          {
-           "c": "tp7_cpc_site_ct0009_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Авито"
           },
           {
            "c": "tp7_cpc_site_ct0010_aon_n000_r0000_ct009_ag001_g00",
@@ -52488,33 +51909,8 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Автокредит/кредит",
-           "gc": "ct0006_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Trade-in/трейд-ин",
-           "gc": "ct0007_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Автору",
-           "gc": "ct0008_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Авито",
-           "gc": "ct0009_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Дром",
            "gc": "ct0010_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Автосалон/салон/Дилер",
-           "gc": "ct0013_aoff_n000_r0100_ct010_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -52790,16 +52186,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Faw Bestune T99",
            "gc": "ct0086_aoff_n000_r0002_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpa_site",
-           "t": "РСЯ FAW X40",
-           "gc": "ct0087_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpa_site",
-           "t": "РСЯ FAW X80",
-           "gc": "ct0088_aon_n000_r0068_ct003_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -53093,11 +52479,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ KGM REXTON",
-           "gc": "ct0161_aoff_n000_r0100_ct010_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ KGM TIVOLI",
            "gc": "ct0162_aoff_n000_r0086_ct001_ag011_g00"
           },
@@ -53245,11 +52626,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ nissan obshaya",
            "gc": "ct0199_aoff_n000_r0088_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpa_site",
-           "t": "РСЯ Nissan Murano",
-           "gc": "ct0200_aon_n000_r0068_ct003_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -53492,11 +52868,6 @@
            "gc": "ct0256_aoff_n000_r0088_ct001_ag011_g00— УАЗ"
           },
           {
-           "c": "tp1_cpa_site",
-           "t": "РСЯ UAZ Hunter",
-           "gc": "ct0257_aon_n000_r0068_ct003_ag011_g00"
-          },
-          {
            "c": "tp1_cpc_site",
            "t": "РСЯ UAZ Patriot",
            "gc": "ct0258_aoff_n000_r0058_ct003_ag011_g00"
@@ -53581,11 +52952,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск группа",
            "gc": "ct0000_aon_n000_r0074_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Автокредит",
-           "gc": "ct0006_aon_n000_r0088_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -54330,7 +53696,7 @@
           {
            "c": "tp2_cpc_kviz",
            "t": "Поиск Solaris",
-           "gc": "ct0221_aoff_n000_r0088_ct001_ag011_g00"
+           "gc": "ct0221_aon_n000_r0088_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -54754,16 +54120,6 @@
            "gc": "ct0086_aon_n000_r0002_ct001_ag011_g00"
           },
           {
-           "c": "tp5_cpa_site",
-           "t": "Поиск + Динамика + Товарная галерея FAW X40",
-           "gc": "ct0087_aon_n000_r0072_ct001_ag011_g00— FAW X40"
-          },
-          {
-           "c": "tp5_cpa_site",
-           "t": "Поиск + Динамика + Товарная галерея FAW X80",
-           "gc": "ct0088_aon_n000_r0072_ct001_ag011_g00— FAW X80"
-          },
-          {
            "c": "tp5_cpc_kviz",
            "t": "Поиск + Динамика + Товарная галерея Gac empow",
            "gc": "ct0090_aon_n000_r0002_ct001_ag011_g00"
@@ -55164,11 +54520,6 @@
            "gc": "ct0199_aoff_n000_r0088_ct001_ag011_g00"
           },
           {
-           "c": "tp5_cpa_site",
-           "t": "Поиск + Динамика + Товарная галерея Nissan Murano",
-           "gc": "ct0200_aon_n000_r0072_ct001_ag011_g00"
-          },
-          {
            "c": "tp5_cpc_site",
            "t": "Поиск + Динамика + Товарная галерея Nissan Qashqai",
            "gc": "ct0201_aoff_n000_r0088_ct001_ag011_g00"
@@ -55372,11 +54723,6 @@
            "c": "tp5_cpa_site",
            "t": "Поиск + Динамика + Товарная галерея UAZ",
            "gc": "ct0256_aon_n000_r0072_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpa_site",
-           "t": "Поиск + Динамика + Товарная галерея UAZ Hunter",
-           "gc": "ct0257_aon_n000_r0072_ct001_ag011_g00"
           },
           {
            "c": "tp5_cpc_kviz",
@@ -55792,11 +55138,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Jac S7",
-           "gc": "ct0135_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Jaecoo J8",
            "gc": "ct0142_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -55809,11 +55150,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Jaecoo J7",
            "gc": "ct0141_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Jaecoo J6",
-           "gc": "ct0318_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -55877,11 +55213,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ KIA Picanto",
-           "gc": "ct0171_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ KIA Ceed",
            "gc": "ct0166_aon_n027_r0000_ct001_ag011_g00"
           },
@@ -55909,11 +55240,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ KIA Sportage",
            "gc": "ct0177_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ KIA Sorento",
-           "gc": "ct0175_aon_n027_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -56059,16 +55385,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Renault Duster",
            "gc": "ct0211_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Renault Sandero",
-           "gc": "ct0214_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Renault Sandero Stepway",
-           "gc": "ct0214_aon_n044_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -56528,11 +55844,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Jac S7",
-           "gc": "ct0135_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Jaecoo J8",
            "gc": "ct0142_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -56545,11 +55856,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Jaecoo J7",
            "gc": "ct0141_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jaecoo J6",
-           "gc": "ct0318_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -56613,11 +55919,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск KIA Picanto",
-           "gc": "ct0171_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск KIA Ceed",
            "gc": "ct0166_aon_n027_r0000_ct001_ag011_g00"
           },
@@ -56645,11 +55946,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск KIA Sportage",
            "gc": "ct0177_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KIA Sorento",
-           "gc": "ct0175_aon_n027_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -56795,16 +56091,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Renault Duster",
            "gc": "ct0211_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Renault Sandero",
-           "gc": "ct0214_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Renault Sandero Stepway",
-           "gc": "ct0214_aon_n044_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -57264,11 +56550,6 @@
           },
           {
            "c": "tp5_cpc_site",
-           "t": "SMA Jac S7",
-           "gc": "ct0135_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
            "t": "SMA Jaecoo J8",
            "gc": "ct0142_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -57281,11 +56562,6 @@
            "c": "tp5_cpc_site",
            "t": "SMA Jaecoo J7",
            "gc": "ct0141_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Jaecoo J6",
-           "gc": "ct0318_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp5_cpc_site",
@@ -57349,11 +56625,6 @@
           },
           {
            "c": "tp5_cpc_site",
-           "t": "SMA KIA Picanto",
-           "gc": "ct0171_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
            "t": "SMA KIA Ceed",
            "gc": "ct0166_aon_n027_r0000_ct001_ag011_g00"
           },
@@ -57381,11 +56652,6 @@
            "c": "tp5_cpc_site",
            "t": "SMA KIA Sportage",
            "gc": "ct0177_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA KIA Sorento",
-           "gc": "ct0175_aon_n027_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp5_cpc_site",
@@ -57531,16 +56797,6 @@
            "c": "tp5_cpc_site",
            "t": "SMA Renault Duster",
            "gc": "ct0211_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Renault Sandero",
-           "gc": "ct0214_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Renault Sandero Stepway",
-           "gc": "ct0214_aon_n044_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp5_cpc_site",
@@ -58087,10 +57343,6 @@
            "t": "МК - Hyundai Tucson - КС"
           },
           {
-           "c": "tp6_cpc_site_ct0135_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Jac S7 - КС"
-          },
-          {
            "c": "tp6_cpc_site_ct0142_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - Jaecoo J8 - КС"
           },
@@ -58101,10 +57353,6 @@
           {
            "c": "tp6_cpc_site_ct0141_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - Jaecoo J7 - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0318_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Jaecoo J6 - КС"
           },
           {
            "c": "tp6_cpc_site_ct0144_aon_n000_r0000_ct001_ag011_g00",
@@ -58155,10 +57403,6 @@
            "t": "МК - KGM TIVOLI - КС"
           },
           {
-           "c": "tp6_cpc_site_ct0171_aon_n027_r0000_ct001_ag011_g00",
-           "t": "МК - KIA Picanto - КС"
-          },
-          {
            "c": "tp6_cpc_site_ct0166_aon_n027_r0000_ct001_ag011_g00",
            "t": "МК - KIA Ceed - КС"
           },
@@ -58181,10 +57425,6 @@
           {
            "c": "tp6_cpc_site_ct0177_aon_n027_r0000_ct001_ag011_g00",
            "t": "МК - KIA Sportage - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0175_aon_n027_r0000_ct001_ag011_g00",
-           "t": "МК - KIA Sorento - КС"
           },
           {
            "c": "tp6_cpc_site_ct0181_aon_n025_r0000_ct001_ag011_g00",
@@ -58303,10 +57543,6 @@
            "t": "МК - Renault Duster - КС"
           },
           {
-           "c": "tp6_cpc_site_ct0214_aon_n044_r0000_ct001_ag011_g00",
-           "t": "МК - Renault Sandero - КС"
-          },
-          {
            "c": "tp6_cpc_site_ct0209_aon_n044_r0000_ct001_ag011_g00",
            "t": "МК - Renault Sandero Stepway - КС"
           },
@@ -58348,28 +57584,7 @@
        "groups": [
         {
          "name": "ТК · общие",
-         "items": [
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Автоматическая"
-          },
-          {
-           "c": "tp7_cpc_site_ct0009_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Авито"
-          },
-          {
-           "c": "tp7_cpc_site_ct0010_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Дром"
-          },
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n052_r0000_ct009_ag001_g00",
-           "t": "ТК - Авто ру"
-          },
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-           "t": "TK - Интересы"
-          }
-         ]
+         "items": []
         }
        ]
       }
@@ -59657,26 +58872,6 @@
          "items": [
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Автокредит/кредит",
-           "gc": "ct0006_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Авито",
-           "gc": "ct0009_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Автосалон/салон/Дилер",
-           "gc": "ct0013_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Авто/Автомобили/Машины",
-           "gc": "ct0014_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ BAIC",
            "gc": "ct0019_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -60187,11 +59382,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ KGM",
-           "gc": "ct0159_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ KGM KORANDO",
            "gc": "ct0160_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -60334,11 +59524,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ MG ZS",
            "gc": "ct0198_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Nissan",
-           "gc": "ct0199_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -60616,21 +59801,6 @@
         {
          "name": "Поиск · Модели (из пака)",
          "items": [
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Авито",
-           "gc": "ct0009_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Автосалон/салон/Дилер",
-           "gc": "ct0013_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Авто/Автомобили/Машины",
-           "gc": "ct0014_aon_n000_r0000_ct001_ag011_g00"
-          },
           {
            "c": "tp2_cpc_site",
            "t": "Поиск BAIC",
@@ -61133,11 +60303,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск KGM",
-           "gc": "ct0159_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск KGM KORANDO",
            "gc": "ct0160_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -61280,11 +60445,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск MG ZS",
            "gc": "ct0198_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Nissan",
-           "gc": "ct0199_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -61495,11 +60655,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск UAZ Patriot",
            "gc": "ct0258_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Niva",
-           "gc": "ct0275_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -61594,26 +60749,6 @@
          "items": [
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Автокредит/кредит",
-           "gc": "ct0006_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Авито",
-           "gc": "ct0009_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Автосалон/салон/Дилер",
-           "gc": "ct0013_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Авто/Автомобили/Машины",
-           "gc": "ct0014_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ BAIC",
            "gc": "ct0019_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -62124,11 +61259,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ KGM",
-           "gc": "ct0159_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ KGM KORANDO",
            "gc": "ct0160_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -62271,11 +61401,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ MG ZS",
            "gc": "ct0198_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Nissan",
-           "gc": "ct0199_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -62553,21 +61678,6 @@
         {
          "name": "Поиск · Модели (из пака)",
          "items": [
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Авито",
-           "gc": "ct0009_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Автосалон/салон/Дилер",
-           "gc": "ct0013_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Авто/Автомобили/Машины",
-           "gc": "ct0014_aon_n000_r0000_ct001_ag011_g00"
-          },
           {
            "c": "tp2_cpc_site",
            "t": "Поиск BAIC",
@@ -63070,11 +62180,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск KGM",
-           "gc": "ct0159_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск KGM KORANDO",
            "gc": "ct0160_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -63217,11 +62322,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск MG ZS",
            "gc": "ct0198_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Nissan",
-           "gc": "ct0199_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -63435,11 +62535,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Lada Niva",
-           "gc": "ct0275_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск MG 7",
            "gc": "ct0294_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -63509,26 +62604,6 @@
         {
          "name": "SMA · Модели (из пака)",
          "items": [
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Автокредит/кредит",
-           "gc": "ct0006_aon_n000_r0000_ct010_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Авито",
-           "gc": "ct0009_aon_n000_r0000_ct010_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Автосалон/салон/Дилер",
-           "gc": "ct0013_aon_n000_r0000_ct010_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Авто/Автомобили/Машины",
-           "gc": "ct0014_aon_n000_r0000_ct010_ag011_g00"
-          },
           {
            "c": "tp5_cpc_site",
            "t": "SMA BAIC",
@@ -64041,11 +63116,6 @@
           },
           {
            "c": "tp5_cpc_site",
-           "t": "SMA KGM",
-           "gc": "ct0159_aon_n000_r0000_ct010_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
            "t": "SMA KGM KORANDO",
            "gc": "ct0160_aon_n000_r0000_ct010_ag011_g00"
           },
@@ -64188,11 +63258,6 @@
            "c": "tp5_cpc_site",
            "t": "SMA MG ZS",
            "gc": "ct0198_aon_n000_r0000_ct010_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Nissan",
-           "gc": "ct0199_aon_n000_r0000_ct010_ag011_g00"
           },
           {
            "c": "tp5_cpc_site",
@@ -64761,26 +63826,6 @@
          "items": [
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Автокредит/кредит",
-           "gc": "ct0006_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Авито",
-           "gc": "ct0009_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Автосалон/салон/Дилер",
-           "gc": "ct0013_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Авто/Автомобили/Машины",
-           "gc": "ct0014_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ BAIC",
            "gc": "ct0019_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -65291,11 +64336,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ KGM",
-           "gc": "ct0159_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ KGM KORANDO",
            "gc": "ct0160_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -65438,11 +64478,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ MG ZS",
            "gc": "ct0198_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Nissan",
-           "gc": "ct0199_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -65720,21 +64755,6 @@
         {
          "name": "Поиск · Модели (из пака)",
          "items": [
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Авито",
-           "gc": "ct0009_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Автосалон/салон/Дилер",
-           "gc": "ct0013_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Авто/Автомобили/Машины",
-           "gc": "ct0014_aon_n000_r0000_ct001_ag011_g00"
-          },
           {
            "c": "tp2_cpc_site",
            "t": "Поиск BAIC",
@@ -66237,11 +65257,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск KGM",
-           "gc": "ct0159_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск KGM KORANDO",
            "gc": "ct0160_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -66384,11 +65399,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск MG ZS",
            "gc": "ct0198_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Nissan",
-           "gc": "ct0199_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -66602,11 +65612,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Lada Niva",
-           "gc": "ct0275_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск MG 7",
            "gc": "ct0294_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -66676,26 +65681,6 @@
         {
          "name": "SMA · Модели (из пака)",
          "items": [
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Автокредит/кредит",
-           "gc": "ct0006_aon_n000_r0000_ct010_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Авито",
-           "gc": "ct0009_aon_n000_r0000_ct010_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Автосалон/салон/Дилер",
-           "gc": "ct0013_aon_n000_r0000_ct010_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Авто/Автомобили/Машины",
-           "gc": "ct0014_aon_n000_r0000_ct010_ag011_g00"
-          },
           {
            "c": "tp5_cpc_site",
            "t": "SMA BAIC",
@@ -67208,11 +66193,6 @@
           },
           {
            "c": "tp5_cpc_site",
-           "t": "SMA KGM",
-           "gc": "ct0159_aon_n000_r0000_ct010_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
            "t": "SMA KGM KORANDO",
            "gc": "ct0160_aon_n000_r0000_ct010_ag011_g00"
           },
@@ -67355,11 +66335,6 @@
            "c": "tp5_cpc_site",
            "t": "SMA MG ZS",
            "gc": "ct0198_aon_n000_r0000_ct010_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Nissan",
-           "gc": "ct0199_aon_n000_r0000_ct010_ag011_g00"
           },
           {
            "c": "tp5_cpc_site",
@@ -67642,14 +66617,6 @@
            "t": "МК - Автоматическая"
           },
           {
-           "c": "tp6_cpc_site_ct0009_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Авито"
-          },
-          {
-           "c": "tp6_cpc_site_ct0010_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Дром"
-          },
-          {
            "c": "tp6_cpc_site_ct0000_aon_n052_r0000_ct001_ag011_g00",
            "t": "МК - Авто ру"
           },
@@ -67709,18 +66676,6 @@
           {
            "c": "tp6_cpc_site_ct0044_aon_n029_r0000_ct001_ag011_g00",
            "t": "МК - Chery - Интересы"
-          },
-          {
-           "c": "tp6_cpc_site_ct0059_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Chevrolet - Автоматическая"
-          },
-          {
-           "c": "tp6_cpc_site_ct0059_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Chevrolet - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0059_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Chevrolet - Интересы"
           },
           {
            "c": "tp6_cpc_site_ct0067_aon_n000_r0000_ct001_ag011_g00",
@@ -67867,18 +66822,6 @@
            "t": "МК - KAIYI - Интересы"
           },
           {
-           "c": "tp6_cpc_site_ct0159_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - KGM - Автоматическая"
-          },
-          {
-           "c": "tp6_cpc_site_ct0159_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - KGM - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0159_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - KGM - Интересы"
-          },
-          {
            "c": "tp6_cpc_site_ct0164_aon_n027_r0000_ct001_ag011_g00",
            "t": "МК - KIA - Автоматическая"
           },
@@ -67925,18 +66868,6 @@
           {
            "c": "tp6_cpc_site_ct0252_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - Moskvich - Интересы"
-          },
-          {
-           "c": "tp6_cpc_site_ct0199_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Nissan - Автоматическая"
-          },
-          {
-           "c": "tp6_cpc_site_ct0199_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Nissan - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0199_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Nissan - Интересы"
           },
           {
            "c": "tp6_cpc_site_ct0204_aon_n000_r0000_ct001_ag011_g00",
@@ -68032,28 +66963,7 @@
        "groups": [
         {
          "name": "ТК · общие",
-         "items": [
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Автоматическая"
-          },
-          {
-           "c": "tp7_cpc_site_ct0009_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Авито"
-          },
-          {
-           "c": "tp7_cpc_site_ct0010_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Дром"
-          },
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n052_r0000_ct009_ag001_g00",
-           "t": "ТК - Авто ру"
-          },
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-           "t": "TK - Интересы"
-          }
-         ]
+         "items": []
         }
        ]
       }
@@ -68182,11 +67092,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ MG марка",
-           "gc": "ct0195_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Moskvich марка",
            "gc": "ct0252_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -68257,21 +67162,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ BAIC BJ40",
-           "gc": "ct0020_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ BAIC BJ60",
-           "gc": "ct0305_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Belgee S50",
-           "gc": "ct0306_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Changan UNI-S/CS55Plus",
            "gc": "ct0041_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -68299,11 +67189,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Changan CS95",
            "gc": "ct0036_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Changan CS35 MAX",
-           "gc": "ct0315_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -68352,16 +67237,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Faw Bestune T55",
-           "gc": "ct0083_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Faw Bestune T99",
-           "gc": "ct0086_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Faw Bestune B70",
            "gc": "ct0082_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -68369,16 +67244,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ GAC GS4",
            "gc": "ct0092_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ GAC Empow",
-           "gc": "ct0090_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Geely Atlas Pro",
-           "gc": "ct0099_aon_n033_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -68412,11 +67277,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Haval Dargo X",
-           "gc": "ct0299_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Hyundai Creta",
            "gc": "ct0122_aon_n026_r0000_ct001_ag011_g00"
           },
@@ -68427,23 +67287,8 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Jac S7",
-           "gc": "ct0135_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Jaecoo J8",
-           "gc": "ct0142_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Jaecoo J7",
            "gc": "ct0141_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Jaecoo J6",
-           "gc": "ct0318_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -68467,48 +67312,13 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Jetta VS5",
-           "gc": "ct0152_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Jetta VS7",
-           "gc": "ct0153_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ KAIYI X3",
            "gc": "ct0156_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ KAIYI X3 Pro",
-           "gc": "ct0157_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ KAIYI X7 Kunlun",
-           "gc": "ct0158_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ KGM TIVOLI",
-           "gc": "ct0162_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ KGM TORRES",
-           "gc": "ct0163_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ KIA Sportage",
            "gc": "ct0177_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ KIA Sorento",
-           "gc": "ct0175_aon_n027_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -68557,31 +67367,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ LIVAN S6Pro",
-           "gc": "ct0192_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ LIVAN X3Pro",
-           "gc": "ct0193_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ MG ZS",
-           "gc": "ct0198_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ MG HS",
-           "gc": "ct0295_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ MG 7",
-           "gc": "ct0294_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Moskvich 3",
            "gc": "ct0253_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -68589,11 +67374,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Moskvich 6",
            "gc": "ct0254_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Nissan Terrano",
-           "gc": "ct0202_aon_n042_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -68624,31 +67404,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Renault Kaptur",
            "gc": "ct0212_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Solaris HC",
-           "gc": "ct0222_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Solaris HS",
-           "gc": "ct0223_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ SOUEAST S07",
-           "gc": "ct0227_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ SOUEAST S09",
-           "gc": "ct0228_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ SWM G01",
-           "gc": "ct0230_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -68684,16 +67439,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Volkswagen Jetta",
            "gc": "ct0240_aon_n049_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ XCITE X-CROSS 7",
-           "gc": "ct0247_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ XCITE X-CROSS 8",
-           "gc": "ct0248_aon_n000_r0000_ct001_ag011_g00"
           }
          ]
         },
@@ -68823,11 +67568,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск MG марка",
-           "gc": "ct0195_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Moskvich марка",
            "gc": "ct0252_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -68898,21 +67638,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск BAIC BJ40",
-           "gc": "ct0020_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск BAIC BJ60",
-           "gc": "ct0305_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Belgee S50",
-           "gc": "ct0306_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Changan UNI-S/CS55Plus",
            "gc": "ct0041_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -68940,11 +67665,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Changan CS95",
            "gc": "ct0036_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Changan CS35 MAX",
-           "gc": "ct0315_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -68993,16 +67713,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Faw Bestune T55",
-           "gc": "ct0083_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Faw Bestune T99",
-           "gc": "ct0086_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Faw Bestune B70",
            "gc": "ct0082_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -69010,16 +67720,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск GAC GS4",
            "gc": "ct0092_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск GAC Empow",
-           "gc": "ct0090_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Geely Atlas Pro",
-           "gc": "ct0099_aon_n033_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -69053,11 +67753,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Haval Dargo X",
-           "gc": "ct0299_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Hyundai Creta",
            "gc": "ct0122_aon_n026_r0000_ct001_ag011_g00"
           },
@@ -69068,23 +67763,8 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Jac S7",
-           "gc": "ct0135_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jaecoo J8",
-           "gc": "ct0142_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Jaecoo J7",
            "gc": "ct0141_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jaecoo J6",
-           "gc": "ct0318_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -69108,48 +67788,13 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Jetta VS5",
-           "gc": "ct0152_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jetta VS7",
-           "gc": "ct0153_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск KAIYI X3",
            "gc": "ct0156_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск KAIYI X3 Pro",
-           "gc": "ct0157_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KAIYI X7 Kunlun",
-           "gc": "ct0158_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KGM TIVOLI",
-           "gc": "ct0162_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KGM TORRES",
-           "gc": "ct0163_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск KIA Sportage",
            "gc": "ct0177_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KIA Sorento",
-           "gc": "ct0175_aon_n027_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -69198,31 +67843,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск LIVAN S6Pro",
-           "gc": "ct0192_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск LIVAN X3Pro",
-           "gc": "ct0193_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск MG ZS",
-           "gc": "ct0198_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск MG HS",
-           "gc": "ct0295_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск MG 7",
-           "gc": "ct0294_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Moskvich 3",
            "gc": "ct0253_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -69230,11 +67850,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Moskvich 6",
            "gc": "ct0254_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Nissan Terrano",
-           "gc": "ct0202_aon_n042_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -69265,31 +67880,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Renault Kaptur",
            "gc": "ct0212_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Solaris HC",
-           "gc": "ct0222_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Solaris HS",
-           "gc": "ct0223_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск SOUEAST S07",
-           "gc": "ct0227_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск SOUEAST S09",
-           "gc": "ct0228_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск SWM G01",
-           "gc": "ct0230_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -69325,16 +67915,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Volkswagen Jetta",
            "gc": "ct0240_aon_n049_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск XCITE X-CROSS 7",
-           "gc": "ct0247_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск XCITE X-CROSS 8",
-           "gc": "ct0248_aon_n000_r0000_ct001_ag011_g00"
           }
          ]
         }
@@ -69461,11 +68041,6 @@
            "c": "tp5_cpc_site",
            "t": "SMA LIVAN марка",
            "gc": "ct0191_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA MG марка",
-           "gc": "ct0195_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp5_cpc_site",
@@ -69816,18 +68391,6 @@
            "t": "МК - LIVAN - Интересы"
           },
           {
-           "c": "tp6_cpc_site_ct0195_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - MG - Автоматическая"
-          },
-          {
-           "c": "tp6_cpc_site_ct0195_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - MG - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0195_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - MG - Интересы"
-          },
-          {
            "c": "tp6_cpc_site_ct0252_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - Moskvich - Автоматическая"
           },
@@ -69981,28 +68544,7 @@
        "groups": [
         {
          "name": "ТК · общие",
-         "items": [
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Автоматическая"
-          },
-          {
-           "c": "tp7_cpc_site_ct0009_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Авито"
-          },
-          {
-           "c": "tp7_cpc_site_ct0010_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Дром"
-          },
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n052_r0000_ct009_ag001_g00",
-           "t": "ТК - Авто ру"
-          },
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-           "t": "TK - Интересы"
-          }
-         ]
+         "items": []
         }
        ]
       }
@@ -70067,11 +68609,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Haval H5",
            "gc": "ct0116_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Haval Dargo X",
-           "gc": "ct0299_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -70160,11 +68697,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Geely Atlas Pro",
-           "gc": "ct0099_aon_n033_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Geely Monjaro",
            "gc": "ct0104_aon_n033_r0000_ct001_ag011_g00"
           },
@@ -70243,11 +68775,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Haval H5",
            "gc": "ct0116_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Haval Dargo X",
-           "gc": "ct0299_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -70333,11 +68860,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Chery Tiggo 7L",
            "gc": "ct0052_aon_n029_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Geely Atlas Pro",
-           "gc": "ct0099_aon_n033_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
@@ -70501,28 +69023,7 @@
        "groups": [
         {
          "name": "ТК · общие",
-         "items": [
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Автоматическая"
-          },
-          {
-           "c": "tp7_cpc_site_ct0009_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Авито"
-          },
-          {
-           "c": "tp7_cpc_site_ct0010_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Дром"
-          },
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n052_r0000_ct009_ag001_g00",
-           "t": "ТК - Авто ру"
-          },
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-           "t": "TK - Интересы"
-          }
-         ]
+         "items": []
         }
        ]
       }
@@ -70647,11 +69148,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Hyundai Creta",
            "gc": "ct0122_aon_n026_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Nissan Terrano",
-           "gc": "ct0202_aon_n042_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -70816,11 +69312,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Nissan Terrano",
-           "gc": "ct0202_aon_n042_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Renault Duster",
            "gc": "ct0211_aon_n044_r0000_ct001_ag011_g00"
           },
@@ -70964,12 +69455,7 @@
         },
         {
          "name": "Автору/Авито/Дром",
-         "items": [
-          {
-           "c": "tp6_cpc_site_ct0319_aon_n000_r0000_ct009_ag001_g00",
-           "t": "—"
-          }
-         ]
+         "items": []
         },
         {
          "name": "Автокредит/кредит",
@@ -71370,11 +69856,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ MG марка",
-           "gc": "ct0195_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Moskvich марка",
            "gc": "ct0252_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -71571,11 +70052,6 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск MG марка",
-           "gc": "ct0195_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Moskvich марка",
            "gc": "ct0252_aon_n000_r0000_ct001_ag011_g00"
           },
@@ -71656,7 +70132,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -71672,7 +70149,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -71702,7 +70180,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -71726,7 +70205,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -71765,7 +70245,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -71798,7 +70279,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       }
@@ -71967,7 +70449,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -71983,7 +70466,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -72035,7 +70519,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -72059,7 +70544,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       },
@@ -72111,7 +70597,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         },
         {
          "sq": "kviz",
@@ -72141,7 +70628,8 @@
             }
            ]
           }
-         ]
+         ],
+         "items": []
         }
        ]
       }
@@ -72375,11 +70863,6 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Changan CS35 MAX",
-           "gc": "ct0315_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Chery Tiggo 8 Pro",
            "gc": "ct0054_aon_n029_r0000_ct001_ag011_g00"
           },
@@ -72552,11 +71035,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Jaecoo J7",
            "gc": "ct0141_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Jaecoo J6",
-           "gc": "ct0318_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp1_cpc_site",
@@ -72897,722 +71375,17 @@
        "title": "Поиск",
        "groups": [
         {
-         "name": "Поиск · Марка (по брендам)",
+         "name": "Кудерко · Кредит",
          "items": [
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Москвич марка",
-           "gc": "ct0252_aon_n000_r0000_ct001_ag011_g00"
+           "t": "Поиск Рассрочка",
+           "gc": "ct0006_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск BAIC марка",
-           "gc": "ct0019_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Belgee марка",
-           "gc": "ct0026_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Changan марка",
-           "gc": "ct0029_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Chery марка",
-           "gc": "ct0044_aon_n029_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Dongfeng марка",
-           "gc": "ct0067_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск EXEED марка",
-           "gc": "ct0076_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Faw марка",
-           "gc": "ct0081_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск GAC марка",
-           "gc": "ct0089_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Geely марка",
-           "gc": "ct0097_aon_n033_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Haval марка",
-           "gc": "ct0111_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Hyundai марка",
-           "gc": "ct0121_aon_n026_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jac марка",
-           "gc": "ct0130_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jaecoo марка",
-           "gc": "ct0140_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jetour марка",
-           "gc": "ct0143_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jetta марка",
-           "gc": "ct0150_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KAIYI марка",
-           "gc": "ct0154_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KGM марка",
-           "gc": "ct0159_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KIA марка",
-           "gc": "ct0164_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada марка",
-           "gc": "ct0181_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск LIVAN марка",
-           "gc": "ct0191_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Nissan марка",
-           "gc": "ct0199_aon_n042_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Omoda марка",
-           "gc": "ct0204_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Renault марка",
-           "gc": "ct0209_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Skoda марка",
-           "gc": "ct0215_aon_n051_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Tank марка",
-           "gc": "ct0233_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Tenet марка",
-           "gc": "ct0300_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Volkswagen марка",
-           "gc": "ct0238_aon_n049_r0000_ct001_ag011_g00"
-          }
-         ]
-        },
-        {
-         "name": "Поиск · Модели (по моделям)",
-         "items": [
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск BAIC U5 Plus",
-           "gc": "ct0021_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск BAIC BJ40",
-           "gc": "ct0020_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск BAIC BJ60",
-           "gc": "ct0305_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Belgee S50",
-           "gc": "ct0306_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Changan UNI-S/CS55Plus",
-           "gc": "ct0041_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Changan UNI-K",
-           "gc": "ct0040_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Changan UNI-T",
-           "gc": "ct0042_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Changan CS95",
-           "gc": "ct0036_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Changan CS85 Coupe",
-           "gc": "ct0035_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Changan CS55",
-           "gc": "ct0032_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Changan CS75 FL",
-           "gc": "ct0033_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Changan CS95",
-           "gc": "ct0036_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Changan CS75Plus",
-           "gc": "ct0034_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Changan CS35 MAX",
-           "gc": "ct0315_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Chery Tiggo 8 Pro",
-           "gc": "ct0054_aon_n029_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Chery Tiggo 8 Pro MAX",
-           "gc": "ct0055_aon_n029_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Chery Tiggo 7 Pro MAX",
-           "gc": "ct0050_aon_n029_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Chery Tiggo 4",
-           "gc": "ct0046_aon_n029_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Chery Tiggo 7L",
-           "gc": "ct0052_aon_n029_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Dongfeng DFSK ix7",
-           "gc": "ct0072_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Dongfeng DFSK 500",
-           "gc": "ct0070_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Dongfeng 580",
-           "gc": "ct0066_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск EXEED RX",
-           "gc": "ct0078_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск EXEED LX",
-           "gc": "ct0077_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск EXEED TXL",
-           "gc": "ct0079_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск EXEED VX",
-           "gc": "ct0080_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Faw Bestune T55",
-           "gc": "ct0083_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Faw Bestune T99",
-           "gc": "ct0086_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Faw Bestune B70",
-           "gc": "ct0082_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Faw Bestune T90",
-           "gc": "ct0085_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск GAC GS4",
-           "gc": "ct0092_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск GAC Empow",
-           "gc": "ct0090_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Geely Atlas Pro",
-           "gc": "ct0099_aon_n033_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Geely Monjaro",
-           "gc": "ct0104_aon_n033_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Geely Cityray",
-           "gc": "ct0100_aon_n033_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Geely Monjaro",
-           "gc": "ct0104_aon_n033_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Haval Jolion",
-           "gc": "ct0119_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Haval M6",
-           "gc": "ct0120_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Haval Jolion",
-           "gc": "ct0119_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Haval Dargo X",
-           "gc": "ct0299_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Haval H3",
-           "gc": "ct0115_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Haval H9",
-           "gc": "ct0118_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Haval H5",
-           "gc": "ct0116_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Hyundai Creta",
-           "gc": "ct0122_aon_n026_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Hyundai Tucson",
-           "gc": "ct0129_aon_n026_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jac S7",
-           "gc": "ct0135_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jaecoo J8",
-           "gc": "ct0142_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jaecoo J7 LE",
-           "gc": "ct0141_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jaecoo J7",
-           "gc": "ct0141_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jaecoo J6",
-           "gc": "ct0318_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jetour Dashing",
-           "gc": "ct0144_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jetour X70 Plus",
-           "gc": "ct0148_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jetour T2",
-           "gc": "ct0145_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jetour X50",
-           "gc": "ct0146_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jetour X70",
-           "gc": "ct0147_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jetour T1",
-           "gc": "ct0307_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jetta VS5",
-           "gc": "ct0152_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Jetta VS7",
-           "gc": "ct0153_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KAIYI X3",
-           "gc": "ct0156_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KAIYI X3 Pro",
-           "gc": "ct0157_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KAIYI X7 Kunlun",
-           "gc": "ct0158_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KGM TIVOLI",
-           "gc": "ct0162_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KIA Picanto",
-           "gc": "ct0171_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KIA Ceed",
-           "gc": "ct0166_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KIA Rio X",
-           "gc": "ct0274_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KIA Ceed SW",
-           "gc": "ct0273_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KIA Cerato",
-           "gc": "ct0167_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KIA Soul",
-           "gc": "ct0176_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KIA Sportage",
-           "gc": "ct0177_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск KIA Sorento",
-           "gc": "ct0175_aon_n027_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Vesta Седан",
-           "gc": "ct0189_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Vesta Cross",
-           "gc": "ct0189_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Vesta SW",
-           "gc": "ct0189_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Vesta SW Cross",
-           "gc": "ct0189_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Granta Лифтбек",
-           "gc": "ct0183_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Granta Седан",
-           "gc": "ct0183_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Granta Cross",
-           "gc": "ct0183_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Largus",
-           "gc": "ct0185_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Largus Cross",
-           "gc": "ct0185_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Granta Хэтчбек",
-           "gc": "ct0183_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Granta Универсал",
-           "gc": "ct0183_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Granta Drive Active",
-           "gc": "ct0183_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Niva Legend 3д",
-           "gc": "ct0186_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Niva Travel",
-           "gc": "ct0188_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Vesta Sportline",
-           "gc": "ct0189_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Vesta SW Sportline",
-           "gc": "ct0189_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Granta Sportline",
-           "gc": "ct0183_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Granta Sportline Лифтбек",
-           "gc": "ct0183_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Granta Sport Седан",
-           "gc": "ct0183_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Granta Sport Лифтбек",
-           "gc": "ct0183_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Niva Legend Bronto",
-           "gc": "ct0186_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Iskra Седан",
-           "gc": "ct0184_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Iskra SW",
-           "gc": "ct0184_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Iskra SW Cross",
-           "gc": "ct0184_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Lada Granta Active Cross",
-           "gc": "ct0183_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск LIVAN S6Pro",
-           "gc": "ct0192_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск LIVAN X3Pro",
-           "gc": "ct0193_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Nissan Terrano",
-           "gc": "ct0202_aon_n042_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Renault Duster",
-           "gc": "ct0211_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Renault Sandero",
-           "gc": "ct0214_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Renault Sandero Stepway",
-           "gc": "ct0214_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Renault Kaptur",
-           "gc": "ct0212_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Tank 300",
-           "gc": "ct0234_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Tenet T4",
-           "gc": "ct0301_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Tenet T7",
-           "gc": "ct0302_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Tenet T8",
-           "gc": "ct0303_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Volkswagen Polo",
-           "gc": "ct0241_aon_n049_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Volkswagen Jetta",
-           "gc": "ct0240_aon_n049_r0000_ct001_ag011_g00"
-          }
-         ]
-        },
-        {
-         "name": "Поиск/РСЯ · Марка-КВИЗ",
-         "items": [
-          {
-           "c": "tp2_cpc_site",
-           "t": "Lada марка-квиз - клики",
-           "gc": "ct0181_aon_n025_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Chery марка-квиз - клики",
-           "gc": "ct0044_aon_n029_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Haval марка-квиз - клики",
-           "gc": "ct0111_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Geely марка-квиз - клики",
-           "gc": "ct0097_aon_n033_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Tenet марка-квиз - клики",
-           "gc": "ct0300_aon_n000_r0000_ct001_ag011_g00"
+           "t": "Поиск Автокредит",
+           "gc": "ct0006_aon_n000_r0000_ct001_ag011_g00"
           }
          ]
         }
@@ -73847,11 +71620,6 @@
           },
           {
            "c": "tp5_cpc_site",
-           "t": "SMA Changan CS35 MAX",
-           "gc": "ct0315_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
            "t": "SMA Chery Tiggo 8 Pro",
            "gc": "ct0054_aon_n029_r0000_ct001_ag011_g00"
           },
@@ -74024,11 +71792,6 @@
            "c": "tp5_cpc_site",
            "t": "SMA Jaecoo J7",
            "gc": "ct0141_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp5_cpc_site",
-           "t": "SMA Jaecoo J6",
-           "gc": "ct0318_aon_n000_r0000_ct001_ag011_g00"
           },
           {
            "c": "tp5_cpc_site",
@@ -74334,14 +72097,6 @@
           {
            "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - Автоматическая"
-          },
-          {
-           "c": "tp6_cpc_site_ct0009_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Авито"
-          },
-          {
-           "c": "tp6_cpc_site_ct0010_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Дром"
           },
           {
            "c": "tp6_cpc_site_ct0000_aon_n052_r0000_ct001_ag011_g00",
@@ -74710,10 +72465,6 @@
            "t": "МК - Changan CS75Plus - КС"
           },
           {
-           "c": "tp6_cpc_site_ct0315_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Changan CS35 MAX - КС"
-          },
-          {
            "c": "tp6_cpc_site_ct0054_aon_n029_r0000_ct001_ag011_g00",
            "t": "МК - Chery Tiggo 8 Pro - КС"
           },
@@ -74844,10 +72595,6 @@
           {
            "c": "tp6_cpc_site_ct0141_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - Jaecoo J7 - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0318_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Jaecoo J6 - КС"
           },
           {
            "c": "tp6_cpc_site_ct0144_aon_n000_r0000_ct001_ag011_g00",
@@ -75091,28 +72838,7 @@
        "groups": [
         {
          "name": "ТК · общие",
-         "items": [
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Автоматическая"
-          },
-          {
-           "c": "tp7_cpc_site_ct0009_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Авито"
-          },
-          {
-           "c": "tp7_cpc_site_ct0010_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Дром"
-          },
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n052_r0000_ct009_ag001_g00",
-           "t": "ТК - Авто ру"
-          },
-          {
-           "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-           "t": "TK - Интересы"
-          }
-         ]
+         "items": []
         }
        ]
       }
@@ -75287,16 +73013,6 @@
            "c": "tp1_cpc_site",
            "t": "РСЯ Renault Logan",
            "gc": "ct0213_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Toyota Camry",
-           "gc": "ct0316_aon_n047_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Toyota RAV4",
-           "gc": "ct0317_aon_n047_r0000_ct001_ag011_g00"
           }
          ]
         },
@@ -75325,18 +73041,8 @@
           },
           {
            "c": "tp1_cpc_site",
-           "t": "РСЯ Общие — Авито",
-           "gc": "ct0009_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
            "t": "РСЯ Общие — Авто ру",
            "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp1_cpc_site",
-           "t": "РСЯ Общие — Дром",
-           "gc": "ct0010_aon_n000_r0000_ct001_ag011_g00"
           }
          ]
         },
@@ -75518,16 +73224,6 @@
            "c": "tp2_cpc_site",
            "t": "Поиск Renault Logan",
            "gc": "ct0213_aon_n044_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Toyota Camry",
-           "gc": "ct0316_aon_n047_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Toyota RAV4",
-           "gc": "ct0317_aon_n047_r0000_ct001_ag011_g00"
           }
          ]
         },
@@ -75556,18 +73252,8 @@
           },
           {
            "c": "tp2_cpc_site",
-           "t": "Поиск Общие — Авито",
-           "gc": "ct0009_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
            "t": "Поиск Общие — Авто ру",
            "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-          },
-          {
-           "c": "tp2_cpc_site",
-           "t": "Поиск Общие — Дром",
-           "gc": "ct0010_aon_n000_r0000_ct001_ag011_g00"
           }
          ]
         }
@@ -75583,14 +73269,6 @@
           {
            "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
            "t": "МК - Автоматическая"
-          },
-          {
-           "c": "tp6_cpc_site_ct0009_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Авито"
-          },
-          {
-           "c": "tp6_cpc_site_ct0010_aon_n000_r0000_ct001_ag011_g00",
-           "t": "МК - Дром"
           },
           {
            "c": "tp6_cpc_site_ct0000_aon_n052_r0000_ct001_ag011_g00",
@@ -75853,14 +73531,6 @@
           {
            "c": "tp6_cpc_site_ct0213_aon_n044_r0000_ct001_ag011_g00",
            "t": "МК - Renault Logan - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0316_aon_n047_r0000_ct001_ag011_g00",
-           "t": "МК - Toyota Camry - КС"
-          },
-          {
-           "c": "tp6_cpc_site_ct0317_aon_n047_r0000_ct001_ag011_g00",
-           "t": "МК - Toyota RAV4 - КС"
           }
          ]
         }
@@ -75876,14 +73546,6 @@
           {
            "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
            "t": "ТК - Автоматическая"
-          },
-          {
-           "c": "tp7_cpc_site_ct0009_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Авито"
-          },
-          {
-           "c": "tp7_cpc_site_ct0010_aon_n000_r0000_ct009_ag001_g00",
-           "t": "ТК - Дром"
           },
           {
            "c": "tp7_cpc_site_ct0000_aon_n052_r0000_ct009_ag001_g00",
@@ -76536,13 +74198,7 @@
        "groups": [
         {
          "name": "ТГ · товары (фид) — из слепка",
-         "items": [
-          {
-           "c": "tp3_cpc_site",
-           "t": "ТГ - Фид (товары)",
-           "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-          }
-         ]
+         "items": []
         }
        ]
       }

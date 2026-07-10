@@ -185,7 +185,8 @@ def test_content_editor_campaigns_get_uses_only_valid_top_level_fields():
             return {"result": {"AdGroups": []}}
         if svc == "ads":
             assert params["SelectionCriteria"] == {"CampaignIds": [1]}
-            assert params["ResponsiveAdFieldNames"] == ["Titles", "Texts", "SitelinkSetId"]
+            # Href — валидное поле: нужно вкладке «Смена ссылки» (links_out).
+            assert params["ResponsiveAdFieldNames"] == ["Titles", "Texts", "SitelinkSetId", "Href"]
             return {"result": {"Ads": [{
                 "Id": 10,
                 "CampaignId": 1,

@@ -191,6 +191,8 @@ def ensure_jobs_table() -> None:
         )""")
     # два сервиса могут стартовать одновременно — IF NOT EXISTS не спасает от гонки в каталоге
     for ddl in (
+        # 'exact' — точечная замена целого поля; 'substring' — массовая замена фрагмента
+        f"ALTER TABLE {CE_JOBS_TABLE} ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT 'exact'",
         f"CREATE INDEX IF NOT EXISTS {CE_JOBS_TABLE}_status_idx ON {CE_JOBS_TABLE}(status)",
         f"CREATE INDEX IF NOT EXISTS {CE_JOBS_TABLE}_login_day_idx ON {CE_JOBS_TABLE}(login, created_at)",
     ):
@@ -273,13 +275,20 @@ def make_job_executor(*, victory_conn, token_for_login, direct_tokens, v5_call, 
         token, _agency = token_for_login(job["login"], "", tokens)
         if not token:
             raise RuntimeError(f"ни один агентский токен не открывает аккаунт {job['login']}")
-        content = _load_account(token, job["login"], v5_call)
+        # campaign-level sitelinks нужны ТОЛЬКО заданиям замены набора уровня кампании
+        # (sitelink_title/description). Для ad_title/ad_text/callout/ad_href не гоняем
+        # лишний Grid-round-trip (см. блок 3c в _load_account).
+        _need_cl_sitelinks = (job.get("type") or "") in _SITELINK_JOB_TYPES
+        content = _load_account(
+            token, job["login"], v5_call,
+            include_campaign_sitelinks=_need_cl_sitelinks,
+        )
         if content.get("error"):
             raise RuntimeError(content["error"])
         if is_cancelled():
             return {"cancelled": True}
         return _do_replace(token, job["login"], job["type"], job["old_text"], job["new_text"],
-                           content, v5_call, v501_svc)
+                           content, v5_call, v501_svc, mode=(job.get("mode") or "exact"))
 
     return execute
 
@@ -411,6 +420,39 @@ def _ad_texts(ad: dict) -> dict:
     }
 
 
+def _ad_href(ad: dict) -> str:
+    """Ссылка объявления (Href). Живёт на TextAd/ResponsiveAd. DynamicTextAd
+    посадочную из фида не имеет — её Href мы не запрашиваем и не трогаем."""
+    for key in ("TextAd", "ResponsiveAd"):
+        body = ad.get(key)
+        if isinstance(body, dict) and body.get("Href"):
+            return str(body.get("Href") or "").strip()
+    return ""
+
+
+def _href_host_path(href: str) -> tuple[str, str]:
+    """(host, path) из Href. host — через copy_engine._copy_domain_from_href
+    (единый парсер хоста). path — суффикс: путь + query, без схемы и хоста."""
+    from urllib.parse import urlsplit
+
+    from .copy_engine import _copy_domain_from_href
+
+    host = _copy_domain_from_href(href)
+    s = urlsplit(href if "://" in href else "https://" + str(href or ""))
+    path = s.path or ""
+    if s.query:
+        path = f"{path}?{s.query}"
+    return host, path
+
+
+def _href_scheme(href: str) -> str:
+    """Схема исходного Href (http/https). Fallback — https, если схема не задана."""
+    from urllib.parse import urlsplit
+
+    s = urlsplit(str(href or ""))
+    return s.scheme or "https"
+
+
 def _ad_content_rows(ad: dict) -> list[dict]:
     """Rows for content editor search.
 
@@ -485,28 +527,58 @@ def _uac_text_item_text(item) -> str:
     return str(item or "").strip()
 
 
-def _uac_replace_text_items(value, old_text: str, new_text: str) -> tuple[list, int]:
-    """Replace exact UAC text items while preserving dict item shape."""
+# Stray leading/trailing whitespace in the fragment fields silently bloats titles:
+# a random leading space in the "new" fragment turns "Jetour2026" into "Jetour 2026"
+# (brand glued to fragment gets an extra gap). Trim BOTH fragments before match /
+# replace / length-guard. str.strip() already removes ASCII + Unicode spaces (incl.
+# NBSP), but NOT invisible zero-width chars (ZWSP U+200B, ZWNJ/ZWJ, word-joiner
+# U+2060, BOM U+FEFF) — those must be trimmed explicitly. Internal spaces are never
+# touched: strip() only affects the ends.
+_FRAG_INVISIBLE = "\u200b\u200c\u200d\u2060\ufeff\u180e"
+
+
+def _frag_trim(s) -> str:
+    """Trim leading/trailing whitespace incl. invisible/zero-width chars from a fragment."""
+    return ("" if s is None else str(s)).strip().strip(_FRAG_INVISIBLE).strip()
+
+
+def _uac_replace_text_items(value, old_text: str, new_text: str,
+                            mode: str = "exact") -> tuple[list, int]:
+    """Replace UAC text items while preserving dict item shape.
+
+    ``mode="exact"`` matches the whole item text (legacy behaviour).
+    ``mode="substring"`` replaces the ``old`` fragment inside each item that
+    contains it, mirroring Grid's ``FIND_AND_REPLACE`` (all occurrences).
+    """
     out: list = []
     changed = 0
-    old = (old_text or "").strip()
-    new = (new_text or "").strip()
+    old = _frag_trim(old_text)
+    new = _frag_trim(new_text)
+
+    def _hit(cur: str) -> bool:
+        return (old in cur) if mode == "substring" else (cur.strip() == old)
+
+    def _apply(cur: str) -> str:
+        return cur.replace(old, new) if mode == "substring" else new
+
     for item in value if isinstance(value, list) else []:
-        if _uac_text_item_text(item) == old:
+        cur_text = _uac_text_item_text(item)
+        if _hit(cur_text):
             changed += 1
             if isinstance(item, dict):
                 next_item = dict(item)
                 replaced_key = None
                 for key in ("text", "title", "value", "body", "name"):
-                    if str(next_item.get(key) or "").strip() == old:
-                        next_item[key] = new
+                    key_val = str(next_item.get(key) or "").strip()
+                    if key_val and _hit(key_val):
+                        next_item[key] = _apply(key_val)
                         replaced_key = key
                         break
                 if replaced_key is None:
-                    next_item["text"] = new
+                    next_item["text"] = _apply(cur_text)
                 out.append(next_item)
             else:
-                out.append(new)
+                out.append(_apply(cur_text))
         else:
             out.append(item)
     return out, changed
@@ -576,6 +648,7 @@ def _load_account(
     *,
     grid_client_factory: Callable | None = None,
     uac_read_client_factory: Callable | None = None,
+    include_campaign_sitelinks: bool = True,
 ) -> dict:
     """Читает кампании, группы, объявления, наборы ссылок и уточнения аккаунта."""
     # 1) Кампании: только Id и Name (CalloutIds недоступны через TextCampaignFieldNames в v5).
@@ -637,7 +710,7 @@ def _load_account(
             uac_read_error = f"{uac_read_error}; Grid tp6/tp7: {str(grid_e)[:160]}"
     campaign_ids = sorted(camp_name)
     if not campaign_ids:
-        out = {"callouts": [], "sitelinks": [], "ads": [], "_ads_by_set": {}}
+        out = {"callouts": [], "sitelinks": [], "ads": [], "links": [], "_ads_by_set": {}}
         if uac_read_error:
             out["_uac_read_error"] = uac_read_error
         return out
@@ -663,9 +736,9 @@ def _load_account(
     # 3) Объявления: заголовки/тексты + ссылка на набор быстрых ссылок.
     ads, err = _v5_paginate_campaign_batches(
         v5_call, "ads", token, login,
-        {"FieldNames": ["Id", "CampaignId", "AdGroupId", "Type"],
-         "TextAdFieldNames": ["Title", "Title2", "Text", "SitelinkSetId"],
-         "ResponsiveAdFieldNames": ["Titles", "Texts", "SitelinkSetId"],
+        {"FieldNames": ["Id", "CampaignId", "AdGroupId", "Type", "State"],
+         "TextAdFieldNames": ["Title", "Title2", "Text", "SitelinkSetId", "Href"],
+         "ResponsiveAdFieldNames": ["Titles", "Texts", "SitelinkSetId", "Href"],
          "DynamicTextAdFieldNames": ["Text", "SitelinkSetId"]},
         "Ads",
         v5_campaign_ids,
@@ -682,6 +755,8 @@ def _load_account(
         }
 
     ads_out: list[dict] = []
+    links_out: list[dict] = []               # ссылки объявлений (Href) для вкладки «Смена ссылки»
+    uac_sitelinks_out: list[dict] = []       # быстрые ссылки UAC (tp6/tp7) — source="uac"
     sitelink_usages: dict[str, list[dict]] = {}
     ads_by_set: dict[str, list[dict]] = {}   # set_id → [{ad_id}] для переназначения на replace
     for a in ads:
@@ -689,6 +764,23 @@ def _load_account(
         agid = int(a.get("AdGroupId") or 0)
         ad_id = int(a.get("Id") or 0)
         usage = _usage_for(cid, agid)
+        # Ссылка объявления (Href) — вкладка «Смена ссылки». Объявления без Href
+        # (DynamicTextAd/фидовые/Shopping/UAC) пропускаем.
+        href = _ad_href(a)
+        if href:
+            host, path = _href_host_path(href)
+            if path:
+                subtype = next((k for k in ("TextAd", "ResponsiveAd") if a.get(k)), "")
+                links_out.append({
+                    "ad_id": ad_id,
+                    "campaign_id": cid,
+                    "campaign_name": camp_name.get(cid, ""),
+                    "type": subtype or (a.get("Type") or ""),
+                    "state": a.get("State") or "",
+                    "host": host,
+                    "path": path,
+                    "href": href,   # исходный Href целиком — для реконструкции scheme+host на записи
+                })
         content_rows = _ad_content_rows(a)
         for t in content_rows:
             ads_out.append({
@@ -733,8 +825,67 @@ def _load_account(
                         "title": "", "title2": "", "text": t,
                         "usages": [usage],
                     })
+                # Быстрые ссылки UAC (title/href/description) — из детали кампании.
+                # Один синтетический «набор» на кампанию (set_id="uac:<cid>"); запись
+                # href/title/description идёт cookie-PATCH sitelinks, а не Grid-набором.
+                uac_sl_items = [
+                    {"title": (it.get("title") or "").strip(),
+                     "href": (it.get("href") or "").strip(),
+                     "description": (it.get("description") or "").strip()}
+                    for it in (raw.get("sitelinks") or [])
+                    if isinstance(it, dict)
+                ]
+                uac_sl_items = [it for it in uac_sl_items if it["title"] or it["href"] or it["description"]]
+                if uac_sl_items:
+                    uac_sitelinks_out.append({
+                        "set_id": f"uac:{int(cid)}",
+                        "set_title": uac_sl_items[0]["title"] or f"UAC {cid}",
+                        "items": uac_sl_items,
+                        "usages": [usage],
+                        "level": "uac",
+                        "campaign_ids": [int(cid)],
+                        "source": "uac",
+                        "campaign_id": int(cid),
+                    })
         except Exception as e:  # noqa: BLE001 — UAC read is enrichment; must not block load
             uac_read_error = str(e)[:200]
+
+    # 3c) Наборы быстрых ссылок УРОВНЯ КАМПАНИИ (inheritableSitelinkSet). В ЕПК
+    # unified-кампаниях быстрые ссылки часто привязаны к КАМПАНИИ, а объявления их
+    # НАСЛЕДУЮТ — v5 ads.get такие наборы у объявлений не отдаёт (SitelinkSetId пуст).
+    # Без этого шага campaign-level наборы невидимы редактору, а замена целится в
+    # пустой список ad_ids и Grid ничего не применяет («не подтвердилась у N объявлений»).
+    # Читаем набор каждой кампании через Grid и добавляем campaign-usage → replace идёт
+    # campaign-level путём (set_campaign_sitelink_set), а не ad-level find/replace.
+    # ⚠️ Блок 3c — лишний Grid-round-trip. Гоняем его ТОЛЬКО когда campaign-level
+    # наборы реально нужны (главный /load и sitelink-замены). Для замен текста/
+    # заголовка/callout/href и для /links / preview НЕ-sitelink типов include=False —
+    # иначе на каждой загрузке лишний Grid-запрос замедляет hot-path и на суб-аккаунтах
+    # без рабочей куки управляющего агентства тихо роняет весь load в except.
+    campaign_ids_by_set: dict[str, list[int]] = {}
+    grid_sitelink_error = None
+    if include_campaign_sitelinks:
+        try:
+            _cl_grid = (grid_client_factory or _grid_client)(login)
+            _cl_payloads = _cl_grid._read_unified_campaign_update_payloads(v5_campaign_ids)
+            for _cl_cid, _cl_payload in (_cl_payloads or {}).items():
+                _cl_raw = (_cl_payload.get("inheritableSitelinkSet") or {}).get("sitelinkSetId")
+                try:
+                    _cl_sid = int(_cl_raw or 0)
+                    _cl_cid_i = int(_cl_cid)
+                except (TypeError, ValueError):
+                    continue
+                if _cl_cid_i <= 0 or _cl_sid <= 0:
+                    continue
+                _cl_list = campaign_ids_by_set.setdefault(str(_cl_sid), [])
+                if _cl_cid_i not in _cl_list:
+                    _cl_list.append(_cl_cid_i)
+                _cl_usages = sitelink_usages.setdefault(str(_cl_sid), [])
+                if not any(u.get("campaign_id") == _cl_cid_i and int(u.get("adgroup_id") or 0) == 0
+                           for u in _cl_usages):
+                    _cl_usages.append(_usage_for(_cl_cid_i, 0))
+        except Exception as e:  # noqa: BLE001 - read-only enrichment must not break editor load
+            grid_sitelink_error = f"Grid campaign-level sitelinks: {str(e)[:200]}"
 
     # 4) Наборы быстрых ссылок. Direct API requires explicit set ids.
     sitelink_set_ids = sorted(int(sid) for sid in sitelink_usages if str(sid).isdigit())
@@ -755,12 +906,20 @@ def _load_account(
                   "description": it.get("Description") or ""}
                  for it in (s.get("Sitelinks") or [])]
         title = items[0]["title"] if items else f"Набор {sid}"
+        camp_ids = campaign_ids_by_set.get(sid, [])
         sitelinks_out.append({
             "set_id": int(s.get("Id") or 0),
             "set_title": title,
             "items": items,
             "usages": sitelink_usages.get(sid, []),
+            # level="campaign" — набор привязан на уровне кампании (наследуется
+            # объявлениями); replace идёт через set_campaign_sitelink_set, а не
+            # ad-level find/replace. level="ad" — обычный ad-level override.
+            "level": "campaign" if camp_ids else "ad",
+            "campaign_ids": camp_ids,
         })
+    # UAC (tp6/tp7) быстрые ссылки — синтетические наборы уровня кампании (source="uac").
+    sitelinks_out.extend(uac_sitelinks_out)
 
     # 5) Уточнения (callouts) — adextensions type CALLOUT.
     exts, err = _v5_paginate(
@@ -793,9 +952,12 @@ def _load_account(
         callouts_out.append({"id": int(e.get("Id") or 0), "text": text, "usages": usages})
 
     out = {"callouts": callouts_out, "sitelinks": sitelinks_out, "ads": ads_out,
+           "links": links_out,
            "_ads_by_set": ads_by_set, "_campaign_callout_ids": campaign_callout_ids}
     if grid_callout_error:
         out["_grid_callout_error"] = grid_callout_error
+    if grid_sitelink_error:
+        out["_grid_sitelink_error"] = grid_sitelink_error
     if uac_read_error:
         out["_uac_read_error"] = uac_read_error
     return out
@@ -805,7 +967,17 @@ def _load_account(
 
 _AD_FIELD = {"ad_title": "title", "ad_title2": "title2", "ad_text": "text"}
 _AD_API_FIELD = {"ad_title": "Title", "ad_title2": "Title2", "ad_text": "Text"}
-_SITELINK_TYPES = {"sitelink_title", "sitelink_description"}
+_SITELINK_TYPES = {"sitelink_title", "sitelink_description", "sitelink_href"}
+# Тип замены → поле элемента быстрой ссылки. sitelink_href правит САМ URL (Href)
+# элемента — приоритет UAC (tp6/tp7), где посадочная ссылка живёт в детали кампании.
+_SITELINK_FIELD = {
+    "sitelink_title": "title",
+    "sitelink_description": "description",
+    "sitelink_href": "href",
+}
+# Типы заданий, которым нужен блок 3c (_load_account campaign-level наборы): и точечные
+# замены поля быстрой ссылки, и позиционная перестановка порядка (sitelink_reorder).
+_SITELINK_JOB_TYPES = _SITELINK_TYPES | {"sitelink_reorder"}
 
 
 def _normalize_callout_text(text: str) -> str:
@@ -815,28 +987,60 @@ def _normalize_callout_text(text: str) -> str:
     return clean[:25]
 
 
-def _match_targets(content: dict, typ: str, old_text: str) -> list[dict]:
-    """Список объектов, где встречается ``old_text`` (для preview и replace)."""
-    old = (old_text or "").strip()
+def _match_targets(content: dict, typ: str, old_text: str,
+                   mode: str = "exact", new_text: str = "") -> list[dict]:
+    """Список объектов, где встречается ``old_text`` (для preview и replace).
+
+    ``mode="exact"`` — совпадение целого поля (legacy: точечная замена одного
+    заголовка/текста). ``mode="substring"`` — поле СОДЕРЖИТ ``old_text``: массовая
+    замена фрагмента (структуры) во всех заголовках/текстах разом; в каждый hit
+    кладётся ``before``/``after`` для превью. Подстрочный режим — только ad-поля.
+    """
+    old = _frag_trim(old_text)
+    new = _frag_trim(new_text)
     hits: list[dict] = []
     if typ in _AD_FIELD:
         fld = _AD_FIELD[typ]
         for ad in content.get("ads", []):
-            if (ad.get(fld) or "").strip() == old:
-                hits.append({
-                    "ad_id": ad["ad_id"],
-                    "campaign_id": ad.get("campaign_id"),
-                    "usages": ad.get("usages", []),
-                    "source": ad.get("source"),  # "uac" for tp6/tp7 entries
-                })
+            val = ad.get(fld) or ""
+            if mode == "substring":
+                if not old or old not in val:
+                    continue
+                extra = {"before": val, "after": val.replace(old, new)}
+            else:
+                if val.strip() != old:
+                    continue
+                extra = {}
+            hits.append({
+                "ad_id": ad["ad_id"],
+                "campaign_id": ad.get("campaign_id"),
+                "usages": ad.get("usages", []),
+                "source": ad.get("source"),  # "uac" for tp6/tp7 entries
+                **extra,
+            })
+    elif mode == "substring":
+        # Подстрочная массовая замена поддержана только для заголовков/текстов.
+        return hits
     elif typ == "callout":
         for co in content.get("callouts", []):
             if (co.get("text") or "").strip() == old:
                 hits.append({"id": co["id"], "usages": co.get("usages", [])})
     elif typ in _SITELINK_TYPES:
-        field = "description" if typ == "sitelink_description" else "title"
+        field = _SITELINK_FIELD.get(typ, "title")
         for s in content.get("sitelinks", []):
-            if any((it.get(field) or "").strip() == old for it in s.get("items", [])):
+            if not any((it.get(field) or "").strip() == old for it in s.get("items", [])):
+                continue
+            if s.get("source") == "uac":
+                # UAC (tp6/tp7): быстрые ссылки живут в детали кампании; запись
+                # идёт cookie-PATCH /web-api/uac/campaign/{id}, а не через Grid-набор.
+                hits.append({
+                    "set_id": s.get("set_id"),
+                    "items": s.get("items", []),
+                    "usages": s.get("usages", []),
+                    "source": "uac",
+                    "campaign_id": s.get("campaign_id"),
+                })
+            else:
                 hits.append({
                     "set_id": s["set_id"],
                     "items": s.get("items", []),
@@ -857,8 +1061,8 @@ def _replace_adaptive_ad_texts(
     grid_client_factory: Callable | None = None,
 ) -> dict:
     """Replace title/body text through cookie/Grid ``findAndReplaceText``."""
-    old = (old_text or "").strip()
-    new = (new_text or "").strip()
+    old = _frag_trim(old_text)
+    new = _frag_trim(new_text)
     if not targets:
         return {"replaced": 0, "errors": ["объявление с таким текстом не найдено"]}
     ad_ids: list[int] = []
@@ -892,11 +1096,12 @@ def _replace_uac_texts(
     new_text: str,
     targets: list[dict],
     *,
+    mode: str = "exact",
     uac_client_factory: Callable | None = None,
 ) -> dict:
     """Replace tp6/tp7 UAC title/body text through cookie PATCH."""
-    old = (old_text or "").strip()
-    new = (new_text or "").strip()
+    old = _frag_trim(old_text)
+    new = _frag_trim(new_text)
     if not old:
         return {"replaced": 0, "errors": ["старый текст пустой"]}
     if not new:
@@ -945,7 +1150,7 @@ def _replace_uac_texts(
                 current = detail.get(candidate)
                 if not isinstance(current, list):
                     continue
-                next_items, candidate_changed = _uac_replace_text_items(current, old, new)
+                next_items, candidate_changed = _uac_replace_text_items(current, old, new, mode)
                 if not candidate_changed:
                     continue
                 _uac_patch_campaign_texts(client, cid, candidate, next_items)
@@ -959,11 +1164,104 @@ def _replace_uac_texts(
             after = _unwrap_uac_response(client._request("GET", f"/campaign/{cid}", step=f"uac-readback:{cid}"))
             after_values = after.get(candidate) if isinstance(after.get(candidate), list) else []
             after_texts = [_uac_text_item_text(item) for item in after_values]
-            if new not in after_texts:
+            if mode == "substring":
+                # фрагмент заменён → старой подстроки быть не должно, новая — присутствует
+                confirmed = any(new in t for t in after_texts) and not any(old in t for t in after_texts)
+            else:
+                confirmed = new in after_texts
+            if not confirmed:
                 errors.append(f"кампания {cid}: read-back не подтвердил новый текст")
                 continue
             replaced += changed
             updated_campaigns.append(cid)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"кампания {cid}: {str(e)[:180]}")
+    return {"replaced": replaced, "errors": errors, "updated_uac_campaigns": updated_campaigns}
+
+
+def _replace_uac_sitelinks(
+    login: str,
+    field: str,
+    old_text: str,
+    new_text: str,
+    targets: list[dict],
+    *,
+    uac_client_factory: Callable | None = None,
+) -> dict:
+    """Заменить поле быстрой ссылки (title/description/href) в UAC-кампаниях (tp6/tp7)
+    через cookie-PATCH ``/web-api/uac/campaign/{id}`` по полю ``sitelinks``.
+
+    ``field`` — одно из ``title``/``description``/``href``. Матч по точному значению
+    поля элемента; в UAC быстрые ссылки нередко имеют ОДИН общий href — тогда смена
+    href меняет посадочную у всех совпавших элементов. Read-back перечитывает деталь
+    кампании и подтверждает, что новое значение есть, а старого — нет."""
+    old = _frag_trim(old_text)
+    new = _frag_trim(new_text)
+    if not old:
+        return {"replaced": 0, "errors": ["старое значение быстрой ссылки пустое"]}
+    if not new:
+        return {"replaced": 0, "errors": ["новое значение быстрой ссылки пустое"]}
+    if field not in ("title", "description", "href"):
+        return {"replaced": 0, "errors": [f"неподдерживаемое поле быстрой ссылки: {field}"]}
+    campaign_ids: list[int] = []
+    for target in targets or []:
+        raw_cid = target.get("campaign_id")
+        if not raw_cid:
+            for usage in target.get("usages") or []:
+                raw_cid = usage.get("campaign_id")
+                if raw_cid:
+                    break
+        try:
+            cid = int(raw_cid)
+        except (TypeError, ValueError):
+            continue
+        if cid > 0 and cid not in campaign_ids:
+            campaign_ids.append(cid)
+    if not campaign_ids:
+        return {"replaced": 0, "errors": ["не найдены UAC-кампании для замены быстрой ссылки"]}
+
+    if uac_client_factory is None:
+        from .uac_read import UacReadClient
+
+        client = UacReadClient(login).client
+    else:
+        client = uac_client_factory(login)
+
+    replaced = 0
+    errors: list[str] = []
+    updated_campaigns: list[int] = []
+    for cid in campaign_ids:
+        try:
+            detail = _unwrap_uac_response(
+                client._request("GET", f"/campaign/{cid}", step=f"uac-detail:{cid}"))
+            current = detail.get("sitelinks")
+            if not isinstance(current, list):
+                errors.append(f"кампания {cid}: у кампании нет быстрых ссылок")
+                continue
+            changed = 0
+            next_items: list = []
+            for item in current:
+                if isinstance(item, dict) and (item.get(field) or "").strip() == old:
+                    nxt = dict(item)
+                    nxt[field] = new
+                    next_items.append(nxt)
+                    changed += 1
+                else:
+                    next_items.append(item)
+            if not changed:
+                errors.append(f"кампания {cid}: значение быстрой ссылки не найдено")
+                continue
+            _uac_patch_campaign_texts(client, cid, "sitelinks", next_items)
+            # Read-back: перечитываем деталь и проверяем, что новое значение есть, старого — нет.
+            after = _unwrap_uac_response(
+                client._request("GET", f"/campaign/{cid}", step=f"uac-sl-readback:{cid}"))
+            after_sl = after.get("sitelinks") if isinstance(after.get("sitelinks"), list) else []
+            after_vals = [(x.get(field) or "").strip() for x in after_sl if isinstance(x, dict)]
+            if new in after_vals and old not in after_vals:
+                replaced += changed
+                updated_campaigns.append(cid)
+            else:
+                errors.append(f"кампания {cid}: read-back не подтвердил новое значение быстрой ссылки")
         except Exception as e:  # noqa: BLE001
             errors.append(f"кампания {cid}: {str(e)[:180]}")
     return {"replaced": replaced, "errors": errors, "updated_uac_campaigns": updated_campaigns}
@@ -1010,7 +1308,7 @@ def _confirm_ads_sitelink_text(v5_call: Callable, token: str, login: str,
             errors.append("read-back sitelinks.get: " + json.dumps(j["error"], ensure_ascii=False)[:120])
             continue
         for s in (j.get("result") or {}).get("SitelinksSets") or []:
-            key = "Description" if field == "description" else "Title"
+            key = {"description": "Description", "href": "Href"}.get(field, "Title")
             vals = [(x.get(key) or "").strip() for x in s.get("Sitelinks") or []]
             set_ok[int(s.get("Id") or 0)] = (new in vals) and (old not in vals)
     confirmed = sum(1 for aid, sid in set_by_ad.items() if set_ok.get(sid))
@@ -1116,16 +1414,18 @@ def _replace_sitelink_text_grid(
     Grid ``findAndReplaceText`` is unstable on hundreds of inherited ads, so
     the safe path is set-level replacement.
     """
-    old = (old_text or "").strip()
-    new = (new_text or "").strip()
-    field = "description" if typ == "sitelink_description" else "title"
+    old = _frag_trim(old_text)
+    new = _frag_trim(new_text)
+    field = _SITELINK_FIELD.get(typ, "title")
     if not targets:
         return {"replaced": 0, "errors": ["набор с таким текстом быстрой ссылки не найден"]}
     if not new:
-        return {"replaced": 0, "errors": ["новый текст быстрой ссылки пустой"]}
-    limit = 60 if typ == "sitelink_description" else 30
-    if len(new) > limit:
-        return {"replaced": 0, "errors": [f"текст быстрой ссылки длиннее {limit} символов"]}
+        return {"replaced": 0, "errors": ["новое значение быстрой ссылки пустое"]}
+    # У title/description — лимиты Директа; у href лимит на длину не применяем.
+    if field != "href":
+        limit = 60 if typ == "sitelink_description" else 30
+        if len(new) > limit:
+            return {"replaced": 0, "errors": [f"текст быстрой ссылки длиннее {limit} символов"]}
     grid = (grid_client_factory or _grid_client)(login)
     all_campaign_ids: list[int] = []
     for target in targets or []:
@@ -1252,7 +1552,8 @@ def _replace_sitelink_text_grid(
                     errors.extend(ad_errs)
             if grid_fr_items:
                 fr_ids = [it["ad_id"] for it in grid_fr_items]
-                fr_target = "SITELINK_DESCRIPTION" if typ == "sitelink_description" else "SITELINK_TITLE"
+                fr_target = {"sitelink_description": "SITELINK_DESCRIPTION",
+                             "sitelink_href": "SITELINK_HREF"}.get(typ, "SITELINK_TITLE")
                 fr = grid.find_and_replace_text(
                     fr_ids, target_types=[fr_target],
                     search=old, replace=new, case_sensitive=True)
@@ -1277,6 +1578,260 @@ def _replace_sitelink_text_grid(
     return {"replaced": replaced, "errors": errors, "new_sitelink_set_ids": created_sets}
 
 
+def _validate_permutation(perm) -> tuple[list[int], str]:
+    """Проверяет, что ``perm`` — биекция позиций 0..N-1 (N≥2), не тождественная.
+
+    Возвращает (нормализованный список int, "") при валидности или ([], причина)."""
+    try:
+        p = [int(x) for x in (perm or [])]
+    except (TypeError, ValueError):
+        return [], "перестановка должна быть списком целых индексов позиций"
+    n = len(p)
+    if n < 2:
+        return [], "перестановка должна содержать минимум 2 позиции"
+    if sorted(p) != list(range(n)):
+        return [], "перестановка должна быть биекцией позиций 0..N-1 (без повторов/пропусков)"
+    if p == list(range(n)):
+        return [], "перестановка тождественна — порядок не меняется"
+    return p, ""
+
+
+def _reorder_sitelinks(
+    token: str,
+    login: str,
+    perm: list[int],
+    content: dict,
+    v5_call: Callable,
+    *,
+    grid_client_factory: Callable | None = None,
+    uac_client_factory: Callable | None = None,
+) -> dict:
+    """Позиционная перестановка (permutation по индексам) быстрых ссылок во ВСЕХ
+    наборах аккаунта: ``result[i] = items[perm[i]]`` для первых ``len(perm)`` позиций;
+    хвост (позиции ≥ len(perm)) остаётся на месте.
+
+    Наборы, где ссылок МЕНЬШЕ длины перестановки (позиция за пределами длины),
+    ПРОПУСКАЮТСЯ с явным отчётом (не падаем, не режем молча). Пути записи по типам:
+      • UAC (tp6/7) → PATCH массива ``sitelinks`` (осн. ссылку UAC не трогаем);
+      • campaign-level (inheritableSitelinkSet) → ``add_sitelink_set`` + ``set_campaign_sitelink_set``;
+      • ad-level TextAd/DynamicTextAd → ``add_sitelink_set`` + v5 rebind;
+      • ad-level ResponsiveAd → честный skip «не поддерживается» (хрупкость Grid).
+
+    Возврат-безопасность: для RK дедуп ``add_sitelink_set`` даёт бесплатный откат к
+    исходному set_id при идентичном содержимом; для UAC исходный порядок сохраняется
+    в отчёте (``orig_order``) — обратная перестановка восстанавливает байт-в-байт.
+    """
+    perm, why = _validate_permutation(perm)
+    if not perm:
+        return {"replaced": 0, "errors": [why], "reports": []}
+    n = len(perm)
+
+    def _apply(items: list) -> list:
+        return [items[p] for p in perm] + list(items[n:])
+
+    def _sl_tuple(x) -> tuple:
+        """Полный кортеж-идентичность быстрой ссылки: (title, href, description).
+        Сравнение порядка ТОЛЬКО по title ложно-негативит swap ссылок с одинаковым
+        title, но разными href/description (finding #2) — сверяем весь кортеж."""
+        if not isinstance(x, dict):
+            return ("", "", "")
+        return (
+            (x.get("title") or "").strip(),
+            (x.get("href") or "").strip(),
+            (x.get("description") or "").strip(),
+        )
+
+    reports: list[dict] = []
+    errors: list[str] = []
+    # Детализация затронутого — РАЗНЫЕ единицы, не смешивать в один счётчик (finding #3):
+    campaigns_touched = 0   # кампаний перепривязано (campaign-level)
+    ads_touched = 0         # объявлений перепривязано (ad-level TextAd/DynamicTextAd)
+    uac_sets = 0            # UAC-наборов переставлено
+    grid = None
+    uac_client = None
+    for s in content.get("sitelinks", []):
+        items = s.get("items") or []
+        set_id = s.get("set_id")
+        source = s.get("source")
+        level = "uac" if source == "uac" else (s.get("level") or "ad")
+        before_titles = [(it.get("title") or "") for it in items]
+        rep: dict = {"set_id": set_id, "set_title": s.get("set_title") or "",
+                     "level": level, "before": before_titles}
+        if len(items) < n:
+            rep["status"] = "skipped"
+            rep["reason"] = f"в наборе {len(items)} ссылок — перестановка требует {n}"
+            reports.append(rep)
+            continue
+        # finding #5: элемент быстрой ссылки в наборе состоит РОВНО из
+        # {title, href, description}. И v5 sitelinks.get (Title/Href/Description),
+        # и Grid get_sitelink_sets (title/description/href), и запись
+        # add_sitelink_set (title/href/description) оперируют этой же тройкой; per-item
+        # `id` назначается сервером и на создании нового набора не пересылается. Поэтому
+        # позиционная перестановка снимка `items` не теряет полей набора для
+        # campaign-level/ad-level. (UAC-ветка отдельно перечитывает живую деталь.)
+        new_items = _apply(items)
+        after_titles = [(it.get("title") or "") for it in new_items]
+        rep["after"] = after_titles
+        # «Изменился ли порядок» — по ПОЛНОМУ кортежу (title,href,description), не только
+        # по title: swap ссылок с одинаковым title, но разными href/desc — реальное
+        # изменение, которое title-сравнение проглатывает как «без изменений» (finding #2).
+        if [_sl_tuple(it) for it in new_items] == [_sl_tuple(it) for it in items]:
+            rep["status"] = "skipped"
+            rep["reason"] = "порядок не изменился"
+            reports.append(rep)
+            continue
+        try:
+            if source == "uac":
+                try:
+                    cid = int(s.get("campaign_id") or 0)
+                except (TypeError, ValueError):
+                    cid = 0
+                if cid <= 0:
+                    rep["status"] = "skipped"
+                    rep["reason"] = "не удалось определить UAC-кампанию"
+                    reports.append(rep)
+                    continue
+                if uac_client is None:
+                    if uac_client_factory is None:
+                        from .uac_read import UacReadClient
+
+                        uac_client = UacReadClient(login).client
+                    else:
+                        uac_client = uac_client_factory(login)
+                # Перечитываем деталь кампании и переставляем РЕАЛЬНЫЙ текущий массив
+                # (полные элементы, не наш обрезанный снимок) — для byte-safe записи.
+                detail = _unwrap_uac_response(
+                    uac_client._request("GET", f"/campaign/{cid}", step=f"uac-detail:{cid}"))
+                cur = detail.get("sitelinks")
+                if not isinstance(cur, list) or len(cur) < n:
+                    rep["status"] = "skipped"
+                    rep["reason"] = f"UAC деталь: {len(cur) if isinstance(cur, list) else 0} ссылок < {n}"
+                    reports.append(rep)
+                    continue
+                rep["orig_order"] = [((x.get("title") or "") if isinstance(x, dict) else "") for x in cur]
+                reordered = _apply(cur)
+                _uac_patch_campaign_texts(uac_client, cid, "sitelinks", reordered)
+                after = _unwrap_uac_response(
+                    uac_client._request("GET", f"/campaign/{cid}", step=f"uac-reorder-rb:{cid}"))
+                after_sl = after.get("sitelinks") if isinstance(after.get("sitelinks"), list) else []
+                # Порядок сверяем по ПОЛНОМУ кортежу (title,href,description), а не только
+                # по title — иначе swap ссылок с одинаковым title даёт ложный «read-back
+                # не подтвердил» при реально применённой перестановке (finding #2).
+                after_tup = [_sl_tuple(x) for x in after_sl]
+                exp_tup = [_sl_tuple(x) for x in reordered]
+                cur_tup = [_sl_tuple(x) for x in cur]
+                if after_tup[:len(exp_tup)] == exp_tup and after_tup != cur_tup:
+                    rep["status"] = "applied"
+                    uac_sets += 1
+                else:
+                    rep["status"] = "error"
+                    rep["reason"] = "read-back не подтвердил новый порядок"
+                    errors.append(f"UAC {cid}: read-back не подтвердил порядок быстрых ссылок")
+                reports.append(rep)
+                continue
+
+            if level == "campaign":
+                campaign_ids = []
+                for c in s.get("campaign_ids") or []:
+                    try:
+                        ci = int(c)
+                    except (TypeError, ValueError):
+                        continue
+                    if ci > 0 and ci not in campaign_ids:
+                        campaign_ids.append(ci)
+                if not campaign_ids:
+                    rep["status"] = "skipped"
+                    rep["reason"] = "нет кампаний, привязанных к набору уровня кампании"
+                    reports.append(rep)
+                    continue
+                if grid is None:
+                    grid = (grid_client_factory or _grid_client)(login)
+                new_set_id = grid.add_sitelink_set(new_items)
+                if not new_set_id:
+                    rep["status"] = "error"
+                    rep["reason"] = "Grid не вернул id нового набора"
+                    errors.append(f"набор {set_id}: Grid не вернул id нового набора")
+                    reports.append(rep)
+                    continue
+                updated = grid.set_campaign_sitelink_set(campaign_ids, int(new_set_id))
+                upd_ids = []
+                for row in updated or []:
+                    try:
+                        ci = int((row or {}).get("id") or 0)
+                    except (TypeError, ValueError):
+                        ci = 0
+                    if ci > 0:
+                        upd_ids.append(ci)
+                if upd_ids:
+                    rep["status"] = "applied"
+                    rep["new_set_id"] = int(new_set_id)
+                    rep["campaign_ids"] = upd_ids
+                    campaigns_touched += len(upd_ids)
+                else:
+                    rep["status"] = "error"
+                    rep["reason"] = "Grid не подтвердил перепривязку кампаний"
+                    errors.append(f"набор {set_id}: перепривязка кампаний не подтверждена")
+                reports.append(rep)
+                continue
+
+            # level == "ad": объявления с ad-level SitelinkSetId.
+            ad_items = content.get("_ads_by_set", {}).get(str(set_id), [])
+            v5_items = [it for it in ad_items if (it or {}).get("subtype") in ("TextAd", "DynamicTextAd")]
+            resp_items = [it for it in ad_items if (it or {}).get("subtype") not in ("TextAd", "DynamicTextAd")]
+            if resp_items:
+                rep["responsive_skipped"] = len(resp_items)
+            if not v5_items:
+                rep["status"] = "skipped"
+                rep["reason"] = (
+                    f"ad-level ResponsiveAd ({len(resp_items)}) — перестановка порядка не "
+                    "поддерживается (хрупкость Grid)"
+                    if resp_items else "нет объявлений, ссылающихся на этот набор")
+                reports.append(rep)
+                continue
+            if grid is None:
+                grid = (grid_client_factory or _grid_client)(login)
+            new_set_id = grid.add_sitelink_set(new_items)
+            if not new_set_id:
+                rep["status"] = "error"
+                rep["reason"] = "Grid не вернул id нового набора"
+                errors.append(f"набор {set_id}: Grid не вернул id нового набора")
+                reports.append(rep)
+                continue
+            ok_ads, ad_errs = _v5_rebind_ads_sitelink_set(v5_call, token, login, v5_items, int(new_set_id))
+            ads_touched += ok_ads
+            errors.extend(ad_errs)
+            if ok_ads:
+                rep["status"] = "applied"
+                rep["new_set_id"] = int(new_set_id)
+                rep["ads"] = ok_ads
+                if resp_items:
+                    rep["reason"] = f"ResponsiveAd ({len(resp_items)}) пропущены — не поддерживается"
+            else:
+                rep["status"] = "error"
+                rep["reason"] = ("; ".join(ad_errs)[:200]
+                                 or "перепривязка объявлений не подтверждена")
+            reports.append(rep)
+        except Exception as e:  # noqa: BLE001
+            rep["status"] = "error"
+            rep["reason"] = str(e)[:180]
+            errors.append(f"набор {set_id}: {str(e)[:180]}")
+            reports.append(rep)
+
+    applied = sum(1 for r in reports if r.get("status") == "applied")
+    skipped = sum(1 for r in reports if r.get("status") == "skipped")
+    if not applied and not errors and not skipped:
+        errors.append("в аккаунте нет наборов быстрых ссылок для перестановки")
+    # Основная метрика перестановки — КОЛИЧЕСТВО НАБОРОВ (applied_sets). Раньше `replaced`
+    # смешивал единицы (кампании + UAC-наборы + объявления) в одно конфузное число
+    # (finding #3). Теперь replaced == applied_sets (наборы), а «во что это раскрылось»
+    # отдаём отдельными полями. `replaced` держим = applied_sets: воркер по нему решает
+    # done/error и пишет в колонку `done`, и это теперь честная единица (наборы).
+    return {"replaced": applied, "errors": errors, "reports": reports,
+            "applied_sets": applied, "skipped_sets": skipped,
+            "campaigns_touched": campaigns_touched,
+            "ads_touched": ads_touched, "uac_sets": uac_sets}
+
+
 def _replace_callout_grid(
     token: str,
     login: str,
@@ -1288,7 +1843,7 @@ def _replace_callout_grid(
     grid_client_factory: Callable | None = None,
 ) -> dict:
     """Create a new callout and swap it into campaigns that used the old one."""
-    old = (old_text or "").strip()
+    old = _frag_trim(old_text)
     targets = _match_targets(content, "callout", old)
     if not targets:
         return {"replaced": 0, "errors": ["уточнение с таким текстом не найдено"]}
@@ -1376,14 +1931,167 @@ def _replace_callout_grid(
     return {"replaced": replaced, "errors": errors, "new_callout_id": int(new_id), "new_text": normalized_new}
 
 
+def _norm_link_path(path: str) -> str:
+    """Нормализует путь-суффикс для сравнения/записи: ведущий '/', без хвостовых пробелов."""
+    p = str(path or "").strip()
+    if p and not p.startswith("/"):
+        p = "/" + p
+    return p
+
+
+def _href_with_new_path(href: str, new_path: str) -> str:
+    """Тот же scheme+host+fragment исходного Href, но path/query = new_path.
+    Host НЕ меняем (в отличие от copy_engine._copy_target_href — там смена домена).
+    Через urlsplit/urlunsplit, НЕ слепой str.replace."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(href if "://" in str(href or "") else "https://" + str(href or ""))
+    np = _norm_link_path(new_path)
+    query = ""
+    if "?" in np:
+        np, query = np.split("?", 1)
+    return urlunsplit((parts.scheme or "https", parts.netloc, np, query, parts.fragment))
+
+
+def _v5_update_results_errors(resp: dict) -> tuple[int, list[str]]:
+    """(успешно_обновлено, [ошибки]) из ответа v5/v501 ads.update."""
+    if not isinstance(resp, dict):
+        return 0, ["пустой ответ ads.update"]
+    top = resp.get("error")
+    if isinstance(top, dict):
+        msg = top.get("error_string") or top.get("error_detail") or str(top)
+        return 0, [f"ads.update: {str(msg)[:200]}"]
+    results = (resp.get("result") or {}).get("UpdateResults") or []
+    ok_n = 0
+    errs: list[str] = []
+    for r in results:
+        r_errs = r.get("Errors") or []
+        if r_errs:
+            aid = r.get("Id")
+            for e in r_errs:
+                errs.append(f"ad {aid}: {e.get('Code')} {e.get('Message') or ''} {e.get('Details') or ''}".strip())
+        elif r.get("Id"):
+            ok_n += 1
+    return ok_n, errs
+
+
+def _replace_ad_href(token: str, login: str, old_path: str, new_path: str,
+                     content: dict, v5_call: Callable, v501_svc: Callable) -> dict:
+    """Массовая смена посадочной ссылки (Href) во всех объявлениях, где путь == old_path.
+    Host сохраняется, меняется только суффикс. TextAd → v5 ads.update;
+    ResponsiveAd → v501 ads.update (v5 отвергает весь тип, Code 3500). Dynamic/фид/UAC —
+    у них Href нет, в content['links'] они отсутствуют → естественно пропускаются.
+    Идемпотентно: объявления, у которых путь уже == new_path, не совпадут с old_path.
+    """
+    old_p = _norm_link_path(old_path)
+    new_p = _norm_link_path(new_path)
+    if not new_p:
+        return {"replaced": 0, "errors": ["новый путь пуст"]}
+    if new_p == old_p:
+        return {"replaced": 0, "errors": ["новый путь совпадает со старым"]}
+    # Собираем объявления с совпадающим путём, группируя по подтипу и новому Href.
+    by_subtype: dict[str, list[dict]] = {"TextAd": [], "ResponsiveAd": []}
+    skipped: list[str] = []
+    seen_ids: set[int] = set()
+    for rec in content.get("links") or []:
+        if _norm_link_path(rec.get("path")) != old_p:
+            continue
+        try:
+            aid = int(rec.get("ad_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if aid <= 0 or aid in seen_ids:
+            continue
+        subtype = rec.get("type") or ""
+        if subtype not in ("TextAd", "ResponsiveAd"):
+            skipped.append(f"ad {aid}: тип {subtype or '—'} — Href не редактируется")
+            continue
+        seen_ids.add(aid)
+        by_subtype[subtype].append({"id": aid, "href": _href_with_new_path(rec.get("href"), new_p)})
+    if not seen_ids:
+        return {"replaced": 0, "errors": ["объявлений с таким путём не найдено"], "skipped": skipped}
+
+    replaced = 0
+    # skipped (нередактируемые типы) — НЕ ошибки: возвращаем отдельным полем,
+    # иначе воркер берёт errors[0] как провал задания даже при успешной замене.
+    errors: list[str] = []
+
+    def _flush(subtype: str, api_field: str, caller):
+        nonlocal replaced
+        items = by_subtype[subtype]
+        for i in range(0, len(items), 100):
+            chunk = items[i:i + 100]
+            params = {"Ads": [{"Id": it["id"], api_field: {"Href": it["href"]}} for it in chunk]}
+            resp = caller("ads", "update", token, login, params)
+            ok_n, errs = _v5_update_results_errors(resp)
+            replaced += ok_n
+            errors.extend(errs)
+
+    if by_subtype["TextAd"]:
+        _flush("TextAd", "TextAd", v5_call)          # TextAd.Href — v5 update ок
+    if by_subtype["ResponsiveAd"]:
+        _flush("ResponsiveAd", "ResponsiveAd", v501_svc)  # ResponsiveAd.Href — только v501
+
+    # Read-back: перечитываем Href по обновлённым ad_id (v5 GET работает для обоих типов).
+    all_ids = sorted(seen_ids)
+    confirmed = 0
+    unconfirmed: list[int] = []
+    try:
+        rb, rb_err = _v5_paginate(
+            v5_call, "ads", token, login,
+            {"SelectionCriteria": {"Ids": all_ids},
+             "FieldNames": ["Id", "Type"],
+             "TextAdFieldNames": ["Href"],
+             "ResponsiveAdFieldNames": ["Href"]},
+            "Ads",
+        )
+        if rb_err:
+            errors.append(f"read-back: {rb_err}")
+        else:
+            for a in rb:
+                h = _ad_href(a)
+                if _norm_link_path(_href_host_path(h)[1]) == new_p:
+                    confirmed += 1
+                else:
+                    unconfirmed.append(int(a.get("Id") or 0))
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"read-back упал: {str(e)[:160]}")
+    if unconfirmed:
+        errors.append(f"read-back не подтвердил новый путь у {len(unconfirmed)} объявл.: "
+                      f"{unconfirmed[:10]}")
+    return {"replaced": replaced, "confirmed": confirmed, "targets": len(all_ids),
+            "errors": errors, "skipped": skipped}
+
+
 def _do_replace(token: str, login: str, typ: str, old_text: str, new_text: str,
                 content: dict, v5_call: Callable, v501_svc: Callable,
-                *, grid_client_factory: Callable | None = None,
+                *, mode: str = "exact", grid_client_factory: Callable | None = None,
                 uac_client_factory: Callable | None = None) -> dict:
     """Применяет замену. Возвращает {'replaced': N, 'errors': [...]}."""
-    old = (old_text or "").strip()
+    old = _frag_trim(old_text)
+    new = _frag_trim(new_text)
+    if typ == "ad_href":
+        return _replace_ad_href(token, login, old, new, content, v5_call, v501_svc)
+    if typ == "sitelink_reorder":
+        # Перестановка порядка: целевой порядок позиций лежит JSON-массивом в new_text
+        # (список исходных индексов). Применяется к КАЖДОМУ набору по позициям.
+        try:
+            perm = json.loads(new_text)
+        except (TypeError, ValueError):
+            return {"replaced": 0, "errors": ["не удалось разобрать перестановку позиций"], "reports": []}
+        return _reorder_sitelinks(
+            token, login, perm, content, v5_call,
+            grid_client_factory=grid_client_factory,
+            uac_client_factory=uac_client_factory,
+        )
+    if mode == "substring":
+        if typ not in _AD_FIELD:
+            return {"replaced": 0, "errors": ["массовая замена фрагмента доступна только для заголовков и текстов"]}
+        if len(new) > len(old):
+            return {"replaced": 0, "errors": [
+                f"новый фрагмент ({len(new)}) длиннее старого ({len(old)}) — заголовки вырастут, замена отклонена"]}
     if typ in _AD_FIELD:
-        targets = _match_targets(content, typ, old)
+        targets = _match_targets(content, typ, old, mode=mode, new_text=new_text)
         if not targets:
             return {"replaced": 0, "errors": ["объявление с таким текстом не найдено"]}
         non_uac = [t for t in targets if t.get("source") != "uac"]
@@ -1410,6 +2118,7 @@ def _do_replace(token: str, login: str, typ: str, old_text: str, new_text: str,
                 old,
                 new_text,
                 uac_targets,
+                mode=mode,
                 uac_client_factory=uac_client_factory,
             )
             replaced += int(out.get("replaced") or 0)
@@ -1432,16 +2141,38 @@ def _do_replace(token: str, login: str, typ: str, old_text: str, new_text: str,
         targets = _match_targets(content, typ, old)
         if not targets:
             return {"replaced": 0, "errors": ["набор с таким текстом быстрой ссылки не найден"]}
-        return _replace_sitelink_text_grid(
-            login,
-            typ,
-            old,
-            new_text,
-            targets,
-            token=token,
-            v5_call=v5_call,
-            grid_client_factory=grid_client_factory,
-        )
+        uac_targets = [t for t in targets if t.get("source") == "uac"]
+        grid_targets = [t for t in targets if t.get("source") != "uac"]
+        replaced = 0
+        errors: list[str] = []
+        result: dict = {}
+        if grid_targets:
+            out = _replace_sitelink_text_grid(
+                login,
+                typ,
+                old,
+                new_text,
+                grid_targets,
+                token=token,
+                v5_call=v5_call,
+                grid_client_factory=grid_client_factory,
+            )
+            replaced += int(out.get("replaced") or 0)
+            errors.extend(out.get("errors") or [])
+            result["grid"] = out
+        if uac_targets:
+            out = _replace_uac_sitelinks(
+                login,
+                _SITELINK_FIELD.get(typ, "title"),
+                old,
+                new_text,
+                uac_targets,
+                uac_client_factory=uac_client_factory,
+            )
+            replaced += int(out.get("replaced") or 0)
+            errors.extend(out.get("errors") or [])
+            result["uac"] = out
+        return {"replaced": replaced, "errors": errors, **result}
 
     return {"replaced": 0, "errors": [f"неизвестный тип: {typ}"]}
 
@@ -1570,9 +2301,13 @@ def register_content_editor_routes(
                                 f"проверьте доступ агентства и актуальность OAuth-токенов")
         return token, agency, None
 
-    def _load_with_index(token: str, login: str) -> dict:
+    def _load_with_index(token: str, login: str, *,
+                         include_campaign_sitelinks: bool = True) -> dict:
         # _load_account уже строит индекс _ads_by_set (без второго запроса ads.get).
-        return _load_account(token, login, v5_call)
+        # include_campaign_sitelinks=False пропускает Grid-round-trip блока 3c —
+        # для /links и preview/replace НЕ-sitelink типов campaign-level наборы не нужны.
+        return _load_account(token, login, v5_call,
+                             include_campaign_sitelinks=include_campaign_sitelinks)
 
     # Исполнение заданий вынесено в direct-content-worker.service (make_job_executor).
     try:
@@ -1959,15 +2694,96 @@ def register_content_editor_routes(
         token, agency, err = _token(login)
         if err:
             return jsonify({"error": err}), 404
-        content = _load_with_index(token, login)
+        # Вкладка «Быстрые ссылки» на главном /load ДОЛЖНА видеть campaign-level наборы.
+        content = _load_with_index(token, login, include_campaign_sitelinks=True)
         if content.get("error"):
             return jsonify({"error": content["error"]}), 502
-        return jsonify({
+        resp = {
             "login": login, "agency": agency,
             "callouts": content["callouts"],
             "sitelinks": content["sitelinks"],
             "ads": content["ads"],
-        })
+        }
+        # Если блок 3c ВЫПОЛНЯЛСЯ и упал — не молчим: фронт покажет заметное
+        # предупреждение (замена набора уровня кампании может не примениться).
+        if content.get("_grid_sitelink_error"):
+            resp["_grid_sitelink_error"] = content["_grid_sitelink_error"]
+        return jsonify(resp)
+
+    # ── Смена ссылки (Фаза 1): чтение ссылок объявлений, дедуп по пути ──────────
+    # Только ЧТЕНИЕ. Запись (замена Href) — Фаза 3, здесь не подключена.
+    @bp.route("/api/content-editor/links", methods=["POST"])
+    @access
+    def ce_links():
+        body = request.json or {}
+        logins = body.get("logins")
+        if isinstance(logins, str):
+            logins = [logins]
+        if not logins:
+            one = (body.get("login") or "").strip()
+            logins = [one] if one else []
+        logins = [str(x).strip() for x in (logins or []) if str(x).strip()]
+        if not logins:
+            return jsonify({"error": "login/logins обязателен"}), 400
+        groups: dict[str, dict] = {}
+        errors: list[dict] = []
+        for login in logins:
+            ok, scope_err = _login_allowed(login)
+            if not ok:
+                errors.append({"login": login, "error": scope_err})
+                continue
+            token, _agency, err = _token(login)
+            if err:
+                errors.append({"login": login, "error": err})
+                continue
+            # /links не нужны campaign-level наборы → не гоняем Grid-round-trip (блок 3c).
+            content = _load_with_index(token, login, include_campaign_sitelinks=False)
+            if content.get("error"):
+                errors.append({"login": login, "error": content["error"]})
+                continue
+            for lk in content.get("links") or []:
+                path = lk.get("path") or ""
+                if not path:
+                    continue
+                g = groups.setdefault(path, {
+                    "path": path,
+                    # Нормализация показа: реальный host заменяем на site.ru, путь сохраняем.
+                    "template_url": "https://site.ru" + path,
+                    "_ads": set(), "_camps": set(), "_accounts": set(),
+                    "live_count": 0, "_detail": {},
+                })
+                g["_ads"].add((login, lk.get("ad_id")))
+                g["_camps"].add((login, lk.get("campaign_id")))
+                g["_accounts"].add(login)
+                is_live = str(lk.get("state") or "").upper() == "ON"
+                if is_live:
+                    g["live_count"] += 1
+                host = lk.get("host") or ""
+                # Реальная схема исходного Href (обычно https, но не хардкодим) —
+                # чтобы превью «было → стало» и запись совпали по scheme.
+                scheme = _href_scheme(lk.get("href"))
+                det = g["_detail"].setdefault(
+                    (login, host),
+                    {"login": login, "host": host, "scheme": scheme, "ads": 0, "live": 0},
+                )
+                det["ads"] += 1
+                if is_live:
+                    det["live"] += 1
+        out_groups: list[dict] = []
+        for _path, g in groups.items():
+            out_groups.append({
+                "path": g["path"],
+                "template_url": g["template_url"],
+                "ads_count": len(g["_ads"]),
+                "campaigns_count": len(g["_camps"]),
+                "accounts_count": len(g["_accounts"]),
+                "live_count": g["live_count"],
+                # Детализация по аккаунтам — чтобы UI собрал превью было→стало
+                # с РЕАЛЬНЫМ доменом каждого аккаунта (без записи).
+                "accounts": list(g["_detail"].values()),
+            })
+        out_groups.sort(key=lambda x: (-x["ads_count"], x["path"]))
+        return jsonify({"logins": logins, "groups": out_groups, "errors": errors})
 
     # ── Preview: сколько объектов затронет замена (без записи) ──────────────────
     @bp.route("/api/content-editor/preview", methods=["POST"])
@@ -1977,6 +2793,8 @@ def register_content_editor_routes(
         login = (body.get("login") or "").strip()
         typ = (body.get("type") or "").strip()
         old_text = body.get("old_text") or ""
+        new_text = body.get("new_text") or ""
+        mode = (body.get("mode") or "exact").strip()
         if not login or not typ or not old_text.strip():
             return jsonify({"error": "login, type и old_text обязательны"}), 400
         ok, scope_err = _login_allowed(login)
@@ -1984,12 +2802,40 @@ def register_content_editor_routes(
             return jsonify({"error": scope_err}), 403
         if typ not in _AD_FIELD and typ != "callout" and typ not in _SITELINK_TYPES:
             return jsonify({"error": f"неизвестный тип: {typ}"}), 400
+        if mode == "substring" and typ not in _AD_FIELD:
+            return jsonify({"error": "массовая замена фрагмента доступна только для заголовков и текстов"}), 400
         token, _, err = _token(login)
         if err:
             return jsonify({"error": err}), 404
-        content = _load_with_index(token, login)
+        # campaign-level наборы нужны превью ТОЛЬКО для sitelink-типов.
+        content = _load_with_index(
+            token, login, include_campaign_sitelinks=(typ in _SITELINK_TYPES))
         if content.get("error"):
             return jsonify({"error": content["error"]}), 502
+        if mode == "substring":
+            old = _frag_trim(old_text)
+            new = _frag_trim(new_text)
+            guard_ok = len(new) <= len(old)
+            hits = _match_targets(content, typ, old, mode="substring", new_text=new)
+            # уникальные заголовки/тексты для визуальной проверки (before→after)
+            seen: set[str] = set()
+            items: list[dict] = []
+            for h in hits:
+                before = h.get("before") or ""
+                if before in seen:
+                    continue
+                seen.add(before)
+                after = h.get("after") or ""
+                items.append({
+                    "before": before, "after": after,
+                    "len_before": len(before), "len_after": len(after),
+                })
+            items.sort(key=lambda it: it["before"].lower())
+            return jsonify({
+                "mode": "substring", "objects": len(hits), "distinct": len(items),
+                "guard_ok": guard_ok, "old_len": len(old), "new_len": len(new),
+                "items": items,
+            })
         hits = _match_targets(content, typ, old_text)
         usages: list[dict] = []
         for h in hits:
@@ -2005,6 +2851,7 @@ def register_content_editor_routes(
         typ = (body.get("type") or "").strip()
         old_text = body.get("old_text") or ""
         new_text = body.get("new_text") or ""
+        mode = (body.get("mode") or "exact").strip()
         if not login or not typ or not old_text.strip() or not new_text.strip():
             return jsonify({"error": "login, type, old_text и new_text обязательны"}), 400
         ok, scope_err = _login_allowed(login)
@@ -2012,13 +2859,21 @@ def register_content_editor_routes(
             return jsonify({"error": scope_err}), 403
         if typ not in _AD_FIELD and typ != "callout" and typ not in _SITELINK_TYPES:
             return jsonify({"error": f"неизвестный тип: {typ}"}), 400
+        # substring доступен только для заголовков/текстов (как в preview и replace_async).
+        # Раньше sync-replace этот гард пропускал (finding #4) — выравниваем.
+        if mode == "substring" and typ not in _AD_FIELD:
+            return jsonify({"error": "массовая замена фрагмента доступна только для заголовков и текстов"}), 400
+        if mode == "substring" and len(_frag_trim(new_text)) > len(_frag_trim(old_text)):
+            return jsonify({"error": "новый фрагмент длиннее старого — замена отклонена"}), 400
         token, _, err = _token(login)
         if err:
             return jsonify({"error": err}), 404
-        content = _load_with_index(token, login)
+        # sitelink-замена набора уровня кампании требует блок 3c; остальным типам — нет.
+        content = _load_with_index(
+            token, login, include_campaign_sitelinks=(typ in _SITELINK_TYPES))
         if content.get("error"):
             return jsonify({"error": content["error"]}), 502
-        out = _do_replace(token, login, typ, old_text, new_text, content, v5_call, v501_svc)
+        out = _do_replace(token, login, typ, old_text, new_text, content, v5_call, v501_svc, mode=mode)
         return jsonify(out)
 
     @bp.route("/api/content-editor/replace_async", methods=["POST"])
@@ -2029,6 +2884,7 @@ def register_content_editor_routes(
         typ = (body.get("type") or "").strip()
         old_text = body.get("old_text") or ""
         new_text = body.get("new_text") or ""
+        mode = (body.get("mode") or "exact").strip()
         try:
             campaign_count = int(body.get("campaign_count") or 0)
         except (TypeError, ValueError):
@@ -2040,6 +2896,11 @@ def register_content_editor_routes(
             return jsonify({"error": scope_err}), 403
         if typ not in _AD_FIELD and typ != "callout" and typ not in _SITELINK_TYPES:
             return jsonify({"error": f"неизвестный тип: {typ}"}), 400
+        if mode == "substring":
+            if typ not in _AD_FIELD:
+                return jsonify({"error": "массовая замена фрагмента доступна только для заголовков и текстов"}), 400
+            if len(_frag_trim(new_text)) > len(_frag_trim(old_text)):
+                return jsonify({"error": "новый фрагмент длиннее старого — замена отклонена"}), 400
         _, agency, err = _token(login)
         if err:
             return jsonify({"error": err}), 404
@@ -2054,10 +2915,10 @@ def register_content_editor_routes(
         allowed = _allowed_directologists()
         _jobs_exec(
             f"INSERT INTO {CE_JOBS_TABLE} "
-            "(job_id, username, login, agency, type, old_text, new_text, campaign_count, access_directologists) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "(job_id, username, login, agency, type, old_text, new_text, mode, campaign_count, access_directologists) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (job_id, (session.get("username") or "").strip(), login, agency or "", typ,
-             old_text, new_text, campaign_count,
+             old_text, new_text, (mode if mode == "substring" else "exact"), campaign_count,
              json.dumps(allowed, ensure_ascii=False) if allowed is not None else None))
         ahead = _jobs_exec(
             f"SELECT count(*) AS c FROM {CE_JOBS_TABLE} WHERE status='queued' "
@@ -2066,6 +2927,106 @@ def register_content_editor_routes(
         return jsonify({
             "ok": True, "job_id": job_id, "login": login, "agency": agency,
             "status": "queued", "total": 1, "ahead": ahead,
+            "campaign_count": campaign_count,
+        })
+
+    # ── Смена ссылки (Фаза 3): постановка задачи смены Href в очередь ───────────
+    @bp.route("/api/content-editor/links/replace_async", methods=["POST"])
+    @access
+    def ce_links_replace_async():
+        body = request.json or {}
+        login = (body.get("login") or "").strip()
+        old_path = _norm_link_path(body.get("old_path") or "")
+        new_path = _norm_link_path(body.get("new_path") or "")
+        try:
+            campaign_count = int(body.get("campaign_count") or 0)
+        except (TypeError, ValueError):
+            campaign_count = 0
+        if not login or not old_path or not new_path:
+            return jsonify({"error": "login, old_path и new_path обязательны"}), 400
+        if new_path == old_path:
+            return jsonify({"error": "новый путь совпадает со старым"}), 400
+        ok, scope_err = _login_allowed(login)
+        if not ok:
+            return jsonify({"error": scope_err}), 403
+        _, agency, err = _token(login)
+        if err:
+            return jsonify({"error": err}), 404
+        day_cnt = _jobs_exec(
+            f"SELECT count(*) AS c FROM {CE_JOBS_TABLE} "
+            f"WHERE login=%s AND status<>'cancelled' AND created_at >= {CE_EKB_DAY_SQL}",
+            (login,), "one")["c"]
+        if day_cnt >= CE_DAILY_JOB_CAP:
+            return jsonify({"error": f"лимит {CE_DAILY_JOB_CAP} заданий на аккаунт в сутки "
+                                     f"(уже поставлено {day_cnt})"}), 429
+        job_id = "ce_" + uuid.uuid4().hex[:12]
+        allowed = _allowed_directologists()
+        _jobs_exec(
+            f"INSERT INTO {CE_JOBS_TABLE} "
+            "(job_id, username, login, agency, type, old_text, new_text, mode, campaign_count, access_directologists) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (job_id, (session.get("username") or "").strip(), login, agency or "", "ad_href",
+             old_path, new_path, "link", campaign_count,
+             json.dumps(allowed, ensure_ascii=False) if allowed is not None else None))
+        ahead = _jobs_exec(
+            f"SELECT count(*) AS c FROM {CE_JOBS_TABLE} WHERE status='queued' "
+            f"AND created_at < (SELECT created_at FROM {CE_JOBS_TABLE} WHERE job_id=%s)",
+            (job_id,), "one")["c"]
+        return jsonify({
+            "ok": True, "job_id": job_id, "login": login, "agency": agency,
+            "type": "ad_href", "status": "queued", "total": 1, "ahead": ahead,
+            "campaign_count": campaign_count,
+        })
+
+    # ── Перестановка порядка быстрых ссылок (sitelink_reorder) ──────────────────
+    # Позиционная перестановка (вариант A): целевой порядок позиций (drag-and-drop)
+    # применяется к КАЖДОМУ набору выбранного аккаунта по позициям. Одна задача на
+    # аккаунт в ту же очередь content_jobs — как остальные замены.
+    @bp.route("/api/content-editor/sitelinks/reorder_async", methods=["POST"])
+    @access
+    def ce_sitelinks_reorder_async():
+        body = request.json or {}
+        login = (body.get("login") or "").strip()
+        perm_raw = body.get("perm")
+        try:
+            campaign_count = int(body.get("campaign_count") or 0)
+        except (TypeError, ValueError):
+            campaign_count = 0
+        if not login:
+            return jsonify({"error": "login обязателен"}), 400
+        perm, why = _validate_permutation(perm_raw)
+        if not perm:
+            return jsonify({"error": why or "некорректная перестановка позиций"}), 400
+        ok, scope_err = _login_allowed(login)
+        if not ok:
+            return jsonify({"error": scope_err}), 403
+        _, agency, err = _token(login)
+        if err:
+            return jsonify({"error": err}), 404
+        day_cnt = _jobs_exec(
+            f"SELECT count(*) AS c FROM {CE_JOBS_TABLE} "
+            f"WHERE login=%s AND status<>'cancelled' AND created_at >= {CE_EKB_DAY_SQL}",
+            (login,), "one")["c"]
+        if day_cnt >= CE_DAILY_JOB_CAP:
+            return jsonify({"error": f"лимит {CE_DAILY_JOB_CAP} заданий на аккаунт в сутки "
+                                     f"(уже поставлено {day_cnt})"}), 429
+        job_id = "ce_" + uuid.uuid4().hex[:12]
+        allowed = _allowed_directologists()
+        perm_json = json.dumps(perm)
+        _jobs_exec(
+            f"INSERT INTO {CE_JOBS_TABLE} "
+            "(job_id, username, login, agency, type, old_text, new_text, mode, campaign_count, access_directologists) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (job_id, (session.get("username") or "").strip(), login, agency or "", "sitelink_reorder",
+             perm_json, perm_json, "reorder", campaign_count,
+             json.dumps(allowed, ensure_ascii=False) if allowed is not None else None))
+        ahead = _jobs_exec(
+            f"SELECT count(*) AS c FROM {CE_JOBS_TABLE} WHERE status='queued' "
+            f"AND created_at < (SELECT created_at FROM {CE_JOBS_TABLE} WHERE job_id=%s)",
+            (job_id,), "one")["c"]
+        return jsonify({
+            "ok": True, "job_id": job_id, "login": login, "agency": agency,
+            "type": "sitelink_reorder", "status": "queued", "total": 1, "ahead": ahead,
             "campaign_count": campaign_count,
         })
 

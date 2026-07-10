@@ -24,6 +24,135 @@
 
 ## Активные / недавние ошибки
 
+### CONTENT_EDITOR_SITELINK_REORDER — новая фича: позиционная перестановка порядка быстрых ссылок (2026-07-10)
+- Симптом/задача: не ошибка, а НОВЫЙ путь записи (вариант A, drag-and-drop). Массовая перестановка
+  ПОРЯДКА быстрых ссылок сразу во всех кампаниях выбранных аккаунтов по позициям (permutation по индексам).
+- Где: `routes_content_editor.py` — `_validate_permutation` (биекция 0..N-1, N≥2, не тождество),
+  `_reorder_sitelinks` (ядро: применяет perm к КАЖДОМУ набору content["sitelinks"], per-set report
+  applied/skipped/error), ветка `typ=="sitelink_reorder"` в `_do_replace` (perm лежит JSON в new_text),
+  `_SITELINK_JOB_TYPES` (executor грузит campaign-level наборы для reorder), эндпоинт
+  `/api/content-editor/sitelinks/reorder_async` (та же очередь content_jobs, type='sitelink_reorder',
+  mode='reorder', old_text=new_text=json(perm)). Frontend `templates/direct/content_editor.html`: кнопка
+  «↕️ Порядок быстрых ссылок» (только раздел sitelinks), панель `ce-reorder-panel` (drag-and-drop чипы
+  позиций, селектор длины N = самая частая длина наборов), клиентское превью было→стало per-set,
+  `ceReorder*` JS. Job-note для reorder показывает «переставлено наборов X, пропущено Y».
+- Пути записи по типам (переиспользованы примитивы, ничего не дублировано):
+  - **UAC (tp6/7)** → `_uac_patch_campaign_texts(client, cid, "sitelinks", reordered)`. Основную ссылку
+    (href) НЕ трогаем. Перечитываем деталь и переставляем РЕАЛЬНЫЙ текущий массив (byte-safe), read-back.
+  - **campaign-level (inheritableSitelinkSet)** → `add_sitelink_set(reordered)` + `set_campaign_sitelink_set`.
+  - **ad-level TextAd/DynamicTextAd** → `add_sitelink_set` + `_v5_rebind_ads_sitelink_set`.
+  - **ad-level ResponsiveAd** → честный skip «не поддерживается (хрупкость Grid)» + отчёт (не тихий успех).
+  - Наборы короче перестановки (len(items) < N) → skip с явным отчётом (не режем молча).
+- Возврат-безопасность: swap — инволюция; для RK дедуп `add_sitelink_set` при идентичном содержимом
+  возвращает ИСХОДНЫЙ set_id (бесплатный откат); для UAC исходный порядок в отчёте (orig_order).
+- Верификация (live, porg-psm5h7q6, всё State=OFF/DRAFT, swap перв.двух [1,0,2,3,4,5,6,7], возврат):
+  · UAC 712694743: order swap → read-back новый порядок → revert → **byte-for-byte идентично**.
+    **Основная ссылка href `https://autos-kemerovo.site/auto` — UNCHANGED** через swap и revert.
+  · campaign-level set 1492751576 (камп 712694813): swap → новый набор 1492769958, камп перепривязан →
+    revert → **Grid дедуп восстановил ИСХОДНЫЙ set_id 1492751576, order идентичен**.
+  · ad-level ResponsiveAd set 1492662343: **skipped «не поддерживается» (responsive_skipped=2),
+    replaced=0, набор НЕ тронут** (порядок unchanged после попытки).
+  МАССОВАЯ запись НЕ запускалась (инициирует Семён из UI).
+- ⚠️ КВИРК (не блокер, документирую): для **UAC товарки tp7** partial-PATCH `{sitelinks}` отвергается →
+  `_uac_patch_campaign_texts` шлёт FULL payload → UAC на save РЕОРДЕРИТ `device_types` и `ad_group_briefs`
+  (МЕМБЕРШИП идентичен: phone/desktop/tablet все на месте — меняется только ПОРЯДОК списка, семантически
+  инертно; main link href НЕ трогается). Это ПРЕД-СУЩЕСТВУЮЩЕЕ поведение общего UAC-write-пути (те же
+  href/title замены), НЕ регресс reorder. Партиал работает для не-товарочных UAC — там churn'а нет.
+- Деплой: рестарт ОБОИХ (direct-content + direct-content-worker, оба active), HTTP 302, journal чист.
+  py_compile OK, pyflakes 0 undefined, node --check OK.
+- Статус: ✅ подтверждено живым прогоном 2026-07-10 (UAC + campaign-level + ad-level ResponsiveAd skip,
+  read-back + откат). НЕ помогло ранее: — (новый путь).
+- **Code-review фиксы 2026-07-10 (5 находок, все ✅ live-verified porg-psm5h7q6 OFF, возврат byte-for-byte):**
+  1. 🟠 **Мультиаккаунт reorder применял непросмотренную перестановку.** `ceReorderApply` слал perm на
+     ВСЕ `ceTargetLogins()`, но превью/`RO_N` строятся только по загруженному `CE.login` (`CE.content` = 1 логин).
+     reorder ПОЗИЦИОННЫЙ → на непросмотренных акках с иным составом наборов слепая перестановка на живых
+     объявлениях. Фикс (`content_editor.html` `ceReorderApply`): `targetLogins = [CE.login]` + гард на `CE.login`
+     + текст подтверждения «только загруженный аккаунт». Выбран вариант «ограничить одним акком» (не warning-мультиакк):
+     превью привязано к одному логину, а позиционный swap на несовпадающих наборах семантически неоднозначен.
+  2. 🟡 **UAC read-back ложный «не подтвердил» при одинаковых title.** `_reorder_sitelinks` сверял порядок
+     по списку TITLE → swap ссылок с одинаковым title/разным href помечался error при реально применённой
+     перестановке. Фикс: сверка read-back И пре-чек «изменилось ли» по ПОЛНОМУ кортежу `_sl_tuple` =
+     (title,href,description). Live-модель: OLD title-only `after==cur -> True` (ложь), NEW tuple `-> False` (верно).
+  3. 🟡 **`replaced` смешивал единицы** (кампании+UAC-наборы+объявления в одно число). Фикс: основная метрика
+     `replaced == applied_sets` (наборы), детализация отдельными полями `campaigns_touched`/`ads_touched`/`uac_sets`.
+     UI job-note уже показывал `applied_sets`/`skipped_sets`. Live: UAC → uac_sets=1; campaign → campaigns_touched=1.
+  4. 🔵 **sync `ce_replace` не отклонял substring для не-AD полей** (в отличие от `/preview` и `/replace_async`).
+     Фикс: тот же гард 400 «массовая замена фрагмента только для заголовков и текстов».
+  5. 🔵 **Reorder пересобирает набор из снимка (title/href/description).** ФАКТ: элемент набора состоит РОВНО из
+     этих трёх полей — v5 `sitelinks.get` (Title/Href/Description), Grid `get_sitelink_sets` (title/description/href)
+     и запись `add_sitelink_set` (title/href/description) оперируют той же тройкой; per-item `id` назначается
+     сервером и на создании не пересылается. Полей не теряется → находка снята комментарием (несущественна).
+  - Верификация: py_compile OK, pyflakes 0, node --check OK. Рестарт обоих сервисов active. Live TEST1..4 на
+    porg-psm5h7q6: UAC swap→revert byte-for-byte (main-link scalar поля unchanged), campaign swap→revert Grid-дедуп
+    к 1492751576, ad-level ResponsiveAd honest skip (responsive_skipped=2, набор не тронут).
+
+### CONTENT_EDITOR_FRAGMENT_STRAY_WHITESPACE — ведущий/хвостовой пробел во фрагменте бьёт заголовок (2026-07-10)
+- Симптом: в «Массовой замене фрагмента» (mode=substring) пользователь случайно оставил ведущий
+  ПРОБЕЛ в поле «Стало — фрагмент». Бренд был слит с фрагментом (`Jetour2026 г в Кемерово…`), а
+  превью/замена выдавали `Jetour 2026 г…` — лишний пробел между брендом и фрагментом.
+- Где: `routes_content_editor.py` (preview `ce_preview`, replace `ce_replace`/`ce_replace_async`,
+  worker через `make_job_executor`→`_do_replace`→`_match_targets`/`_replace_adaptive_ad_texts`) +
+  frontend `templates/direct/content_editor.html` (`ceFragPreview`/guard).
+- Root-cause: для обычного пробела `str.strip()`/JS `.trim()` уже чистили — этот кейс работал. Но
+  НЕвидимые/zero-width символы (BOM U+FEFF, ZWSP U+200B, ZWNJ/ZWJ, word-joiner U+2060) `.strip()`
+  НЕ убирает (`'﻿'.isspace()==False`), а JS `\s` не покрывает U+200B..U+200D/2060. Такой
+  стрей-символ подставлялся буквально между брендом и фрагментом. Гард длины `len(new)>len(old)`
+  тоже сбивался (символ увеличивал длину).
+- Решение (2026-07-10): добавлен `_frag_trim()` (`.strip()` + strip невидимого набора
+  `_FRAG_INVISIBLE` + повторный `.strip()`) и JS-двойник `ceFragTrim()`. Заменил ВСЕ нормализации
+  `old_text`/`new_text` и все length-гарды (preview, replace, replace_async, `_do_replace`) на
+  frag-trim. Внутренние пробелы не трогаются (strip только по краям). Рестарт ОБОИХ сервисов:
+  `direct-content` + `direct-content-worker`.
+- Верификация (LXC 101, реальный `_match_targets`): plain space / NBSP / BOM / ZWSP / word-joiner /
+  trailing ZW → все дают чистый `Jetour2026 г…` (before-fix BOM/ZW вставляли символ между
+  Jetour и 2026). Exact-режим цел (hit=1 / non-match=0). `_frag_trim('  a b  c ZW')`==`'a b  c'`.
+- Статус: ✅ подтверждено локальным прогоном на LXC 101 2026-07-10 (оба сервиса active). Живой
+  UI-прогон по аккаунту не делал (правило: без массовой записи по живым аккаунтам).
+- Грабля: это ЛОГИКА → недостаточно рестарта одного сервиса, надо оба (`direct-content` для
+  превью/эндпоинтов + `direct-content-worker` для реальной записи), иначе превью и запись
+  разъедутся.
+
+### CONTENT_EDITOR_SITELINK_HREF_REPLACE — Фаза 3b: смена Href/URL быстрой ссылки, приоритет UAC (2026-07-10)
+- Симптом/задача: не ошибка, а НОВЫЙ путь записи. Редактор быстрых ссылок раньше менял ТОЛЬКО
+  заголовок/описание (`sitelink_title`/`sitelink_description`). Сам URL (Href) элемента быстрой
+  ссылки не редактировался — особенно для UAC (tp6/tp7 = Мастер/Товарка), где Семён отдельно просил.
+- Где: `routes_content_editor.py` — новый тип `sitelink_href` (`_SITELINK_TYPES`/`_SITELINK_FIELD`),
+  UAC-загрузка сайтлинков в `_load_account` блок 3b (`uac_sitelinks_out`, `source="uac"`,
+  `set_id="uac:<cid>"`), `_match_targets` (ветвление uac/grid по `source`), новый
+  `_replace_uac_sitelinks` (PATCH sitelinks + read-back), `_do_replace` sitelink-ветка (split
+  uac→PATCH / grid→set-rebind), `_replace_sitelink_text_grid` + `_confirm_ads_sitelink_text`
+  обобщены на field=href. Frontend `content_editor.html`: поле «Стало: ссылка/URL» в edit-боксе
+  быстрой ссылки, задача `sitelink_href` через ту же очередь `content_jobs`/`replace_async`.
+- Путь записи по типам (подтверждён живьём):
+  - **UAC (tp6/7): cookie-PATCH `/web-api/uac/campaign/{id}` по полю `sitelinks`** (`_uac_patch_campaign_texts`,
+    field_key="sitelinks", `sitelinks` уже в `_UAC_PATCH_FULL_KEYS`). Структура элемента —
+    `{title, href, description}` (проверено GET detail на porg-psm5h7q6). Матч по точному значению
+    поля; в UAC href часто ОДИН общий → смена меняет посадочную у всех совпавших элементов кампании.
+    v5 UAC-кампании не отдаёт → ids берутся из `uac_detail_client.client.list_campaigns()` (уже было).
+  - **Обычные РК (tp1-5, campaign-level inheritableSitelinkSet): Grid `add_sitelink_set`(новый набор с
+    новым href) → `set_campaign_sitelink_set`(перепривязка)** — та же campaign-level машинерия, что и
+    для title/desc, просто меняем поле href в items. Требует куку управляющего агентства (victorylotsofads1
+    для porg-*, см. GRID_COOKIE_SUBACCOUNT_404).
+  - Ad-level ResponsiveAd href — fallback через Grid `find_and_replace_text` target `SITELINK_HREF`
+    (`linkReplacementMode:"FULL"`) — ФЛАКОВ (может вернуть successCount без применения, «не подтвердилась
+    у N» — как и для title/desc на GdTextAd). Read-back честно репортит; данные не портятся. Основной
+    (campaign-level) путь стабилен.
+- Верификация (live, porg-psm5h7q6, ЧЕРНОВИКИ State=OFF/DRAFT):
+  - UAC (712694741+712694743): read href `/auto` → `_do_replace(sitelink_href, /auto → /spike-test-sl-href)`
+    `replaced=16 errors=[]` → read-back NEW у всех 16 → REVERT `replaced=16 errors=[]` → read-back
+    восстановлено `/auto` байт-в-байт.
+  - Grid campaign-level (set 1492662511, 4 кампании): href `https://autos-kemerovo.site` → `/grid-spike-test-href`
+    → новый набор 1492748296, кампании перепривязаны, read-back NEW → REVERT → кампании вернулись на
+    исходный 1492662511 с `https://autos-kemerovo.site`. (Ad-level ResponsiveAd в матче — 2+8 «не
+    подтвердилась», см. выше; не регресс.)
+  - МАССОВАЯ запись НЕ запускалась (её инициирует Семён из UI). Живые (State=ON) объявления после
+    смены href уходят на модерацию — UI предупреждает в hint.
+- Деплой: рестарт ОБОИХ (`direct-content` + `direct-content-worker`, правка логики воркера), оба active,
+  HTTP 302, journal чист. py_compile OK, pyflakes 0, node --check OK.
+- Статус: ✅ подтверждено живым прогоном 2026-07-10 (UAC И Grid campaign-level, read-back + откат).
+- НЕ помогло ранее: — (новый путь). ⚠️ Ad-level ResponsiveAd href через find_and_replace SITELINK_HREF
+  ненадёжен (нужны sitelinkOrderNumsToUpdateHref или set-rebind) — сейчас честный fail-report, не тихая порча.
+
 ### CONTENT_EDITOR_AD_HREF_REPLACE — Фаза 3 «Смена ссылки»: путь записи Href (2026-07-10)
 - Симптом: не ошибка, а НОВЫЙ путь записи — фиксирую риски. Массовая смена посадочной ссылки (Href)
   объявлений по выбранному пути через очередь content_jobs (`type='ad_href'`, `mode='link'`).

@@ -3,6 +3,188 @@
 > Читать ПЕРВЫМ в начале каждой сессии. Обновлять ПОСЛЕДНИМ перед выходом.
 > Ошибки создания РК: сигнатуры/решения/что-помогло — **ERRORS_JOURNAL.md** (обязателен к заполнению при фиксах).
 
+## Сессия 2026-07-10 — Code-review фиксы reorder быстрых ссылок (5 находок) ✅ ДЕПЛОЙ+LIVE-ВЕРИФ
+- **Задача:** починить 5 находок code-review в фиче reorder + content-editor, повторно проверить на porg-psm5h7q6 (OFF, возврат).
+- **Фиксы** (`routes_content_editor.py` `_reorder_sitelinks`, `ce_replace`; `content_editor.html` `ceReorderApply`):
+  #1 🟠 reorder ограничен ЗАГРУЖЕННЫМ аккаунтом (`targetLogins=[CE.login]`, не вся мультивыборка) — превью
+  строится по одному логину, позиционный swap на непросмотренных наборах небезопасен. #2 🟡 read-back и
+  пре-чек «изменилось ли» по ПОЛНОМУ кортежу `_sl_tuple`=(title,href,description), не по title (ложный error
+  при одинаковых title). #3 🟡 `replaced==applied_sets` (наборы) + детализация `campaigns_touched`/`ads_touched`/
+  `uac_sets`. #4 🔵 sync `ce_replace` теперь тоже 400 на substring+не-AD. #5 🔵 снят комментарием: элемент набора
+  = ровно {title,href,description} (id серверный), полей не теряется.
+- **LIVE-ВЕРИФ (porg-psm5h7q6, OFF):** TEST1 UAC 712694741 swap→applied (uac_sets=1)→revert byte-for-byte,
+  main-link scalar unchanged; TEST2 логическая модель same-title/diff-href (OLD title-only=ложь, NEW tuple=верно);
+  TEST3 campaign 1492751576 swap (campaigns_touched=1)→revert Grid-дедуп к 1492751576; TEST4 ad ResponsiveAd
+  1492662343 honest skip (responsive_skipped=2, набор не тронут). Массово НЕ запускал.
+- **Деплой:** py_compile OK / pyflakes 0 / node --check OK; рестарт обоих (direct-content + worker) active; 302.
+  ERRORS_JOURNAL: CONTENT_EDITOR_SITELINK_REORDER дополнен блоком «Code-review фиксы 2026-07-10».
+
+## Сессия 2026-07-10 — Фича sitelink_reorder: позиционная перестановка порядка быстрых ссылок (вариант A) ✅ ДЕПЛОЙ+LIVE-ВЕРИФ
+- **Задача:** массовая перестановка ПОРЯДКА быстрых ссылок (drag-and-drop) сразу во всех кампаниях
+  выбранных аккаунтов по позициям (permutation по индексам). Реализована по прошлому R&D-дизайну.
+- **Backend** (`routes_content_editor.py`): `_validate_permutation`, `_reorder_sitelinks` (ядро,
+  per-set report applied/skipped/error), ветка `sitelink_reorder` в `_do_replace` (perm=JSON в new_text),
+  `_SITELINK_JOB_TYPES` (executor грузит campaign-level для reorder), эндпоинт
+  `/api/content-editor/sitelinks/reorder_async` (та же очередь content_jobs, mode='reorder').
+  Пути записи ПЕРЕИСПОЛЬЗОВАНЫ: UAC→`_uac_patch_campaign_texts(...,"sitelinks",reordered)` (осн.ссылку не
+  трогаем); campaign-level→`add_sitelink_set`+`set_campaign_sitelink_set`; ad-level TextAd/DynamicTextAd→
+  `add_sitelink_set`+`_v5_rebind_ads_sitelink_set`; ad-level ResponsiveAd→честный skip; наборы < N→skip с отчётом.
+- **Frontend** (`content_editor.html`): кнопка «↕️ Порядок быстрых ссылок» (только раздел sitelinks),
+  панель `ce-reorder-panel` с drag-and-drop чипами позиций + селектор N (самая частая длина наборов),
+  клиентское превью было→стало per-set (с пометкой пропусков), `ceReorder*` JS, job-note reorder.
+- **LIVE-ВЕРИФ (porg-psm5h7q6, всё OFF, swap перв.двух, возврат):** UAC 712694743 order swap→revert
+  byte-for-byte, **осн.ссылка href /auto UNCHANGED**; campaign-level 1492751576 (камп 712694813) swap→
+  новый набор 1492769958→revert Grid-дедупом на ИСХОДНЫЙ 1492751576 identical; ad-level ResponsiveAd
+  1492662343 → **skipped «не поддерживается» replaced=0, набор не тронут**. Массово НЕ запускал (ждёт UI Семёна).
+- **Квирк** (в ERRORS_JOURNAL): UAC товарка tp7 → partial-PATCH sitelinks отвергается → full-payload →
+  UAC реордерит device_types/ad_group_briefs (мембершип цел, семантически инертно, main link цел). Пред-существующее.
+- **Деплой:** рестарт ОБОИХ (direct-content + direct-content-worker) → active, 302, journal чист.
+  py_compile OK / pyflakes 0 / node --check OK. ERRORS_JOURNAL: CONTENT_EDITOR_SITELINK_REORDER ✅.
+
+## Сессия 2026-07-10 — Контрол. проверка write-путей + R&D reorder (porg-psm5h7q6, всё OFF) ✅ ВЕРИФ, возврат byte-for-byte
+- **Задача A:** доказать живьём, что редактор реально меняет callouts/href/sitelink title+desc по tp, с возвратом.
+- **Покрытие акка:** tp1(5)/tp2(2)/tp5(5) = TEXT_CAMPAIGN/OFF/**все ResponsiveAd** (нет TextAd); tp3/tp4 ОТСУТСТВУЮТ;
+  tp6/7 = 2 UAC (712694741/743). **0 dynamic/feed ads** (href для них немех. неприменим — исключены из links, не проверено живьём).
+  UAC `list_campaigns` отдаёт HTTP 405, но `campaign_details` работает через Grid-fallback. Кука живая (len 1331).
+- **Факты (было→стало→возврат, все errors=[] кроме fragile):**
+  · callout (кампания 712694735): old отвязан→spike привязан→revert. add_callouts ДЕДУПает к исходному ext-id 43321281 → возврат byte+id.
+  · href ad-level ResponsiveAd→**v501** ads.update: tp1 ad 1915186115551025151, tp5 ad 1915186853212398223 — replaced/confirmed=1, revert ок.
+  · href UAC (712694741): replaced=8 (общий href), revert ок.
+  · sitelink title+desc **campaign-level** (inheritableSitelinkSet rebind, 712694819): работает, revert ДЕДУПает к исходному set 1492751568 (content identical, same id).
+  · sitelink title+desc **UAC** (712694741): работает, revert ок.
+  · sitelink title+desc **ad-level ResponsiveAd** (set 1492662343) через Grid findAndReplace: **НЕ применяется** (replaced=0, «Grid не применил у 2 объявл.») — подтверждённая ХРУПКОСТЬ, дирти-стейта НЕ оставляет (set нетронут). Reconcile: всё вернулось byte-for-byte.
+- **Задача B (reorder R&D):** порядок sitelinks = позиция в массиве. UAC: swap [0]/[1] в `sitelinks` PATCH → порядок сменился → revert. RK campaign-level: reorder = add_sitelink_set(reordered)+set_campaign_sitelink_set → сменился → revert дедуп к 1492751568. **Грабля:** наборы шарятся (SetId один на многих) + в разных акках/кампаниях разный состав — «поменять местами» неоднозначно при несовпадающих наборах. Дизайн предложен (не реализован).
+- **Грабля кода:** `_normalize_callout_text` вырезает `_`/пунктуацию — spike для callout ДОЛЖЕН быть alnum, иначе readback/revert по строке с `_` не матчит (ловил дирти-стейт, откатил). Temp-скрипты удалены. Код НЕ менял, деплой не трогал.
+
+## Сессия 2026-07-10 — content-editor: автозагрузка ссылок вкладки «Смена ссылки» ✅ ДЕПЛОЙ
+- **Задача:** ссылки посадочных должны подтягиваться автоматически вместе с основным контентом; убрать кнопку «Загрузить ссылки».
+- **Сделал** (только `templates/direct/content_editor.html`, backend не тронут): удалил `<button id="lnk-load-btn">`;
+  в `ceLoad()` finally при `ok` гашу индетерминантный таймер `CE_LOAD_PROG_TIMER` без «Готово» и вызываю `ceLinksLoad()`
+  тем же прогоном (та же карта `#ce-load-prog`); `ceLinksLoad()` избавлен от btn-ссылок, добавлены гард `LNK_LOADING`
+  (анти-двойной прогон) и кэш `LNK_LOADED_KEY`; клик по вкладке → новый `ceLinksTabOpen()`: кэш при совпадении
+  выборки / тихая догрузка / заглушка если аккаунты не выбраны (не ошибка).
+- **Верификация:** `node --check` извлечённого JS = JS_OK; grep кнопки на сервере = 0; синк Mutagen ок; рестарт
+  `direct-content` → active; smoke `curl :5021/direct/automation/content` = 302 (login-gate, сервис отдаёт). UI-кликом
+  не верифицировано (auth-гейт, без записи по живым аккаунтам).
+
+## Сессия 2026-07-10 — content-editor: стрей-пробел/невидимые символы во фрагменте (substring) ✅ ДЕПЛОЙ+ВЕРИФ
+- **Задача:** ведущий/хвостовой пробел в «Было/Стало — фрагмент» (mode=substring) превращал `Jetour2026` → `Jetour 2026`.
+- **Корень:** обычный пробел `.strip()`/`.trim()` уже чистили (кейс работал), но zero-width/невидимые
+  (BOM U+FEFF, ZWSP U+200B, ZWNJ/ZWJ, word-joiner U+2060) `.strip()` НЕ убирает, JS `\s` не покрывает
+  U+200B..U+200D/2060 → символ вставлялся между брендом и фрагментом + сбивал гард длины.
+- **Сделал:** `_frag_trim()` в `routes_content_editor.py` (strip + strip невидимых `_FRAG_INVISIBLE` + strip)
+  + JS `ceFragTrim()` в `templates/direct/content_editor.html`; заменил ВСЕ нормализации old_text/new_text
+  и length-гарды в preview/replace/replace_async/`_do_replace`/`_match_targets`/`_replace_*`. Внутренние
+  пробелы целы (strip только по краям).
+- **Верификация (LXC101, реальный `_match_targets`):** plain/NBSP/BOM/ZWSP/word-joiner/trailing → все чистый
+  `Jetour2026`; before-fix BOM/ZW вставляли символ между Jetour и 2026; exact-режим цел (hit=1/non-match=0).
+- **Деплой:** рестарт ОБОИХ — `direct-content` + `direct-content-worker` → оба active. ERRORS_JOURNAL:
+  CONTENT_EDITOR_FRAGMENT_STRAY_WHITESPACE ✅. Живой UI-прогон по аккаунту НЕ делал (без массовой записи).
+- **Открыто:** ничего по этой задаче. Не верифицировано только UI-кликом (правило: без записи по живым аккаунтам).
+
+## Сессия 2026-07-10 — Фаза 3b: смена Href/URL быстрой ссылки (приоритет UAC tp6/7) ✅ ДЕПЛОЙ+ВЕРИФ
+- **Задача:** редактор быстрых ссылок менял только заголовок/описание — сам URL (Href) элемента не
+  редактировался. Семён: «менять ссылки в быстрых ссылках тп6-тп7» (UAC).
+- **Сделал** (`routes_content_editor.py`): новый тип `sitelink_href` (`_SITELINK_TYPES`+`_SITELINK_FIELD`);
+  UAC-сайтлинки грузятся в `_load_account` блок 3b (`uac_sitelinks_out`, `source="uac"`, `set_id="uac:<cid>"`,
+  структура `{title,href,description}` из UAC detail); `_match_targets` ветвит uac/grid по `source`;
+  новый `_replace_uac_sitelinks` (cookie-PATCH поля `sitelinks` + read-back); `_do_replace` sitelink-ветка
+  split uac→PATCH / grid→set-rebind; `_replace_sitelink_text_grid`+`_confirm_ads_sitelink_text` обобщены на
+  field=href (fr_target SITELINK_HREF). Frontend `templates/direct/content_editor.html`: поле «Стало: ссылка/URL»
+  в edit-боксе быстрой ссылки (+ceCanApply/cePreview/ceApply/ceTypeName), очередь та же (`replace_async`, тип sitelink_href).
+- **Путь записи:** UAC → PATCH `/web-api/uac/campaign/{id}` sitelinks. Обычные РК campaign-level →
+  Grid `add_sitelink_set`+`set_campaign_sitelink_set` (меняем поле href в items). Ad-level ResponsiveAd href
+  через find_and_replace SITELINK_HREF — флаков (честный fail-report, не регресс).
+- **Верифno live (черновики porg-psm5h7q6, State=OFF/DRAFT):** UAC 712694741/743 `/auto`→spike→REVERT
+  `replaced=16 errors=[]` оба раза, read-back байт-в-байт. Grid set 1492662511 (4 камп)
+  `autos-kemerovo.site`→spike→новый набор→REVERT на исходный. Массовая запись НЕ запускалась.
+- **Деплой:** рестарт ОБОИХ (direct-content + direct-content-worker), active, HTTP 302, journal чист.
+  py_compile OK / pyflakes 0 / node --check OK. ERRORS_JOURNAL: CONTENT_EDITOR_SITELINK_HREF_REPLACE ✅.
+- **Осталось (не блок):** ad-level ResponsiveAd href через find_and_replace ненадёжен (нужны
+  sitelinkOrderNumsToUpdateHref или Grid set-rebind ResponsiveAd) — если понадобится, доработать.
+
+## Сессия 2026-07-10 — Code-review фикс редактора контента (4 замечания) ✅ ДЕПЛОЙ+ВЕРИФ
+- **№1 (важный)** блок 3c (`_read_unified_campaign_update_payloads` по всем кампаниям, Grid) гонялся на КАЖДОЙ
+  загрузке → лишний round-trip в hot-path + тихая деградация campaign-level наборов на суб-аккаунтах без куки.
+  → `_load_account(..., include_campaign_sitelinks: bool=True)` + одноимённый параметр в `_load_with_index`.
+  include=True: главный /load (ce_load) + sitelink-замены (тип sitelink_title/description); include=False:
+  /links (ce_links), preview/replace НЕ-sitelink типов, воркер `execute` для ad_title/ad_text/callout/ad_href.
+  ce_load теперь пробрасывает `_grid_sitelink_error` → UI на вкладке «Быстрые ссылки» рисует заметный warning
+  (`ceRender`, оранжевый баннер) вместо молчания. Файлы: `routes_content_editor.py` (614/278/~1868/ce_load/ce_links/
+  ce_preview/ce_replace), `content_editor.html` (ceRender).
+- **№2** превью «Смена ссылки» больше не хардкодит `https://` — `_href_scheme(href)` (новый хелпер) кладёт реальную
+  схему в `_detail.scheme` (ce_links), `ceLinksAccountRows` протаскивает, превью/список берут `a.scheme`.
+- **№3** `ceLinksPreview` теперь итерирует дедуп-источник `ceLinksAccountRows(LNK_SELECTED)` (было сырой .accounts).
+- **№4** `_replace_ad_href`: `errors = []` (было `list(skipped)`) — skipped уже отдаётся отдельным полем; воркер
+  больше не считает пропуск нередактируемого типа за провал задания.
+- Тест `test_content_editor_campaigns_get_uses_only_valid_top_level_fields` обновлён: Href — валидное поле
+  ResponsiveAdFieldNames (нужен вкладке ссылок). Остаётся 1 ПРЕД-СУЩЕСТВУЮЩИЙ фейл
+  `test_content_editor_replace_never_writes_via_oauth_api` (sitelink replace, фейлит и на baseline — НЕ мой).
+- **ВЕРИФ на porg-psm5h7q6 (State=OFF, без массовой записи):** (a) /links include=False → 537 links, grid3c=0;
+  (b) /load include=True → sitelinks=159, level=campaign=3, grid3c=1; (d) ad_href/ad_title job include=False → grid3c=0
+  (лог-спай); (c) campaign-level sitelink_title ORIG↔TMP на 7 черновиках: replaced=7/0 err, revert восстановил ТОТ ЖЕ
+  set_id 1492625682 (identical). Деплой: рестарт direct-content + direct-content-worker (оба active).
+
+## Сессия 2026-07-10 — Смена ссылки ФАЗА 3 (ЗАПИСЬ Href) ✅ ДЕПЛОЙ + КОНТРОЛ.ТЕСТ (массово НЕ запускалось)
+- **Что:** кнопка «Заменить» включена — массовая смена посадочной ссылки (Href) объявлений по выбранному
+  пути через очередь content_jobs (`type='ad_href'`, `mode='link'`, old_text=old_path, new_text=new_path).
+- **Backend** (`routes_content_editor.py`): `_replace_ad_href` (матч по old_path в `content['links']`,
+  группировка по подтипу, ads.update, read-back), `_href_with_new_path` (urlsplit — host НЕ меняем, только
+  path/query), `_v5_update_results_errors`; ветка `typ=='ad_href'` в `_do_replace` ПЕРЕД mode-логикой;
+  эндпоинт `/api/content-editor/links/replace_async` (per-account, дневной лимит). **TextAd.Href → v5
+  ads.update; ResponsiveAd.Href → v501 ads.update (v5 = Code 3500).** Dynamic/фид/UAC без Href → skipped.
+  В links_out добавлено поле `href` (реконструкция scheme+host на записи).
+- **Frontend** (`content_editor.html`): `ceLinksApply` (ceConfirm с предупреждением о пере-модерации живых +
+  счётчики, per-account задачи в ту же очередь content_jobs, карточки как у остальных замен),
+  `ceLinksUpdateApplyState` (enable/disable + подпись), `ceTypeName['ad_href']`. Блок «Заменить+подпись»
+  сведён в одну flex-строку, подпись «Фаза 3» убрана.
+- **Контрол. тест (porg-psm5h7q6, ЧЕРНОВИК ad 1915186853212398223 State=OFF, ResponsiveAd/v501):**
+  read→сменил Href на `/auto/baic/spike-test-href`→read-back OK→REVERT→read-back `/auto/baic` байт-в-байт,
+  `replaced=1 confirmed=1 errors=[]`. Только 1 draft тронут. TextAd/v5-путь live не тестирован (нет TextAd).
+- **Деплой:** рестарт ОБОИХ (direct-content + direct-content-worker, active), 302, journals чисты.
+  ⚠️ МАССОВЫЙ прогон НЕ запускался — ждёт Семёна в UI. ERRORS_JOURNAL `CONTENT_EDITOR_AD_HREF_REPLACE` ✅.
+
+## Сессия 2026-07-10 — Смена ссылки в редакторе контента: ФАЗА 1+2 (чтение + UI + превью) ✅ ДЕПЛОЙ+LIVE
+- **Что:** новая вкладка «Смена ссылки» на `/direct/automation/content`. ТОЛЬКО чтение ссылок + UI + превью.
+  Запись (Фаза 3) НЕ подключена — кнопка «Заменить» disabled с подписью «запись — Фаза 3».
+- **Backend** (`routes_content_editor.py`): `_load_account` теперь запрашивает `Href` в
+  `TextAd/ResponsiveAdFieldNames` + `State` в общем FieldNames; новые хелперы `_ad_href`/`_href_host_path`
+  (host через `copy_engine._copy_domain_from_href`, path=path+query из urlsplit); собирает `links_out`
+  `{ad_id,campaign_id,campaign_name,type,state,host,path}` (Dynamic/фид/UAC без Href пропущены). Новый
+  эндпоинт `POST /api/content-editor/links` (многоаккаунтный, тот же `@access`/`_login_allowed`/`_token`):
+  группирует по path, дедуп, `template_url=https://site.ru/<path>`, счётчики ads/campaigns/accounts/live +
+  `accounts:[{login,host,ads,live}]` для клиентского превью с реальным доменом.
+- **Frontend** (`templates/direct/content_editor.html`): сайдбар-таб «🔗 Смена ссылки» после Уточнений
+  (виден всем), `panel-links`, JS `ceLinks*` (загрузка/список/выбор одного пути/превью было→стало).
+- **UX-итерации вкладки (клиент, без backend-правок):** (1) шкала загрузки — агрегация перенесена
+  на клиент, `/links` дёргается ПО ОДНОМУ логину, бар done/total (1 акк = indeterminate); (2) поиск по
+  подстроке пути над списком (клиент); (3) раскрытие «Где используется» per-group → login+host+ads+live
+  (accounts[] склеиваются при merge); (4) блок замены поднят наверх, поля путей на всю ширину (не общий
+  `.ce-frag-grid` — там первое поле зажималось в 160px). node --check OK, direct-content active, 302, чист.
+- **Верификация live (porg-psm5h7q6):** 537 записей → 85 уникальных путей; host=autos-kemerovo.site из
+  самого Href (не local_gsheet); template_url=https://site.ru/auto/haval/...; только ResponsiveAd
+  (Dynamic отсеян); счётчики адекватны. Деплой: рестарт direct-content.service (active), journal чист,
+  страница 200/302. Воркер НЕ трогал (запись — Фаза 3).
+
+## Сессия 2026-07-10 — Редактор контента: campaign-level быстрые ссылки (title/description) ✅ ДЕПЛОЙ+LIVE
+- **Дефект:** смена заголовка/описания быстрой ссылки падала для наборов уровня КАМПАНИИ
+  (`inheritableSitelinkSet`): «заменён 1/1, ошибок 80» / «не подтвердилась у 8 объявлений». Часть
+  наборов вообще не видна в редакторе.
+- **Корень (подтверждён живьём на porg-psm5h7q6):** `routes_content_editor.py:_load_account` собирал
+  наборы ТОЛЬКО из ad-level `SitelinkSetId`. v5 ads.get НЕ отдаёт унаследованный campaign-level набор
+  (у наследующих объявлений SitelinkSetId ПУСТ, `ads_carrying_inh=0`). 2 из 3 campaign-level наборов были
+  невидимы; замена целилась в пустой ad_ids → Grid не применял.
+- **Фикс:** `_load_account` читает набор каждой кампании через Grid `_read_unified_campaign_update_payloads`
+  → добавляет campaign-usage в `sitelink_usages` + `campaign_ids_by_set` + `level`/`campaign_ids` в
+  `sitelinks_out`. Запись НЕ менял — существующий `_replace_sitelink_text_grid` уже идёт campaign-level
+  путём (`add_sitelink_set`+`set_campaign_sitelink_set`). Ad-level путь не тронут (гейт по inheritable-набору).
+- **Верификация live (набор 1492706877, камп 712694813):** LOAD — 3 campaign-level набора видны; WRITE
+  title И description → `replaced=1, errors=[]`, read-back подтвердил; оба изменения ОТКАЧЕНЫ (контент
+  восстановлен байт-в-байт). Никаких «80 ошибок».
+- **Статус:** ✅ ЗАДЕПЛОЕНО (direct-content + direct-content-worker active, HTTP 302, journal чист).
+  ERRORS_JOURNAL: CONTENT_EDITOR_SITELINK_CAMPAIGN_LEVEL_INVISIBLE ✅ подтверждено.
+- Файлы: `routes_content_editor.py` (`_load_account` ~756, sitelinks_out ~775, out-dict ~817).
+
 ## Сессия 2026-07-10 — tp7 товарка: минус-марки (FeedFilter) не сохранялись (DOD §3.7)
 - **Дефект:** tp7 ShoppingAd не нёс глоб. минус-марки в feed_filters (в кабинете conditions пусты),
   хотя сборка it_ff их клала. **Корень (сверено с HAR `direct.yandex.ru.59har.har`):** наши UAC-условия
