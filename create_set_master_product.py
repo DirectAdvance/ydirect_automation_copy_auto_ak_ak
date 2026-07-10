@@ -593,7 +593,14 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             feed_filters=it_ff,                 # товарка tp7: фильтр по модели/марке, не по всему фиду
             listings_feed_filters=it_lff,        # фильтр по collectionId (tp7-only; [] = весь фид)
             keywords=it_keywords,
-            minus_keywords=list(dict.fromkeys((it_minus_keywords or []) + _enabled_minus_words())),
+            # DEFECT 3 (2026-07-10, эталон Семёна по кабинету 712694741): tp7-АВТОТАРГЕТ должен
+            # рендериться как «Подобрать оптимальную» (Аудитория), а не «Настроить вручную». При
+            # keywords=[]/audiences=[] ЕДИНСТВЕННЫЙ ручной сигнал в payload — minus_keywords (глоб.
+            # «отзывы») → UAC-товарка (product) флипает блок «Аудитория» в «Настроить вручную».
+            # Требование Семёна: для tp7-автотаргета минус-слова НЕ нужны → шлём []. Ручные режимы
+            # tp7 (keywords/audience) — минус-слова как есть. tp6-мастер не тронут (рендерит верно).
+            minus_keywords=([] if (is_product and targeting_mode == "autotarget")
+                            else list(dict.fromkeys((it_minus_keywords or []) + _enabled_minus_words()))),
             audiences=it_audiences,
             audience_interest_type="short-term",
             # #7: группа ТОЛЬКО автотаргетинг → «Подобрать оптимальную» (HAR 34): пустые

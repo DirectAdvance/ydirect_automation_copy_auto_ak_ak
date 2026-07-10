@@ -13,11 +13,12 @@
   финальный desc-гарант + добор до 8 из филлеров (уник.описания, %-safe) ПОСЛЕ reuse-override.
   Smoke 8/8 uniq-desc. Reuse на логин (`DIRECT_SITELINK_REUSE_ACCOUNT`) — механизм рабочий на всех tp,
   флаг дефолт OFF, Семён включит.
-- **DEFECT 3 (tp7 имя↔режим):** мод-резолюция ПРОВЕРЕНА корректной — «Товарная - Автотаргетинг» →
-  `_tp67_targeting_mode`=autotarget → payload без keywords/audiences. Code-level divergence НЕТ.
-  Исправлена лишь консистентность rebuild-ветки (`is_auto == "autotarget"`). ⚠️ ОТКРЫТО: если кабинет
-  всё равно «ручная настройка» — корень в UAC-payload автотаргета для ТОВАРКИ (product), нужен HAR
-  реальной autotarget-товарки (не фиксить вслепую).
+- **DEFECT 3 (tp7 имя↔режим) ПОДТВЕРЖДЁН в кабинете (712694741) + ПОЧИНЕН:** мод-резолюция корректна
+  (autotarget), но кабинет «Настроить вручную». Корень = глоб.минус-слова «отзывы» — для UAC-товарки
+  (product) при keywords=[]/audiences=[] это ЕДИНСТВЕННЫЙ ручной сигнал → флип в «вручную». Фикс
+  `create_set_master_product.py:596`: tp7-автотаргет → `minus_keywords=[]` → кабинет «Подобрать
+  оптимальную». Ручные tp7 (keywords/audience) минус как есть; tp6-мастер не тронут. Верифай build_payload:
+  minus=[]/keywords=[]/no ca_retargeting/relevance=OPTIMAL. Аккаунт psm5h7q6 НЕ трогал (фикс для след.прогона).
 - **Статус:** всё на Mac, py_compile OK, pyflakes 0 undefined. НЕ деплоено (contentgen-файлы у copywriter
   параллельно — не трогал). ERRORS_JOURNAL: 3 записи 🟡. Файлы: `campaign.py`, `create_set_master_product.py`,
   `blueprint.py`.

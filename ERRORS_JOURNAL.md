@@ -70,27 +70,37 @@
 - НЕ помогло ранее: R2-6 (2 backup-филлера без «%») решал ТОЛЬКО %-фильтр-старвейшн; desc-коллизия
   `_norm_sitelinks` оставалась.
 
-### TP7_NAME_AUTOTARGET_VS_MODE_REBUILD_MISMATCH — is_auto в rebuild-ветке трактовал audience как автотаргет (DEFECT 3, 2026-07-10)
-- Симптом (прогон af4bd7bd5a52, porg-psm5h7q6): tp7 «Товарная - Автотаргетинг» в имени, а по факту
-  «ручная настройка аудитории». Ожидание: автотаргет-имя → автотаргет-режим.
-- Где: **`create_set_master_product.py:~532`** (rebuild-ветка `_build_name` при сыром слаг-имени).
-- Root-cause (частично): `is_auto=(targeting_mode != "keywords")` — audience тоже давал автотаргет-имя
-  (ag001/aon), рассинхрон с планом (`create_set_plan.py:637` = `targeting_mode == "autotarget"`) и
-  комментарием `create_set_plan.py:79`. Ветка срабатывает редко (только при сыром слаг-имени).
-- ВАЖНО — мод-резолюция ПРОВЕРЕНА и КОРРЕКТНА: для scherbakova×Мультибренд×tp7 группа «Товарная -
-  Автотаргетинг» (item `t="Автотаргетинг"`, code `tp7_cpc_site_ct0000_aon...`) → `_tp67_targeting_mode`
-  возвращает **autotarget** (текст содержит «автотаргет», приоритет выше audience-веток). Плейн ставит
-  `targeting_mode="autotarget"`, master_product использует его → payload: `keywords=[]`, `audiences=[]`,
-  `relevance=OPTIMAL`. Т.е. режим В КОДЕ = автотаргет, совпадает с именем. Никакого code-level
-  divergence имя↔режим для этой группы НЕТ (проверено против slepki_structure.json).
-- Решение (2026-07-10): исправлен `is_auto=(targeting_mode == "autotarget")` (консистентность с планом).
-- ⚠️ ОТКРЫТО (нужен HAR): если кабинет ВСЁ РАВНО показывает «ручная настройка аудитории» на этой
-  autotarget-РК — корень в UAC-payload рендеринге автотаргета для ТОВАРКИ (product), не в мод-резолюции.
-  `_TP67_OPTIMAL_CATEGORIES` (HAR34, «Подобрать оптимальную») верифицирован для tp6 МАСТЕРА; для tp7
-  product+feed нужно СВЕРИТЬ HAR реальной autotarget-товарки (возможно, для product автотаргет требует
-  иной relevance_match/отсутствия явных категорий). БЕЗ HAR не фиксить вслепую.
-- Статус: 🟡 код-фикс консистентности задеплоя ждёт; корневой payload-вопрос ОТКРЫТ (нужен HAR).
-- НЕ помогло ранее: —
+### TP7_AUTOTARGET_RENDERS_MANUAL_AUDIENCE — глоб.минус-слова флипали tp7-автотаргет в «Настроить вручную» (DEFECT 3, 2026-07-10)
+- Симптом ПОДТВЕРЖДЁН в кабинете (прогон af4bd7bd5a52, porg-psm5h7q6, tp7 камп **712694741**): имя
+  «Товарная - Автотаргетинг», а блок «Аудитория» = **«Настроить вручную»**, «Интересы и поисковые
+  запросы» ПУСТО, «Минус-слова: отзывы». Ожидание Семёна: tp7-автотаргет → **«Подобрать оптимальную»**,
+  минус-слова НЕ нужны.
+- Где: **`create_set_master_product.py:596`** (сборка `MasterCampaignSpec.minus_keywords`) →
+  **`campaign.py:build_payload:1511`** (`"minus_keywords": spec.minus_keywords`).
+- Root-cause: мод-резолюция КОРРЕКТНА — `_tp67_targeting_mode("Товарная - Автотаргетинг")` = autotarget
+  (проверено против slepki_structure.json), payload уже слал `keywords=[]`, `audiences=[]`,
+  `relevance=OPTIMAL` («Подобрать оптимальную»). НО `minus_keywords` слался ВСЕГДА
+  (`list((it_minus_keywords or []) + _enabled_minus_words())` = глоб. «отзывы»). Для UAC-ТОВАРКИ
+  (product) при пустых keywords/audiences ЕДИНСТВЕННЫЙ ручной сигнал = minus_keywords → блок
+  «Аудитория» флипался в «Настроить вручную». Т.е. корень не в relevance/мод-резолюции, а в
+  минус-словах как последнем ручном маркере.
+- Решение (2026-07-10, эталон Семёна по кабинету — HAR не понадобился):
+  - `create_set_master_product.py:596`: `minus_keywords=([] if (is_product and
+    targeting_mode == "autotarget") else list(dict.fromkeys((it_minus_keywords or []) +
+    _enabled_minus_words())))`. tp7-автотаргет → минус-слова НЕ шлём → кабинет рендерит «Подобрать
+    оптимальную». Ручные режимы tp7 (keywords/audience) — минус как есть. tp6-мастер (is_product=False)
+    НЕ тронут (рендерит верно).
+  - Ранее (rebuild-ветка `:536`): `is_auto=(targeting_mode == "autotarget")` — консистентность имени.
+- Было vs теперь (payload tp7-автотаргет): было `minus_keywords=["отзывы"]` → «Настроить вручную»;
+  теперь `minus_keywords=[]` + `keywords=[]` + без `ca_retargeting_condition` + `relevance.active=True`
+  categories=OPTIMAL → «Подобрать оптимальную». Верифицировано изолированным вызовом `build_payload`.
+- Чинит ли delayed content_repair уже созданные РК (712694741): НЕТ (аккаунт по указанию Семёна НЕ
+  трогаем). Фикс только для СЛЕДУЮЩЕГО прогона.
+- Статус: 🟡 код на Mac (py_compile OK; pyflakes 0 undefined; build_payload-тест: minus=[], keywords=[],
+  no ca_retargeting, relevance=OPTIMAL). НЕ деплоено. live не проверено — проверит tp7-прогон: блок
+  «Аудитория» = «Подобрать оптимальную», минус-слов нет.
+- НЕ помогло ранее: consistency-фикс `is_auto` (имя) не менял payload → кабинет оставался «вручную»,
+  пока не убрали minus_keywords для is_product+autotarget.
 
 ### TITLES_ALL_FINANCIAL_NO_AUTO_CONTEXT — все 7 заголовков про финансы, продукт (авто) не виден (Д1, 2026-07-10)
 - Симптом (прогон af4bd7bd5a52, porg-psm5h7q6, tp1 Марки-КС BAIC 712686247): ВСЕ 7 заголовков —
