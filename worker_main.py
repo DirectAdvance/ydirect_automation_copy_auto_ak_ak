@@ -1,7 +1,7 @@
 """
 Worker entrypoint for the Direct create-set queue (Phase 2).
 
-Run as a dedicated systemd service (direct-worker.service):
+Run as a dedicated systemd service (direct-create-worker.service):
     DIRECT_ROLE=worker python -m direct.worker_main
 
 This process OWNS campaign creation. It polls Victory DB for web-posted jobs
@@ -9,7 +9,7 @@ This process OWNS campaign creation. It polls Victory DB for web-posted jobs
 RETURNING), and executes create_set in its OWN memory — with the full worker pool
 and every daemon (watchdog / resume / delayed-repair) plus per-job prefetch warm-up.
 
-The web process (direct.service, DIRECT_ROLE=web) only POSTS jobs to the DB and READS
+The web process (direct-create.service, DIRECT_ROLE=web) only POSTS jobs to the DB and READS
 status/queue. Therefore restarting the UI on deploy never kills in-flight jobs — the
 whole point of splitting the worker out.
 

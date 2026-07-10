@@ -7,25 +7,25 @@
 
 | Drop-in | Переменная | Зачем |
 |---|---|---|
-| `direct.service.d/role.conf` | `DIRECT_ROLE=web` | **Сплит web/worker**: direct.service обслуживает только UI, создание РК — в direct-worker.service. Рестарт UI не убивает наборы в работе. |
-| `direct.service.d/copy.conf` | `DIRECT_REGISTER_COPY=0` | Копирование вынесено в direct-copy.service. |
-| `direct.service.d/neuro-local.conf` · `direct-worker.service.d/neuro-local.conf` | `NEURO_PACK_MOUNT=/opt/neuro_content_local` | Путь к M3 контент-паку. |
-| `direct.service.d/openrouter-model.conf` · `direct-worker.service.d/openrouter-model.conf` | `OPENROUTER_LLM_MODEL=deepseek/deepseek-chat` | Модель LLM для контента. |
+| `direct-create.service.d/role.conf` | `DIRECT_ROLE=web` | **Сплит web/worker**: direct-create.service обслуживает только UI, создание РК — в direct-create-worker.service. Рестарт UI не убивает наборы в работе. |
+| `direct-create.service.d/copy.conf` | `DIRECT_REGISTER_COPY=0` | Копирование вынесено в direct-copy.service. |
+| `direct-create.service.d/neuro-local.conf` · `direct-create-worker.service.d/neuro-local.conf` | `NEURO_PACK_MOUNT=/opt/neuro_content_local` | Путь к M3 контент-паку. |
+| `direct-create.service.d/openrouter-model.conf` · `direct-create-worker.service.d/openrouter-model.conf` | `OPENROUTER_LLM_MODEL=deepseek/deepseek-chat` | Модель LLM для контента. |
 
-`direct-worker.service.d/` дополнительно получает `DIRECT_ROLE=worker` — оно уже в самом
-`deploy/direct-worker.service` (Environment=), поэтому отдельного drop-in для роли воркера нет.
+`direct-create-worker.service.d/` дополнительно получает `DIRECT_ROLE=worker` — оно уже в самом
+`deploy/direct-create-worker.service` (Environment=), поэтому отдельного drop-in для роли воркера нет.
 
 ## Установка (при пересборке контейнера / новом сервере)
 
 ```bash
 # для каждого юнита:
-mkdir -p /etc/systemd/system/direct.service.d /etc/systemd/system/direct-worker.service.d
-cp deploy/dropins/direct.service.d/*.conf        /etc/systemd/system/direct.service.d/
-cp deploy/dropins/direct-worker.service.d/*.conf /etc/systemd/system/direct-worker.service.d/
+mkdir -p /etc/systemd/system/direct-create.service.d /etc/systemd/system/direct-create-worker.service.d
+cp deploy/dropins/direct-create.service.d/*.conf        /etc/systemd/system/direct-create.service.d/
+cp deploy/dropins/direct-create-worker.service.d/*.conf /etc/systemd/system/direct-create-worker.service.d/
 systemctl daemon-reload
 # порядок рестарта: сначала worker, потом web
-systemctl restart direct-worker.service
-systemctl restart direct.service
+systemctl restart direct-create-worker.service
+systemctl restart direct-create.service
 ```
 
 ⚠️ Без `role.conf` сплит схлопнется в single-process (`DIRECT_ROLE=all`) — рестарт UI снова

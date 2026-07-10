@@ -8,7 +8,7 @@ This process owns only:
     /direct/automation/content
     /direct/api/content-editor/*
 
-The main Direct automation app remains in direct.service on port 5020.
+The main Direct automation app remains in direct-create.service on port 5020.
 """
 import json
 import os

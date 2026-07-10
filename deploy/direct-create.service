@@ -1,5 +1,5 @@
 [Unit]
-Description=SEOAdvanced Direct Automation
+Description=SEOAdvanced Direct Create (web UI, создание РК — нейродиректолог)
 After=network-online.target
 Wants=network-online.target
 
@@ -17,8 +17,8 @@ Environment=DIRECT_REGISTER_COPY=0
 # UI only. It POSTS jobs to the Victory DB (status='queued', _web_posted=true) and reads
 # status/queue from the DB — it does NOT run the worker pool or daemons, so deploying/
 # restarting the UI no longer kills in-flight jobs. Campaign creation runs in
-# direct-worker.service (DIRECT_ROLE=worker). Start direct-worker.service FIRST.
-# NOTE: on prod DIRECT_ROLE=web is ALSO applied via drop-in deploy/dropins/direct.service.d/
+# direct-create-worker.service (DIRECT_ROLE=worker). Start direct-create-worker.service FIRST.
+# NOTE: on prod DIRECT_ROLE=web is ALSO applied via drop-in deploy/dropins/direct-create.service.d/
 # role.conf (drop-ins are additive and win). This line keeps the tracked unit self-documenting;
 # to revert to single-process, set DIRECT_ROLE=all here AND remove the role.conf drop-in.
 Environment=DIRECT_ROLE=web
@@ -28,7 +28,7 @@ RestartSec=5
 
 # In DIRECT_ROLE=all (default) the Direct queue and throttling are intentionally
 # single-process in memory. Do not run this app with multiple workers or the Werkzeug
-# reloader. In the split setup (DIRECT_ROLE=web here + direct-worker.service) the queue
+# reloader. In the split setup (DIRECT_ROLE=web here + direct-create-worker.service) the queue
 # lives in the worker process; this one only talks to it through the Victory DB.
 
 [Install]

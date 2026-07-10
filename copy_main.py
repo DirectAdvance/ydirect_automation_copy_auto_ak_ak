@@ -10,11 +10,11 @@ This process owns only:
     /direct/api/copy_start, /direct/api/copy_status/<job_id>
 
 Копирование исполняется в СОБСТВЕННОЙ in-memory очереди этого процесса
-(_ensure_copy_worker) — изолировано от очереди создания РК в direct.service.
+(_ensure_copy_worker) — изолировано от очереди создания РК в direct-create.service.
 Рестарт любого из сервисов не трогает очередь другого:
   • copy_main НЕ поднимает create-set recover/sweep/resume/repair/поллер;
   • recover основного процесса исключает kind='copy_campaigns'.
-The main Direct automation app remains in direct.service on port 5020.
+The main Direct automation app remains in direct-create.service on port 5020.
 """
 import json
 import os

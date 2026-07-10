@@ -13,7 +13,7 @@ ExecStart=/root/venv/bin/python3 -m direct.content_main
 Restart=always
 RestartSec=5
 
-# Content editor is isolated from the campaign creation queue in direct.service.
+# Content editor is isolated from the campaign creation queue in direct-create.service.
 
 [Install]
 WantedBy=multi-user.target

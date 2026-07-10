@@ -1,5 +1,5 @@
 [Unit]
-Description=SEOAdvanced Direct Automation — Worker (create-set queue executor)
+Description=SEOAdvanced Direct Create — Worker (create-set queue executor)
 After=network-online.target
 Wants=network-online.target
 
