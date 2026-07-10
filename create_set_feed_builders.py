@@ -706,7 +706,13 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
     # _build_tp1_from_pack → _build_tp1_adgroups: with_shopping=True даёт «Т+Л+ТОВ» в каждой группе.
     # Кодер группы: _tp1_group_name(ct, r_code, brand, with_shopping=True)
     #   → ct{N}_aon_n000_{r}_ct010_ag011_g00 — {Бренд}  (CODER.md §tp5 2026-06-22)
-    texts = [data.get("default_text") or "Официальный дилер. Тест-драйв и выгодные условия по кредиту. Авто в наличии."]
+    # R2-8 2026-07-10 (дефекты 5+6): единый ShoppingAd default_text БЕЗ кредита, ОДИН общий на все
+    # каталожные/товарные кампании — НЕ из slepok_content/фида (был hardcoded «…по кредиту…» + разнобой).
+    try:
+        from .create_set_assets import SHOPPING_DEFAULT_TEXT as _SDT
+    except Exception:  # noqa: BLE001 — fail-safe если импорт недоступен
+        _SDT = "Новые автомобили в наличии. Большой выбор. Скидки до 45% при покупке. Тест-драйв."
+    texts = [_SDT]
     tp5_build: dict = {}
     try:
         tp5_build = _build_tp1_from_pack(
@@ -730,7 +736,7 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
         return _fail
 
     # ── 3. Текст по умолчанию для ShoppingAd ────────────────────────────────────
-    _default_text = data.get("default_text") or "Официальный дилер. Тест-драйв и выгодные условия по кредиту. Авто в наличии."
+    _default_text = _SDT   # R2-8: единый ShoppingAd default_text без кредита (см. выше)
     _shop_ids = tp5_build.get("shopping_ad_ids") or []
     if feed_id and not _shop_ids:
         _delete_partial_campaign(token, login, cid)

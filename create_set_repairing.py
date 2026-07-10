@@ -166,11 +166,18 @@ def _repair_shopping_content_context(login: str, ctx: dict, action: dict) -> dic
     vendor = _vendor_value(brand) if (brand and is_brand_seg) else None
     model_vals = _model_field_values(brand, seg) if (brand and is_brand_seg) else []
     listing_name = _listing_name_value(brand, seg) if (brand and is_brand_seg) else None
-    tpl_titles, tpl_texts, _tpl_sitelinks = _templates_for(
-        (body.get("site_type") or "").strip() or acc.get("site_type") or ""
-    )
-    texts = _lines(item.get("texts")) or tpl_texts
-    body_text = _trim_clean(texts[0] if texts else "", 81)
+    # Д5/Д6 (2026-07-10): единая константа SHOPPING_DEFAULT_TEXT (без кредит/взнос/платёж —
+    # запрещено в товарных объявлениях). НЕ берём texts[0] из AI-контента: там может быть
+    # кредитный текст или короткий fallback. Fail-safe: texts[0] если импорт упал.
+    try:
+        from .create_set_assets import SHOPPING_DEFAULT_TEXT as _SDT_R
+        body_text = _SDT_R
+    except Exception:  # noqa: BLE001
+        tpl_titles, tpl_texts, _tpl_sitelinks = _templates_for(
+            (body.get("site_type") or "").strip() or acc.get("site_type") or ""
+        )
+        texts = _lines(item.get("texts")) or tpl_texts
+        body_text = _trim_clean(texts[0] if texts else "", 81)
     return {
         "groups": [{
             "name": group_name,

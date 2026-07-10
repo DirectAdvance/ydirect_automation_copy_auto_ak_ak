@@ -442,6 +442,51 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
         _AC._account_sitelinks_put(login, it_sitelinks)
     except Exception:  # noqa: BLE001 — account-pass reuse не критичен: фолбэк на локальный набор
         pass
+    # DEFECT 2/4 (2026-07-10): ГАРАНТ 8 сайтлинков с УНИКАЛЬНЫМИ описаниями на UAC-пути.
+    # campaign._norm_sitelinks дедупит по title И description (защита от DUPLICATE_SITELINK_DESCS
+    # — UAC отвергает набор с повторяющимися описаниями). Сборка выше дедупила по ПАРЕ
+    # (title,desc) → два сайтлинка с одинаковым description, но разными title, проходили сборку,
+    # а _norm_sitelinks их резал → в кабинет уходило <8 (psm5h7q6: 6/8). Здесь финально:
+    # (1) дедуп по описанию (как _norm_sitelinks), (2) добор до 8 из _GENERIC_SITELINK_FILLERS
+    # с НЕиспользованными описаниями, %-safe (при %-заголовке не берём %-филлеры).
+    _title_has_pct = bool(_discount_pcts(it_titles))
+    _uniq_sl: list = []
+    _seen_titles: set = set()
+    _seen_descs: set = set()
+    for _s in (it_sitelinks or []):
+        if not isinstance(_s, dict):
+            continue
+        _st = str(_s.get("title") or "").strip()[:30].rstrip()
+        _sd = str(_s.get("description") or "").strip()[:60].rstrip()
+        if not _st:
+            continue
+        _tk, _dk = _st.lower(), _sd.lower()
+        if _tk in _seen_titles or (_dk and _dk in _seen_descs):
+            continue
+        _seen_titles.add(_tk)
+        if _dk:
+            _seen_descs.add(_dk)
+        _uniq_sl.append({"title": _st, "description": _sd})
+    if len(_uniq_sl) < 8:
+        for _s in _GENERIC_SITELINK_FILLERS:
+            if len(_uniq_sl) >= 8:
+                break
+            _st = _trim_to_word(_sanitize_content(_s.get("title", ""), max_len=30), 30).rstrip()
+            _sd = _trim_to_word(_sanitize_content(_s.get("description", ""), max_len=60), 60).rstrip()
+            _tk, _dk = _st.lower(), _sd.lower()
+            if not _st or _tk in _seen_titles or (_dk and _dk in _seen_descs):
+                continue
+            if not _is_bu_site(eff_site) and _BU_RE.search(f"{_st} {_sd}"):
+                continue
+            if _title_has_pct and _sitelink_has_pct({"title": _st, "description": _sd}):
+                continue
+            if _bad_ad_sitelink(_st, _sd) or not _common_content_ok(f"{_st} {_sd}"):
+                continue
+            _seen_titles.add(_tk)
+            if _dk:
+                _seen_descs.add(_dk)
+            _uniq_sl.append({"title": _st, "description": _sd})
+    it_sitelinks = _uniq_sl[:8]
     # Картинки: СНАЧАЛА картинки ЭТОГО слепка (read_slepok_images по канону слепка), потом
     # общий пул по типу сайта. Иначе пул Мультибренда общий на ВСЕ слепки → Павлов брал бы
     # картинки Кудерко (баг: read_images ключ = тип сайта, не слепок). ВИДЕО — по логину.
@@ -483,8 +528,11 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     if re.match(r'^tp[67]_cp[ac]_(site|kviz)_ct\d+_a(?:on|off)_', name):
         _r_code_fix, _oblast_fix = _resolve_region(ctx.get("city") or "")
         name = _build_name(
-            is_master=not is_product,
-            is_auto=(targeting_mode != "keywords"),
+            # DEFECT 3 (2026-07-10): is_auto ТОЛЬКО для autotarget. Было (!="keywords") —
+            # audience тоже попадал в автотаргет-имя (ag001/aon), рассинхрон имя↔факт (в имени
+            # «Автотаргетинг», по факту ручная аудитория). Совпадает с create_set_plan.py:637
+            # (is_autotarget_name == "autotarget") и комментарием create_set_plan.py:79.
+            is_auto=(targeting_mode == "autotarget"),
             pay=it.get("pay") or "cpa",
             r_code=_r_code_fix,
             oblast=_oblast_fix,

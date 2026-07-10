@@ -1024,6 +1024,33 @@ DEFAULT_COOKIE_ACCOUNTS = (
     "useful-call-agency",
 )
 
+# Task #34 (2026-07-10): резолвер УПРАВЛЯЮЩЕГО агентства для саб-логина (porg-*).
+# Куку с главпотока по САБ-логину брать НЕЛЬЗЯ (fetch_cookie_glavpotok("porg-*") = 404 → None) —
+# ВСЕГДА берётся кука АГЕНТСТВА-оператора. pick_working_cookie перебирает DEFAULT_COOKIE_ACCOUNTS,
+# но раньше без приоритета: первая ЖИВАЯ агентская кука побеждала, даже если это агентство НЕ
+# управляет данным саб-логином → Grid-чтение/ремонт получали «No rights» и верификатор был СЛЕП
+# на агентских саб-аккаунтах (7 дефектов R2-8 не поймала автоматика). Blueprint инъектит сюда
+# _resolve_agency_hint (кэш БД + local_gsheet_sites), чтобы УПРАВЛЯЮЩЕЕ агентство пробовалось ПЕРВЫМ.
+_AGENCY_RESOLVER = None   # type: ignore[var-annotated]
+
+
+def set_agency_resolver(fn) -> None:
+    """Инъекция резолвера агентства (login → agency_login|''). Ставит blueprint при импорте,
+    чтобы campaign.py не импортировал blueprint (циклический импорт) и не лез в БД напрямую."""
+    global _AGENCY_RESOLVER
+    _AGENCY_RESOLVER = fn
+
+
+def _resolve_managing_agency(ulogin: str) -> str:
+    """Управляющее агентство для ulogin через инъектированный резолвер (best-effort, '' при сбое)."""
+    fn = _AGENCY_RESOLVER
+    if not fn or not ulogin:
+        return ""
+    try:
+        return (fn(ulogin) or "").strip().lower()
+    except Exception:  # noqa: BLE001 — резолвер best-effort: сбой → перебор всех агентств как раньше
+        return ""
+
 # Имя кампании по умолчанию (пока ВСЕГДА так — тестовый режим).
 DEFAULT_DISPLAY_NAME = "Тест API"
 
@@ -1836,6 +1863,12 @@ def pick_working_cookie(ulogin: str, accounts: tuple[str, ...] = DEFAULT_COOKIE_
         hit = _ACCOUNT_COOKIE_CACHE.get(ulogin)
         if hit and (time.time() - hit[1]) < _ACCOUNT_COOKIE_TTL:
             return hit[0]
+    # Task #34: УПРАВЛЯЮЩЕЕ агентство саб-логина — ПЕРВЫМ в переборе (иначе первая живая, но
+    # НЕуправляющая агентская кука победит → Grid «No rights» → слепой верификатор). Дубли
+    # убираем, сохраняя порядок; остальные агентства остаются фолбэком.
+    _mng = _resolve_managing_agency(ulogin)
+    if _mng and _mng not in ("none", ""):
+        accounts = tuple(dict.fromkeys((_mng, *accounts)))
     last_err: Exception | None = None
     expired_accs: list[str] = []   # агентства, чья кука на главпотоке ПРОТУХЛА (сессия истекла)
     for acc in accounts:

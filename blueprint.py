@@ -4295,6 +4295,14 @@ def _resolve_agency_hint(login: str, agency_hint: str) -> str:
     return ag                                              # "" если ничего не нашли
 
 
+# Task #34 (2026-07-10): инъекция резолвера в campaign.pick_working_cookie — управляющее агентство
+# саб-логина (porg-*) пробуется ПЕРВЫМ. Без API-вызовов (кэш БД + local_gsheet_sites), best-effort.
+try:
+    cmc.set_agency_resolver(lambda login: _resolve_agency_hint(login, ""))
+except Exception:  # noqa: BLE001 — хук best-effort: сбой не должен ронять импорт blueprint
+    pass
+
+
 def _agency_override_save(login: str, agency: str) -> None:
     """Сохранить найденное рабочее агентство, чтобы в следующий раз не перебирать."""
     if not login or not agency:

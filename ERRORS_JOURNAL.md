@@ -24,6 +24,140 @@
 
 ## Активные / недавние ошибки
 
+### GRID_COOKIE_SUBACCOUNT_404_BLIND_VERIFIER — Grid слеп на агентских саб-аккаунтах (Task #34, 2026-07-10)
+- Симптом (прогон af4bd7bd5a52, porg-psm5h7q6): верификатор/delayed content_repair НЕ поймали 7 дефектов
+  R2-8 — только Семён глазом по скринам. Grid-чтение на саб-логине porg-* возвращало пусто/«No rights».
+- Где: **`campaign.py:pick_working_cookie`** (перебор `DEFAULT_COOKIE_ACCOUNTS`). Grid-клиенты
+  (`grid_read.GridReadClient`, `grid_finalize.GridClient`, `grid_create`) все берут куку через
+  `cmc.pick_working_cookie(login)` где login = саб-логин.
+- Root-cause: `fetch_cookie_glavpotok("porg-psm5h7q6")` = **404** (у главпотока НЕТ куки саб-аккаунта);
+  `fetch_cookie_glavpotok("victorylotsofads1")` = **200** (кука АГЕНТСТВА, аутентифицирует Grid для
+  саб-аккаунта — правило Семёна: ВСЕГДА кука агентства). `pick_working_cookie` перебирал 6 агентств БЕЗ
+  приоритета: первая ЖИВАЯ агентская кука побеждала, даже если это агентство НЕ управляет данным
+  саб-логином → link_info мог пройти по generic-URL, но Grid потом «No rights» → верификатор слеп.
+- Решение (2026-07-10, Task #34):
+  - `campaign.py`: инъектируемый резолвер `set_agency_resolver(fn)` + `_resolve_managing_agency(ulogin)`
+    (без импорта blueprint — циклический). `pick_working_cookie`: управляющее агентство
+    (`dict.fromkeys((_mng, *accounts))`) пробуется ПЕРВЫМ, остальные — фолбэк.
+  - `blueprint.py`: `cmc.set_agency_resolver(lambda login: _resolve_agency_hint(login, ""))` (кэш БД +
+    `local_gsheet_sites.agency_account`, без API-вызовов, best-effort).
+- Статус: 🟡 код на Mac (py_compile OK; pyflakes 0 undefined; изолированный тест: victorylotsofads1
+  пробуется первым для porg-psm5h7q6). НЕ деплоено. live не проверено — проверит прогон: Grid-чтение и
+  ремонт работают на porg-* (верификатор видит созданные РК, ловит дефекты сам).
+- НЕ помогло ранее: link_info-валидация в pick_working_cookie проверяла живость сессии, но НЕ
+  приоритет управляющего агентства → первая живая (но чужая) кука закрывала доступ.
+
+### UAC_SITELINKS_LT8_DESC_DEDUP_STARVE — tp7 <8 сайтлинков из-за desc-дедупа _norm_sitelinks (DEFECT 2/4, 2026-07-10)
+- Симптом (прогон af4bd7bd5a52, porg-psm5h7q6): tp7 быстрые ссылки < 8 (было 6/8). Даже после R2-6
+  (2 backup-филлера без «%») набор в кабинете неполный.
+- Где: **`campaign.py:_norm_sitelinks`** (:1782-1806) дедупит по title И **description** (защита от
+  UAC `DUPLICATE_SITELINK_DESCS`). **`create_set_master_product.py`** сборка сайтлинков дедупила по
+  ПАРЕ `(title.lower, desc.lower)`.
+- Root-cause: рассинхрон дедупов. Сборка допускала два сайтлинка с ОДИНАКОВЫМ description но разными
+  title (разная пара → оба проходят), а `_norm_sitelinks` (desc-дедуп) один из них РЕЗАЛ → в UAC-payload
+  уходило <8. R2-6 %-backup помогал против %-фильтра, но не против desc-коллизий.
+- Решение (2026-07-10, DEFECT 2/4, `create_set_master_product.py` перед сборкой spec): финальный ГАРАНТ —
+  дедуп по описанию (зеркало `_norm_sitelinks`: title И desc) + добор до 8 из `_GENERIC_SITELINK_FILLERS`
+  (у всех 10 УНИКАЛЬНЫЕ описания) с НЕиспользованными title/desc, %-safe (при %-заголовке %-филлеры
+  пропускаются, остаётся 8 без-% филлеров). Итог: ровно 8 сайтлинков с уникальными описаниями → все
+  переживают `_norm_sitelinks` → в кабинете 8/8. Smoke: dup-desc + %-title → 8 uniq-desc; пустой → 8.
+- Reuse на логин (DEFECT 4): механизм `ai_content._account_sitelinks_get/put` уже wired на ВСЕ tp
+  (orchestrator tp1/tp2/tp5 :759-778, master_product tp6/tp7 :423-442), флаг
+  `DIRECT_SITELINK_REUSE_ACCOUNT` дефолт OFF — Семён включит на деплое. Финальный desc-гарант стоит
+  ПОСЛЕ reuse-override → эталон тоже нормализуется до 8 уникальных.
+- Статус: 🟡 код на Mac (py_compile OK; pyflakes 0 undefined; smoke 8/8 uniq-desc). НЕ деплоено. live
+  не проверено — проверит tp7-прогон: `sitelinks_count=8` в кабинете.
+- НЕ помогло ранее: R2-6 (2 backup-филлера без «%») решал ТОЛЬКО %-фильтр-старвейшн; desc-коллизия
+  `_norm_sitelinks` оставалась.
+
+### TP7_NAME_AUTOTARGET_VS_MODE_REBUILD_MISMATCH — is_auto в rebuild-ветке трактовал audience как автотаргет (DEFECT 3, 2026-07-10)
+- Симптом (прогон af4bd7bd5a52, porg-psm5h7q6): tp7 «Товарная - Автотаргетинг» в имени, а по факту
+  «ручная настройка аудитории». Ожидание: автотаргет-имя → автотаргет-режим.
+- Где: **`create_set_master_product.py:~532`** (rebuild-ветка `_build_name` при сыром слаг-имени).
+- Root-cause (частично): `is_auto=(targeting_mode != "keywords")` — audience тоже давал автотаргет-имя
+  (ag001/aon), рассинхрон с планом (`create_set_plan.py:637` = `targeting_mode == "autotarget"`) и
+  комментарием `create_set_plan.py:79`. Ветка срабатывает редко (только при сыром слаг-имени).
+- ВАЖНО — мод-резолюция ПРОВЕРЕНА и КОРРЕКТНА: для scherbakova×Мультибренд×tp7 группа «Товарная -
+  Автотаргетинг» (item `t="Автотаргетинг"`, code `tp7_cpc_site_ct0000_aon...`) → `_tp67_targeting_mode`
+  возвращает **autotarget** (текст содержит «автотаргет», приоритет выше audience-веток). Плейн ставит
+  `targeting_mode="autotarget"`, master_product использует его → payload: `keywords=[]`, `audiences=[]`,
+  `relevance=OPTIMAL`. Т.е. режим В КОДЕ = автотаргет, совпадает с именем. Никакого code-level
+  divergence имя↔режим для этой группы НЕТ (проверено против slepki_structure.json).
+- Решение (2026-07-10): исправлен `is_auto=(targeting_mode == "autotarget")` (консистентность с планом).
+- ⚠️ ОТКРЫТО (нужен HAR): если кабинет ВСЁ РАВНО показывает «ручная настройка аудитории» на этой
+  autotarget-РК — корень в UAC-payload рендеринге автотаргета для ТОВАРКИ (product), не в мод-резолюции.
+  `_TP67_OPTIMAL_CATEGORIES` (HAR34, «Подобрать оптимальную») верифицирован для tp6 МАСТЕРА; для tp7
+  product+feed нужно СВЕРИТЬ HAR реальной autotarget-товарки (возможно, для product автотаргет требует
+  иной relevance_match/отсутствия явных категорий). БЕЗ HAR не фиксить вслепую.
+- Статус: 🟡 код-фикс консистентности задеплоя ждёт; корневой payload-вопрос ОТКРЫТ (нужен HAR).
+- НЕ помогло ранее: —
+
+### TITLES_ALL_FINANCIAL_NO_AUTO_CONTEXT — все 7 заголовков про финансы, продукт (авто) не виден (Д1, 2026-07-10)
+- Симптом (прогон af4bd7bd5a52, porg-psm5h7q6, tp1 Марки-КС BAIC 712686247): ВСЕ 7 заголовков —
+  чисто финансовые УТП (кредит/взнос/КАСКО/одобрение/банки/выгода/трейд-ин). Ни один не сообщает
+  что продаём АВТОМОБИЛИ. Пользователь не понимает продукт.
+- Где: **`ai_agents.build_titles_messages`** (промпт «ОБЩАЯ РАМКА») + **`create_set_assets._upgrade_credit_titles`**
+  (варианты для `brand_real=True`, все 7 позиций — только кредитные УТП).
+- Root-cause: промпт требовал «В КАЖДОМ заголовке должен читаться кредитный оффер» — без исключения
+  для авто-контекста. Upgrade-варианты (9 штук) тоже все финансовые. Ни промпт, ни детерминированный
+  fallback не обязывали включить «авто в наличии» / «новые автомобили» в набор из 7.
+- Решение (2026-07-10):
+  - `ai_agents.py:build_titles_messages` — заменена «ОБЩАЯ РАМКА»: теперь «1–2 из 7 ОБЯЗАТЕЛЬНО
+    сообщают ПРОДУКТ (авто в наличии / новые автомобили); остальные 5 — кредитный угол».
+  - `create_set_assets._upgrade_credit_titles` (brand_real=True): позиции 1 и 4 из cap=7 заменены:
+    - поз.1: `f"{brand}. Авто в наличии. Кредит от 9 000 ₽/мес"` (AUTO-CONTEXT + credit);
+    - поз.4: `f"{brand}. Новые автомобили. Выгода до 45%"` (AUTO-CONTEXT + discount).
+    Прежние КАСКО (поз.1) и «15 банков» (поз.4) смещены на позиции 7–8 (резерв, >cap).
+    Smoke-test: 2/7 AUTO-CONTEXT, все brand-first, все с цифрой, 6 уникальных 18-симв. префиксов.
+- Чинит ли delayed content_repair уже созданные РК (712686247): НЕТ. Нет аудитора/фиксера для
+  «ВСЕ заголовки финансовые» в delayed-repair. Фикс только для будущих прогонов.
+- Статус: 🟡 код на Mac (py_compile OK; pyflakes 0 новых undefined). НЕ деплоено.
+- НЕ помогло ранее: R2-6 (вариативность захода) — добавил разные 18-симв. префиксы, но все варианты
+  остались финансовыми. D11 (стиль формулировок) — улучшил формулировки кредита, авто-контекст не добавил.
+
+### SHOPPING_DEFAULT_TEXT_CREDIT_FORBIDDEN — default_text ShoppingAd содержал кредитную лексику (Д5, 2026-07-10)
+- Симптом (прогон af4bd7bd5a52, tp1 Модели-КС BAIC U5 Plus): «Текст по умолчанию» =
+  «Купить авто в кредит от 9 000₽/мес. Первый взнос 0 ₽. Одобрение за 30 минут» —
+  в ShoppingAd/каталожных объявлениях кредитная лексика ЗАПРЕЩЕНА (Семён 2026-07-10).
+- Где: **`create_set_assets.SHOPPING_DEFAULT_TEXT`** (строка 92) — константа содержала кредит/взнос/одобрение.
+- Root-cause: предыдущий фикс (Fix 4, SHOPPING_DEFAULT_TEXT_UNDERFILLED, 2026-07-10) исправил
+  ДЛИНУ (50→70 симв) и добавил кредитный угол — но не учёл что ShoppingAd запрещает кредитную
+  лексику. «Кредитный угол обязателен» из DoD §2 относится к ResponsiveAd/TextAd, НЕ к ShoppingAd.
+- Решение (2026-07-10):
+  `create_set_assets.SHOPPING_DEFAULT_TEXT` изменён с
+  `"Авто в кредит от 9 000 ₽/мес. Первый взнос 0 ₽. Одобрение за 30 минут."` (70 симв, кредит)
+  на `"Новые автомобили в наличии. Большой выбор. Скидки до 45% при покупке. Тест-драйв."` (81 симв).
+  Проверено: нет кредит/взнос/платёж/одобрение; содержит авто-контекст; ровно 81 символ.
+- Чинит ли delayed content_repair уже созданных РК: НЕТ. `_campaign_default_text_repair` — STUB.
+  Фикс только для будущих прогонов.
+- Статус: 🟡 код на Mac (py_compile OK; len=81 ≤81; no credit). НЕ деплоено.
+- НЕ помогло ранее: Fix 4 (SHOPPING_DEFAULT_TEXT_UNDERFILLED) — исправил длину, но ввёл кредит.
+
+### SHOPPING_DEFAULT_TEXT_MULTIPLE_SOURCES — разные источники default_text на разных путях (Д6, 2026-07-10)
+- Симптом (прогон af4bd7bd5a52): «Текст по умолчанию» разный по кампаниям одного набора —
+  cookie-путь (create_set_gallery) использовал SHOPPING_DEFAULT_TEXT; repair-путь
+  (_repair_shopping_content_context) брал texts[0] из item-контента; API-путь tp5
+  (_create_tp5_single) брал data.get("default_text") из direct_slepok_content или hardcoded fallback.
+- Где: 3 независимых источника default_text:
+  1. **`create_set_gallery.py`** — SHOPPING_DEFAULT_TEXT (константа) ✅ правильно;
+  2. **`create_set_repairing.py:_repair_shopping_content_context`** — texts[0] ❌;
+  3. **`create_set_feed_builders.py:_create_tp5_single`** — data.get("default_text") + hardcoded
+     `"Официальный дилер. Тест-драйв и выгодные условия по кредиту. Авто в наличии."` ❌ (инфра).
+- Root-cause: Fix 4 подключил константу ТОЛЬКО в create_set_gallery (cookie-путь), но repair-путь
+  и API-путь tp5 остались на старых источниках.
+- Решение (2026-07-10):
+  - `create_set_repairing.py:_repair_shopping_content_context` (строки 169-180): заменён блок
+    `body_text = _trim_clean(texts[0] ...)` на import SHOPPING_DEFAULT_TEXT с fail-safe на texts[0].
+  - `create_set_feed_builders.py:_create_tp5_single` (строки 709, 733) — НЕ трогал (инфра-граница,
+    `create_set_feeds*` = зона direct_neyrodirektolog). Задача главной сессии: строки 709 и 733
+    заменить на `from .create_set_assets import SHOPPING_DEFAULT_TEXT` + убрать hardcoded fallback.
+    Также строка 636 в `_tp5_account_data` читает из `direct_slepok_content.texts[0]` — это тоже
+    нужно переключить на константу или игнорировать это поле для body_text.
+- Чинит ли delayed content_repair уже созданных РК: НЕТ. Только будущие прогоны.
+- Статус: 🟡 repair-путь исправлен (py_compile OK). API-путь tp5 (infra) — не деплоено, ждёт правки
+  `direct_neyrodirektolog`. live не проверено.
+- НЕ помогло ранее: Fix 4 — закрыл только cookie-путь.
+
 ### KEYWORD_REPAIR_NO_PACK_SILENTLY_OK — КС-группа без ключей пака засчитывалась как «ok» в keyword-repair (P0, 2026-07-10)
 - Симптом (прогон 59581fdd9f9d, delayed_repair 0210a981b2b0): `keywords_repair` пишет «нет групп для
   keyword-repair (всё уже корректно/идемпотентно), skipped_groups=73» — хотя `campaign_spec_audit`
