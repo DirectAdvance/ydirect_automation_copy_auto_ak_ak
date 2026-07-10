@@ -38,7 +38,15 @@ _CT4_RE = re.compile(r"ct\d{4}")
 
 
 def _ag_part1_map() -> dict:
-    """ct-код → имя марки/модели из gsheet_naming (ag_part1). Кэш на процесс."""
+    """ct-код → имя из gsheet_naming (ag_part1) + leadgen_ct_naming (ct0800+, dmp).
+
+    Два источника:
+    1. public.gsheet_naming type='ag_part1' — авто-слепки (ct0001–ct0319).
+    2. public.leadgen_ct_naming — leadgen-слепок dmp (ct0800–ct0821 + ct0032/ct0084
+       в dmp-контексте). Коды из авто-источника НЕ перезаписываются: если ct уже есть
+       в gsheet_naming — leadgen-запись игнорируется (сохраняем авто-интерпретацию
+       для ct0032=Changan CS55 и т.п. в не-dmp слепках).
+    Кэш на процесс."""
     global _AG1_NAME_CACHE
     if _AG1_NAME_CACHE is not None:
         return _AG1_NAME_CACHE
@@ -47,10 +55,18 @@ def _ag_part1_map() -> dict:
         conn = _victory_conn()
         try:
             cur = conn.cursor()
+            # 1) авто-кодер (основной источник)
             cur.execute("SELECT code, name FROM public.gsheet_naming WHERE type='ag_part1'")
             for code, name in cur.fetchall():
                 if code and name:
                     m[str(code).strip()] = str(name).strip()
+            # 2) leadgen-кодер dmp (ct0800+): добавляем ТОЛЬКО коды, которых нет в авто-источнике
+            cur.execute("SELECT ct, name FROM public.leadgen_ct_naming")
+            for ct, name in cur.fetchall():
+                ct = str(ct).strip()
+                name = str(name).strip()
+                if ct and name and ct not in m:
+                    m[ct] = name
         finally:
             conn.close()
     except Exception:  # noqa: BLE001 — БД недоступна → без бренда (общий контент)
