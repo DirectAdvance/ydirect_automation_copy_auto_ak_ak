@@ -756,7 +756,12 @@ def create_set_response(deps: dict):
             if it.get("titles") and it.get("texts"):
                 try:
                     from . import ai_content as _AC
-                    _reuse_sl = _AC._account_sitelinks_get(login)
+                    # FIX6/#4 (2026-07-10): АТОМАРНЫЙ get-or-put — устраняет гонку параллельных каналов
+                    # (`DIRECT_PARALLEL_CHANNELS=1`): раньше get→генерация→put не атомарны, каждый канал
+                    # видел пустой кэш → свой набор → разные inheritableSitelinkSet у tp1/tp2/tp5/tp7.
+                    # Первый канал с полным (≥8) набором сеет эталон, ОСТАЛЬНЫЕ берут ТОТ ЖЕ → один набор.
+                    _reuse_sl, _is_acc = _AC._account_sitelinks_get_or_put(
+                        login, list(it.get("sitelinks") or []))
                     if _reuse_sl and len(_reuse_sl) >= 8 and it.get("sitelinks"):
                         # pct-safety: не подставляем эталон с «%», если заголовки item несут «%»
                         # (per-item инвариант «нет %-сайтлинка при %-заголовке»).
@@ -774,8 +779,6 @@ def create_set_response(deps: dict):
                     it["titles"], it["texts"] = _nt, _nx
                     if _nsl:
                         it["sitelinks"] = _nsl
-                    if it.get("sitelinks"):
-                        _AC._account_sitelinks_put(login, it.get("sitelinks"))
                 except Exception:  # noqa: BLE001 — account-pass reuse не критичен: локальный набор
                     pass
 

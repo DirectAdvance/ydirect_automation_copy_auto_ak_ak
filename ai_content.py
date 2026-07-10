@@ -215,6 +215,42 @@ def _account_sitelinks_put(login: str, sitelinks: list) -> None:
             _ACCOUNT_SITELINKS_CACHE[login or ""] = (list(sl[:8]), time.time())
 
 
+def _account_sitelinks_get_or_put(login: str, candidate: list) -> tuple[list | None, bool]:
+    """FIX6/#4 (2026-07-10): АТОМАРНО get-or-put под ОДНИМ локом — устраняет гонку параллельных
+    каналов (`DIRECT_PARALLEL_CHANNELS=1`). Раньше канал делал get (None) → ГЕНЕРИЛ свой набор →
+    put ПОЗЖЕ: каналы стартуют ~одновременно, каждый видел пустой кэш → свой набор → в кабинете
+    tp1/tp2/tp5/tp7 получали РАЗНЫЕ inheritableSitelinkSet. Теперь под локом: если эталон уже есть
+    (и жив по TTL) — вернуть ЕГО; иначе если `candidate` полон (≥8) — зафиксировать его эталоном и
+    вернуть. Первый канал с полным набором сеет эталон, остальные берут ТОТ ЖЕ → один набор на логин.
+    Возвращает (набор_для_использования | None, is_account_set:bool). is_account_set=False → эталона
+    нет и candidate неполон: каллер остаётся на своём наборе (не ломаем лимиты)."""
+    if not _account_sitelinks_reuse_enabled():
+        return None, False
+    ttl = _account_content_ttl()
+    now = time.time()
+    with _ACCOUNT_SITELINKS_CACHE_LOCK:
+        ent = _ACCOUNT_SITELINKS_CACHE.get(login or "")
+        if ent and (now - ent[1]) <= ttl:
+            try:
+                return json.loads(json.dumps(ent[0], ensure_ascii=False)), True
+            except Exception:  # noqa: BLE001
+                return list(ent[0]), True
+        if ent:                                   # протух — сбрасываем, эталон пересеется ниже
+            _ACCOUNT_SITELINKS_CACHE.pop(login or "", None)
+        sl = [s for s in (candidate or []) if isinstance(s, dict) and s.get("title")]
+        if len(sl) < 8:
+            return None, False                    # candidate неполон → эталоном НЕ сеем
+        try:
+            stored = json.loads(json.dumps(sl[:8], ensure_ascii=False))
+        except Exception:  # noqa: BLE001
+            stored = list(sl[:8])
+        _ACCOUNT_SITELINKS_CACHE[login or ""] = (stored, now)
+        try:
+            return json.loads(json.dumps(stored, ensure_ascii=False)), True
+        except Exception:  # noqa: BLE001
+            return list(stored), True
+
+
 def _account_pay_get(login: str) -> str:
     """Канон-сумма платежа аккаунта (строка «9 000» / «12 000») или '' (промах/TTL/выкл)."""
     if not _account_pay_canon_enabled():

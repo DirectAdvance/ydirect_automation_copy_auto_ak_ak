@@ -24,6 +24,38 @@
 
 ## Активные / недавние ошибки
 
+### SITELINK_REUSE_RACE_PARALLEL_CHANNELS — параллельные каналы держали РАЗНЫЕ наборы сайтлинков (FIX6/#4, 2026-07-10)
+- Симптом (верификатор на живых РК через Grid, прогон af4bd7bd5a52): reuse сайтлинков работает ВНУТРИ
+  канала, но МЕЖДУ каналами набор РАЗНЫЙ — tp1→`inheritableSitelinkSet=1492662511`, tp5→`1492625682`,
+  tp2→`1492662343`. Семён требует ОДИН набор на ВЕСЬ логин (все кампании всех tp).
+- Где: **`ai_content.py:_account_sitelinks_get/put`** (get и put — РАЗДЕЛЬНЫЕ локи) +
+  **`create_set_orchestrator.py:759-778`** (tp1/tp2/tp5) / **`create_set_master_product.py:421-444`**
+  (tp6/tp7). Кэш `_ACCOUNT_SITELINKS_CACHE` — process-global module-dict (НЕ thread-local), это верно;
+  корень не в scope кэша.
+- Root-cause: `DIRECT_PARALLEL_CHANNELS=1` → каналы A(units)/B(cookie) стартуют в двух потоках
+  ~одновременно. Паттерн был get→(генерация своего набора)→put, НЕ атомарный: каждый канал делал
+  `_account_sitelinks_get`=None (кэш пуст) → генерил СВОЙ набор → использовал его → `_account_sitelinks_put`
+  ПОЗЖЕ (первый put выигрывал кэш, но остальные каналы УЖЕ взяли свой). → 3 разных набора.
+- Решение (2026-07-10, FIX6/#4): атомарный **`_account_sitelinks_get_or_put(login, candidate)`** под
+  ОДНИМ `_ACCOUNT_SITELINKS_CACHE_LOCK`: если эталон есть (жив по TTL) → вернуть ЕГО; иначе если
+  candidate полон (≥8) → зафиксировать эталоном и вернуть. Первый канал с полным набором сеет, все
+  остальные (включая поздний tp7) берут ТОТ ЖЕ. Wired в orchestrator (tp1/tp2/tp5) и master_product
+  (tp6/tp7) вместо get→…→put. `_account_pay_unify` (детерминированный account-канон) применяется после
+  override → финальные наборы совпадают. pct-safety per-item сохранена (эталон с «%» при %-заголовке →
+  остаёмся на своём — редкое исключение).
+- Статус: 🟡 код на Mac (py_compile OK; pyflakes 0 undefined; concurrency-тест: 3 гонящихся канала +
+  поздний tp7 → 1 общий набор). НЕ деплоено (работает при `DIRECT_SITELINK_REUSE_ACCOUNT=1`, уже ON).
+  live не проверено — проверит прогон: ВСЕ кампании логина → ОДИН `inheritableSitelinkSet`.
+- НЕ помогло ранее: R2-4(c2) reuse через раздельные get/put — устранял reuse ВНУТРИ канала, но
+  межканальную гонку при PARALLEL=1 НЕ ловил (не атомарно).
+
+### SHOPPING_DEFAULT_TEXT_HARDCODED_CREDIT — FIX5 ЗАКРЫТ (подтверждено на сервере 2026-07-10)
+- Верификатор (по СТАЛЕ-ERRORS_JOURNAL) сказал `create_set_feed_builders.py:709/733` «не деплоен»
+  (hardcoded «…по кредиту…»). Проверка на LXC101 `/opt/scripts/home/seoadvanced/direct/
+  create_set_feed_builders.py:712`: `from .create_set_assets import SHOPPING_DEFAULT_TEXT as _SDT` →
+  `texts=[_SDT]` (fail-safe fallback БЕЗ кредита). «по кредиту» осталось ТОЛЬКО в комментарии («был
+  hardcoded»). Commit 31e30f8 (R2-8) задеплоен. ✅ FIX5 ЗАКРЫТ — стале-запись верификатора.
+
 ### GRID_COOKIE_SUBACCOUNT_404_BLIND_VERIFIER — Grid слеп на агентских саб-аккаунтах (Task #34, 2026-07-10)
 - Симптом (прогон af4bd7bd5a52, porg-psm5h7q6): верификатор/delayed content_repair НЕ поймали 7 дефектов
   R2-8 — только Семён глазом по скринам. Grid-чтение на саб-логине porg-* возвращало пусто/«No rights».

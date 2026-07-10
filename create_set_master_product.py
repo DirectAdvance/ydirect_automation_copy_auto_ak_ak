@@ -420,7 +420,11 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     # (pct/BU/лимит) — несовместимый эталон → остаёмся на своём наборе (brand-first/лимиты целы).
     try:
         from . import ai_content as _AC
-        _reuse_sl = _AC._account_sitelinks_get(login)
+        # FIX6/#4 (2026-07-10): АТОМАРНЫЙ get-or-put (тот же, что в orchestrator для tp1/tp2/tp5) —
+        # устраняет гонку параллельных каналов при DIRECT_PARALLEL_CHANNELS=1. tp7 (UAC) участвует в
+        # ЕДИНОМ эталоне: первый канал с полным набором сеет, tp6/tp7 берут ТОТ ЖЕ → один
+        # inheritableSitelinkSet на все tp. _title_has_pct вычислен выше (сборка сайтлинков).
+        _reuse_sl, _is_acc = _AC._account_sitelinks_get_or_put(login, list(it_sitelinks or []))
         if _reuse_sl:
             _rf: list = []
             for _s in _reuse_sl:
@@ -439,7 +443,6 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
                 it_sitelinks = _rf[:8]
         it_titles, it_texts, it_sitelinks = _AC._account_pay_unify(
             login, it_titles, it_texts, it_sitelinks)
-        _AC._account_sitelinks_put(login, it_sitelinks)
     except Exception:  # noqa: BLE001 — account-pass reuse не критичен: фолбэк на локальный набор
         pass
     # DEFECT 2/4 (2026-07-10): ГАРАНТ 8 сайтлинков с УНИКАЛЬНЫМИ описаниями на UAC-пути.

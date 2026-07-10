@@ -22,6 +22,13 @@
 - **Статус:** всё на Mac, py_compile OK, pyflakes 0 undefined. НЕ деплоено (contentgen-файлы у copywriter
   параллельно — не трогал). ERRORS_JOURNAL: 3 записи 🟡. Файлы: `campaign.py`, `create_set_master_product.py`,
   `blueprint.py`.
+- **FIX6/#4 (сайтлинки РАЗНЫЕ между каналами):** корень — гонка `DIRECT_PARALLEL_CHANNELS=1`: каналы
+  стартуют ~одновременно, get→генерация→put НЕ атомарны → каждый свой набор → tp1/tp2/tp5 разные
+  inheritableSitelinkSet. Фикс: `ai_content._account_sitelinks_get_or_put` (атомарно под ОДНИМ локом,
+  первый ≥8 сеет эталон, остальные берут его). Wired orchestrator+master_product. Concurrency-тест: 3
+  канала + tp7 → 1 набор. Кэш process-global (не thread-local) — подтверждено.
+- **FIX5 ЗАКРЫТ:** сервер `create_set_feed_builders.py:712` = `SHOPPING_DEFAULT_TEXT` (не «по кредиту»),
+  commit 31e30f8 задеплоен. Верификатор флагнул по стале-ERRORS_JOURNAL.
 - **В контент (copywriter):** генерация сайтлинков tp7 может давать повторяющиеся описания — desc-гарант
   их добьёт филлерами, но идеально бы генерить 8 с уникальными описаниями на входе.
 
