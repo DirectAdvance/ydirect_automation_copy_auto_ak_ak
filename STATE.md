@@ -3,6 +3,20 @@
 > Читать ПЕРВЫМ в начале каждой сессии. Обновлять ПОСЛЕДНИМ перед выходом.
 > Ошибки создания РК: сигнатуры/решения/что-помогло — **ERRORS_JOURNAL.md** (обязателен к заполнению при фиксах).
 
+## Сессия 2026-07-10 — tp7 товарка: минус-марки (FeedFilter) не сохранялись (DOD §3.7)
+- **Дефект:** tp7 ShoppingAd не нёс глоб. минус-марки в feed_filters (в кабинете conditions пусты),
+  хотя сборка it_ff их клала. **Корень (сверено с HAR `direct.yandex.ru.59har.har`):** наши UAC-условия
+  эмитили только `value` (json-строка), без ключа `values` (реальный массив). Эталон UAC-сейва
+  (PATCH `/web-api/uac/campaign/712694743` + result) хранит ДВОЙНОЙ формат:
+  `{"field":"name","operator":"NOT_CONTAINS","values":["uaz"],"value":"[\"uaz\"]"}`. Без `values` UAC
+  молча дропает условие → `feed_filters=[{"conditions":[]}]`.
+- **Фикс:** `create_set_feeds.py` — `_minus_marks_uac_conditions` (минус-марки+минус-модели) и позитив
+  `_tp7_product_feed_filters` (CONTAINS по модели): добавлен `"values": <массив>` рядом с `value`.
+  collectionId listings — НЕ трогал (проверены live value-only). Grid-путь / defect A (текст.минус-слова)
+  — НЕ тронуты. py_compile OK, pyflakes 0 новых undefined, изолир.тест: value==json(values), assert PASS.
+- **Статус:** код на Mac, НЕ деплоено (по указанию). ERRORS_JOURNAL: запись 🟡
+  TP7_SHOPPING_FEED_FILTER_MINUS_MARKS_DROPPED. live проверит прогон: conditions товарки НЕ пусты.
+
 ## Сессия 2026-07-10 — af4bd7 разбор дефектов 2/3/4 + Task #34 (Grid-кука саб-аккаунта)
 - **Task #34 (Grid слеп на саб-аккаунтах):** `campaign.py:pick_working_cookie` теперь пробует УПРАВЛЯЮЩЕЕ
   агентство ПЕРВЫМ (инъекция `set_agency_resolver`→`_resolve_agency_hint`; blueprint регистрирует хук).

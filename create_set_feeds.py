@@ -1393,11 +1393,18 @@ def _minus_marks_uac_conditions(brand_field: str = "vendor", model_field: str = 
     out: list[dict] = []
     marks = _minus_values_ci(_minus_marks_enabled())
     models = _minus_values_ci(_minus_models_enabled())
+    # HAR-эталон (direct.yandex.ru.59har.har, PATCH /web-api/uac/campaign/712694743 + result):
+    # UAC-условие фид-фильтра хранится в ДВОЙНОМ формате — `values` (реальный массив) И `value`
+    # (json-строка того же массива): {"field":"name","operator":"NOT_CONTAINS","values":["uaz"],
+    # "value":"[\"uaz\"]"}. Без ключа `values` UAC ИГНОРИРУЕТ условие и сохраняет
+    # feed_filters=[{"conditions":[]}] → минус-марки товарки пропадали живьём (дефект 2026-07-10).
     if marks:
         out.append({"field": brand_field, "operator": "NOT_CONTAINS",
+                    "values": marks,
                     "value": json.dumps(marks, ensure_ascii=False)})
     if models:
         out.append({"field": model_field, "operator": "NOT_CONTAINS",
+                    "values": models,
                     "value": json.dumps(models, ensure_ascii=False)})
     return out
 
@@ -1504,7 +1511,10 @@ def _tp7_product_feed_filters(brand_model: str, ct: str,
             if cand and len(cand) >= 3 and cand not in variants:
                 variants.append(cand)
         if variants:
+            # Дв. формат UAC (values + value) — как минус-условия (HAR-эталон 712694743), иначе
+            # позитив по модели тоже потеряется и товарка уйдёт по всему фиду.
             conditions.append({"field": _mf, "operator": "CONTAINS",
+                               "values": variants,
                                "value": json.dumps(variants, ensure_ascii=False)})
     conditions.extend(minus)                 # минус-марки К бренд-условию (AND) или самостоятельно
     conditions = _dedup_conditions(conditions)
