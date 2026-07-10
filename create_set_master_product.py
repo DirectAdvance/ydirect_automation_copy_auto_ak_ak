@@ -528,6 +528,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     if re.match(r'^tp[67]_cp[ac]_(site|kviz)_ct\d+_a(?:on|off)_', name):
         _r_code_fix, _oblast_fix = _resolve_region(ctx.get("city") or "")
         name = _build_name(
+            is_master=not is_product,   # РЕГРЕССИЯ-ФИКС R2-8: строка была случайно удалена при правке DEFECT 3
             # DEFECT 3 (2026-07-10): is_auto ТОЛЬКО для autotarget. Было (!="keywords") —
             # audience тоже попадал в автотаргет-имя (ag001/aon), рассинхрон имя↔факт (в имени
             # «Автотаргетинг», по факту ручная аудитория). Совпадает с create_set_plan.py:637
