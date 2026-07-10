@@ -6633,225 +6633,22 @@
       {
        "code": "tp5",
        "title": "Поиск + Динамика + Товарная галерея",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Фид + Каталог",
-           "items": [
-            {
-             "c": "tp5_cpc_site",
-             "t": "Автотаргетинг",
-             "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-            },
-            {
-             "c": "tp5_cpc_site",
-             "t": "[Товарная галерея] Автотаргетинг",
-             "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Фид + Каталог ХМАО",
-           "items": [
-            {
-             "c": "tp5_cpc_site",
-             "t": "Автотаргетинг",
-             "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp6",
        "title": "Мастер кампаний",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Haval Jolion",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Lada Granta",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Lada Iskra",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Lada Vesta",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Автосалон",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Дилер",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Интересы",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "Кредит",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Автотаргетинг"
-            },
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp7",
        "title": "Товарка",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Интересы",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp8",
        "title": "Telegram",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "(нестандартные имена)",
-           "items": [
-            {
-             "c": "tp8_cpc_site",
-             "t": "—"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "(нестандартные имена)",
-           "items": [
-            {
-             "c": "tp8_cpc_kviz",
-             "t": "—"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       }
      ]
     },
@@ -8768,405 +8565,22 @@
       {
        "code": "tp5",
        "title": "Поиск + Динамика + Товарная галерея",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Фид + Каталог",
-           "items": [
-            {
-             "c": "tp5_cpc_site",
-             "t": "Автотаргетинг",
-             "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Фид + Каталог",
-           "items": [
-            {
-             "c": "tp5_cpc_kviz",
-             "t": "Автотаргетинг",
-             "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp6",
        "title": "Мастер кампаний",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Geely Coolray",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Geely Monjaro",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Haval Jolion",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "LADA Granta",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "LADA Vesta",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Автосалон",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Дилер",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Дилер Lada",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Интересы",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Автотаргетинг"
-            },
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            },
-            {
-             "c": "tp6_cpc_site_ct0119_aon_n000_r0000_ct001_ag011_g00",
-             "t": "[МК-  Haval Jolion] Ключевики"
-            },
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Автотаргетинг / Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Lada Granta",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Lada Vesta",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Lada Общие запросы",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Автосалон Lada",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Haval Jolion",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Lada Granta",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Lada Vesta",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Автосалон",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Дилер",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Автотаргетинг"
-            },
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp7",
        "title": "Товарка",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Lada Общие запросы",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Автотаргетинг"
-            },
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Chery",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0044_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Автотаргетинг"
-            },
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp8",
        "title": "Telegram",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "(нестандартные имена)",
-           "items": [
-            {
-             "c": "tp8_cpc_site",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp8_cpc_site",
-             "t": "—"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "(нестандартные имена)",
-           "items": [
-            {
-             "c": "tp8_cpc_kviz",
-             "t": "—"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       }
      ]
     },
@@ -11083,387 +10497,22 @@
       {
        "code": "tp5",
        "title": "Поиск + Динамика + Товарная галерея",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Фид + Каталог",
-           "items": [
-            {
-             "c": "tp5_cpc_site",
-             "t": "Автотаргетинг",
-             "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Фид + Каталог",
-           "items": [
-            {
-             "c": "tp5_cpc_kviz",
-             "t": "Автотаргетинг",
-             "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp6",
        "title": "Мастер кампаний",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Автокредит",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Автосалон",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Дилер",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Дилеры",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Кредит",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы Интересы",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "Трейд-ин",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Автотаргетинг"
-            },
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Автосалон",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Дилер",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp7",
        "title": "Товарка",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Авто",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Автокредит",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Автомобили",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Автосалон",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Дилер",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы Автокредит",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы Интересы",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "[МК] —"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Авито",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Автокредит",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Автомобили",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Автору",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Дилер",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Дром",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Трейд-ин",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp8",
        "title": "Telegram",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "(нестандартные имена)",
-           "items": [
-            {
-             "c": "tp8_cpc_site",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp8_cpc_site",
-             "t": "—"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       }
      ]
     },
@@ -13380,271 +12429,22 @@
       {
        "code": "tp5",
        "title": "Поиск + Динамика + Товарная галерея",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Фид + Каталог",
-           "items": [
-            {
-             "c": "tp5_cpc_site",
-             "t": "Автотаргетинг",
-             "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Фид + Каталог",
-           "items": [
-            {
-             "c": "tp5_cpc_kviz",
-             "t": "Автотаргетинг",
-             "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp6",
        "title": "Мастер кампаний",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "LADA Granta",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "LADA Vesta",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Автосалон",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Дилер",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Дилер Интересы",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Автотаргетинг"
-            },
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Lada Granta",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Lada Vesta",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Автосалон",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Дилер",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Автотаргетинг"
-            },
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp7",
        "title": "Товарка",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Автотаргетинг"
-            },
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Автотаргетинг"
-            },
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Ключевики"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp8",
        "title": "Telegram",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "(нестандартные имена)",
-           "items": [
-            {
-             "c": "tp8_cpc_site",
-             "t": "—"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "(нестандартные имена)",
-           "items": [
-            {
-             "c": "tp8_cpc_kviz",
-             "t": "—"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       }
      ]
     }
@@ -16834,73 +15634,12 @@
       {
        "code": "tp7",
        "title": "Товарка",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Товарная",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "КС"
-            }
-           ]
-          },
-          {
-           "name": "Автокредит/кредит",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0006_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          },
-          {
-           "name": "Прочие запросы",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0001_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp8",
        "title": "Telegram",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "(нестандартные имена)",
-           "items": [
-            {
-             "c": "tp8_cpc_site",
-             "t": "—"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       }
      ]
     },
@@ -20084,259 +18823,22 @@
       {
        "code": "tp6",
        "title": "Мастер кампаний",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0112_aon_n000_r0000_ct001_ag011_g00",
-             "t": "[Haval Dargo] —"
-            },
-            {
-             "c": "tp6_cpc_site_ct0299_aon_n000_r0000_ct001_ag011_g00",
-             "t": "[Haval Dargo X] —"
-            },
-            {
-             "c": "tp6_cpc_site_ct0119_aon_n000_r0000_ct001_ag011_g00",
-             "t": "[Haval Jolion] —"
-            },
-            {
-             "c": "tp6_cpc_site_ct0111_aon_n000_r0000_ct001_ag011_g00",
-             "t": "[Haval Автокредит] —"
-            },
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          },
-          {
-           "name": "Haval",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0111_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          },
-          {
-           "name": "Haval F7",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0113_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          },
-          {
-           "name": "Haval F7X",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0114_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          },
-          {
-           "name": "Haval H3",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0115_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          },
-          {
-           "name": "Haval H5",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0116_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          },
-          {
-           "name": "Haval H7",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0117_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          },
-          {
-           "name": "Haval H9",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0118_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          },
-          {
-           "name": "Haval M6",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0120_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "—"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp7",
        "title": "Товарка",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Автотаргетинг"
-            },
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "КС"
-            }
-           ]
-          },
-          {
-           "name": "Lada",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0181_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          },
-          {
-           "name": "Haval",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0111_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          },
-          {
-           "name": "Chery",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0044_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          },
-          {
-           "name": "Belgee",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0026_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          },
-          {
-           "name": "Прочие запросы",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0001_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Общие (автотаргетинг)",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp8",
        "title": "Telegram",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "(нестандартные имена)",
-           "items": [
-            {
-             "c": "tp8_cpc_site",
-             "t": "—"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp11",
        "title": "Connected TV",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp11_cpc_site",
-             "t": "Автотаргетинг"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       }
      ]
     },
@@ -23520,42 +22022,7 @@
       {
        "code": "tp7",
        "title": "Товарка",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Автокредит/кредит",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0006_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          },
-          {
-           "name": "Прочие запросы",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0001_aon_n000_r0000_ct009_ag001_g00",
-             "t": ""
-            }
-           ]
-          },
-          {
-           "name": "Общие (автотаргетинг)",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       }
      ]
     }
@@ -25419,62 +23886,12 @@
       {
        "code": "tp7",
        "title": "Товарка",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Товарная",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Модели",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "КС"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp8",
        "title": "Telegram",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "(нестандартные имена)",
-           "items": [
-            {
-             "c": "tp8_cpc_site",
-             "t": "—"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       }
      ]
     },
@@ -27332,55 +25749,12 @@
       {
        "code": "tp7",
        "title": "Товарка",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Lada Vesta",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp8",
        "title": "Telegram",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "(нестандартные имена)",
-           "items": [
-            {
-             "c": "tp8_cpc_site",
-             "t": "—"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       }
      ]
     },
@@ -31091,46 +29465,12 @@
       {
        "code": "tp7",
        "title": "Товарка",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp8",
        "title": "Telegram",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "(нестандартные имена)",
-           "items": [
-            {
-             "c": "tp8_cpc_site",
-             "t": "—"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       }
      ]
     }
@@ -35023,22 +33363,6 @@
            "t": "МК - Автотаргетинг"
           }
          ]
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          }
-         ],
-         "items": []
         }
        ]
       },
@@ -35988,246 +34312,17 @@
       {
        "code": "tp5",
        "title": "Поиск + Динамика + Товарная галерея",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Фид + Каталог",
-           "items": [
-            {
-             "c": "tp5_cpc_site",
-             "t": "Автотаргетинг",
-             "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Фид + Каталог",
-           "items": [
-            {
-             "c": "tp5_cpc_kviz",
-             "t": "Автотаргетинг",
-             "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp6",
        "title": "Мастер кампаний",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Авто/Автомобили/Машины",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0014_aon_n000_r0000_ct009_ag001_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "Автору/Авито/Дром",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0319_aon_n000_r0000_ct009_ag001_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "Автокредит/кредит",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0006_aon_n000_r0000_ct009_ag001_g00",
-             "t": "—"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Авто/Автомобили/Машины",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0014_aon_n000_r0000_ct009_ag001_g00",
-             "t": "—"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp7",
        "title": "Товарка",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Авто",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Автокредит",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Автомобили",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Автосалон",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Дилер",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы Автокредит",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Авито",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Автокредит",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Автомобили",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Автору",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Дилер",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Дром",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Трейд-ин",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       }
      ]
     },
@@ -36379,268 +34474,17 @@
       {
        "code": "tp5",
        "title": "Поиск + Динамика + Товарная галерея",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Фид + Каталог",
-           "items": [
-            {
-             "c": "tp5_cpc_site",
-             "t": "Автотаргетинг",
-             "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Фид + Каталог",
-           "items": [
-            {
-             "c": "tp5_cpc_kviz",
-             "t": "Автотаргетинг",
-             "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp6",
        "title": "Мастер кампаний",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Авто/Автомобили/Машины",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0014_aon_n000_r0000_ct009_ag001_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "Автору/Авито/Дром",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0319_aon_n000_r0000_ct009_ag001_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "Автокредит/кредит",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0006_aon_n000_r0000_ct009_ag001_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            },
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Авто/Автомобили/Машины",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0014_aon_n000_r0000_ct009_ag001_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp7",
        "title": "Товарка",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Авто",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Автокредит",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Автомобили",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Автосалон",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Дилер",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы Автокредит",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Авито",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Автокредит",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Автомобили",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Автору",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Дилер",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Дром",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Трейд-ин",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       }
      ]
     }
@@ -42072,12 +39916,7 @@
       {
        "code": "tp7",
        "title": "Товарка",
-       "groups": [
-        {
-         "name": "ТК · общие",
-         "items": []
-        }
-       ]
+       "groups": []
       }
      ]
     },
@@ -42694,12 +40533,7 @@
       {
        "code": "tp7",
        "title": "Товарка",
-       "groups": [
-        {
-         "name": "ТК · общие",
-         "items": []
-        }
-       ]
+       "groups": []
       }
      ]
     }
@@ -57581,12 +55415,7 @@
       {
        "code": "tp7",
        "title": "Товарка",
-       "groups": [
-        {
-         "name": "ТК · общие",
-         "items": []
-        }
-       ]
+       "groups": []
       }
      ]
     },
@@ -66960,12 +64789,7 @@
       {
        "code": "tp7",
        "title": "Товарка",
-       "groups": [
-        {
-         "name": "ТК · общие",
-         "items": []
-        }
-       ]
+       "groups": []
       }
      ]
     }
@@ -68541,12 +66365,7 @@
       {
        "code": "tp7",
        "title": "Товарка",
-       "groups": [
-        {
-         "name": "ТК · общие",
-         "items": []
-        }
-       ]
+       "groups": []
       }
      ]
     },
@@ -69020,12 +66839,7 @@
       {
        "code": "tp7",
        "title": "Товарка",
-       "groups": [
-        {
-         "name": "ТК · общие",
-         "items": []
-        }
-       ]
+       "groups": []
       }
      ]
     },
@@ -69452,10 +67266,6 @@
            "t": "—"
           }
          ]
-        },
-        {
-         "name": "Автору/Авито/Дром",
-         "items": []
         },
         {
          "name": "Автокредит/кредит",
@@ -70117,172 +67927,17 @@
       {
        "code": "tp5",
        "title": "Поиск + Динамика + Товарная галерея",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Фид + Каталог",
-           "items": [
-            {
-             "c": "tp5_cpc_site",
-             "t": "Автотаргетинг",
-             "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Фид + Каталог",
-           "items": [
-            {
-             "c": "tp5_cpc_kviz",
-             "t": "Автотаргетинг",
-             "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp6",
        "title": "Мастер кампаний",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Авто/Автомобили",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0014_aon_n000_r0000_ct009_ag001_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Авто/Автомобили",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0014_aon_n000_r0000_ct009_ag001_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp7",
        "title": "Товарка",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Авто",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "ТК - Авто"
-            }
-           ]
-          },
-          {
-           "name": "Автокредит",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0006_aon_n000_r0000_ct009_ag001_g00",
-             "t": "ТК - Автокредит"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "ТК - Общая"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Авто",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "ТК - Авто"
-            }
-           ]
-          },
-          {
-           "name": "Автокредит",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0006_aon_n000_r0000_ct009_ag001_g00",
-             "t": "ТК - Автокредит"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00",
-             "t": "ТК - Общая"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       }
      ]
     },
@@ -70434,204 +68089,17 @@
       {
        "code": "tp5",
        "title": "Поиск + Динамика + Товарная галерея",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Фид + Каталог",
-           "items": [
-            {
-             "c": "tp5_cpc_site",
-             "t": "Автотаргетинг",
-             "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Фид + Каталог",
-           "items": [
-            {
-             "c": "tp5_cpc_kviz",
-             "t": "Автотаргетинг",
-             "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp6",
        "title": "Мастер кампаний",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Авто/Автомобили/Машины",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0014_aon_n000_r0000_ct009_ag001_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "Автору/Авито/Дром",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0319_aon_n000_r0000_ct009_ag001_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "Автокредит/кредит",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0006_aon_n000_r0000_ct009_ag001_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Ключевики"
-            },
-            {
-             "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Авто/Автомобили/Машины",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0014_aon_n000_r0000_ct009_ag001_g00",
-             "t": "—"
-            }
-           ]
-          },
-          {
-           "name": "Общие запросы",
-           "items": [
-            {
-             "c": "tp6_cpc_kviz_ct0000_aon_n000_r0000_ct001_ag011_g00",
-             "t": "Автотаргетинг"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp7",
        "title": "Товарка",
-       "splits": [
-        {
-         "sq": "site",
-         "label": "Сайт",
-         "groups": [
-          {
-           "name": "Авто",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Автокредит",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Автомобили",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Дилер",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        },
-        {
-         "sq": "kviz",
-         "label": "Квиз",
-         "groups": [
-          {
-           "name": "Авто",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "Автокредит",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          },
-          {
-           "name": "(общая)",
-           "items": [
-            {
-             "c": "tp7_cpc_kviz_ct0000_aon_n000_r0000_ct009_ag001_g00"
-            }
-           ]
-          }
-         ],
-         "items": []
-        }
-       ]
+       "splits": []
       }
      ]
     }
@@ -72835,12 +70303,7 @@
       {
        "code": "tp7",
        "title": "Товарка",
-       "groups": [
-        {
-         "name": "ТК · общие",
-         "items": []
-        }
-       ]
+       "groups": []
       }
      ]
     },
@@ -74195,12 +71658,7 @@
       {
        "code": "tp3",
        "title": "Товарная галерея",
-       "groups": [
-        {
-         "name": "ТГ · товары (фид) — из слепка",
-         "items": []
-        }
-       ]
+       "groups": []
       }
      ]
     }
@@ -74216,372 +71674,7 @@
       {
        "code": "tp2",
        "title": "Поиск",
-       "splits": [
-        {
-         "sq": "identification",
-         "label": "Идентификация",
-         "groups": [
-          {
-           "name": "Идентификация",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Идентификация",
-             "gc": "ct0001_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "СОЦ сети",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "СОЦ сети",
-             "gc": "ct0002_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Номер / телефон",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Номер / телефон",
-             "gc": "ct0003_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Владельцы сайтов",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Владельцы сайтов",
-             "gc": "ct0004_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Контакты",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Контакты",
-             "gc": "ct0005_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Захватить, зацепить",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Захватить, зацепить",
-             "gc": "ct0006_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Определение",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Определение",
-             "gc": "ct0007_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Отслеживание",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Отслеживание",
-             "gc": "ct0008_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Сбор",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Сбор",
-             "gc": "ct0009_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Найти",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Найти",
-             "gc": "ct0010_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Узнать",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Узнать",
-             "gc": "ct0011_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Лид",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Лид",
-             "gc": "ct0012_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Ниши",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Ниши",
-             "gc": "ct0013_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Лиды заявки расширен.",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Лиды заявки расширен.",
-             "gc": "ct0014_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ]
-        },
-        {
-         "sq": "marketing_tools",
-         "label": "Маркетинговые инструменты",
-         "groups": [
-          {
-           "name": "Маркет. инструменты",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Маркет. инструменты",
-             "gc": "ct0015_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Маркет. инструменты2",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Маркет. инструменты2",
-             "gc": "ct0016_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ]
-        },
-        {
-         "sq": "offtopic",
-         "label": "Околотематические ключи",
-         "groups": [
-          {
-           "name": "Маркетинговые термины",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Маркетинговые термины",
-             "gc": "ct0017_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Бизнес термины",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Бизнес термины",
-             "gc": "ct0018_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ]
-        },
-        {
-         "sq": "extended_sya",
-         "label": "Расширенное СЯ",
-         "groups": [
-          {
-           "name": "Онлайн-консультант",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Онлайн-консультант",
-             "gc": "ct0019_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Виджет",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Виджет",
-             "gc": "ct0020_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Чат",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Чат",
-             "gc": "ct0021_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Калькулятор",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Калькулятор",
-             "gc": "ct0022_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Опросник, обратная связь",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Опросник, обратная связь",
-             "gc": "ct0023_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Умный поиск для ИМ",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Умный поиск для ИМ",
-             "gc": "ct0024_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Квиз на сайт",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Квиз на сайт",
-             "gc": "ct0025_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Программа лояльности",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Программа лояльности",
-             "gc": "ct0026_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Анализ сайта",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Анализ сайта",
-             "gc": "ct0027_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Посещаемость сайта",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Посещаемость сайта",
-             "gc": "ct0028_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Вордстат",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Вордстат",
-             "gc": "ct0029_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Бизнес клубы",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Бизнес клубы",
-             "gc": "ct0030_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Инфобизнес",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Инфобизнес",
-             "gc": "ct0031_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Маркетинг",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Маркетинг",
-             "gc": "ct0032_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Кейс",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Кейс",
-             "gc": "ct0033_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          },
-          {
-           "name": "Маркетинговые СМИ",
-           "items": [
-            {
-             "c": "tp2_cpc_site",
-             "t": "Маркетинговые СМИ",
-             "gc": "ct0034_aon_n000_r0000_ct001_ag011_g00"
-            }
-           ]
-          }
-         ]
-        }
-       ]
+       "splits": []
       },
       {
        "code": "tp6",
