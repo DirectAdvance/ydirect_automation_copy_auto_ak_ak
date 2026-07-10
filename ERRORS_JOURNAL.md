@@ -24,6 +24,98 @@
 
 ## Активные / недавние ошибки
 
+### CONTENT_EDITOR_AD_HREF_REPLACE — Фаза 3 «Смена ссылки»: путь записи Href (2026-07-10)
+- Симптом: не ошибка, а НОВЫЙ путь записи — фиксирую риски. Массовая смена посадочной ссылки (Href)
+  объявлений по выбранному пути через очередь content_jobs (`type='ad_href'`, `mode='link'`).
+- Где: `routes_content_editor.py` — `_replace_ad_href` (сборка по подтипу + ads.update + read-back),
+  `_do_replace` (ветка `typ=='ad_href'` ПЕРЕД mode-логикой), эндпоинт `/api/content-editor/links/replace_async`,
+  исполнитель тот же `make_job_executor→_do_replace`. UI `content_editor.html:ceLinksApply`.
+- Root-cause/механика по типам: **ResponsiveAd.Href — ТОЛЬКО v501 `ads.update {Id,ResponsiveAd:{Href}}`**
+  (v5 отвергает весь тип — Code 3500 «используйте v501», спайк подтвердил живьём). **TextAd.Href — v5
+  `ads.update {Id,TextAd:{Href}}` ок.** DynamicTextAd/фид/Shopping — Href нет → в `content['links']`
+  отсутствуют → пропускаются; UAC (tp6/7) основную посадочную сменить нельзя → в skipped. Новый Href =
+  тот же scheme+host+fragment исходного + новый path/query (`_href_with_new_path`, urlsplit/urlunsplit —
+  НЕ str.replace, host НЕ меняем). Идемпотентно: матч по old_path, уже-изменённые не совпадут.
+- РИСК: живые (State=ON) объявления после смены Href уходят на ПЕРЕ-МОДЕРАЦИЮ Яндекса — UI предупреждает
+  через `ceConfirm` с числом живых. Массовую запись инициирует Семён из UI, не код.
+- Решение: реализовано + read-back-подтверждение (v5 GET Href работает для ОБОИХ типов). Дедуп ad_ids,
+  чанки по 100, per-account задачи в очередь, дневной лимит `CE_DAILY_JOB_CAP`.
+- Статус: ✅ контролируемый тест на ЧЕРНОВИКЕ (porg-psm5h7q6, ad 1915186853212398223 State=OFF,
+  ResponsiveAd/v501): read→сменил Href→read-back `/auto/baic/spike-test-href`→REVERT→read-back
+  `/auto/baic` байт-в-байт, `replaced=1 confirmed=1 errors=[]`. TextAd/v5-путь live НЕ тестирован
+  (в аккаунте только ResponsiveAd) — код зеркалит спайк-факт. Массовый прогон НЕ запускался (ждёт Семёна).
+- НЕ помогло ранее: — (новый путь). ⚠️ НЕ слать ResponsiveAd.Href в v5 (Code 3500). НЕ str.replace хоста.
+
+### CONTENT_EDITOR_SITELINK_CAMPAIGN_LEVEL_INVISIBLE — смена заголовка/описания быстрой ссылки не работала для campaign-level наборов (2026-07-10)
+- Симптом (редактор контента `/direct/automation/content`, porg-psm5h7q6): job «быстрая ссылка»
+  → «заменён 1/1, ошибок 80»; job «описание ссылки» → «замена текста ссылки не подтвердилась у 8
+  объявлений — Grid не применил изменение». Часть наборов быстрых ссылок вообще не видна в редакторе.
+- Где: **`routes_content_editor.py:_load_account`** (сбор наборов). Запись — `_replace_sitelink_text_grid`
+  (уже умела campaign-level через `grid_finalize.set_campaign_sitelink_set`, но её никто не кормил
+  campaign-usages).
+- Root-cause (подтверждён живьём на porg-psm5h7q6, 12 кампаний): быстрые ссылки в ЕПК бывают на ДВУХ
+  уровнях — КАМПАНИЯ (`inheritableSitelinkSet`) и ОБЪЯВЛЕНИЕ (`SitelinkSetId`). `_load_account` собирал
+  наборы ТОЛЬКО из `SitelinkSetId` объявлений. Диагностика показала: **v5 ads.get НЕ отдаёт
+  унаследованный campaign-level набор у объявлений** — у наследующих объявлений `SitelinkSetId` ПУСТ
+  (`ads_carrying_inh=0` во ВСЕХ 12 кампаниях). Из 3 campaign-level наборов два (`1492625682` — 7 кампаний,
+  `1492706877` — 1) были полностью НЕВИДИМЫ редактору; третий (`1492662511`) виден лишь из-за случайного
+  ad-override в чужой кампании. Замена целилась в пустой `ad_ids` → Grid ничего не применял, а ad-level
+  find/replace по наследующим объявлениям давал «не подтвердилась у N».
+- Решение (2026-07-10, `_load_account`): после чтения объявлений читаем набор КАЖДОЙ кампании через
+  Grid `_read_unified_campaign_update_payloads` → `inheritableSitelinkSet.sitelinkSetId`; добавляем
+  campaign-usage (`adgroup_id=0`) в `sitelink_usages[set_id]` и строим `campaign_ids_by_set`. За счёт
+  этого set-id попадает в `sitelink_set_ids` (контент читается тем же v5 `sitelinks.get` — проверено:
+  отдаёт все 3 набора с полным содержимым) и в `sitelinks_out` появляется `level=campaign` +
+  `campaign_ids`. Дальше уже существующий `_replace_sitelink_text_grid` идёт campaign-level путём:
+  `add_sitelink_set` (новый набор) → `set_campaign_sitelink_set` (перепривязка кампаний). Grid-чтение
+  обёрнуто в try/except (`_grid_sitelink_error`), как callout-обогащение — не ломает /load.
+- Ad-level НЕ сломан: для ad-level наборов campaign-usages нет → в replace гейт
+  `current_set_by_campaign.get(cid) == source_set_id` фильтрует campaign_ids в [] (у кампании
+  inheritable-набор ДРУГОЙ) → идёт ad-level find/replace как раньше. Чистый campaign-level набор
+  (0 объявлений его несут) → `_ads_by_set` пуст → НЕТ ложного ad-level find/replace → нет «80 ошибок».
+- Требует куку управляющего агентства для саб-аккаунтов (`victorylotsofads1` для porg-*) —
+  `pick_working_cookie` уже приоритизирует управляющее агентство (см. GRID_COOKIE_SUBACCOUNT_404).
+- Верификация (live, porg-psm5h7q6, набор `1492706877`, кампания `712694813`):
+  - LOAD: теперь 3 campaign-level набора видны (`level=campaign`, campaign_ids заполнены);
+    ранее невидимые `1492625682`/`1492706877` присутствуют.
+  - WRITE title: `Дарим КАСКО на 1 год.` → `Дарим КАСКО на 1 год` → `replaced=1, errors=[]`,
+    кампания перепривязана на новый набор, read-back: new present / old absent.
+  - WRITE description: `…при покупке автомобиля` → `…при покупке нового авто` → `replaced=1, errors=[]`,
+    read-back подтвердил.
+  - Оба изменения ОТКАЧЕНЫ обратным replace — контент набора восстановлен байт-в-байт (Grid при
+    идентичном содержимом переиспользовал исходный set-id, без orphan-набора). Никаких «80 ошибок».
+- Деплой: рестарт ОБОИХ — `direct-content.service` + `direct-content-worker.service` (правка логики,
+  worker обязателен, см. CONTENT_EDITOR_TWO_SERVICES_WORKER_STALE). Оба `active`, HTTP 302, journal чист.
+- Статус: ✅ подтверждено живым прогоном 2026-07-10 (title И description на campaign-level наборе,
+  read-back + откат; ad-level путь логически не тронут).
+- НЕ помогло ранее: `_replace_sitelink_text_grid` уже содержал campaign-level ветку
+  (`set_campaign_sitelink_set`), но `_load_account` не собирал campaign-level наборы → ветка получала
+  пустые usages/ad_ids и не срабатывала. Корень был в ЧТЕНИИ (discovery), а не в записи.
+
+### CONTENT_EDITOR_TWO_SERVICES_WORKER_STALE — правку логики content-editor надо катить на ОБА сервиса (2026-07-10)
+
+**Симптом.** Задание массовой замены фрагмента `mode=substring` (заголовок) упало с
+«объявление с таким текстом не найдено», хотя фрагмент в объявлениях есть.
+
+**Корень.** Редактор контента `/direct/automation/content` обслуживают ДВА systemd-сервиса:
+- `direct-content.service` (flask, порт **5021**) — отдаёт UI/шаблон/preview, роуты `routes_content_editor.py`;
+- `direct-content-worker.service` — исполнитель очереди `direct_automation.content_jobs`, реально применяет замены.
+
+При правке ЛОГИКИ в `direct/routes_content_editor.py` (напр. новый режим `mode=substring` для замены
+фрагмента) рестартнули только `direct-content` → воркер продолжил крутить СТАРЫЙ код: он игнорировал
+новый `mode`, падал в exact-match целого заголовка (= фрагменту не равен) → «текст не найден».
+Инцидент 2026-07-10: заголовок-задание `mode=substring` упало именно так, пока воркер был на коде от 2026-07-09.
+
+**Фикс/правило.**
+- Правка ЛОГИКИ (`routes_content_editor.py`, воркер) → рестарт **ОБОИХ**:
+  `direct-content.service` И `direct-content-worker.service`.
+- Правка только шаблона/JS (`templates/direct/content_editor.html`) → достаточно рестарта `direct-content`.
+- Колонка `mode` в `content_jobs` добавляется миграцией `ensure_jobs_table()` при старте flask.
+- Рестарт (прямой ssh lxc101 может не отвечать): `ssh proxmox-ts "pct exec 101 -- systemctl restart <unit>"`.
+
+**Статус.** ✅ причина/правило зафиксированы. Правка модала (только шаблон/JS) 2026-07-10 —
+рестарт только `direct-content`, смоук HTTP 302, journal чист.
+
 ### BRAND_ISOLATED_NOT_INTEGRATED — «Belgee.» как рублёный первый элемент, без интеграции в фразу (Д1, 2026-07-10)
 - Симптом (Семён, прогон на аккаунтах Belgee): заголовки «Belgee. Авто в наличии. Кредит от 9 000 ₽/мес»,
   «Belgee. Новые автомобили. Выгода до 45%» — бренд как изолированное слово + точка + рублёный УТП.
@@ -77,16 +169,17 @@
   - `ai_agents.py:_fanout_head` (строка ~2107): добавлено `promo_hint` — в шапку промпта теперь идут
     «Характерные посылы акций этого агента» из `promo.examples` → LLM получает дополнительный сигнал
     уникальности для каждого слепка.
-  - ⚠️ Корень в ДАННЫХ (→ slepki_master): полное решение — добавить `AGENT_ADS` для 6 стартовых
-    (реальные заголовки/тексты/сайтлинки из их live-кампаний после накопления). Без этого даже
-    дифференцированный system/examples = плохая замена настоящему корпусу. Запросить у slepki_master:
-    заполнить `ai_agents.AGENT_ADS["salamahin"|"gordeeva"|"zubakin"|"chepelev"|"tumashenko"|"kuderko"]`
-    по аналогии с pavlov/kryuchkova (titles/texts/sitelinks из их реальных кампаний).
+  - **ПОЛНЫЙ фикс (2026-07-10, R2-9 Д3):** `ai_agents.py:AGENT_ADS` (строки 943–1092): добавлены
+    реальные корпуса для всех 6 стартовых слепков из живых аккаунтов (харвестер):
+    salamahin(10t/5tx/8sl), gordeeva(10t/6tx/8sl), zubakin(10t/5tx/7sl),
+    chepelev(10t/6tx/8sl), tumashenko(8t/6tx/8sl), kuderko(10t/2tx/8sl).
+    После for-loop (~строка 1093) все 6 инжектированы в AGENTS[slepok]["ads"].
+    LLM теперь видит реальный голос (ex_titles/ex_texts/ex_sitelinks) вместо "(адаптируй свой тон)".
+    Формат: кортежи ("title","desc") — идентично pavlov/kryuchkova. py_compile OK; pyflakes 0 новых.
 - Чинит ли delayed content_repair уже созданных РК: НЕТ. LLM-голос применяется только при генерации
   (новые прогоны). Фикс только для будущих.
-- Статус: 🟡 код дифференцирован на Mac (py_compile OK; pyflakes 0 новых undefined). НЕ деплоено.
-  Дифференциация реальна только на уровне системного промпта/examples — без AGENT_ADS отличие минимальное.
-  Полный фикс: slepki_master → реальный корпус кампаний стартовых слепков.
+- Статус: ✅ полный данных-фикс на Mac (py_compile OK; AGENTS[slepok]["ads"] != {} для всех 6;
+  pyflakes 2 pre-existing f-string warnings строки 2310/2388 — не мои). НЕ деплоено.
 - НЕ помогло ранее: —
 
 ### TP7_SHOPPING_FEED_FILTER_MINUS_MARKS_DROPPED — UAC-условие без `values` → минус-марки товарки пропадали живьём (2026-07-10)
