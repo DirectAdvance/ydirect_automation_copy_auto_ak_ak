@@ -80,6 +80,8 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
 
     _bu_site = A.is_bu_site_type(st)
     _new_only_site = st in A.NEW_ONLY_SITE_TYPES
+    _is_dmp = (st == "dmp")  # B2B-лидоген: другие UTP-фильтры, кредитный угол не требуется
+    _DMP_B2B_UTP_RE = re.compile(r"(?i)(лид|заявк|контакт|клиент|компани|бизнес|источник|идентифик|горяч)")
     # Для БРЕНДОВОЙ кампании общий размер автопарка салона неуместен («6500+ авто», «более 6500»,
     # «огромный выбор авто») — это число по ВСЕМУ салону, а не по одной марке.
     _BIG_INV_RE = re.compile(r"(?i)(?:\b\d{3,}\s*\+|\bболее\s+\d{3,}|\bогромн\w+\s+выбор)\s*"
@@ -106,6 +108,9 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
         # Для брендовой кампании слабые общие заголовки без марки почти всегда нерелевантны.
         if _brand_re and not _brand_re.search(t or ""):
             return False
+        if _is_dmp:
+            # B2B: принимаем заголовок если содержит B2B-маркер (лид/контакт/клиент/...) — кредит не нужен
+            return bool(_DMP_B2B_UTP_RE.search(t or ""))
         # Заголовок должен нести продающее УТП, а не быть общим «Новые BAIC в городе».
         if not _TITLE_UTP_RE.search(t or ""):
             return False
@@ -120,6 +125,9 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
         # Для брендовой кампании текст без марки часто оказывается слишком общим и слабым.
         if _brand_re and not _brand_re.search(x or ""):
             return False
+        if _is_dmp:
+            # B2B: принимаем текст если содержит B2B-маркер — кредит/CTA не требуются
+            return bool(_DMP_B2B_UTP_RE.search(x or ""))
         # Текст должен содержать реальную выгоду/условие, а не общий слоган.
         if not _TEXT_UTP_RE.search(x or ""):
             return False
@@ -228,18 +236,25 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
             reject_stats["titles"]["missing_brand"] += 1
             _push_example("titles", "missing_brand", t)
             return False
-        if not _TITLE_UTP_RE.search(t or ""):
-            reject_stats["titles"]["missing_utp"] += 1
-            _push_example("titles", "missing_utp", t)
-            return False
-        if not re.search(r"\d", t or ""):
-            reject_stats["titles"]["missing_number"] += 1
-            _push_example("titles", "missing_number", t)
-            return False
-        if not _DIRECT_CREDIT_RE.search(t or ""):
-            reject_stats["titles"]["missing_credit_angle"] += 1
-            _push_example("titles", "missing_credit_angle", t)
-            return False
+        if _is_dmp:
+            # B2B: требуем B2B-маркер вместо авто-кредитного угла
+            if not _DMP_B2B_UTP_RE.search(t or ""):
+                reject_stats["titles"]["missing_utp"] += 1
+                _push_example("titles", "missing_utp", t)
+                return False
+        else:
+            if not _TITLE_UTP_RE.search(t or ""):
+                reject_stats["titles"]["missing_utp"] += 1
+                _push_example("titles", "missing_utp", t)
+                return False
+            if not re.search(r"\d", t or ""):
+                reject_stats["titles"]["missing_number"] += 1
+                _push_example("titles", "missing_number", t)
+                return False
+            if not _DIRECT_CREDIT_RE.search(t or ""):
+                reject_stats["titles"]["missing_credit_angle"] += 1
+                _push_example("titles", "missing_credit_angle", t)
+                return False
         _tl = t.lower()
         _nk = _variant_norm_key(t)
         _fw = str(t).split()[0].lower().rstrip(".,!?") if str(t).split() else ""
@@ -286,18 +301,25 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
             reject_stats["texts"]["missing_brand"] += 1
             _push_example("texts", "missing_brand", x)
             return False
-        if not _TEXT_UTP_RE.search(x or ""):
-            reject_stats["texts"]["missing_utp"] += 1
-            _push_example("texts", "missing_utp", x)
-            return False
-        if not _DIRECT_CREDIT_RE.search(x or ""):
-            reject_stats["texts"]["missing_utp"] += 1
-            _push_example("texts", "missing_utp", x)
-            return False
-        if not _CTA_RE.search(x or ""):
-            reject_stats["texts"]["missing_cta"] += 1
-            _push_example("texts", "missing_cta", x)
-            return False
+        if _is_dmp:
+            # B2B: требуем B2B-маркер; авто-UTP/кредит/CTA не нужны
+            if not _DMP_B2B_UTP_RE.search(x or ""):
+                reject_stats["texts"]["missing_utp"] += 1
+                _push_example("texts", "missing_utp", x)
+                return False
+        else:
+            if not _TEXT_UTP_RE.search(x or ""):
+                reject_stats["texts"]["missing_utp"] += 1
+                _push_example("texts", "missing_utp", x)
+                return False
+            if not _DIRECT_CREDIT_RE.search(x or ""):
+                reject_stats["texts"]["missing_utp"] += 1
+                _push_example("texts", "missing_utp", x)
+                return False
+            if not _CTA_RE.search(x or ""):
+                reject_stats["texts"]["missing_cta"] += 1
+                _push_example("texts", "missing_cta", x)
+                return False
         if _TEXT_SHOUTY_START_RE.search(x or ""):
             reject_stats["texts"]["bad_site_fit"] += 1
             _push_example("texts", "bad_site_fit", x)
@@ -584,7 +606,39 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
         """Финальный гард после M3/assemble: количество, длина, бренд и запретные фразы."""
         bname = _display_brand(brand or "Авто")
         btext = bname if len(bname) <= 9 else bname.split()[0]
-        if _bu_site:
+        if _is_dmp:
+            title_fillers = [
+                "До 150% горячих лидов для вашего бизнеса сегодня",
+                "50+ горячих контактов для компании. Попробуй сейчас",
+                "Получите 50+ горячих лидов для бизнеса за 24 часа",
+                "Идентификация 1000+ клиентов для вашего бизнеса онлайн",
+                "Контакты 100% заинтересованных клиентов за 24 часа",
+                "Рост продаж на 150%. Горячие контакты для компании",
+                "Источник клиентов. 50+ заявок в день для бизнеса",
+                "Тест-доступ 3 дня. Контакты заинтересованных клиентов",
+                "Горячие лиды за 24 часа. Идентификация вашей ЦА онлайн",
+                "Платформа лидогенерации. 50+ клиентов для компании",
+                "Получите контакты 1000+ клиентов вашей ниши онлайн",
+                "Точная идентификация ЦА. 50+ заявок в день онлайн",
+            ]
+            text_fillers = [
+                "Предоставим контакты горячих клиентов, заинтересованных в покупке прямо сейчас!",
+                "Доступ к горячим клиентам сегодня. Получайте контакты заинтересованных людей.",
+                "Предоставляем контакты клиентов, интересовавшихся вашим продуктом. Заявка онлайн!",
+                "Идентифицируем аудиторию. Горячие лиды для бизнеса. Оставьте заявку сегодня!",
+                "Доступ к базе 1000+ заинтересованных клиентов. Получите демо сегодня онлайн!",
+            ]
+            sitelink_fillers = [
+                {"title": "Получите демо-доступ сегодня", "description": "Покажем профили 50+ клиентов, готовых купить онлайн"},
+                {"title": "Горячие контакты за 24 часа", "description": "Горячие клиенты вашей ниши поступят за 1 рабочий день"},
+                {"title": "Тест-доступ к базе 3 дня", "description": "Доступ к базе заинтересованных клиентов без оплаты"},
+                {"title": "Лиды для вашей ниши онлайн", "description": "Подберём клиентов под параметры вашего бизнеса онлайн"},
+                {"title": "Стоимость одного контакта", "description": "Рассчитаем стоимость контакта под ваш бюджет онлайн"},
+                {"title": "Как работает платформа", "description": "Алгоритм находит заинтересованных в вашем продукте"},
+                {"title": "Наши кейсы по отраслям", "description": "50+ компаний получают до 150% больше заявок с нами"},
+                {"title": "Оставьте заявку сейчас", "description": "Менеджер подберёт пакет контактов за 15 минут онлайн"},
+            ]
+        elif _bu_site:
             title_fillers = [
                 f"Платеж от 9 000 ₽/мес. {bname} с пробегом в кредит онлайн" if brand else "Платеж от 9 000 ₽/мес. Авто с пробегом в кредит онлайн",
                 f"Выгода 45% на {bname} с пробегом. Кредит от 15 банков" if brand else "Выгода 45% на авто с пробегом. Кредит от 15 банков",
@@ -687,6 +741,8 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
             return (not _brand_re) or bool(_brand_re.search(s or ""))
 
         def _credit_offer_ok_line(s: str) -> bool:
+            if _is_dmp:
+                return True  # B2B: кредитный угол не требуется
             return bool(_DIRECT_CREDIT_RE.search(s or ""))
 
         def _site_ok_line(s: str) -> bool:

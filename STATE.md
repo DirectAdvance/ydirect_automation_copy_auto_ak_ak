@@ -3,6 +3,66 @@
 > Читать ПЕРВЫМ в начале каждой сессии. Обновлять ПОСЛЕДНИМ перед выходом.
 > Ошибки создания РК: сигнатуры/решения/что-помогло — **ERRORS_JOURNAL.md** (обязателен к заполнению при фиксах).
 
+## Сессия 2026-07-11 — DMP_FULL_B2B_PIPELINE fix (ЗАВЕРШЁН, код на Mac, НЕ деплоено)
+
+- **СДЕЛАНО:** все 7 точек авто-кредитного кровотечения в dmp устранены.
+  - DB: 25 строк для site_type='dmp' добавлены в `public.direct_ad_templates` (12 title, 5 text, 8 sitelink).
+  - `ai_agents.py`: AGENT_ADS['dmp'] sitelinks, sitelink_bank_for dmp-branch, _sitelink_bucket_limits dmp-branch,
+    assemble_campaign (_is_dmp + dmp-aware _title_ok/_text_ok), build_texts_messages dmp-guard, build_sitelinks_messages dmp-guard.
+  - `create_content.py`: _is_dmp + _DMP_B2B_UTP_RE, _title_ok/_text_ok + _accept_title/_accept_text dmp-branch,
+    _final_fill_campaign_content dmp-fillers (12+5+8 B2B), _credit_offer_ok_line dmp=True.
+- **Верификация:** py_compile OK; pyflakes 0 undefined; filter-test 8/8 titles + 5/5 texts; DB INSERT OK rows=25.
+- **ОСТАЛОСЬ:** Семён деплоит (рестарт direct-content + direct-content-worker), потом первый dmp-прогон.
+- ERRORS_JOURNAL.md обновлён: `DMP_FULL_B2B_PIPELINE` (🟡 ждёт прогона).
+
+## Сессия 2026-07-11 — БАТЧ тест-прогон porg-vfdnaolu (шаг 2, ЗАВЕРШЁН, 0 правок кода проекта)
+- **ФИНАЛ: 9 слепков прогнано, 68 черновиков (все DRAFT), kuderko SKIP.** Механизм cookie-Grid (via_cookie+no_cpa, без баллов) валиден.
+- Создано по слепкам: pavlov 9, scherbakova 6, kryuchkova 4, gordeeva(Мультибренд) 5, zubakin 2, chepelev 9,
+  tumashenko 9, karavaev(Мультибренд) 10, salamahin 6, terehov 8. kuderko SKIP (пак пуст в обоих типах).
+- **Site_type по полноте пака** (правило координатора): gordeeva/karavaev → Мультибренд (С пробегом пуст);
+  остальные по probe. **kuderko — единственный полный блокер: залить М3-пак** (пусто в С пробегом И Мультибренд).
+- **Флаги (все известные, не стоп):** tp5-сегменты→NO_BRAND_SEGMENTS(докрутка токеном); tp3/tp5-Фиды→нет URL-фида;
+  NO_IMAGES_LIVE(tp1, систематичен, auto-repair grid); NO_KEYWORDS_LIVE(tp2); NO_ADPRICE_LIVE(warn);
+  M3-partial (salamahin/terehov tp2/tp4 «Общее»). tp6/tp7 не тестируемы (нет Метрики → goalId=0 HTTP400).
+- **Шаг 5 (dmp B2B) — ⛔ СТОП (create упал), ТРИ блокера:** (1) пак ct0800+ ЧИТАЕТСЯ, но только с `NEURO_PACK_MOUNT=/opt/neuro_content_local`
+  (env воркера, НЕ дефолт /opt/neuro_kontent — мой probe без env давал ложный kw=0; с env pack15 kw557 B2B). (2) Гейт `validate_create_set_content`
+  (create_set_account.py:59): `direct_ad_templates` 0 строк для site_type='dmp' → job error «нет шаблонных текстов». (3) КЛЮЧЕВОЕ: генерация даёт
+  АВТО-контент не B2B (LLM подмешивает «Автокредит/Трейд-ин/КАСКО/Авто с пробегом», тексты/сайтлинки целиком авто; fast_mode→OpenRouter пусто→авто-фолбэк).
+  Вопрос Семёну: dmp нужны B2B-строки в direct_ad_templates + B2B-промпт ai_agents + не-авто фолбэк. Пак сам по себе B2B-объявления НЕ даёт.
+- Полный разбор: `scratchpad/batch_run_report.md`. Аккаунт porg-vfdnaolu ЧИСТ (0 камп). Харнесс: `scratchpad/batch_create.py` (2 фильтра), `batch_monitor/verify.py`, `pack_probe_all/alt.py`.
+- **Осталось (шаг 5, Семён):** решение по kuderko (fill пака); долить точечно salamahin/terehov «Общее»; для tp6/tp7 — Метрика-аккаунт; dmp/gen_ses не трогались.
+- **Прогнано 4 слепка, создано 19 черновиков (все DRAFT):** pavlov 9 (пилот), scherbakova 6, kryuchkova 4, gordeeva 0.
+- **Харнесс (scratchpad, НЕ проект):** `batch_create.py` (set_plan → фильтр pay=='cpa' И tp6/tp7 → create_set_async
+  via_cookie+no_cpa+launch=false), `batch_monitor.py`, `batch_verify.py`, `pilot_inv.py` (delete/inv), `pack_probe_all.py`.
+  Запуск: `ssh lxc101-ts "/root/venv/bin/python3 /tmp/<script>.py ..."`. Отчёт: `scratchpad/batch_run_report.md`.
+- **ДВА фильтра плана обязательны на porg-vfdnaolu:** (1) pay=='cpa' (пилот), (2) tp6/tp7 master/product —
+  UNIFIED/SMART требуют счётчик Метрики, иначе `goals[0].goalId MUST_BE_VALID_ID value "0"` HTTP 400 (gordeeva: 51 мастер, все fail, ~10мин/item UAC-ретраи).
+- **КОРЕНЬ «ушло в докрутку / 0 создано» = ПУСТОЙ М3-ПАК per-slepok, НЕ units** (координатор подозревал баллы — опровергнуто:
+  докрутка шла «по куке» units-free и дала 0; cookie-путь баллы не трогает; прямой `_pack_for_item` показал from=fallback kw=0).
+- **3 слепка с пустым паком на выбранном С пробегом:** gordeeva (но Мультибренд kw3538 ✅), karavaev (Мультибренд kw2683 ✅),
+  **kuderko (пусто в ОБОИХ типах — нужен реальный fill)**. Остальные 7 — пак есть.
+- **ОСТАНОВЛЕНО координатором** на диагностике (перед zubakin). Батч НЕ продолжен. Ждём решения Семёна: сменить
+  site_type gordeeva/karavaev→Мультибренд + залить пак kuderko; для tp6/tp7 нужен Метрика-аккаунт. Аккаунт чист (0 камп).
+- Известные системные (не баги прогона): tp5-«Модели» cookie→NO_BRAND_SEGMENTS (нужен токен), tp6/tp7→счётчик Метрики.
+
+## Сессия 2026-07-11 — ПИЛОТ pavlov на porg-vfdnaolu (тест-прогон создания, 0 правок кода)
+- **Инвентарь ДО:** 1 камп («Системная кампания eLama», DRAFT). Удалена штатно (Grid delete_campaigns) → 0.
+- **Создано:** job `180d40beefe8`, via_cookie+no_cpa (cookie-Grid, без баллов). **9 черновиков** (все DRAFT):
+  6 tp1 РСЯ (cpc) + 3 tp2 Поиск (cpc). tp3/4/5/6/7 пропущены (строгое соответствие профилю pavlov/С пробегом);
+  фидов/yandex.xml нет → tp7 неприменим (single_feed на этом акке моот). Промо-автопромо (id 1975545) на все 9.
+  Контент наполнен: tp2 Марки 26гр/1259кв, Модели 79гр/1681кв, Общее 3гр/254кв.
+- **3 «failed»** = tp2 **cpa**-item'ы: harness послал их, а под no_cpa UI их НЕ шлёт (сервер no_cpa гасит
+  только cpa-половину tp1/tp5-пар, standalone tp2 cpa НЕ фильтрует). + без Metrika-цели Яндекс отклонил:
+  `PAY_FOR_CONVERSION_DOES_NOT_ALLOW_ALL_GOALS`. Не дефект продукта — артефакт harness.
+- **Metrika-гейт:** porg-vfdnaolu без счётчика (`metrika_goals.counter_ids='[]'`). token-путь падает
+  «укажите счётчик Метрики»; спасает `via_cookie AND no_cpa` (create_set_metrika.py:31 → optional).
+- **Live-verifier: 1 error** NO_KEYWORDS_LIVE (tp2 Модели): 1 из 79 групп без ключей (пустой keyword-файл
+  одной модели в паке). auto_repair НЕ чинит (skip), delayed content_repair (kind≠keywords) не покрывает →
+  нужен keywords_repair (Grid AddKeywords, executable_now) ИЛИ create-side skip пустых search-групп.
+- **Для БАТЧА:** (1) harness ДОЛЖЕН исключать pay=='cpa' item'ы при no_cpa (иначе спурьёзные fail);
+  (2) аккаунтам без Metrika доступен только via_cookie+no_cpa (CPC-only); (3) NO_KEYWORDS empty-group —
+  предложить Семёну create-side guard. porg-vfdnaolu ГОТОВ как пилот, дефектов-блокеров нет.
+
 ## Сессия 2026-07-11 — Терехов #49 (Блок 5): не-структурные правки уровня СОЗДАНИЯ РК — АНАЛИЗ, 0 правок
 - **Итог:** реализовано 0 новых правок (консервативно, безопасность>полнота). Все 7 пунктов разобраны →
   `scratchpad/terehov_open_questions.md` (механика+что нужно от Семёна по каждому).

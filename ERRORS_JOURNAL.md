@@ -24,6 +24,60 @@
 
 ## Активные / недавние ошибки
 
+### DMP_FULL_B2B_PIPELINE — весь пайплайн dmp генерировал авто-кредитный контент (2026-07-11)
+- Симптом: для `site_type=="dmp"` (B2B-лидоген, dmp-ai.ru) все объявления содержали
+  «кредит/платёж/₽/мес/трейд-ин/КАСКО» — даже при исправном паке. Gate `validate_create_set_content`
+  блокировал запуск с «нет шаблонных текстов для типа сайта dmp».
+- Где: 6 мест авто-кредитного кровотечения + 1 gate-блокер.
+- Root-cause (все 7 проблем):
+  1. **Gate-блокер** `validate_create_set_content` (create_set_account.py:59) — 0 строк для
+     site_type='dmp' в `public.direct_ad_templates` → "нет шаблонных текстов".
+  2. **`build_texts_messages`** — нет dmp-guard; авто-кредитный промпт строился для всех.
+  3. **`build_sitelinks_messages`** — нет dmp-guard; авто-сайтлинковый промпт для всех.
+  4. **`_title_ok`/`_text_ok`** в `create_content.py` (оба набора: closure + `_accept_title`/`_accept_text`)
+     — требовали `_DIRECT_CREDIT_RE` (кредитный угол) → весь B2B-контент блокировался.
+  5. **`assemble_campaign`** (`ai_agents.py`) — внутренние `_title_ok`/`_text_ok` тоже требовали
+     кредитный угол → corpus dmp-агента отбрасывался.
+  6. **`_final_fill_campaign_content`** — все fillers авто-кредитные; `_credit_offer_ok_line`
+     блокировала B2B.
+  7. **`sitelink_bank_for("dmp")`** — возвращал `COMMON_SITELINK_BANK` (авто); `_sitelink_bucket_limits`
+     ставил `"other"=1` → все 8 B2B-сайтлинков (попадающих в «other»-корзину) срезались до 1.
+- Решение (2026-07-11):
+  - **DB**: 25 строк (12 title, 5 text, 8 sitelink) добавлены в `public.direct_ad_templates` для
+    site_type='dmp' (idempotent INSERT, содержимое — B2B-лидоген без авто/кредита).
+  - **`ai_agents.py`**:
+    - `AGENT_ADS['dmp']`: добавлены 8 B2B-сайтлинков (ранее отсутствовали).
+    - `sitelink_bank_for`: `if st == "dmp": return [8 B2B сайтлинков]`.
+    - `_sitelink_bucket_limits`: `if st == "dmp": return {k: 8 for k in limits}` — снимает
+      ограничение «other=1».
+    - `assemble_campaign`: добавлен `_is_dmp = (st == "dmp")`, `_dmp_b2b_re`; `_title_ok`/`_text_ok`
+      теперь проверяют B2B-маркер (лид/контакт/клиент/горяч…) вместо кредитного угла для dmp.
+    - `build_texts_messages`: dmp-guard → early return с B2B-текстовым промптом, явный `⛔ ЗАПРЕЩЕНО:
+      кредит/₽/мес/трейд-ин/КАСКО/авто/дилер`; corp = `AGENT_ADS['dmp']['texts']`.
+    - `build_sitelinks_messages`: dmp-guard → early return с B2B-сайтлинковым промптом;
+      corp = `sitelink_bank_for("dmp")`.
+  - **`create_content.py`**:
+    - `_is_dmp = (st == "dmp")`, `_DMP_B2B_UTP_RE` — добавлены после `_new_only_site`.
+    - `_title_ok`, `_text_ok` (closure): `if _is_dmp: return _DMP_B2B_UTP_RE.search(t)` вместо
+      кредитных проверок.
+    - `_accept_title`, `_accept_text` (LLM-output-фильтр): аналогично — `if _is_dmp` ветка
+      с `_DMP_B2B_UTP_RE`, иначе авто-путь без изменений.
+    - `_final_fill_campaign_content`: `if _is_dmp:` ветка с 12 B2B-заголовками, 5 B2B-текстами,
+      8 B2B-сайтлинками (все ≤56/81/30+60 символов; цифры в каждом заголовке).
+    - `_credit_offer_ok_line`: `if _is_dmp: return True` — B2B не требует кредитный угол.
+  - Все правки под `st == "dmp"` / `_is_dmp` — авто-слепки не затронуты.
+- Верификация (статическая):
+  - py_compile OK на ai_agents.py + create_content.py; pyflakes 0 undefined-name.
+  - Тест фильтров: 8/8 dmp title fillers прошли `_DMP_B2B_UTP_RE`, 0 авто-кредита; 5/5 dmp texts
+    прошли, все ≤81c; все авто-заголовки/тексты заблокированы dmp-фильтром (test 2-3 PASS).
+  - Длины: все sitelink title 22–28c (≥MIN_ACCEPT=18, ≥TARGET_MIN=22), desc 50–53c (≥50).
+  - DB: INSERT OK rows=25; SELECT count=25 (12+5+8); site_type='dmp' ✓.
+- Чинит ли delayed content_repair уже созданные РК: НЕТ. dmp-прогонов ещё не было.
+  Фикс применяется при следующем запуске create_set для dmp.
+- Статус: 🟡 код на Mac + DB ✅. Mutagen засинкает, НЕ деплоено (рестарт сервиса — отдельно).
+- НЕ помогло ранее: частичный dmp-guard в build_titles_messages (добавлен 2026-07-10) —
+  блокировал авто только в заголовках; тексты/сайтлинки/фильтры оставались авто.
+
 ### DMP_TITLES_AUTO_CREDIT_BLEED + CT0000_BRAND_HALLUCINATION + KVIZ_BU_LEAK + TITLES_SHORT_BUDGET (контент-тест #51, 2026-07-10)
 Четыре бага генерации заголовков/текстов, найденные боевым M3. Все в `ai_agents.py`.
 
