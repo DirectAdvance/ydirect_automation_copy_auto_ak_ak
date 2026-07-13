@@ -24,6 +24,421 @@
 
 ## Активные / недавние ошибки
 
+### VICTORY_CONN_STALE_SSL_EOF_500 — content-editor 500 → фронт «Unexpected token '<' … not valid JSON» после простоя (2026-07-13)
+- Симптом: во фронте content-editor `SyntaxError: Unexpected token '<', "<!doctype "... is not valid JSON` (Flask отдал HTML-страницу 500, `r.json()` упал). Проявлялось на `/direct/api/content-editor/accounts` («Обзор») и на «Проверить блокировку» после простоя аккаунта; днём те же ручки отдавали 200 (транзиентно).
+- Где: content-editor (`direct-content.service` :5021), `direct_repository.py::victory_conn`. Общий read-only пул Victory (используют «Обзор», баланс, сверка цен, а для scoped-юзера ещё «Проверка блокировок» через `routes_content_editor._pairs_allowed`).
+- Root-cause (подтверждён логом 13.07 20:50): Postgres на Victory молча роняет idle-соединение (SSL EOF), но `conn.closed` остаётся `0` → голая проверка `if conn.closed` проходит → первый реальный I/O (`conn.set_session(...)`) кидает `psycopg2.OperationalError: SSL SYSCALL error: EOF detected`. Ретрая/пинга не было → Flask 500 (HTML).
+- Решение (`direct_repository.py::victory_conn`, 2026-07-13): выданное из пула соединение пингуется (`SELECT 1`) в `try/except psycopg2.OperationalError`; при ошибке мёртвый сокет закрывается (`pool.putconn(conn, close=True)`, НЕ возвращается в пул живым) и делается ОДИН ретрай на свежем `getconn()`; если и он падает — исключение пробрасывается (не глотаем). Здоровый путь не изменён (живое соединение → как раньше). Патч только в этой функции.
+- Статус: ✅ подтверждено на LXC101 (2026-07-13): (1) healthy — accounts?status=__all__ → 200 JSON 1238 rows; (2) симуляция реального EOF — `pg_terminate_backend` СВОЕЙ victory-сессии за pooled-conn (closed остался 0!) → `victory_conn()` прозрачно переоткрыл (`RECOVERED`), 500 нет; (3) unauth live 401 (не 500), в journal после рестарта 0 `SSL SYSCALL`/500.
+- check_blocks вердикт: для scoped-юзера DB-контакт есть (`routes_content_editor._pairs_allowed()` → `victory_conn()`), для full-access/admin — нет (выходит из `_pairs_allowed` до DB). ⚠️ ДОПОЛНЕНО 2026-07-13 (см. `CHECK_BLOCKS_PULL_LOCK_MISSING_500` ниже): у check_blocks была ВТОРАЯ, независимая причина 500, НЕ покрытая фиксом `victory_conn()` — незаконфигуренный pull-lock в content-процессе. Она била именно admin/full-access (кто DB-путь пропускает). «Отдельно чинить не надо» относилось только к DB-EOF-корню.
+- НЕ помогло ранее: голая проверка `if conn.closed` (была до фикса) — серверный EOF не ловит (`closed==0`).
+
+### CHECK_BLOCKS_PULL_LOCK_MISSING_500 — «Проверить блокировку» 500→HTML (`SyntaxError: Unexpected token '<'`), pull-lock не сконфигурен в content-процессе (2026-07-13)
+- Симптом: кнопка «Проверить блокировку» (вкладка «Обзор» content-editor) под АДМИН-сессией → фронт `SyntaxError: Unexpected token '<'` = HTTP 500 (HTML вместо JSON). Баланс/«Обзор» работали. Отличие от `VICTORY_CONN_STALE_SSL_EOF_500`: воспроизводился СТАБИЛЬНО (не после простоя) и именно у full-access (кто минует `_pairs_allowed`→`victory_conn`).
+- Где: `direct-content.service` :5021. `routes_content_editor.py:ce_check_blocks` → `account_service._check_blocks_response` → `_pull_begin("blocks",60.0)`.
+- Root-cause (подтверждён живым логом LXC101, PID 1898783, 21:25): `account_service.py:25` объявляет `_pull_begin=_pull_end=_busy_response=_missing` (заглушка `raise RuntimeError("account_service dependency is not configured")`). Реальные реализации инжектятся ТОЛЬКО через `automation_runtime.configure(...)` (:3728-3731) — а это wiring процесса direct-CREATE. Процесс direct-CONTENT (`content_main.py`) `configure(...)` для pull-lock не вызывает вообще → `_pull_begin` навсегда `_missing` → любой эндпоинт content-editor, дёргающий его, падает 500. Баланс жив, т.к. `_do_balance` pull-lock не использует.
+- Решение (2026-07-13, scoped, `account_service.py` — Вариант Б «самодостаточные дефолты»): в модуль добавлены `import threading, time` + per-process `_PULL_LOCK`/`_PULL_LAST`/`_PULL_OWNER` + дефолтные `_default_pull_begin`/`_default_pull_end`/`_default_busy_response` (зеркало `automation_runtime` :327/:341/:592), и строка 25 = `_pull_begin,_pull_end,_busy_response = _default_*` вместо `_missing`. direct-create по-прежнему перезаписывает их своим `configure()` (единый лок движка) → его поведение НЕ меняется; direct-content использует дефолты. `content_main.py` НЕ трогали (чистая граница, движок не импортируется). Прочие `_missing`-деп-ы (delete_drafts/assets/stopall) оставлены `_missing` — их эндпоинты в content-процессе НЕ регистрируются (`register_content_editor_routes` заводит только balance+check_blocks).
+- Статус: ✅ подтверждено на LXC101 (2026-07-13, деплой Mutagen md5-сверен, py_compile+pyflakes чисто, рестарт direct-content, active PID 1908114). test_client с форс-admin-сессией на боевом коде: (1) check_blocks #1 → **200 application/json** `{"blocks":{"porg-asfbs7qe":false}}`; (2) повтор в пределах 60c → **429 application/json** cooldown (`_busy_response` отдаёт JSON, не 500); (3) balance регресс → 200 JSON; (4) журнал: до рестарта 8× `RuntimeError account_service dependency is not configured`+500, после — 0.
+- НЕ помогло ранее: фикс `victory_conn()` (`VICTORY_CONN_STALE_SSL_EOF_500`) этот путь НЕ закрывал — тут иная причина (незаконфигуренный pull-lock, а не мёртвый DB-сокет); admin вообще не доходит до DB.
+
+### MODEL_URL_BRAND_FALLBACK_WRONG_MODEL — ссылка объявления ведёт на ЧУЖУЮ модель марки (2026-07-13)
+- Симптом: группа сегмента «Модели» (напр. `ct0042 — Changan UNI-T`, porg-psm5h7q6, autos-kemerovo.site) получала ссылку `/auto/changan/cs55/...` (первая модель Changan) вместо своей. Товарный сниппет тянул чужой товар (CS55, Ростов-на-Дону) — следствие той же неверной ссылки.
+- Где: tp1/tp2 фид-путь, `create_set_feeds.py:_feed_url_for_model` (335); call-sites `create_set_tp1_builders.py:703,1511`, `create_set_text_builders.py:355`.
+- Root-cause: `_feed_url_for_model` при отсутствии точного ключа модели падал на brand-fallback `urls.get(b.split()[0])` = URL первого оффера бренда (cs55). ГЛУБЖЕ (live-факт porg-psm5h7q6, feed-preview): `_grid_feed_offer_urls` строит ключи из `FeedOffersPreview`, а это ВЫБОРКА (sample), НЕ полный список офферов → оффер UNI-T (который в сыром XML фида ЕСТЬ, url `/auto/changan/uni-t/i/suv-5d?fid=yandex`) в sample НЕ попал → ключ `changan uni-t` не построился → brand-fallback. Системно: любая модель вне sample-preview промахивается.
+- Решение (2026-07-13, вариант A, задеплоено): зеркало ПРАВКИ 5 из `_ad_price_for_brand` — параметр `no_brand_fallback=True` для сегмента «Модели» (`_feed_url_for_model:347`): нет точного/без-года ключа → `None`, НЕ брать бренд-оффер. При `None` builders уходят на формульный `_model_page_href` → `/auto/changan/uni-t` (верная модель/марка/домен). Прокинуто из 3 call-sites `no_brand_fallback=(_ct_segment(ct)=="Модели")`. Марки-сегмент не тронут (бренд-URL там легитимен).
+- Решение (2026-07-13, вариант B, НЕ задеплоено): доливка ТОЧНЫХ url из raw XML авто-фида `<homepage>/yandex.xml` — новая `create_set_feeds.py::_auto_feed_urls(url)` (зеркало `_auto_feed_discount_prices`: requests.get с tries+backoff, итерация `<car>`, тег `<url>`, ключ = `_offer_price_keys(mark_id folder_id)` → «changan uni-t», первый url на ключ, свой кэш `_AUTO_FEED_URL_CACHE` TTL 20 мин, {} при сбое). В `_account_offer_urls` после Grid-цикла из sample: `for k,v in _auto_feed_urls(url).items(): out.setdefault(k, v)` — заполняет ТОЛЬКО пропущенные ключи (sample-covered модели не трогаются, приоритет sample). Теперь UNI-T есть в карте → `_feed_url_for_model` вернёт точный `/auto/changan/uni-t/i/suv-5d?fid=yandex`, а не формульный.
+- Вариант A ОСТАЁТСЯ страховкой: модель, которой нет НИГДЕ (ни в sample, ни в raw XML) → ключ не построится → `_feed_url_for_model(no_brand_fallback=True)` вернёт None → builders на формульный `_model_page_href` (верная марка/модель/домен, без хвоста). `no_brand_fallback` и 3 call-site НЕ тронуты.
+- Статус: 🟡 вариант A задеплоен 2026-07-13 20:33; вариант B код готов (create_set_feeds.py), НЕ задеплоено — ждёт синка на LXC101 + рестарта direct-create/-worker + живого прогона: Changan UNI-T → точный `/auto/changan/uni-t/i/suv-5d?fid=yandex` (не формульный, не cs55).
+- Проверено (офлайн): py_compile + pyflakes (0 новых undefined в диапазоне правки). Трейс 3 кейсов: (a) UNI-T вне sample, есть в raw XML → ключ «changan uni-t» долит через setdefault → точный url; (b) covered-модель (в sample) → url НЕ перезаписан (setdefault пропускает существующий ключ); (c) модель без офферов нигде → карта пуста по ключу → вариант A формульный (страховка цела).
+- НЕ помогло бы: полагаться на `FeedOffersPreview` для полноты офферов — это sample, не весь фид (доказано: UNI-T есть в XML, нет в preview 30 фидов). Вариант B закрывает это добором из raw XML.
+
+### VIDEO_NO_POOL_AUDIT_IGNORES_SLEPOK_POOL — аудит видит только общий пул, слепковый игнорирует
+- Симптом: для слепка со СВОИМИ видео (марки вне общего `_video_pool`, напр. `haval_ufa_si7rw3ua` — 21 mp4) аудит tp1 эмитит ЛОЖНЫЙ `VIDEO_NO_POOL` (info), хотя ролики в слепковом пуле есть; видео не довкладывается. Латентный, тот же класс, что tp3-#6 (пропущенная симметричная точка).
+- Где: AUDIT — tp1 `campaign_spec_audit.py::_ct_has_pool_video` (773-808, вызов :899 в `_audit_tp1_adaptive`) и UAC `::_audit_uac_video_missing` (1287-1338, чек пула :1324).
+- Root-cause: асимметрия create vs audit. СОЗДАНИЕ резолвит видео слепок-aware через `kp.videos_for_ct(login, ct, brand_hint)` (`kontent_pack.py:1141-1190`: сначала пул слепка `_slepki_data/<slepok>/videos/`, потом общий `_video_pool/<ct>` + brand-fallback) — `create_set_tp1_builders.py:122`, `create_set_master_product.py:579`. АУДИТ же звал pool-only `videos_pool_for_ct(ct)` БЕЗ `login` → слепковый пул невидим → у ct без записи в общем пуле пул «пуст» → ложный VIDEO_NO_POOL (tp1) / недо-детект UAC_VIDEO_MISSING (UAC).
+- Решение (2026-07-13, `campaign_spec_audit.py`): tp1 — `_ct_has_pool_video(ct)` → `_ct_has_pool_video(login, ct)`, внутри `videos_pool_for_ct(ct)` → `videos_for_ct(login, ct, ...)` (login доступен в `_audit_tp1_adaptive`); call-site :899 обновлён. UAC — login доступен в `_audit_uac_video_missing`, но ct в контексте нет (только имя→brand_hint); зеркалю create-путь UAC (`videos_for_ct(login,c_ct) or videos_for_login(login)`): к pool-арму `videos_pool_for_ct("", brand_hint)` добавлен слепковый арм `videos_for_login(login)` — подавляем флаг ТОЛЬКО когда пусты ОБА.
+- Проверено (офлайн): `py_compile` + `pyflakes` clean. Трейс на реальной `_ct_has_pool_video` со стабом kp: (a) haval-слепок ct0119 вне общего пула → NEW has=True → VIDEO_NO_POOL НЕ эмитится (OLD pool-only вернул бы [] → ложный NO_POOL); (b) pavlov ct вне обоих пулов → has=False → VIDEO_NO_POOL эмитится (regression сохранён); (c) базовый общий-пул кейс не сломан; UAC оба арма корректны.
+- Статус: 🟡 код готов, НЕ задеплоено (ждёт синка на LXC101 + рестарта direct-create/-worker + живого прогона аудита на слепке haval со своими видео + pavlov-regression).
+- НЕ помогло ранее: — (первая правка симметрии audit↔create по видео-пулу слепка).
+
+### 🔴 ПРОГОН porg-asfbs7qe (2026-07-13) — 10 ошибок с живого создания (Семён)
+
+> Батч ошибок с ручного прогона. Триаж по домену; root-cause/фикс — по ходу. Статус каждой обновлять после правки+прогона.
+
+#### 1. UNITS_CLIENT_NOT_AGENCY — использованы баллы КЛИЕНТА, а не агентства
+- Симптом: при создании РК списаны/использованы units клиента вместо агентских (главпоток). Скрин.
+- Где: домен ENGINE — выбор источника units при вызове API v5/Grid. Файлы-кандидаты: campaign.py / yandex_gateway / units-handling в create_set_*.
+- Root-cause: TBD (проверить, откуда берётся Client-Login / units при операции).
+- Статус: 🔴 обнаружено прогоном, root-cause в работе.
+
+#### 2. NO_COOKIE_FALLBACK_ON_UNITS_EMPTY — нет добивки по куки при нехватке баллов
+- Симптом: если баллов нет — создание НЕ переключается на куки-докрутку (152/баллы), просто не добивает.
+- Где: ENGINE — fallback units→cookie. account_service.py (self-probe кук), докрутка-механизм.
+- Статус: 🔴 root-cause в работе.
+
+#### 3. CPA_BUDGET_RULES_IGNORED — глоб. правила бюджета для оплаты за конверсию игнорируются
+- Симптом: кампания с оплатой за конверсию (CPA) создана без учёта глобальных правил бюджета — подставляется другое число. Скрин.
+- Где: ENGINE — `create_set_plan.py:317-318` helper `_bud(pay)`. Пишется в `item["budget"]` для ВСЕХ per-pay tp: tp4 (:588), tp2 (:660, :692), tp6/tp7 master/product (:837).
+- Root-cause: `rs` = глобальные правила из `public.direct_automation_rules` по (site_type, city), ключи `{cpa, budget, cpc_cpa, cpc_budget}` (`_rule_sets`, :90-119). Контракт (:315 `cpa, budget = rs["cpa"], rs["budget"]`; `resolved_budget=budget` :858, read-only справка формы): для CPA бюджет = `rs["budget"]`. Но `_bud` в CPA-ветке возвращал `rs["cpa"] * 10`, а не `rs["budget"]` → глоб. правило бюджета игнорировалось, подставлялось cpa×10 (с дефолтами: 20000 вместо 5000). CPC-ветка (`rs["cpc_budget"]`) корректна. Downstream-фолбэки `create_set_text.py:56` и `create_set_master_product.py:589,652` (`... else rs["budget"]`) — мёртвый код: primary `it["budget"]` уже заполнен неверно, фолбэк не срабатывает.
+- Решение: `create_set_plan.py:318` — `rs["cpa"] * 10` → `rs["budget"]` (один пойнт, минимальная правка). Downstream-фолбэки НЕ тронуты (не нужны после фикса, но не мешают). 2026-07-13.
+- Проверено (офлайн): `python3 -m py_compile create_set_plan.py` OK; трейс `_bud("cpa")` → `rs["budget"]` (дефолт 5000, DB 8000 — match контракта), `_bud("tcpa")` → `rs["cpc_budget"]` не изменилось.
+- Статус: 🟡 код готов, НЕ задеплоено (ждёт синка на LXC101 + рестарта direct-create/-worker + живого прогона CPA-кампании).
+- НЕ помогло ранее: — (первая правка; сигнатура была 🔴 в триаже, root-cause найден отдельным агентом).
+
+#### 4. NAME_FEED_NOT_IN_CAMPAIGN — в названии кампании фид, которого в кампании нет
+- Симптом: имя РК ссылается на фид, отсутствующий в самой кампании. Скрин.
+- Где: ENGINE — формирование имени vs реально прикреплённый фид. create_set_feeds.py, naming.
+- Статус: 🔴 root-cause в работе.
+
+#### 5. FEED_WRONG_FIRST_NOT_SCRIPT — взят ПЕРВЫЙ фид в аккаунте вместо нужного по скрипту
+- Симптом: нужного Яндекс-фида нет в аккаунте; вместо выбора корректного по скрипту взяли первый попавшийся. Скрин.
+- Где: ENGINE — резолвер фида. create_set_feeds.py (выбор feed_id/feed_role).
+- Статус: 🔴 root-cause в работе.
+
+#### 6. CREDIT_IN_DEFAULT_TEXT_PRODUCT — «кредит» в тексте по умолчанию у товарных/каталожных
+- Симптом: в default-тексте товарных (tp7/ShoppingAd) и каталожных объявлений присутствует «кредит» — нельзя. Скрин.
+- Где: CONTENT — «текст по умолчанию» для product/listing. Реально: `create_set_feed_builders.py::_create_tp3_single` (НЕ ai_agents.py — см. полную запись ниже).
+- Root-cause (доказан 2026-07-13): tp3 «Товарная галерея» ставил ShoppingAd default text = `data["default_text"]`, читаемый из `direct_slepok_content` texts (кампанийные тексты с кредитным углом), тогда как брат tp5 уже был пофикшен (R2-8 2026-07-10) на единый credit-free `SHOPPING_DEFAULT_TEXT`. tp3 пропустили — асимметрия.
+- Статус: 🟡 фикс на Mac (tp3 → SHOPPING_DEFAULT_TEXT), py_compile OK. Полная запись — `CREDIT_IN_DEFAULT_TEXT_PRODUCT_TP3` ниже.
+
+#### 7. HEADLINE_CHAR_BUDGET_UNDERUSE — много свободных символов
+- Симптом: заголовки/тексты не добирают символьный бюджет (много места пустует). Скрин.
+- Где: CONTENT — генерация заголовков. Промпт `ai_agents.py::build_titles_messages` + сборка `assemble_campaign._pad`.
+- Статус: 🟡 LLM-подход реализован (2026-07-13) — см. `HEADLINE_CHAR_BUDGET_UNDERUSE_TITLES` ниже. Ждёт live-прогона.
+
+#### 8. NO_VIDEO_ATTACHED — нет видео
+- Симптом: в созданных РК нет видео (должны цеплять из видео-пула). Скрин.
+- Где: ENGINE/CONTENT — видео-пул. kontent_pack.py (_video_pool), attach в объявление.
+- Статус: 🔴 root-cause в работе.
+
+#### 9. SLEPOK_MINUS_MISSING_ONLY_GLOBAL — минус из глоб.правил есть, из слепка НЕТ
+- Симптом: в минус-словах кампании есть слово из глобальных правил, но НЕТ библиотечных минус-слов слепка (`{slepok}_minus_shared`). Скрин.
+- Где: `create_set_minus.py::_apply_campaign_direct_minus` (campaign-уровень) и `::_get_or_create_minus_set` (library-набор); паковый читатель `_collect_pack_minus` (там же).
+- Root-cause (2026-07-13, доказан): слепковый снапшот минусов `{slepok}_minus.txt` + `{slepok}_minus_shared.txt` (пак M3) применяется к кампании ТОЛЬКО в group-режиме (terehov/karavaev) — через групповые минусы `_build_tp2_adgroups g["minus"]` (`create_set_text_builders.py:64`). Для **campaign-режима** (pavlov/kryuchkova) и **shared_set-режима** (scherbakova) групповые минусы сняты (`apply_group_minus=False`), а campaign-уровневые аппликаторы брали ТОЛЬКО `_enabled_minus_words()` (глоб. вкладка), с комментарием «пак M3 как источник отключён — принцип только оттуда». Единственный читатель пака `_collect_pack_minus` был мёртвым кодом (0 реальных вызовов, только re-export shim в automation_runtime.py). Это противоречило: (а) group-режиму, который пак применяет; (б) комментарию `create_set_text_builders.py:63` «для campaign/shared_set минус — на кампании»; (в) редактируемости `_minus_shared` (сессия 2026-07-13). → слепковый минус не долетал до кампаний campaign/shared_set-режимов.
+- Решение (2026-07-13, scoped, только `create_set_minus.py`, 2 функции): `_apply_campaign_direct_minus` и `_get_or_create_minus_set` теперь мержат `_collect_pack_minus(slepok, site_type, tp_code)` в `words` (дедуп case-insensitive, порядок: глоб. слова → паковые, кап `_minus_char_budget`). Гейт против двойного применения и переусердствования: пак мержится в campaign-inline ТОЛЬКО когда `_SLEPOK_MINUS_MODE != "group"` (group уже на группах) И `tp_code != "tp1"` (РСЯ — минуса режут охват без пользы, там же намеренно снят групповой минус). Пак недоступен (ssh M3) → try/except → деградация к глоб. словам (кампанию не валим).
+- Верификация: py_compile OK; pyflakes — новых undefined нет (все варны — предсуществующие DI-инъекции). Offline-трейс (мок deps, ct с непустым `_minus_shared`): pavlov/tp2→глоб+пак, pavlov/tp1→только глоб, scherbakova/tp4→глоб+пак, terehov(group)/tp2→только глоб, unknown(default group)/tp2→только глоб, новый library-набор `_get_or_create_minus_set`→глоб+пак. Дедуп/порядок корректны.
+- Остаточный гэп — ЗАКРЫТ (2026-07-13, доп. scoped-фикс cookie-пути): при ре-анализе гэп оказался НЕ в token-пути. Token-путь `_create_text_via_token` (feed_builders:410 attach Grid-набор + :437 `_apply_campaign_direct_minus`) УЖЕ кладёт слепковый минус INLINE через step 5 — т.е. фикс #9 его покрыл, даже при переиспользовании расшаренного набора. Реальный незакрытый путь — **cookie** `_create_text_via_cookie` (tp2/tp4): его `spec["minus_keywords"]` (Grid AddCampaigns, без баллов) нёс ТОЛЬКО глоб. слова, `_apply_campaign_direct_minus` там намеренно не вызывается (создал бы дубль), а переиспользуемый Grid-набор «Минуса общие» (`_grid_minus_pack_id`, feed_builders:189) слов слепка НЕ содержит → слепковый `_minus_shared` не долетал. Фикс: `_mk_words` = глоб. слова + `_collect_pack_minus` (зеркало гейта/дедупа/бюджета из `_apply_campaign_direct_minus`: только `mode!="group"` И `tp!="tp1"`, кап `_minus_char_budget` 20 000) кладётся INLINE в `spec.minusKeywords` per-кампания. Расшаренный аккаунтный набор НЕ мутируется (read-only reuse) → др. кампании, делящие набор, не затронуты. Deps `_collect_pack_minus`/`_minus_char_budget` добавлены в `_create_set_feed_builder_deps` (automation_runtime.py). Детектор `SLEPOK_MINUS_LIBRARY_MISSING` по-прежнему отложен (см. ниже).
+- Статус: 🟡 оба фикса на Mac (Mutagen→LXC101 авто), py_compile+pyflakes+offline OK. Ждёт живого прогона на campaign/shared_set-слепке с непустым `_minus_shared` (pavlov/kryuchkova/scherbakova): в минус-словах поисковой кампании должны появиться слепковые фразы + глобальные — И на token-пути (баллы), И на cookie-пути (via_cookie, без баллов); расшаренный набор «Минуса общие» аккаунта не должен получить новых слов (проверить read-back набора до/после).
+- НЕ помогло ранее: — (первая правка проброса пакового `_minus_shared` в campaign/shared_set аппликаторы). ⚠️ Реверс намеренного комментария «пак отключён — только оттуда»: разрешено в пользу поведения, консистентного с group-режимом, `create_set_text_builders.py:63` и редактируемым `_minus_shared`; при живом прогоне подтвердить, что охват поиска не просел сверх ожидаемого.
+- 📌 Рекомендация (детектор, отложен — требует доп. инфры): `SLEPOK_MINUS_LIBRARY_MISSING` в `campaign_spec_audit.py`. Спецификация «`libraryMinusKeywordsIds` непуст» НЕКОРРЕКТНА при текущем фиксе — campaign-режим (pavlov/kryuchkova) кладёт слепковый минус INLINE (`NegativeKeywords`), а не как library → детектор дал бы ложные срабатывания. Корректный детектор должен читать паковый `_minus_shared` (extra `kp.gather`) и проверять покрытие inline ИЛИ содержимого library-набора (существующий `_audit_global_minus_campaign` содержимое library намеренно не резолвит — дорого). Это заметная инфра + риск ложных срабатываний → вынесено отдельной задачей, в scope #9-фикса не включено.
+
+#### 10. UI_BADGE_ONLY_AUTOTARGET — UI слепка показывает только автотаргетинг, а создались авто+КС (создание ВЕРНО)
+- Симптом: реально создались корректно и автотаргет, и КС (разные РК) — это ПРАВИЛЬНО; но на странице «Структура слепков» бейдж = только «автотаргетинг». Проблема в ИНТЕРФЕЙСЕ, не в создании. Скрин.
+- Где: UI — бейдж tp1-5 из `aon/aoff` кодера (index.html). = Класс 1 нашего аудита.
+- Root-cause: бейдж парсит `aon/aoff`, который на поиске/РСЯ всегда `aon` и не отражает реальный КС. Метку строить из живого факта.
+- Статус: 🟡 диагноз известен (Класс 1), фикс запланирован (бейдж из факта).
+
+
+
+### CREDIT_IN_DEFAULT_TEXT_PRODUCT_TP3 — «кредит» в тексте по умолчанию tp3-товарной галереи (2026-07-13)
+- Симптом: у товарного/каталожного объявления (ShoppingAd) в кампании tp3 «Товарная галерея» текст по умолчанию содержал «кредит» — нельзя для товарных/каталожных. Скрин прогона porg-asfbs7qe. (= триаж-ошибка #6.)
+- Где: **`create_set_feed_builders.py::_create_tp3_single`** (~981-993, `set_default_text([shop], feed_id, data["default_text"])`). НЕ ai_agents.py: задача указывала ai_agents.py «вероятно», но проверенный путь оказался в feed-билдере.
+- Root-cause (доказан трассировкой данных): `data` для tp3 берётся из общей `_tp5_account_data` (create_set_feed_builders.py:601). Там `default_text = next((t for t in slepok_content["texts"] if len(t)<=81), "")` (строка 636) — это КАМПАНИЙНЫЙ текст из `direct_slepok_content` (kind='campaign'), а он генерируется с кредитным углом (для авто-слепков `_credit_offer_ok_line` в create_content.py / `_text_ok` в ai_agents.py ТРЕБУЮТ кредит — это НАМЕРЕННО, дилерские сайты продают в кредит). Брат tp5 (`_create_tp5_single`:739) уже был исправлен R2-8 2026-07-10 на единый credit-free `SHOPPING_DEFAULT_TEXT` (create_set_assets.py:95, «ОДИН общий на все каталожные/товарные кампании»), а tp3 (`_create_tp3_single`:982) остался на `data["default_text"]` — переиспользовал кредитный текст текстового объявления как default text товарного. Асимметрия: R2-8 задекларировал «все каталожные/товарные», но tp3 пропустили.
+- Решение (2026-07-13, `create_set_feed_builders.py::_create_tp3_single`): вместо `data["default_text"]` ставим `SHOPPING_DEFAULT_TEXT` (импорт `as _SDT3` с fail-safe фолбэком, как в tp5:712-714). set_default_text теперь вызывается всегда (как tp5:759), а не только при непустом slepok-тексте. Точечно, зеркалит принятый tp5-фикс; НЕ трогает кредитный угол текстовых объявлений (tp1/tp2 — там кредит намеренный для авто-слепков) и НЕ добавляет site_type-guard в `_credit_offer_ok_line` (это сломало бы легитимные дилерские тексты; «товарного/каталожного site_type» в системе нет — товарность определяется tp/типом объявления, а не site_type).
+- Почему НЕ по образцу dmp-guard (как предполагала задача): dmp — это отдельный B2B site_type, где кредит не нужен ВЕЗДЕ. Здесь site_type авто-дилерский (Монобренд/Мультибренд/…), кредит нужен в ТЕКСТОВЫХ объявлениях; лишний он только в default text товарного объявления. Правильная точка — источник default text товарного (tp3), а не общий кредитный гейт контента.
+- Верификация: py_compile create_set_feed_builders.py OK; pyflakes — только штатные DI-undefined (gf и др., globals().update(deps)), новых нет; `_SDT3` — локальный импорт, чист.
+- Статус: 🟡 фикс на Mac (Mutagen→LXC101 авто), py_compile OK. Ждёт живого прогона: создать tp3-товарную галерею → ShoppingAd default text = «Новые автомобили в наличии. Большой выбор. Скидки до 45% при покупке. Тест-драйв.» (без «кредит»).
+- НЕ помогло ранее: — (первая правка tp3 default text; tp5-аналог R2-8 2026-07-10 подтверждён как рабочий образец, не откат).
+
+### HEADLINE_CHAR_BUDGET_UNDERUSE_TITLES — заголовки недобирают символьный бюджет (48-55 вместо ~56), LLM-добивка реализована (2026-07-13)
+- Симптом: заголовки объявлений короче возможного — обычно 48-55 символов при лимите 56, много свободного места. Скрин прогона porg-asfbs7qe. (= триаж-ошибка #7.)
+- Где: генерация заголовков — промпт `ai_agents.py::build_titles_messages` (~2482-2495) + density-upgrade pass в `create_content.py::run_gen_campaign_content` + dense-first sort перед `assemble_campaign`.
+- Root-cause (найден): (1) промпт требовал «целься в 50-55 символов» — LLM (M3) не добирал стабильно; цель была заниженной. (2) В основном пути генерации НЕТ пост-добивщика: `assemble_campaign._pad` берёт ≥48 как есть. (3) Suffix-добивка сознательно отменена (campaign_spec_audit.py:1842 — суффикс к 54-симвному заголовку читается хуже). Решение Семёна: «ИИ сам добивает — не суффиксы».
+- Решение (2026-07-13): три скоординированных изменения:
+  1. **Новая константа** `TITLE_DENSE_MIN = 53` (ai_agents.py:777) — предпочтительный диапазон 53-56 симв, 48-52 = резерв приёмки, а не норма.
+  2. **Промпт `build_titles_messages`** (ai_agents.py ~2482): цель изменена с «50-56» на «53-56». Добавлен раздел «ЭТАЛОН ДЛИНЫ» с парами BAD (48 симв) / НОРМА (53-56 симв) на конкретных примерах Haval-заголовков. Добавлено явное «48-52 = слабо, 53-56 = норма». dmp-ветка также обновлена (53-56).
+  3. **Density-upgrade pass** в `create_content.py::run_gen_campaign_content` (перед count-retry, ~строка 377): после начальной приёмки собирает `_short_t = [t for t in good_t if len(t) < TITLE_DENSE_MIN]`; если список непуст — вызывает `build_density_upgrade_messages` + LLM M3 14B (1 вызов, bounded `_M3_CONTENT_IDLE_TIMEOUT`); LLM получает список коротких заголовков и инструкцию расширить каждый до 53-56 симв, добавив деталь (банки, «от», срок, взнос); каждый расширенный заголовок валидируется (len in [53,56], brand, credit/sale, digit, site_fit) и при успехе заменяет короткий in-place в `good_t`; seen_t/seen_t_norm обновляются. Exception-безопасен (нет валидного LLM-ответа → оставляем исходный короткий заголовок). **НЕ суффиксы** — LLM добавляет семантически осмысленную деталь.
+  4. **Dense-first sort** `good_t.sort(key=...)` перед `assemble_campaign` (create_content.py ~662): если good_t > 1, ставит dense (≥53 симв) перед sparse (48-52 симв) — при избытке вариантов плотные идут в набор первыми.
+- Brand-first: density-upgrade проверяет `_brand_re.search(exp)` перед заменой → бренд в начале сохраняется. Сорт не нарушает brand-first (только порядок в пуле, финальный набор — assemble/diversify).
+- Лимит 56: `TITLE_DENSE_MIN <= len(exp) <= TITLE_MAX` — если LLM пере-расширил (>56), расширение отклоняется, исходный 48-симвный остаётся.
+- Верификация: py_compile OK, pyflakes: 0 новых warnings (3 оставшихся — pre-existing escaped {{...}} в f-string Верни JSON в других функциях). Offline-симуляция: [48]-заголовок + LLM expansion [53] → заменяется; LLM [>56] → отклоняется; LLM [<53] → отклоняется; dense-first sort: [56],[53] до [48],[48]; brand-first: Haval первым во всех случаях.
+- Статус: 🟡 реализовано на Mac (Mutagen→LXC101 авто), py_compile OK. Ждёт live-прогона: создать РК (не dmp, бренд задан) → заголовки должны быть ≥53 симв чаще; логи density_upgrade pass в stdout сервиса (Exception-caught, не фатален).
+- НЕ помогло ранее: (1) промпт-инструкция «целься в 50-55» (2026-07-10) — LLM стабильно её недобирал. Текущий фикс = LLM-расширение + более высокая цель 53-56 + few-shot примеры.
+- ⚠️ Суффиксную добивку `extend_title_to_max` НЕ включали и не возвращали — решение «суффиксами не добиваем» сохранено, LLM работает семантически.
+
+### IMAGES_REPAIR_CONTENT_GAP_FALSE_FAIL — images_repair валил весь шаг из-за контент-гэпа + вводящее в заблуждение сообщение (2026-07-13)
+- Симптом: авто-добивка (job 0d2708907d6d, scherbakova/Мультибренд) помечала images_repair кампании `ok=False` с текстом «не удалось загрузить картинки ни для одного ct из кп», хотя механизм картинок ИСПРАВЕН (в create-прогоне залилось 79/81 и 253/258). Провал только на объявлениях ct, у которых нет креативов НИ В ОДНОМ источнике: ct0067(Dongfeng), ct0195(MG), ct0041(Changan UNI-S/CS55Plus), ct0052(Chery Tiggo 7L), ct0066(Dongfeng 580), ct0070(Dongfeng DFSK 500), ct0072(Dongfeng DFSK ix7).
+- Где: `create_set_repairing.py::_campaign_images_repair` (~302-375). Резолвер `_creative_images_for_ct` (automation_runtime.py:2499) для gap-ct возвращает [] → hashes пуст → items пуст → выброс общей ошибки «ни для одного ct» → весь images_repair кампании ok=False.
+- Root-cause: код не отличал КОНТЕНТ-ГЭП (резолвер вернул [] — нет путей к файлам, грузить нечего) от UPLOAD-FAIL (пути были, но upload/хеши не получились). Оба сливались в один hard-fail, а сообщение «ни для одного ct» ложно указывало на поломку загрузчика.
+- Решение (2026-07-13, `create_set_repairing.py`): в цикле по ct — если `paths==[]` → `content_gap_cts.append(ct); continue` (не считаем ошибкой, не трогаем reset/upload); если пути были, но `hashes` пуст → `upload_fail_cts.append(ct)`. При `not items`: `upload_fail_cts` непуст → ok=False «upload-fail: не удалось загрузить картинки для ct [...]»; иначе (чистый контент-гэп) → **ok=True**, `ads_updated=0`, `skipped_content_gap=True`, note «контент-гэп: нет креативов для ct [...] (нужны картинки в Manual/<ct> или паке слепка)». Успешный путь: `ok = updated>0 and not upload_fail_cts`. В результат всегда добавлены поля `content_gap_cts` / `upload_fail_cts`, чтобы контент-гэп не считался hard-fail'ом добивки.
+- Верификация: py_compile create_set_repairing.py OK; ветки прочитаны (content-gap→ok=True со списком; upload-fail→ok=False; смешанное с частичным успехом→ok=False+error, но content_gap_cts не в счёт).
+- Статус: 🟡 фикс на Mac (Mutagen→LXC101 авто), py_compile OK. Ждёт живого прогона добивки на кампании с gap-ct: images_repair должен вернуть ok=True + content_gap_cts, без «ни для одного ct».
+- НЕ помогло ранее: — (первая правка разделения контент-гэп/upload-fail в images_repair). Reschedule авто-добивки уже ограничен `_DELAYED_REPAIR_MAX_RESCHEDULES=1` / `_DELAYED_FULL_REPAIR_MAX_ITERATIONS=2` (queue_server.py:66/69) — вечного цикла на gap-ct нет; правка убирает ложный hard-fail и вводящее в заблуждение сообщение.
+
+### ADPRICE_REPAIR_STUB_SILENT_FAIL — adprice_repair это заглушка, всегда падала молча в цикле добивки (2026-07-13)
+- Симптом: для tp1 Фиды-Автотаргетинг NO_ADPRICE_LIVE планировался как исполнимое действие, а исполнитель звал стаб → `{"ok": False, "note": "...не реализован..."}` БЕЗ ключа `error` → `_run_per_campaign_repair` синтезировал `error="ok=False"`, per-campaign error=None (молчит). Провал гарантирован каждый прогон.
+- Где: `create_set_repairing.py::_campaign_adprice_repair` (~378-392, стаб); планирование — `grid_content_verifier.py:159-162` (NO_ADPRICE_LIVE + repair-candidate) → `repair_planner.py:325/462` (action="adprice_repair") → `repair_gate.executable_adprice_repairs` → `repair_auto.execute_all_in_place:315-325`.
+- Root-cause: функция — нереализованный стаб (нужен rebuild price_map из offer_prices + ad→brand маппинг), но detect/plan/gate считали adprice_repair executable_now → добивка гарантированно исполняла его и получала безмолвный ok=False.
+- Решение (2026-07-13, минимальный вариант, 2 файла): (1) `repair_gate.executable_adprice_repairs` теперь возвращает `[], [], matched` — НИ одного executable id, все adprice_repair-действия → unsupported → `execute_all_in_place` пропускает блок (adprice_ids пуст), `summarize_repair_gate.executable_now` больше не включает adprice → цикл не гоняет reschedule на гарантированно-провальном ремонте. (2) стаб `_campaign_adprice_repair` дополнен ключом `error="adprice_repair не реализован (стаб; ...)"` — на случай прямого вызова провал не безмолвный. Полный adprice НЕ реализован (отдельная задача). NO_ADPRICE_LIVE остаётся видимым как known non-fixable гэп (unsupported).
+- Верификация: py_compile create_set_repairing.py + repair_gate.py OK; трасса подтверждена — оба executor-пути (repair_auto:98/315) и summarize (repair_gate:429) зовут `executable_adprice_repairs`, централизованная правка покрывает все.
+- Статус: 🟡 фикс на Mac (Mutagen→LXC101 авто), py_compile OK. Ждёт живого прогона добивки на tp1 Фиды-Автотаргетинг: adprice_repair не должен исполняться/падать, NO_ADPRICE_LIVE помечен неисполнимым.
+- НЕ помогло ранее: — (первая правка; стаб был замкнут в pipeline detect→plan→gate→executor и всегда падал). Вернуть adprice в executable ТОЛЬКО после реализации стаба (price_map из offer_prices).
+
+### TP7_FEED_FANOUT_IGNORES_EXPLICIT_FEED — tp7-товарка размножалась по ВСЕМ фидам, игнорируя явно заданный фид позиции (2026-07-12)
+- Симптом: tp7 (Товарка) создавала кампанию на КАЖДЫЙ разрешённый URL-фид аккаунта (fan-out), даже когда позиция слепка подразумевала конкретный фид → могли появляться кампании на нерелевантных фидах.
+- Где: `create_set_plan.py::_emit_struct` (feed_list, ~775). `feed_list = [(id,name,url) for f in feeds]` для product — безусловный fan-out по всем `feeds` (уже отфильтрованным allow-list'ом, но без учёта фида позиции). Структура позиции (`_slepok_struct_groups`, create_set_context.py:164) фид вообще не пробрасывала.
+- Root-cause: `_slepok_struct_groups` не извлекала фид позиции, а `_emit_struct` всегда фанил по `feeds`. В текущих данных slepki_structure.json фид на позициях НЕ задан ни у кого (feed/role keys = 0), поэтому fan-out был единственным путём.
+- Решение (2026-07-12, точечно, 3 файла):
+  - `create_set_context.py::_slepok_struct_groups` — в возвращаемый item добавлены `feed_role`/`feed_id`/`feed_key` (item→group приоритет; пусто по умолчанию).
+  - `create_set_plan.py` — хелперы `_feed_role_of` (catalog/landing по `_CATALOG_FEED_KEYS`) и `_explicit_feed_subset(g, feeds)`: явный фид (id→ключ/имя→роль) → подмножество; не задан → `None` (fan-out); задан, но нет среди разрешённых → `[]` (позиция пропускается + warning, НЕ на чужом фиде). `_emit_struct`: product-ветка использует subset; fan-out по умолчанию + ОДИН warning на `_emit_struct` («без явного feed — fan-out по N фидам»).
+  - `automation_runtime.py::_create_set_plan_deps` — инъекция `_feed_key` и `_CATALOG_FEED_KEYS`.
+- Обратная совместимость: слепки без явного feed → `_explicit_feed_subset` возвращает `None` → прежний fan-out (проверено на pavlov/tp7: feed_role='' feed_id=None → None). Меняется только добавленная строка лога.
+- Верифицировано (офлайн): py_compile 3 файлов OK; таблица веток `_explicit_feed_subset` (no-spec→None, id/key/role→match, absent→[]) — все корректны; `_slepok_struct_groups` на pavlov/Мультибренд/tp7 отдаёт пустые feed-поля (any explicit=False). Live-прогон не запускался.
+- Статус: 🟡 фикс на Mac (Mutagen→LXC101 авто), py_compile OK, офлайн-логика верна. Ждёт: (1) живого tp7-прогона с fan-out (должен появиться warning, поведение прежнее); (2) при появлении явного feed_role/feed_id в структуре — товарка ровно на нём.
+- НЕ помогло ранее: — (первая правка проброса фида позиции в tp7). Смежно: allow-list фильтр `feeds` (create_set_plan.py:314-325) уже отсекал неразрешённые фиды, но НЕ давал таргетинга на конкретный фид позиции — это ортогонально и оставлено.
+- Смежная диагностика (Task 2 — cpc+cpa дублирование, kuderko): механизм НАЙДЕН, но это ОСОЗНАННАЯ фича, НЕ баг → код НЕ трогал. `pays = ["tcpa"] if no_cpa else ["tcpa","cpa"]` (create_set_plan.py:458, `no_cpa=bool(body.get("n"))`) — по умолчанию (галочка «под стиль сайта»/n снята) каждая позиция даёт пару cpc+cpa; снять дубль = поставить «n». Это deliberate-решение Семёна 2026-07-12 (fix #4, коммент :749-750 «МК — тоже по галочке, единый механизм pays. Было: не-авто МК всегда cpa, 1 РК»). Per-position pricing в коде структуры (`tp7_cpc_site` vs `tp7_cpa_site`) при этом `_emit_struct` игнорирует — pays определяется галочкой аккаунта, а не токеном cpc/cpa в `c`. kuderko (реально наблюдаемый аккаунт) tp6/tp7 НЕ содержит вовсе — у него tp1/tp2/tp5, все позиции `cpc`, дублирование — тот же checkbox-механизм. Правка = откат deliberate-фичи → требует явного решения Семёна (должен ли per-position `c`-pricing перекрывать галочку?), слепой фикс запрещён.
+
+### UAC_LIST_CAMPAIGNS_405 — GET /web-api/uac/campaigns → 405 Method Not Allowed (2026-07-12)
+- Симптом: `UacClient.list_campaigns()` бил `GET /web-api/uac/campaigns`, Яндекс отвечал 405 (метод не поддерживается на этом эндпоинте) → исключение. Единственный вызов — `routes_content_editor._load_account:683` (`uac_detail_client.client.list_campaigns()`), где 405 гасился `except` и добор UAC-кампаний шёл через Grid-фолбэк `_grid_tp67_campaigns` (т.е. рабочий путь уже был, но снаружи метода — сам метод всегда падал).
+- Где: `campaign.py::UacClient.list_campaigns` (~1468); рабочий Grid-путь — `routes_content_editor.py::_grid_tp67_campaigns` (~361), фактически исполнявшийся фолбэк — `routes_content_editor.py:700`.
+- Root-cause: приватный UAC-эндпоинт `/web-api/uac/campaigns` не отдаёт список методом GET (405). UAC-кампании (Мастер tp6 / Товарка tp7) невидимы в v5 и читаются только через Grid GraphQL `client.campaigns` (фильтр tp6_/tp7_ по имени, без архивных) — ровно то, что делает `_grid_tp67_campaigns`.
+- Решение (2026-07-12, `campaign.py`): `list_campaigns` переведён на делегирование к `_grid_tp67_campaigns(self.ulogin)` (lazy import — иначе цикл routes_content_editor→uac_read→campaign), с сохранением фильтра `status`. Выбран вариант «вызвать существующую функцию» (0 дублирования GraphQL/пагинации) вместо повтора запроса в campaign.py. Внешний Grid-фолбэк в routes_content_editor остаётся как безвредный ретрай.
+- Верификация: py_compile OK; единственный caller (`routes_content_editor:683`) читает id/name из dict — оба поля присутствуют в выдаче `_grid_tp67_campaigns` (id, name, typename, status); `self.ulogin` == login (build_client(ulogin)→UacClient(cookie, ulogin)).
+- Статус: 🟡 фикс на Mac (Mutagen→LXC101 авто), ждёт живого прогона content-editor `_load_account` на аккаунте с tp6/tp7-черновиками (список UAC приходит без 405).
+- НЕ помогло ранее: —
+
+### AUDIENCE_GOALS_SILENT_TRUNCATE_100 — >100 аудиторных сегментов молча резались в payload UAC (2026-07-12)
+- Симптом: при 100+ id аудиторий в спеке `build_payload` брал первые 100 без единого следа — «лишние» сегменты терялись тихо, кампания создавалась с усечённым таргетингом.
+- Где: `campaign.py::UacClient.build_payload` (~1591), `ca_retargeting_condition.condition_rules[0].goals`.
+- Root-cause: `[:100]` — это РЕАЛЬНЫЙ лимит API Яндекса (не более 100 goals в одном condition_rules, иначе `INVALID_COLLECTION_SIZE`), подтверждён комментарием рядом (`_slepok_audiences_for` объединяет все категории → может дать 200+ id). Проблема была не в самом капе, а в его молчаливости.
+- Решение (2026-07-12, `campaign.py`): кап оставлен (лимит API реален), но при `len(_all_goals) > 100` печатается WARNING в stderr (стиль как `create` line ~1996) с числом сегментов, сколько отброшено и display_name — обрезка перестала быть тихой. Поведение payload не изменилось (те же первые 100).
+- Верификация: py_compile OK; `sys` и `DEFAULT_DISPLAY_NAME` в области видимости (импорт line 62, константа используется в этом же методе line ~1525).
+- Статус: 🟡 фикс на Mac (Mutagen→LXC101 авто), ждёт прогона со спеком >100 аудиторий — в журнале воркера должен появиться WARNING о потере N сегментов.
+- НЕ помогло ранее: —
+
+### SINGLE_FEED_TP5_TP3_WRONG_FEED — при «по одному фиду» tp5/tp3 создавались на ЧУЖОМ фиде (credit-page), вразрез с планом (2026-07-12)
+- Симптом: галочка «по одному фиду» (single_feed) на аккаунте БЕЗ `/yandex.xml` — товарные галереи tp5 (Поиск+Динамика+ТГ) и tp3 (ТГ) создавались на первом попавшемся разрешённом фиде (на porg-asfbs7qe это `credit-page-01-a.xml` — лендинг/оффер-фид, не товарный), тогда как plan/превью и tp7 резолвили `/yandex.xml` или канонический фолбэк. Выглядело как «галочка не работает».
+- Где: tp5/tp3 (token/API-путь), `create_set_feed_builders.py::_create_tp5_campaign` (~858-863) и `_create_tp3_campaign` (~987-992); резолв фида — `_tp5_account_data.feeds` → `prefer_single_feed_variants`.
+- Root-cause: tp5/tp3 items эмитятся структурой слепка НЕЗАВИСИМО от plan-`feeds` (create_set_plan.py:561-583/661-702), т.е. само-резолвят фид. `prefer_single_feed_variants(data["feeds"])` при отсутствии `/yandex.xml` тихо возвращает `variants[:1]` = ПЕРВЫЙ разрешённый фид. Хотя url `/yandex.xml` уже лежал в кортеже (`UrlFeed.Url`, line 615) и Grid тоже отдаёт url — фида `/yandex.xml` в аккаунте просто НЕТ (51 фид, все `yandex-<brand>.xml`/`yandex-catalog-*.xml`), поэтому prefer брал первый. tp1/plan вместо этого идут через `_first_url_feed(strict=True)` (create_set_plan.py:350): strict-мисс /yandex.xml → канонический фолбэк `yandex-catalog-model-design-custom-name.xml` при подтверждённом `single_feed_fallback`, иначе feeds=[] (товарные не создаются).
+- Живой факт (v5 feeds.get + UrlFeedFieldNames Url, porg-asfbs7qe/victoryagency14, 2026-07-12): `/yandex.xml` в v5 ОТСУТСТВУЕТ; OLD prefer_single_feed_variants → 3505256 credit-page-01-a (ЧУЖОЙ); NEW resolution → strict/yandex.xml=0, fallback=3505268 yandex-catalog-model-design-custom-name.xml; single_feed_fallback=False→[] (skip, как plan/tp7), =True→[3505268]. Вариант (a) «мержить Grid всегда» и (b) «читать UrlFeed.Url в allow-фильтре» — оба НЕ помогли бы: /yandex.xml физически нет ни в v5, ни в Grid, а url уже был в кортеже.
+- Решение (2026-07-12, `create_set_feed_builders.py`): новый helper `_resolve_single_feed_variants(data, token, login, agency, job)` — резолвит целевой фид как plan: `_first_url_feed(strict=True)` для /yandex.xml → фолбэк `_first_url_feed(strict=True, url_key=FALLBACK_SINGLE_FEED_KEY)` ТОЛЬКО при `job.body.single_feed_fallback` → выбор кортежа из data["feeds"] по id; не резолвится → feeds=[] (tp5/tp3 явно пропускается, а не создаётся на чужом фиде). tp5/tp3 зовут helper вместо `prefer_single_feed_variants`. `_first_url_feed` добавлен в `automation_runtime._create_set_feed_builder_deps()`.
+- Статус: 🟡 фикс на Mac (Mutagen→LXC101 авто), py_compile OK, логика верифицирована живыми данными (offline-симуляция резолва). Ждёт живого прогона: single_feed на аккаунте с `/yandex.xml` → tp5/tp3 фан-аут ровно на него; без /yandex.xml — фолбэк-фид при подтверждении, иначе пропуск (не credit-page).
+- Верификация direct_verifier (2026-07-12): ✅ код подтверждён — helper `_resolve_single_feed_variants` (create_set_feed_builders.py:842-858) зовётся в tp5 (881-885) и tp3 (1013-1017) вместо `prefer_single_feed_variants`; `_first_url_feed` добавлен в DI `automation_runtime._create_set_feed_builder_deps()` (2828); non-single_feed путь (fan-out по всем фидам) не тронут; отклонённые (a)/(b) записаны корректно. Остаётся 🟡 только на live happy-path (аккаунт с реальным `/yandex.xml`).
+- НЕ помогло ранее: — (первая правка резолва single_feed в tp5/tp3). Вариант (a)/(b) из диагностики отклонены живым фактом (см. выше), не пробовать.
+- FOLLOW-UP (2026-07-13, feed_alert НЕ покрывал tp5): предыдущий фикс (2026-07-12) сделал tp5/tp3 при отсутствии /yandex.xml и без подтверждённого фолбэка ПРОПУСКАЮТСЯ (feeds=[]) — но при наборе, где есть tp5 (search_gallery), а tp7/tp3 нет, поп-ап feed_alert НЕ всплывал, и tp5 терялся молча. Причина: `_fal_needed = len(feeds)==0 and (want_product or want_tp3)` (create_set_plan.py:840) покрывал только tp7/tp3, флага для tp5 не было (в блоке tp5 create_set_plan.py:695-734 want_* не ставился, в отличие от want_tp3 на :607). Живой прогон job 3f689a9ccec2, scherbakova/Мультибренд, single_feed=true. Решение: введён `want_tp5_gallery` (init :493, ставится в блоке tp5 после подтверждения tp5_items :703), добавлен в `_fal_needed` (:840→ `or want_tp5_gallery`) и в `will_skip_types` (:849 → ключ `"tp5"`). Фронт: FEED_SKIP_LABELS/FEED_SKIP_PLAN_TYPES (templates/direct/index.html:3048-3049) получили ключ `tp5` → label «Товарная галерея (tp5)», plan-type `search_gallery` (совпадает с plan[].type в create_set_plan.py:722/730). Путь фолбэка для tp5 идентичен tp3: `_resolve_single_feed_variants` (create_set_feed_builders.py:842-858) без ветвления по tp_code, оба через `_first_url_feed(strict, url_key=FALLBACK_SINGLE_FEED_KEY)` при `single_feed_fallback`. Статус: 🟡 ждёт живого прогона — «single_feed on + нет /yandex.xml + есть tp5» должен показать поп-ап с кнопкой «Продолжить с другим фидом», при подтверждении tp5 строится на фолбэк-фиде. py_compile OK.
+
+### SLEPOK_CORPUS_SITETYPE_BLEED — бренды одного site_type протекали в секции другого при пересборке слепков (2026-07-12)
+- Симптом: латентный (видимого вреда не было — «для scherbakova случайно совпало»). При автоперестройке структуры слепков бренды «С пробегом» могли попасть в «Мультибренд» и наоборот.
+- Где: **`scripts/build_slepok_structure.py::scan_corpus`** (~62–107). Собирала ct4-коды (adgroups) и tp-коды (campaigns) в ОДИН плоский set на всего директолога, без разбивки по site_type. `rebuild_directologist_section` применял этот общий set ко ВСЕМ секциям → фильтр `filter_items` пропускал бренд, если ct4 встречался в корпусе хоть где-то (в т.ч. в логине чужого site_type).
+- Root-cause: site_type в корпусе задаётся на уровне login (`_logins.json` → поле `type`), но scan_corpus его игнорировал. Пример: terehov ct0150 присутствует только в логинах «С пробегом», но в суперсете «Мультибренд» флаг-фильтр его сохранял (bleed). Аналогично tp-gate: tp3 (С пробегом) считался «используемым» и в «Мультибренд».
+- Решение (точечный патч, 2026-07-12): scan_corpus читает `_logins.json` (login→site_type) и возвращает `used_tps_by_st`/`corpus_ct4_by_st` = `{site_type: set}`. Логины без записи → бакет `_UNKNOWN_ST=""`, подмешивается во все site_type через `_st_sets` (в реальном корпусе такие логины бренд-ct4 не содержат — 0). `rebuild_directologist_section` для каждой секции берёт набор ИМЕННО её site_type. `build_staging` считает плоские агрегаты только для логов/отчёта; фильтрация — по site_type. filter_items не менялся.
+- Статус: 🟡 ждёт прогона. Офлайн-факт (read-only, без записи в живые файлы): terehov «Мультибренд» ДО содержал С-пробегом-only `ct0150`; ПОСЛЕ — убран, остаётся только `ct0000` (общий фид-код, всегда keep by design); секция «С пробегом» сохраняет все 14 своих ct4; tp3 не течёт в «Мультибренд». py_compile OK. Реальный прогон `build_staging` — решение Семёна.
+- Верификация direct_verifier (2026-07-12): ✅ код подтверждён — `scan_corpus` возвращает `(used_tps_by_st, corpus_ct4_by_st)` (dict по site_type), helper `_st_sets`, `rebuild_directologist_section` берёт набор своей секции, `filter_items` не тронут; при отсутствии `_logins.json` фолбэк через `_UNKNOWN_ST` = прежнее flat-поведение → регрессий нет. Остаётся 🟡: нужен реальный `build_staging --output` в staging-файл (НЕ поверх живого `slepki_structure.json`), сверка `collisions_before/after` — решение Семёна.
+- Остаток (НЕ в этом фиксе): per-tp cross-join campaigns↔adgroups (ассоциация ct4 с конкретным tp через CampaignId) не реализован — это глубже и не требуется для устранения site_type-bleed.
+- НЕ помогло ранее: —
+
+### KEYWORD_REPAIR_PARTIAL_REPORTED_ZERO — беспаковая группа роняла ok/executed всей докрутки в «0 действий» (2026-07-12)
+- Симптом: докрутка ключей обрабатывает N групп (кейс: 44), 43 группы ключи получили успешно, но виджет показал «добилось 0 действий» → сработал anti-ping-pong break → reschedule всей пачки вхолостую. Врёт про прогресс.
+- Где: **`repair_executor.py:execute_keywords_repair`** — ветка `need_kw and not writable_kw and not need_at` (беспаковая КС-группа) клала группу в `failed`; на выходе `ok = not failed = False`, status 207. Далее `repair_auto.py:execute_all_in_place:286` считает `executed` только при `200<=status<300 AND out.get("ok")` → ok=False → executed=0. `queue_server.py:1022` `if not res.get("executed"): break` (anti-ping-pong) + `remaining>0` (live NO_KEYWORDS_LIVE у беспаковой) → reschedule.
+- Root-cause: одна беспаковая группа (пак пуст/недоступен — нечинимый СЕЙЧАС остаток, аналог video_no_pool, НЕ провал докрутки) попадала в тот же bucket `failed`, что и настоящие провалы → отравляла агрегатный `ok` → 43 реально применённые группы репортились как 0.
+- Решение (2026-07-12, `repair_executor.py`): беспаковые КС-группы кладём в ОТДЕЛЬНЫЙ bucket `unfixable` (не `failed`). `ok = (not failed) and (bool(applied) or not unfixable)` — партиал-успех (applied>0) даёт ok=True/200 → executed отражает реальный прогресс; если применить не удалось НИЧЕГО (только беспаковые) → ok=False/502 (честно «0 добили», НЕ маскируем под «идемпотентно»). Идемпотент-ветка `not write_items and not failed` дополнена `and not unfixable`. В ответ добавлены `unfixable_no_pack`/`unfixable_groups` → audit↔repair не расходятся. Изменение затрагивает ТОЛЬКО mixed-кейс (applied>0 + беспаковые + без реальных провалов): ok False→True; все прочие пути (all-unfixable, реальные провалы, штатный успех) байт-в-байт прежние.
+- Статус: 🟡 код на Mac (Mutagen→LXC101 авто), py_compile OK. Ждёт живого прогона докрутки с частично-беспаковой пачкой.
+- Верификация direct_verifier (2026-07-12): ✅ код подтверждён — bucket `unfixable` изолирует беспаковые КС-группы от `failed`; `ok = (not failed) and (bool(applied) or not unfixable)` даёт mixed=ok/200 и all-unfixable=ok False/502 (инвариант KEYWORD_REPAIR_NO_PACK_SILENTLY_OK сохранён); при `unfixable=[]` формула сводится к старому `not failed` → регрессий нет; NameError-риска нет (`applied` определён до `ok`). Остаётся 🟡: live-докрутка на частично-беспаковой пачке.
+- НЕ помогло ранее: KEYWORD_REPAIR_NO_PACK_SILENTLY_OK (2026-07-10) — правильно завёл беспаковую-КС в `failed` (чтобы не выдавать «всё ок»), но переусердствовал: одна беспаковая группа стала ронять весь батч в «0 действий». Текущий фикс сохраняет тот инвариант ТОЛЬКО для all-unfixable (ok=False), а mixed теперь честно партиал.
+
+### PREFLIGHT_CROSS_SITETYPE_DUP_BLINDSPOT — preflight не ловил дубли структуры между site_type одного слепка (2026-07-12)
+- Симптом: НЕ ошибка создания РК, а слепой угол детектора. `slepki_preflight.py` находил байт-идентичные секции структуры ТОЛЬКО между разными директологами (фамилиями), но не между site_type ОДНОГО директолога. По корпусу незамечено 25 групп / 48 лишних копий (kryuchkova и salamahin — все 4 site_type идентичны; chepelev — Монобренд=Мультибренд).
+- Где: `scripts/slepki_preflight.py::check` — фильтр `len({x[0] for x in v}) > 1` (уникальные `key`=директолог внутри bucket `fp[frozenset(items)]`) ловит только межфамильные коллизии; одинаковые секции разных site_type одного директолога дают `len({key})==1` → не флагались.
+- Root-cause: `_sig` группирует секции по `(site_type, tp)`, но детектор считал уникальность по `key` (директолог), а не по `site_type` внутри одного директолога.
+- Решение (2026-07-12, только детектор/отчёт): в `check()` добавлен блок 1b (для каждого директолога секции `_sig(e)` группируются по `frozenset(items)`; bucket'ы, где один frozenset встречается под >1 site_type → `same_slepok_cross_site`) + НЕблокирующий ⚠-отчёт (число групп / лишних копий + построчная раскладка `key: site/tp`). `preflight_dict` (блокирующий путь редактора слепков) НАМЕРЕННО не тронут — kryuchkova/salamahin идентичны намеренно (решение Семёна), блокировка сломала бы редактор. Сами структуры слепков НЕ менялись.
+- Статус: ✅ детектор проверен read-only прогоном (`python3 scripts/slepki_preflight.py`): 25 групп / 48 лишних копий — совпало с независимым пересчётом, EXIT=0 (non-blocking); существующая межфамильная проверка не задета (cross-slepok коллизий 0, как раньше). Код независимо подтверждён direct_verifier (правка хирургическая: блок 1b строки 188-200 + отчёт 266-274, `ok=False` НЕ выставляется, регрессий в empty_tp/bad_gc/duplicate_items/source_manifest нет).
+- Остаток (НЕ код): намеренность идентичных структур (kryuchkova/salamahin/chepelev) — решение Семёна отдельно; детектор только сигнализирует, деплой не блокирует.
+- НЕ помогло ранее: —
+
+### SCHERBAKOVA_SALE_TITLE_CUT — голос Щербаковой резался кредитным фильтром заголовков (2026-07-12)
+- Симптом: для брендовых кампаний фирменные sale-заголовки Щербаковой («Распродаём стоянку. Скидка 45%», «Распродаём перед завозом», «Нулевой утильсбор. Господдержка …») систематически отбрасывались из LLM-контента.
+- Где: `create_content.py:_title_ok` (кредитный гейт заголовков в `run_gen_campaign_content`).
+- Root-cause: `if not _DIRECT_CREDIT_RE.search(t): return False` жёстко требовал кредитное слово в КАЖДОМ заголовке. Sale-фразы «складских» слепков (распрод/склад/стоянк/завоз/утильсбор) кредитного слова не содержат → резались. В `ai_agents.py:assemble_campaign._title_ok` (стр. 2042-2047) верная OR-альтернатива `title_sale_ok_re` уже была; в `create_content.py` — нет (рассинхрон двух фильтров).
+- Решение (2026-07-12, `create_content.py`): добавлен `_TITLE_SALE_OK_RE = re.compile(r"(?i)(распрод|склад|стоянк|завоз|утильсбор)")` (образец — `ai_agents.py:2021`, +утильсбор как фраза Щербаковой); гейт заменён на `if not (_DIRECT_CREDIT_RE.search(t) or _TITLE_SALE_OK_RE.search(t)): return False`. `_text_ok` НЕ тронут (текст держим в кредитной рамке, как в ai_agents).
+- Верифицировано (офлайн, но НЕ на боевом гейте): 5 кейсов на `_title_ok` PASS/FAIL корректно. py_compile OK. ОДНАКО тест гонял МЁРТВУЮ функцию — см. Статус.
+- Провал первой правки (2026-07-12): фикс попал в МЁРТВЫЙ КОД. `_title_ok` в модуле НИГДЕ не вызывается (0 callers, подтверждено grep) → `_TITLE_SALE_OK_RE` и OR в нём на runtime НЕ влияют. Реальный гейт LLM-заголовков — `_accept_title` (вызовы: 4 места в `run_gen_campaign_content`), где credit-only фильтр без OR резал sale-заголовки Щербаковой (независимо подтверждено direct_verifier).
+- Решение (2026-07-13, `create_content.py:_accept_title`, теперь строка ~265): credit-only гейт заменён на `if not (_DIRECT_CREDIT_RE.search(t or "") or _TITLE_SALE_OK_RE.search(t or "")):` — в реальном гейте. `_TITLE_SALE_OK_RE` НЕ пришлось поднимать: он уже определён в области функции `run_gen_campaign_content` (строка ~64, рядом с `_DIRECT_CREDIT_RE`), общей для `_title_ok` и `_accept_title` через closure — вопреки формулировке next-step, он НЕ был вложен в `_title_ok`. Мёртвый `_title_ok` не удалён (сиблинги `_text_ok`/`_ok` — тот же dead-кластер, удаление = unrelated cleanup вне точечного фикса), но помечен явным комментом «МЁРТВЫЙ КОД, реальный гейт — _accept_title» (строка ~112), чтобы больше не вводил в заблуждение. py_compile OK.
+- Статус: 🟡 ждёт прогона — фикс теперь в РЕАЛЬНОМ гейте `_accept_title`. Нужна live-проверка: прогнать брендовую кампанию «складского» слепка (Щербакова) и убедиться, что sale-заголовки («Распродаём стоянку. Скидка 45%», «Нулевой утильсбор…») проходят в LLM-контент, а не режутся в `missing_credit_angle`.
+- НЕ помогло ранее: OR-альтернатива в `create_content.py:_title_ok` (2026-07-12) — правка в dead code (`_title_ok` не вызывается, 0 callers). НЕ повторять правки в `_title_ok`/`_text_ok`/`_ok` — это мёртвый кластер; реальные гейты LLM-output — `_accept_title`/`_accept_text`.
+
+### DMP_SITELINKS_AUTO_BLEED — B2B-сайтлинки dmp заменялись авто-ассетами аккаунта (2026-07-12)
+- Симптом: у слепка dmp быстрые ссылки в кабинете = авто-сферы («Первый взнос 0₽», «Оценка авто в трейд-ин», «КАСКО на 1 год», «Тест-драйв», «Авто в наличии») — вместо B2B-контента; porg-lrfjzcxo.
+- Где: tp2 поиск (`create_set_feed_builders.py:77` — `_common_sitelinks_fast`) и tp6 МК (`blueprint.py:6707` — `_slepok_campaign_content`). Оба пути фильтруют `isinstance(s, dict) and s.get("title")` → строки из БД отсеиваются → возвращают [] → аккаунтные авто-ассеты.
+- Root-cause: `public.direct_slepok_content` (slepok='dmp', site_type='dmp', kind='campaign') хранит sitelinks как список строк: `["Автоматическая интеграция","От 200 ₽ за контакт",...]`. Legacy-засев через M3 без dmp-контекста сохранял строки. `_seed_slepok_content` итерировал только `SITE_TYPE_PROFILE.keys()` (авто-типы), НЕ охватывал `site_type="dmp"` → запись не обновлялась. Корректный B2B-пул (`AGENT_ADS["dmp"]["sitelinks"]` + `sitelink_bank_for("dmp")`) существовал в `ai_agents.py`, но до БД не доходил.
+- Решение (2026-07-12, `ai_content.py`):
+  1. `_slepok_content_get` (строки 352–385): нормализация строк → `{"title": s, "description": ""}` перед возвратом — немедленно чинит path 1 (`_common_sitelinks_fast` через `_slepok_content_get`) на текущих данных БД.
+  2. `_seed_slepok_content` (строки ~501–515): доп. цикл по агентам с `site_fit` вне SITE_TYPE_PROFILE (dmp → extra_sts=["dmp"]). При `--all` вызывает `assemble_campaign([], [], [], dmp_agent, site_type="dmp")` → записывает 8 B2B dict-сайтлинков в (dmp, dmp, campaign) — чинит path 2 (blueprint.py прямой запрос в БД) после запуска seed.
+- Требует запуска на LXC101: `python3 -m direct.seed_slepok_content --all` (чтобы перезаписать стрингов-запись ключом `--all`; без него `only_missing=True` пропускает существующую). После: оба пути возвращают 8 B2B dict-сайтлинков.
+- Верифицировано (офлайн, факт): `assemble_campaign(dmp, site_type=dmp)` → 8 B2B dict-ссылок (`"Получите демо-доступ сегодня"`, `"Горячие контакты за 24 часа"`, …), 0 авто-слов; трассировка обоих путей с корректной БД → picked=8 B2B, [] не возникает. py_compile+pyflakes OK.
+- Статус: 🟡 код на Mac (Mutagen→LXC101 авто). Нужно: (1) рестарт direct-create/worker, (2) `python3 -m direct.seed_slepok_content --all` на LXC101.
+- Граблей НЕТ (старый): авто-слепки затронуты НЕ будут — их `site_fit` целиком в `SITE_TYPE_PROFILE.keys()` → `extra_sts=[]` → цикл их игнорит.
+
+### TP6_MASTER_REQUIRES_FEED — ложный диалог «Мастер кампаний не создать без фида» (2026-07-11)
+- Симптом: набор с tp6 (Мастер кампаний) без URL-фида на аккаунте → диалог «⚠️ Фид /yandex.xml не найден. Мастер кампаний (tp6) не смогут быть созданы (нет URL-фида). Через 5 минут будут автоматически запущены кампании без них.» + кнопка «Создать без них (Мастер кампаний tp6)». (Кейс: слепок dmp на porg-lrfjzcxo — у dmp только tp2+tp6, фида нет.)
+- Где: `create_set_plan.py:676` (feed_alert), + skip-набор `blueprint.py:956` и `routes_jobs.py:275`.
+- Root-cause: `_fal_needed = len(feeds)==0 and (want_product or want_master or want_tp3)` — `want_master` (tp6) ошибочно включён в условие «нужен фид». Но master-items ВСЕГДА строятся с `feed_list=[(None,None,None)]` (create_set_plan.py:636) — Мастер кампаний фид НЕ требует (фид нужен только Товарке tp7/product и динамике tp3). Плюс `_skip_feed_types=["product","master"]` — при «Создать без них» из-за товарки МК тоже отбрасывались.
+- Решение (2026-07-11):
+  - `create_set_plan.py:676` — убрал `want_master` из `_fal_needed` (+ из `will_skip_types` стр.685).
+  - `blueprint.py:956` и `routes_jobs.py:275` — `_skip_feed_types = ["product"]` (без "master").
+- Статус: 🟡 фикс задеплоен (рестарт direct-create), ждёт прогона — при наборе только с tp6 диалог фида не должен появляться, МК создаются напрямую.
+
+### DMP_MK_KONKURENTY_AUTOTARGET — «МК Конкуренты» схлопывалась в autotarget + авто-коллизия ct (2026-07-12)
+- Симптом: у слепка dmp 3 МК (Авто/Ключи/Конкуренты) выходили неотличимыми — все autotarget, «пересечение с авто-слепками». «МК Ключи» при этом работал (пак `dmp/tp6/ct0000/keywords/dmp.txt`=25 фраз, verified LXC101).
+- Где: `create_set_plan.py::_emit_struct` (targeting_mode/ct), `create_set_context.py::_slepok_struct_groups` (не пробрасывал gc/mode), `_tp67_keywords_from_real_library._score`; данные — `slepki_structure.json` (dmp tp6), `tp67_real_keywords.json`.
+- Root-cause (3 слоя):
+  1. «МК Конкуренты» имя → `_tp67_targeting_mode` матчит «конкурент»→`audience`; в `direct_slepok_audiences` для (dmp,dmp,tp6) interest IDs нет → fallback `autotarget`. 69 готовых «ключевых названий конкурентов» в библиотеке осиротели.
+  2. `_slepok_struct_groups` брал `code=it["c"]`(="tp6_cpc_site"), а `gc` (кодер) игнорил → все 3 МК уезжали в `ct0000` (нельзя развести источник ключей Ключи vs Конкуренты).
+  3. `_score` библиотеки при матче по позиции выбирал ПУСТОЙ decoy-item (dmp position='конкуренты' 0 кл) вперёд реального набора (pos_score приоритетнее ct_score) → [] → autotarget.
+  - Доп.: `ct0032/ct0084` (leadgen «Бренд»/«Конкуренты») совпадают с авто gsheet_naming (Changan CS55 / FAW) → `_ag_part1_map` их игнорит → резолвятся в АВТО-имя (авто-бренд в контент). Поэтому ct0084 для Конкуренты НЕЛЬЗЯ.
+- Решение (2026-07-12):
+  - Код: `_slepok_struct_groups` пробрасывает `gc`+`targeting_mode` item'а в g; `create_set_plan.py` — `targeting_mode = g.get('targeting_mode') or _tp67_targeting_mode(g)` и `cat_ct` берёт `_gc_ct(g['gc'])`; `_score` — `return None` для item без keywords (защита от пустого decoy).
+  - Данные: `slepki_structure.json` «МК Конкуренты» → `gc=ct0834` (выделенный leadgen-номер вне авто-пространства) + `targeting_mode:keywords`; `tp67_real_keywords.json` конкурентный item `ct: '' → ct0834`.
+  - Комментарий `campaign_naming.py` актуализирован (ct0800–ct0834; ct0032/ct0084 мертвы из-за коллизии).
+- Верифицировано (офлайн, факт до/после): Авто→autotarget/ct0000; Ключи→keywords/ct0000 (пак 25); Конкуренты→keywords/ct0834→69 своих ключей; без skip-empty → 0/autotarget (доказана необходимость фикса); pavlov ct0084(FAW) не течёт в dmp (same_slepok выигрывает). py_compile+JSON OK.
+- Статус: 🟡 фикс в локальных файлах (Mutagen→LXC101), ждёт рестарта direct-create/worker + боевого прогона dmp на porg-lrfjzcxo.
+- НЕ помогло бы: держать Конкуренты на ct0084 — притянул бы авто-бренд FAW (контент/имя) = то самое «пересечение с авто».
+- Открытый долг (не блокирует фикс): `leadgen_ct_naming` без имён ct0822–ct0834 (naming gap); имена структуры vs coder расходятся (ct0801 структура=«СОЦ сети» vs coder=«Идентификация»); зарегистрировать ct0834; жёсткий slepok-фильтр в `_score` для не-авто (анти-bleed).
+
+### CALLOUTS_NAMEERROR_TIME — уточнения создаются, но НЕ привязываются (NameError) (2026-07-12)
+- Симптом: объявления выходят без уточнений (callouts); в API остаются осиротевшие Callout-объекты (созданы, но не привязаны).
+- Где: `create_set_assets.py:687` — `time.sleep(_AC_BATCH_SLEEP)` в пуле заливки уточнений (`adextensions.add`).
+- Root-cause: `time` НЕ импортирован (в файле только `import re`) и не в DI → `NameError: name 'time' is not defined` после `adextensions.add`. Вызывающие ветки глушат исключение → кампания достраивается без callouts, созданные Callout-объекты не используются. (Находка Семёна, воспроизведено.)
+- Решение (2026-07-12): `create_set_assets.py` — добавлен `import time` в шапку. py_compile OK.
+- Статус: 🟡 фикс в файле (Mutagen→LXC101), ждёт рестарта worker + прогона с уточнениями.
+
+### DMP_TP2_PACK_EMPTY_GATHER_SSH_M3 — «пак M3 пуст», tp2 dmp падают в defer (2026-07-12)
+- Симптом: `live_verification` → 5× `RESULT_FAILED` «tp2(куки): пак M3 пуст/недоступен (M3_alive=True) — отложено на докрутку»; tp2-кампании dmp не создаются. (Вопрос Семёна: «причём тут M3, если всё грузим с 101?».)
+- Где: `create_set_tp1_builders.py::_tp1_pack_groups:1419` → `kp.gather` → `kontent_pack.py::gather:1394`.
+- Root-cause: `gather` читала пак ТОЛЬКО по `ssh (_M3_SSH) к M3_PACK_ROOT` — удалённый M3-relay. Редеплой кодера (ct0800–ct0834) прошёл лишь в ЛОКАЛЬНОЕ зеркало `/opt/neuro_content_local` (что читает `read_keywords`), а удалённый M3 остался старым (ct0001–ct0034). → `gather` отдавала ct0001–34, план требовал `only_cts=ct0800+` → пересечение ПУСТОЕ → 0 групп → defer. `refresh_index` не помогал: `gather` индекс не использует, ходит на M3 напрямую.
+  - Доказано на LXC101: `gather` (ssh M3) = ct0001–34; `_GATHER_PY` локально по зеркалу = ct0032/ct0084/ct0800–ct0821 (правильно).
+- Решение (2026-07-12): `kontent_pack.py::gather` — local-first (как `refresh_index`): при активном зеркале запускать `_GATHER_PY` ЛОКАЛЬНО через `_ensure_local_shim()`, ssh M3 — фолбэк.
+- Верифицировано: после деплоя `gather("dmp","dmp","tp2")` = 24 cts (ct0800–ct0821 + ct0032/ct0084); md5 Mac==LXC101; worker перезапущен.
+- Статус: 🟡 фикс задеплоен + gather подтверждён; ждёт боевого прогона (tp2 dmp должны создаваться, не defer).
+- ✅ Долг закрыт 2026-07-12: пак dmp/tp2 наполнен из выгрузок кабинета — 34 ct (ct0800–ct0833), 1204 ключа, вкл. ct0822–ct0833.
+
+### DMP_SITELINKS_AUTO — быстрые ссылки dmp выходят авто-сферы (2026-07-12)
+- Симптом: у B2B-слепка dmp сайтлинки в кабинете — авто («Первый взнос 0₽/автокредит», «Оценка авто в трейд-ин», «КАСКО на 1 год», «Тест-драйв»), а не B2B.
+- Root-cause: `direct_slepok_content` (dmp/campaign) хранил sitelinks СТРОКАМИ; `_common_sitelinks_fast` (create_set_feed_builders.py:74) и `_slepok_campaign_content` (blueprint.py:6707) берут только `isinstance(s,dict)` → строки отсеивались → [] → фолбэк на авто-ассеты аккаунта.
+- Решение: `ai_content.py:_slepok_content_get` нормализует строки→dict (+seed из `AGENT_ADS["dmp"]["sitelinks"]`); в БД `direct_slepok_content` записаны 8 B2B-сайтлинков (title+description).
+- Статус: 🟡 задеплоено, ждёт прогона — сайтлинки dmp B2B, без авто-лексики.
+
+### DMP_GROUP_NAMES_AVTO — почти все группы tp2 названы «— Авто» (2026-07-12)
+- Симптом: в кабинете dmp почти все группы = `ct08XX_… — Авто` (дубли), лишь единицы с верным именем.
+- Root-cause: `_tp1_pack_groups` брал `raw_brand = ct_name.get(ct) or ct_model.get(ct) or ct`; при пустом leadgen фолбэк уходил в `feeds_ct_model` (авто-фид) = «Авто».
+- Решение: (1) `leadgen_ct_naming` выровнен по выгрузке (все ct0800–ct0833 = имена тем); (2) для не-авто имя = leadgen → структура `t` (выгрузка) → ct, авто-фид НЕ используется — `create_set_tp1_builders.py::_struct_ct_names` + правка `raw_brand` в `_tp1_pack_groups` и `_build_tp1_from_pack`.
+- Верифицировано (LXC101): `_struct_ct_names("dmp","dmp")`=36 ct верных имён; авто-слепки → {}.
+- Статус: 🟡 задеплоено, ждёт прогона.
+
+### DMP_PAY_CHECKBOX — тип оплаты cpc/cpa из split.pay, а не по галочке (2026-07-12)
+- Симптом (правило Семёна): тип оплаты dmp копировался из `split.pay`; нужно как в авто — по галочке «под стиль сайта», едино для ВСЕХ слепков.
+- Решение: `create_set_plan.py` — единый `pays = ["tcpa"] if no_cpa else ["tcpa","cpa"]` (`no_cpa=body["n"]`); dmp tp2-сплиты и МК используют `pays` вместо split.pay. Активна → cpc+cpa; снята → только cpc. Заодно починен латентный баг: раньше `no_cpa` не влиял на tp2/tp4/МК (pays был жёстко `[tcpa,cpa]`).
+- Статус: 🟡 задеплоено — проверить: активна → dmp 16 РК; снята → 8 РК.
+
+### TEREHOV_TERM_AND_NO_CITY — «Обмен авто» vs «Трейд-ин» + город в заголовках terehov (2026-07-11)
+Два контент-изменения по тон-оф-войс terehov (решение Семёна #14/#15).
+
+**#14 — Термин «Обмен авто» (не «Трейд-ин») для terehov.**
+- Root-cause: terehov — разговорный/уличный стиль («Б/У авто», «за 1 день», «Звоните!»); «Трейд-ин» = отраслевой англицизм (формальнее), «Обмен авто» = повседневный русский (органичнее тону).
+- Решение: `ai_agents.py:AGENT_ADS['terehov']` — замена единообразно:
+  - texts[1]: «Оценим дорого в трейд-ин» → «Обменяем ваше авто выгодно»
+  - sitelinks[5]: `("Трейд-ин выше рынка", ...)` → `("Обмен авто выгодно", ...)`
+- Другие слепки: НЕ тронуты (pavlov/scherbakova/karavaev/gordeeva — «Трейд-ин выше рынка» остался).
+
+**#15 — Город НЕ вставляется в заголовки terehov.**
+- Root-cause: `_brand_title_set` и `_title_from_template` строили «{brand} в {city_loc}.» для ВСЕХ слепков.
+  Для terehov — нежелательно (разговорный стиль без привязки к городу в заголовке).
+- Решение (три файла, только slepok=="terehov", другие не затронуты):
+  1. `text_gen.py` — `_SLEPOKS_NO_CITY_TITLES = frozenset({"terehov"})` + `slepok=""` параметр
+     в `_title_from_template` и `_rsya_titles`; guard `if slepok in _SLEPOKS_NO_CITY_TITLES: city = ""`.
+  2. `create_set_text_builders.py:363,373` — передаём `slepok=slepok` в `_title_from_template` и `_rsya_titles`.
+  3. `ai_agents.py:build_titles_messages` — добавлен `_akey_early` + `_terehov_no_city_rule`:
+     явный запрет в LLM-промпте для теrехова «⛔ НЕ упоминай ГОРОД в заголовках».
+- ⚠️ НЕ покрыто (инфра-граница): `create_set_tp1_builders.py:709,714,1472,1478` — тоже вызывают
+  `_title_from_template(brand, city)` и `_rsya_titles(brand, city, ...)` без slepok= → для tp1-пути
+  город ещё попадает в шаблоны terehov. Нужна правка в `create_set_tp1_builders.py` через main-сессию.
+- Верификация: py_compile OK (все 3 файла); pyflakes — 0 новых undefined-name.
+- Чинит уже созданные РК: НЕТ. Применяется при следующем прогоне create_set.
+- Статус: 🟡 код на Mac. НЕ деплоено (Mutagen засинкает, рестарт direct-create.service — отдельно).
+
+### DEGRADATION_4FIX — деферред-потеря/ложный-дефер/3-джобы на мульти-слепок прогоне (2026-07-11)
+Четыре точечных фикса по read-only root-cause (прогон деградировал на мульти-слепок single-login).
+- **ФИКС 1 (косметика диагностики).** `create_set_tp1_builders.py:_build_tp1_from_pack` логировал
+  захардкоженный литерал «ключами scherbakova» для ЛЮБОГО слепка → путал диагностику. Заменил на
+  реальный `{key}` (M3-lookup-ключ слепка) в лог-строке; 2 комментария → «ключи слепка».
+- **ФИКС 2 (потеря деферреда).** `blueprint.py:_deferred_save` дедупил остаток по ИМЕНИ item
+  (`body->'items' @> [{name}]`) в рамках login. Имена слепок-АГНОСТИЧНЫ (кодируют tp/сегмент/город,
+  НЕ слепок) → defer одного слепка (zubakin) схлопывался в уже созданный deferred другого (gordeeva)
+  по совпавшему имени и ТЕРЯЛСЯ. Дополнил ключ дедупа слепком: `AND COALESCE(body->>'agent','')=%s`
+  (login уже в scope; COALESCE('') покрывает легаси-строки без agent → обратная совместимость).
+- **ФИКС 3 (3 джобы на логине).** `blueprint.py:_resume_daemon_loop` брал до 5 waiting-строк и стартовал
+  `_resume_one_deferred`→`_job_new(priority=True)` для каждой БЕЗ проверки активного create → 3 джобы
+  разом на одном логине (гонка/дубли/конфликт баллов). Добавил гард: пропуск строки, если у логина
+  есть активная create-джоба (`_job_db_active_by_login` = queued/running/claimed/resumed) ИЛИ resume
+  для него уже поднят в этом батче (`_busy_launched`). Занят → `continue` (resume_at НЕ сдвигаем,
+  строка остаётся waiting → следующий поллинг).
+- **ФИКС 4 (ложный M3-glitch defer).** `create_set_tp1_builders.py:_pack_read_glitch` детектил «сбой
+  чтения M3» по пробе СОСЕДНЕГО tp: если у слепка сосед (tp2) ЛЕГИТИМНО пуст (gordeeva) → probe пуст
+  → ложно «M3 down» → вечный defer сегмента, пака которого нет в принципе. `gather()` возвращает `{}`
+  и при сбое инфры, и при легит-пустом паке — амбигуитет. Добавил `kp.m3_reachable()` (real-time
+  health-probe M3-relay ТЕМ ЖЕ ssh-транспортом, тривиальный `true`, без обхода каталогов → не виснет).
+  Новый дискриминатор: сосед непуст → инфра жива, целевой пак легит-пуст → False; сосед пуст →
+  `not m3_reachable()` (relay отвечает → нет пака → False; relay мёртв → реальный сбой → True/дефер).
+- Статус: 🟡 код на Mac, py_compile OK (все 3 файла). НЕ деплоено (Семён катнёт после ревью; воркер стоит).
+- Live-проверка direct_verifier: мульти-слепок single-login прогон (zubakin+gordeeva на одном логине) →
+  оба слепка сохраняют свои deferred (нет потери по имени); gordeeva-сегмент без пака НЕ уходит в
+  вечный defer; на логине с активным create демон НЕ поднимает вторую docrutka-джобу.
+- НЕ помогло ранее: — (уточнение существующей анти-дуп логики от 2026-07-07, не откат).
+
+### NO_IMAGES_COOKIE_TP1_FRESH_CT — свежий ct на cookie-пути tp1 создавался без картинок (2026-07-11)
+- Симптом: NO_IMAGES_LIVE(tp1, систематичен) — объявления РСЯ без картинок на cookie-пути (когда
+  исчерпан лимит v5=152 и пользователь согласился создавать по куке). Особенно первая РК бренда в
+  аккаунте (свежий ct).
+- Где: `create_set_tp1_builders.py:_create_tp1_via_cookie` (перед `gc.create_full`).
+- Root-cause: пред-create резолвинг картинок шёл ТОЛЬКО через `_grid_account_image_hashes(login)`
+  (`_img_map`) — хэши УЖЕ привязанных к объявлениям картинок аккаунта. Для свежего ct basename нет в
+  `_img_map` → `_tp1_pack_groups` оставлял `g["image_hashes"]` пустым → `create_full` →
+  `build_ad(image_hashes=[])` → объявление БЕЗ картинок. Пост-create Grid-repair (блок ~1830,
+  `_grid_update_adaptive_ads` full-replace) существует, но НЕНАДЁЖЕН (STATE:25 «auto-repair grid,
+  систематичен») → картинки часто не «прилипали». `_preupload_tp1_images` не спасает: льёт в
+  библиотеку аккаунта, а этот путь читал картинки-на-объявлениях.
+- Решение (2026-07-11): в `_create_tp1_via_cookie` ПЕРЕД `create_full` добавлена пред-заливка —
+  собрать `image_paths` всех групп, `_parallel_upload_images(gf.get_grid_client(login), login,
+  paths, account_map=_img_map)` (Grid `upload_image` — БЕЗ баллов, допустим при 0 units; НЕ v5
+  `adimages.add`=152), проставить `g["image_hashes"]` (≤5, дедуп) для всех групп. Так объявления
+  создаются СРАЗУ С картинками, не завися от флакового пост-create repair. Зеркалит token-path
+  Фаза 3.4 (`_build_tp1_adgroups:388`). Правка ТОЛЬКО в `_create_tp1_via_cookie`, token-path и
+  `_parallel_upload_images` не тронуты. best-effort try/except — не роняет создание кампании.
+- Верификация (статическая): py_compile OK; новые имена (`_gc_img_pre`/`_uploaded_pre`/`_osu`/
+  `_all_paths`/`_iue`) pyflakes НЕ помечает; прочие «undefined» — DI-инъекции `configure()`.
+- Статус: 🟡 код на Mac, py_compile OK. НЕ деплоено (Семён катнёт на direct-worker.service после ревью).
+- Live-проверка direct_verifier: cookie-путь tp1 на свежем аккаунте/бренде → в кабинете у
+  комбинаторных РСЯ-объявлений есть imageHashes (картинки видны сразу после создания, без ожидания
+  пост-create repair).
+- НЕ помогло ранее: пост-create Grid-repair (`_grid_update_adaptive_ads`, коммит 402949f 2026-07-10) —
+  добавлял картинки ПОСЛЕ create через UpdateAdaptiveTextAds full-replace, но флаковал →
+  NO_IMAGES оставался систематичным. `_preupload_tp1_images` (в библиотеку) — этот путь её не читал.
+
+### TP7_GOALID_FROM_PAYLOAD — Товарка/SMART, goalId=0 при отсутствии счётчика (2026-07-11)
+- Симптом (историч.): tp7 UAC-товарка падала «goalId=0 / ошибка 4000» когда `metrika_goals`
+  (FOREIGN-таблица) не отдавала счётчик/цель для логина.
+- Где: tp7, путь UAC/cookie, `create_set_metrika.py:prepare_metrika` → `create_set_orchestrator`
+  (counter_id/goal_id) → `create_set_master_product.run_master_product_item`
+  → `MasterCampaignSpec(counter_id,goal_id)` → `campaign.create_master_campaign`.
+- Root-cause: цель для конверсионной стратегии товарки берётся из счётчика клиента; при пустом
+  `metrika_goals` goal=0 → Яндекс отклоняет.
+- Решение (Семёна): `prepare_metrika` принимает `counter_id`/`goal_id` из PAYLOAD напрямую
+  (`api/create_set_async` → normalize_create_set_input → prepare_metrika), только при их отсутствии
+  идёт в `metrika_goals`. Передача счётчик+цель в body обходит FOREIGN-таблицу.
+- Статус: ✅ подтверждено прогоном 2026-07-11. porg-vfdnaolu, counter=110499992/goal=579905467
+  в payload → 3 tp7-товарки (BAIC/Changan/Chery, ids 712717953/955/958) созданы created=3/failed=0/
+  errors=0, БЕЗ goalId=0. Сырой UAC-детейл: **goal_id=579905467** (≠0), feed_id=3560490, ecom=true
+  на всех 3. Live-verifier: status=pass, 0 issues.
+- ⚠️ Смежная находка (НЕ баг создания, но чинить): у porg-vfdnaolu 8 фидов, НИ ОДИН не в allow-list
+  «Глобальных правил» (`_allowed_feed_keys`): у аккаунта префикс `used-*` и `yandex-catalog*.xml`,
+  нет `/yandex.xml` и нет `yandex-catalog-model-design-custom-name.xml`. → штатный set_plan
+  (single_feed) даёт 0 product-items → до UAC-создания НЕ доходит. Тест goalId прошёл только с
+  точечным in-process разрешением ОДНОГО реального каталог-фида (3560490 yandex-catalog.xml).
+  Для боевого tp7 на used-car аккаунтах нужен либо фид из allow-list, либо расширение allow-list.
+- ⚠️ Латентный баг (masked): `create_set_plan.py:277` читает v5 `feeds` с FieldNames `["Id","Name",
+  "SourceType","Url"]` — `Url` НЕ валиден (v5 требует Id/Name/BusinessType/SourceType/FilterSchema/…),
+  вызов ВСЕГДА возвращает «Некорректный запрос» → молчаливый фолбэк на Grid `_grid_feeds`. Не ломает
+  (Grid работает), но v5-путь фидов мёртв. Убрать `Url` из FieldNames (URL берётся из Grid).
+
 ### DMP_FULL_B2B_PIPELINE — весь пайплайн dmp генерировал авто-кредитный контент (2026-07-11)
 - Симптом: для `site_type=="dmp"` (B2B-лидоген, dmp-ai.ru) все объявления содержали
   «кредит/платёж/₽/мес/трейд-ин/КАСКО» — даже при исправном паке. Gate `validate_create_set_content`
@@ -77,6 +492,78 @@
 - Статус: 🟡 код на Mac + DB ✅. Mutagen засинкает, НЕ деплоено (рестарт сервиса — отдельно).
 - НЕ помогло ранее: частичный dmp-guard в build_titles_messages (добавлен 2026-07-10) —
   блокировал авто только в заголовках; тексты/сайтлинки/фильтры оставались авто.
+
+**Round 2 — доминантный путь `_gen_campaign_content`/`_rsya_titles`/`_upgrade_credit_titles` (2026-07-11):**
+После Round 1 диагностика показала: titles гибрид авто+B2B, texts 100% авто, sitelinks 100% авто.
+Дополнительные корни:
+  1. `_accept_title`/`_accept_text` + `_title_ok`/`_text_ok` (create_content.py) — branch order: brand-check ДО dmp-check
+     → B2B-контент LLM и корпус agentads['dmp'] отвергались при наличии бренда в ct.
+  2. `assemble_campaign._title_ok`/`._text_ok` (ai_agents.py) — `_brand_ok(c) AND B2B` → корпус dmp сбрасывался, emergency fallback без dmp-guard.
+  3. `sitelink_fillers` (create_content.py, ~строка 723) — авто-список overwrite dmp B2B sitelinks.
+  4. `_needs_credit_title_upgrade` (create_set_assets.py) — B2B без кредита → `_upgrade_credit_titles` навешивал авто.
+  5. `_rsya_titles` (text_gen.py) — нет dmp-guard → авто brand-title-set и _GENERIC_TITLE_FILLERS.
+Решение (2026-07-11):
+  - `create_content.py` (7 правок): dmp-check ПЕРВЫМ во всех 4 функциях; `_brand_ok_line` True для dmp;
+    sitelink_fillers под `if not _is_dmp`; stop-words в `_take_titles`/`_take_texts`/`_take_sitelinks`.
+  - `ai_agents.py` (3 правки): убран `_brand_ok(c)` из dmp-ветки; emergency fallback с B2B фолбэком.
+  - `create_set_assets.py` (1 правка): `_DMP_B2B_TITLE_RE` + guard в `_needs_credit_title_upgrade` → False при B2B-маркерах.
+  - `text_gen.py` (1 правка): `_rsya_titles` — ранний return для dmp с `AGENT_ADS['dmp']` + B2B fillers.
+Верификация (2026-07-11, статическая):
+  - py_compile OK на всех 4 файлах; pyflakes 0 новых undefined-name.
+  - `_needs_credit_title_upgrade(B2B_TITLES)` → False; `(AUTO_TITLES)` → True. PASS.
+  - `_rsya_titles(site_type="dmp")` → 7 B2B-заголовков, 0 авто-контента. PASS.
+  - `AGENT_ADS['dmp']`: 4 title / 3 text / 8 sitelink — все B2B-маркеры. PASS.
+- Статус: 🟡 Round 2 код на Mac. НЕ деплоено (Mutagen засинкает, рестарт — отдельно).
+
+**Round 3 — UAC/master-путь `create_set_master_product.py` (tp6/tp7) (2026-07-11):**
+Дополнительный корень: tp1/tp2-контент-путь закрыт Rounds 1-2, но tp6 МК (UAC-путь) строился
+через `create_set_master_product.py` с прямым использованием `_GENERIC_AT_TITLES` как базы.
+Root-cause:
+  1. `create_set_master_product.py:141-145` (до правки) — `else` ветка tp6 ct0000: `title_primary = _GENERIC_AT_TITLES`; B2B-корпус шёл только в `title_supp` добавкой.
+  2. `_has_number` (number-gate) :178 — резал B2B-строки без цифр («Получайте контакты потенциальных клиентов…»).
+  3. `if not c_brand: _x_base = _GENERIC_TEXT_FILLERS` :220 — авто-тексты вместо B2B-корпуса.
+  4. `_GENERIC_TITLE_FILLERS`/`_GENERIC_TEXT_FILLERS` в пуле `_fill_variants` — авто-добор.
+  5. `_fallback_master_titles` — авто-строки («Авто в кредит», «КАСКО»…) при <5 заголовков.
+Решение (2026-07-11):
+  - `blueprint.py:7290` — добавлен `"_slepok_is_auto"` в `_master_product_deps()`.
+  - `create_set_master_product.py`:
+    - :81 — `_slepok_is_auto = deps['_slepok_is_auto']`
+    - :85 — `_is_non_auto = not _slepok_is_auto(agent or "")`
+    - :151-163 — `else` ветка tp6 и `elif is_product` ветка tp7: при `_is_non_auto` база = B2B-корпус `_sc["titles"]`, авто-дженерики не подмешиваем.
+    - :188-190 — `_title_fill_pool`: для не-авто исключён `_GENERIC_TITLE_FILLERS`.
+    - :198 — number-gate заголовков: `not _is_non_auto and not _has_number(_t)`.
+    - :239-245 — тексты: при `_is_non_auto` `_x_base = _b2b_texts or _GENERIC_TEXT_FILLERS`.
+    - :249-251 — `_text_fill_pool`: для не-авто исключён `_GENERIC_TEXT_FILLERS`.
+    - :260 — number-gate текстов: `not _is_non_auto and not _has_number(_x)`.
+    - :regen-loop (titles/texts) — аналогично.
+    - :411-412 — fallback `_fallback_master_titles` guard: `not _is_non_auto`.
+    - :413-417 — текстовый fallback `_txt_fallback = [] if _is_non_auto else list(_GENERIC_TEXT_FILLERS)`.
+  - Авто-слепки: `_slepok_is_auto(agent)=True` → `_is_non_auto=False` → все ветки авто-пути без изменений.
+- Верификация (статическая, 2026-07-11):
+  - py_compile OK (create_set_master_product.py + blueprint.py).
+  - pyflakes: create_set_master_product.py — 0 предупреждений; blueprint.py — 0 undefined-name.
+- Чинит ли уже созданные РК: НЕТ. Применяется только при следующем прогоне create_set для dmp.
+- Статус: 🟡 код на Mac. НЕ деплоено (Mutagen засинкает, рестарт direct-create.service — отдельно).
+
+**Round 4 — тексты tp2 Поиска: `_rsya_texts()` в `text_gen.py` (2026-07-11):**
+Root-cause: `_rsya_texts()` не имела dmp-ветки совсем. Вызывается из `_build_text_from_pack` (create_set_text_builders.py:374)
+для КАЖДОЙ ct-группы tp2. Без ветки функция:
+  1. Запускала `_brand_text_set(brand=«BAIC», city)` → «Купить BAIC в кредит. Первый взнос 0 ₽ и КАСКО...» и т.п.
+  2. Добивала `_RSYA_TEXT_POOL` — пул авто-УТП («Господдержка и выгодный кредит...»).
+  3. Применяла `pad_tails` — «Одобрение за 30 минут», «КАСКО в подарок», «Трейд-ин выше рынка».
+Итог: 3 текста = 100% авто-кредитный контент, даже если incoming уже B2B.
+Решение (2026-07-11): `text_gen.py:642-657` — ранний return dmp-ветки по образцу `_rsya_titles` (строки 1034-1052):
+  - `if site_type == "dmp":` — lazy import ai_agents; corpus из `AGENT_ADS['dmp']['texts']` (3 B2B-текста);
+  - 5 B2B-текстов-филлеров (контакты/лиды/клиенты, без авто-лексики);
+  - `dict.fromkeys` дедуп incoming + corpus + fillers → возврат cap=3 B2B-текстов.
+  - Авто-пути (`_brand_text_set`, `_RSYA_TEXT_POOL`, `pad_tails`) — пропускаются целиком для dmp.
+  - Авто-слепки: ветка `site_type == "dmp"` не срабатывает → без изменений.
+- Верификация (2026-07-11):
+  - py_compile text_gen.py OK; pyflakes 0 ошибок.
+  - Логика-тест: dmp incoming=["Предоставим контакты..."] → 3 B2B-текста, авто-лексика отсутствует (PASS).
+  - dmp пустой incoming → 3 текста из corpus (PASS). Дедуп → 0 дублей (PASS). Авто site_type='new' → прежний путь (PASS).
+- Чинит ли уже созданные РК: НЕТ. Только будущие прогоны create_set для dmp.
+- Статус: 🟡 Round 4 код на Mac (text_gen.py:642-657). НЕ деплоено.
 
 ### DMP_TITLES_AUTO_CREDIT_BLEED + CT0000_BRAND_HALLUCINATION + KVIZ_BU_LEAK + TITLES_SHORT_BUDGET (контент-тест #51, 2026-07-10)
 Четыре бага генерации заголовков/текстов, найденные боевым M3. Все в `ai_agents.py`.
@@ -947,6 +1434,37 @@
   прод OFF → OFF-ветка флипала по первому маркеру без units-проверки. R2-2 распространяет жёсткую
   units-проверку на ОБЕ ветки (OFF-дефолт и ON) и на конец-сет remainder.
 
+### FALSE_152_TOKEN_RETRY_TECH_FAIL_FLIPS_COOKIE — техошибка token-ретрая при ЖИВЫХ баллах даёт ложный «баллы исчерпаны» + куку (2026-07-13)
+- Симптом (job porg-asfbs7qe, агентство victoryagency14, остаток ~37.8 МЛН баллов): ложный попап
+  «⛔ Баллы коммандера исчерпаны (error 152)» на конец-сет remainder, хотя баллы ЖИВЫ. Плюс остаток
+  уводился на via_cookie → сегментный tp5 теряет функциональность (`NO_BRAND_SEGMENTS_AVAILABLE`).
+- Где: `create_set_orchestrator.py`, конец-сет блок `_units_block` (гейт куки-remainder, ~1190). Дырка
+  в инварианте R2-2 (см. запись FALSE_152_COOKIE_FLIP_AT_LIVE_OPERATOR_UNITS выше).
+- Root-cause: token-ретрай (`_deferred_save` с `_resume_via_token=True`, строки 1171-1184) обёрнут в
+  `try/except: _token_retry_did = None`. Любое ТЕХНИЧЕСКОЕ исключение (DB-хиккап, не units) тихо оставляло
+  `_token_retry_did = None`. Гейт куки-remainder был `if _remaining and not _token_retry_did:` — он НЕ
+  перепроверял `_units_dead_confirmed`/`_rc`, а трактовал «`_token_retry_did` is None» как «баллы
+  исчерпаны ИЛИ ретраи исчерпаны». При живых баллах (`_units_dead_confirmed=False`) и `_rc < _RESUME_MAX`
+  это ЛОЖЬ → проваливался в куки-фолбэк + текст «баллы исчерпаны». То есть инвариант R2-2 («кука ТОЛЬКО
+  при dead ИЛИ rc>=max») обходился именно техническим падением ретрая.
+- Решение (2026-07-13): (1) гейт куки-remainder ужесточён до
+  `if _remaining and not _token_retry_did and (_units_dead_confirmed or _rc >= _RESUME_MAX):` — кука
+  строго по инварианту R2-2. (2) Добавлена честная ветка `elif ... not _units_dead_confirmed and
+  _rc < _RESUME_MAX:` для «ложный 152 при живых баллах + техпадение ретрая»: повторная TOKEN-постановка
+  остатка (`_deferred_save`, `_resume_via_token=True`, БЕЗ `via_cookie`) → на успех honest-note
+  «повторно на докрутку токеном», на неудачу — флаг `_false152_unplaced` + honest-note «баллы ЕСТЬ,
+  техошибка, нужен ручной перезапуск» (НЕ «исчерпаны»). (3) `_false152_unplaced` в parent-handling:
+  при resume-run с непоставленным остатком родительская строка → `waiting` (демон повторит токеном),
+  НЕ гасится в `done` — инвариант «пункты не теряются» (тот же класс, что инцидент SEGMENT_TP5 08.07).
+  Реальный 152 (`_units_dead_confirmed=True`) и путь rc>=max — не тронуты.
+- Статус: 🟡 код на Mac (py_compile OK, pyflakes 0 новых undefined). НЕ деплоено. **live не проверено** —
+  проверить: технический сбой token-ретрая при живых баллах НЕ даёт «баллы исчерпаны» и НЕ уводит на
+  куку; реальное исчерпание (rest≈0) и rc>=max по-прежнему идут на куки-remainder.
+- НЕ помогло ранее: R2-2 (FALSE_152_COOKIE_FLIP) — ввёл units-проверку и token-деферред при живых баллах,
+  НО оставил гейт куки-remainder на голом `not _token_retry_did`, из-за чего ТЕХНИЧЕСКОЕ падение ретрая
+  (а не units) всё равно уводило на куку. Текущий фикс закрывает эту щель, перепроверяя dead/rc в самом
+  гейте.
+
 ### WORKER_FREEZE_POSTPROCESS_NO_TIMEOUT — постпроцесс морозит поток воркера (#17, 2026-07-09)
 - Симптом (живой прогон 09.07, ДВАЖДЫ за прогон): direct-worker ЗАМЕРЗАЛ — процесс жив, **CPU 0%, лог
   молчит 6-8+ мин**, джоба висит `running`/`interrupted`, `done=14/14` но НЕ флипается в `done`. Второй
@@ -1509,6 +2027,15 @@
 - Root-cause: НЕ баг. Video-пул `/Users/Shared/agency/Video/<ct>/` покрывает 4 марки (BAIC/Belgee/Haval/Москвич), аккаунт торгует ~30. Привязка (per-ct breaker + 2 ретрая + brand-fallback + «до нуля» переочередь) исправна — `video_no_pool` by design.
 - Решение: код НЕ править. Наливать video-пул роликами недостающих марок (задача контента/пака).
 - Статус: ✅ диагностировано (не код). `video_no_pool` теперь виден в отчёте.
+
+### VIDEO_NO_POOL_TRANSIENT_INDEX — транзиентно пустой manifest → VIDEO_MISSING ложно становится VIDEO_NO_POOL, догрузка молча не перепланируется (2026-07-12)
+- Симптом: живой видео-пул на диске на месте, но hasVideo=false объявления tp1 РСЯ не догружаются и НЕ переочередиваются; в аудите вместо `VIDEO_MISSING` (fixable) висит `VIDEO_NO_POOL` (fixable=False).
+- Где: `campaign_spec_audit.py:_audit_tp1_adaptive` (классификация VIDEO_NO_POOL vs VIDEO_MISSING) → `_ct_has_pool_video` → `kontent_pack.videos_pool_for_ct` (`_load_index().external_assets`).
+- Root-cause: `_load_index()` при недоступном/переписываемом `manifest.json` возвращает пустую заглушку (`external_assets={}`). Тогда `_ct_has_pool_video(ct)` даёт False для ВСЕХ ct → все объявления уходят в `video_no_pool` (fixable=False), `video_missing` пуст. Reschedule-плита завязана ТОЛЬКО на `video_missing_fix.still_missing_total` (queue_server.py:1060 `remaining += _video_still`) → нет VIDEO_MISSING = нет ретрая. Транзиент индекса замаскирован под «нет пула».
+- Решение (2026-07-12): гейт свежести. Новый `kontent_pack.video_index_suspect_empty()` → True ТОЛЬКО когда видео-индекс глобально пуст (ни одного ключа `Video|video|*`) НО физический пул `_video_pool/ctNNNN/*.mp4` на локальном зеркале существует (без sshfs-обхода M3). В `_audit_tp1_adaptive` no_pool собирается на ad-level; если гейт True — ролики переводятся в `VIDEO_MISSING` (retryable) вместо финального VIDEO_NO_POOL → существующая плита `still_missing_total`→`remaining` даёт reschedule. Следующий (здоровый) цикл разложит корректно: covered→attach, genuinely-uncovered→VIDEO_NO_POOL терминально. Настоящее частичное покрытие (журнал VIDEO_NO_POOL 08.07) сюда НЕ попадает — индекс НЕпуст → гейт False.
+- Статус: 🟡 код на Mac (Mutagen→LXC101), py_compile OK; ждёт живого прогона. Верификация: при пустом manifest + живом `_video_pool` аудит эмитит VIDEO_MISSING (не VIDEO_NO_POOL) и delayed-repair переочередивает; при непустом индексе поведение без изменений.
+- Верификация direct_verifier (2026-07-12): ✅ код подтверждён — `kontent_pack.video_index_suspect_empty()` (1302-1335) + ad-level буфер `no_pool_ads` в `campaign_spec_audit._audit_tp1_adaptive` (888-924); не-транзиентный путь (индекс непуст) — `no_pool_ads` не используется, `VIDEO_NO_POOL` эмитится идентично pre-fix; UAC-путь не тронут; conservative fallback (`_LOCAL_MIRROR_ROOT=None`/нет `_video_pool` → False) = прежнее поведение. Остаётся 🟡: live-прогон при реальном транзиентном `manifest.json`.
+- НЕ помогло ранее: — (новый путь; отдельный отказ от VIDEO_NO_POOL by-design 08.07 — там частичное покрытие, индекс НЕпуст).
 
 ### COPY_LOGIN2LOGIN_GRID_BRANCH_GAPS — 5 дефектов копировщика при login→login (2026-07-08)
 - Симптом (по факту от Семёна на боевом копировании кабинета): 1) кодер группы не перекодирован Краснодар→Уфа; 2) нет быстрых ссылок и уточнений у скопированных объявлений; 3) местами URL из «подборок» (чужой/дефолтный); 4) в имени РК регион не по кодеру; 5) в фидах не проставлен текст по умолчанию.

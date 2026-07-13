@@ -76,6 +76,14 @@ PC_APPLY_ATTEMPTS_FAST = 5
 PC_APPLY_DELAY_FAST = 10
 PC_APPLY_ATTEMPTS_SLOW = 5
 PC_APPLY_DELAY_SLOW = 20
+# Батч ads.update/ads.get: конвенция v5 для add/update/delete — потолок 1000 элементов
+# в массиве; берём с запасом (согласовано 2026-07-10 после инцидента с Тумашенко).
+PC_BATCH_SIZE = 900
+# Heartbeat заливки: минимальный интервал (сек) между записями message в БД. Крупная заявка
+# закрывает первую url-позицию за 10-15 мин (все ad_id всех логинов) → done стоит на 0, шкала
+# кажется зависшей. Heartbeat пишет ad-level прогресс в message не чаще раза в интервал, чтобы
+# не спамить БД (< 6с UI-полла, но >> per-request rate). started_at НЕ трогаем — reconcile не задет.
+PC_HEARTBEAT_SECS = float(os.environ.get("PRICE_CHECK_HEARTBEAT_SECS") or 4)
 
 _ADS_FIELDS = ["Id", "CampaignId", "AdGroupId", "Status", "State", "Type"]
 _TEXT_AD_FIELDS = ["Title", "Title2", "Text", "Href", "VCardId", "SitelinkSetId", "DisplayUrlPath"]
@@ -362,6 +370,10 @@ def ensure_price_check_tables(victory_conn_rw: Callable) -> None:
             # status может принимать значение 'paused' (пауза очереди пользователем).
             cur.execute("ALTER TABLE public.direct_price_check_jobs "
                         "ADD COLUMN IF NOT EXISTS control text NOT NULL DEFAULT ''")
+            # run_now — заявка queued отмечена кнопкой «Запустить» (не ждать крон 20:00);
+            # см. request_start_now/_claim_next_run_now_apply.
+            cur.execute("ALTER TABLE public.direct_price_check_jobs "
+                        "ADD COLUMN IF NOT EXISTS run_now boolean NOT NULL DEFAULT false")
         conn.commit()
     except Exception:  # noqa: BLE001
         try:
@@ -416,16 +428,23 @@ def _job_update(victory_conn_rw: Callable, job_id: str, **fields) -> None:
         conn.close()
 
 
-def mark_running(victory_conn_rw: Callable, job_id: str, message: str = "") -> None:
-    """queued→running с проставлением started_at (для корректного elapsed). См. пункт 5 code-review."""
+def mark_running(victory_conn_rw: Callable, job_id: str, message: str = "") -> bool:
+    """queued→running с проставлением started_at (для корректного elapsed). См. пункт 5 code-review.
+
+    Guard `status='queued'` обязателен: между SELECT очереди и этим апдейтом заявку могли
+    удалить (queued→cancelled кнопкой) — без guard'а мы бы воскресили её обратно в running
+    и залили «удалённые» цены. Возвращает True, если заявка реально переведена (была queued)."""
     conn = victory_conn_rw()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE public.direct_price_check_jobs SET status='running', "
-                "started_at=COALESCE(started_at, now()), message=%s WHERE job_id=%s",
+                "started_at=COALESCE(started_at, now()), message=%s "
+                "WHERE job_id=%s AND status='queued'",
                 (message[:500], job_id))
+            n = cur.rowcount
         conn.commit()
+        return n > 0
     finally:
         conn.close()
 
@@ -484,15 +503,39 @@ def job_public(victory_conn: Callable, job_id: str) -> dict | None:
         conn.close()
 
 
-def jobs_recent(victory_conn: Callable, limit: int = 30) -> list[dict]:
+def jobs_recent(victory_conn: Callable, limit: int = 30,
+                created_by: str | None = None) -> list[dict]:
+    """Последние задания сверки цен. created_by=None → все (админ); строка →
+    только задания этого пользователя (обычный юзер видит лишь свои)."""
     import psycopg2.extras
+    where = ""
+    params: list = []
+    if created_by is not None:
+        where = "WHERE created_by=%s "
+        params.append(created_by)
+    params.append(limit)
     conn = victory_conn()
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("SELECT job_id, kind, status, done, total, message, error, created_by, "
                     "extract(epoch FROM created_at) AS created_at "
-                    "FROM public.direct_price_check_jobs ORDER BY created_at DESC LIMIT %s", (limit,))
+                    f"FROM public.direct_price_check_jobs {where}"
+                    "ORDER BY created_at DESC LIMIT %s", tuple(params))
         return cur.fetchall() or []
+    finally:
+        conn.close()
+
+
+def job_created_by(victory_conn: Callable, job_id: str) -> str | None:
+    """created_by задания (для проверки владения на не-админских эндпоинтах).
+    None → задание не найдено."""
+    conn = victory_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT created_by FROM public.direct_price_check_jobs "
+                        "WHERE job_id=%s", (job_id,))
+            row = cur.fetchone()
+            return (row[0] or "") if row else None
     finally:
         conn.close()
 
@@ -551,23 +594,126 @@ def request_resume(victory_conn_rw: Callable, job_id: str) -> bool:
 
 
 def request_delete(victory_conn_rw: Callable, job_id: str) -> bool:
-    """Удалить задание из очереди — ТОЛЬКО если оно на паузе (status='paused').
-    Переводит в 'cancelled' (скрывается из активной очереди). Возвращает True если удалено,
-    False если задание не на паузе (нельзя удалить активное — сначала пауза)."""
+    """Удалить задание из очереди — на паузе ИЛИ ещё не стартовавшее (status='queued').
+    Активное (running) удалить нельзя — сначала пауза. Переводит в 'cancelled'
+    (скрывается из активной очереди). Возвращает True если удалено."""
     conn = victory_conn_rw()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE public.direct_price_check_jobs SET status='cancelled', control='', "
-                "finished_at=now(), "
+                "run_now=false, finished_at=now(), "
                 "error=CASE WHEN error='' THEN 'удалено из очереди' ELSE error END "
-                "WHERE job_id=%s AND status='paused'",
+                "WHERE job_id=%s AND status IN ('paused','queued')",
                 (job_id,))
             n = cur.rowcount
         conn.commit()
         return n > 0
     finally:
         conn.close()
+
+
+def cleanup_old_jobs(victory_conn_rw: Callable, keep_days: int = 3) -> int:
+    """Удаляет ЗАВЕРШЁННЫЕ задания (done/done_with_errors/error/cancelled) старше
+    keep_days суток. Активные (queued/running/paused) не трогает независимо от
+    возраста. Возвращает число удалённых строк."""
+    conn = victory_conn_rw()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM public.direct_price_check_jobs "
+                "WHERE status IN ('done','done_with_errors','error','cancelled') "
+                "AND created_at < now() - (%s || ' days')::interval",
+                (keep_days,))
+            n = cur.rowcount
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
+def request_start_now(victory_conn_rw: Callable, job_id: str) -> tuple[str, list] | None:
+    """Кнопка «Запустить»: queued-заявка не ждёт крон 20:00.
+
+    Если сейчас НЕ выполняется другая apply-заявка — запускается немедленно (status→'running',
+    вызывающий обязан launch_background(run_apply_job,...) с возвращёнными items).
+    Если уже что-то выполняется — заявка остаётся 'queued', но помечается run_now=true и
+    встаёт в конец очереди на автостарт: _chain_next_apply подхватит её сразу, как только
+    текущая заливка закончится (не дожидаясь общего крона). Обычные (не отмеченные run_now)
+    queued-заявки эта логика не трогает — они как и раньше ждут крона 20:00.
+    Возвращает (status, items) или None, если заявки нет / она уже не в 'queued'."""
+    import psycopg2.extras
+    conn = victory_conn_rw()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Сериализуем решение «стартовать сейчас или встать в очередь»: без этого два
+            # одновременных клика (или клик ∥ крон 20:00) оба увидят «running нет» и уйдут
+            # в running параллельно — два прогона ударят один агентский токен >1 потоком
+            # (152/троттлинг). Лок xact-scoped, снимается на commit ниже.
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext('pc_apply_singleton'))")
+            cur.execute(
+                "UPDATE public.direct_price_check_jobs SET "
+                "run_now=true, "
+                "status = CASE WHEN NOT EXISTS (SELECT 1 FROM public.direct_price_check_jobs r "
+                "                                WHERE r.kind='apply' AND r.status='running') "
+                "             THEN 'running' ELSE status END, "
+                "started_at = CASE WHEN NOT EXISTS (SELECT 1 FROM public.direct_price_check_jobs r "
+                "                                    WHERE r.kind='apply' AND r.status='running') "
+                "                  THEN now() ELSE started_at END, "
+                "message = CASE WHEN NOT EXISTS (SELECT 1 FROM public.direct_price_check_jobs r "
+                "                                 WHERE r.kind='apply' AND r.status='running') "
+                "               THEN 'выполняется (запущено вручную)' "
+                "               ELSE 'запустится сразу после текущей заливки' END "
+                "WHERE job_id=%s AND status='queued' AND kind='apply' "
+                "RETURNING status, params",
+                (job_id,))
+            row = cur.fetchone()
+        conn.commit()
+        if not row:
+            return None
+        items = (row["params"] or {}).get("items") or []
+        return row["status"], items
+    finally:
+        conn.close()
+
+
+def _claim_next_run_now_apply(victory_conn_rw: Callable) -> tuple[str, list] | None:
+    """Атомарно забирает следующую run_now-заявку (FIFO по created_at) и переводит
+    в 'running'. Вызывается из _chain_next_apply после финиша ручного запуска."""
+    import psycopg2.extras
+    conn = victory_conn_rw()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Тот же singleton-лок: не забираем следующую run_now, если сейчас уже что-то
+            # выполняется (например кроновый пул 20:00 в параллельном процессе).
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext('pc_apply_singleton'))")
+            cur.execute(
+                "UPDATE public.direct_price_check_jobs SET status='running', started_at=now(), "
+                "message='выполняется (следующая в ручной очереди)' "
+                "WHERE job_id = (SELECT job_id FROM public.direct_price_check_jobs "
+                "                 WHERE kind='apply' AND status='queued' AND run_now=true "
+                "                 AND NOT EXISTS (SELECT 1 FROM public.direct_price_check_jobs r "
+                "                                 WHERE r.kind='apply' AND r.status='running') "
+                "                 ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED) "
+                "RETURNING job_id, params")
+            row = cur.fetchone()
+        conn.commit()
+        if not row:
+            return None
+        items = (row["params"] or {}).get("items") or []
+        return row["job_id"], items
+    finally:
+        conn.close()
+
+
+def _chain_next_apply(deps: dict) -> None:
+    """После финиша apply-заявки проверяет, не встала ли за это время в очередь на
+    автостарт ('Запустить', run_now=true) другая заявка — и если да, сразу её стартует,
+    вместо того чтобы заставлять ждать общего крона 20:00."""
+    nxt = _claim_next_run_now_apply(deps["victory_conn_rw"])
+    if nxt:
+        next_job_id, items = nxt
+        launch_background(run_apply_job, deps, next_job_id, items)
 
 
 def last_check_run(victory_conn: Callable) -> dict | None:
@@ -593,14 +739,22 @@ def last_check_run(victory_conn: Callable) -> dict | None:
 
 def logins_for(victory_conn: Callable, *, logins: list[str] | None,
                directologist: str | None, status: str, exclude: list[str],
-               all_active: bool = False) -> list[dict]:
+               all_active: bool = False,
+               allowed: list[str] | None = None) -> list[dict]:
     """Возвращает [{login, domain, directologist, agency}] из local_gsheet_sites.
 
     Явный список logins → берём их. Иначе по директологу. all_active=True → ВСЕ
     активные (для ночной сверки/кнопки «Пересчитать сейчас»). Без всего — [] (защита
-    от случайного запуска по всем аккаунтам из ручного UI)."""
+    от случайного запуска по всем аккаунтам из ручного UI).
+
+    allowed=None → полный доступ (скоуп не применяется). allowed=[...] → жёсткий
+    скоуп по директологу текущего пользователя (как «Обзор»); пустой список → []
+    (нет выданных доступов). Скоуп применяется поверх ЛЮБОГО режима (logins/
+    directologist/all_active), чтобы обычный юзер не мог достать чужой аккаунт."""
     import psycopg2.extras
     from .account_filters import base_account_where
+    if allowed is not None and not allowed:
+        return []
     where = list(base_account_where())
     params: list = []
     if status and status != "__all__":
@@ -609,6 +763,9 @@ def logins_for(victory_conn: Callable, *, logins: list[str] | None,
     if exclude:
         where.append("(directologist IS NULL OR directologist <> ALL(%s))")
         params.append(exclude)
+    if allowed is not None:
+        where.append("directologist = ANY(%s)")
+        params.append(allowed)
     if logins:
         where.append("login_key = ANY(%s)")
         params.append(list({l.strip() for l in logins if l and l.strip()}))
@@ -630,10 +787,14 @@ def logins_for(victory_conn: Callable, *, logins: list[str] | None,
         conn.close()
 
 
-def active_logins(victory_conn: Callable, *, status: str, exclude: list[str]) -> list[dict]:
-    """ВСЕ активные Авто-логины (для ночной сверки 02:00 и кнопки «Пересчитать сейчас»)."""
+def active_logins(victory_conn: Callable, *, status: str, exclude: list[str],
+                  allowed: list[str] | None = None) -> list[dict]:
+    """ВСЕ активные Авто-логины (для ночной сверки 02:00 и кнопки «Пересчитать сейчас»).
+
+    allowed=None → все; allowed=[...] → только аккаунты своих директологов."""
     return logins_for(victory_conn, logins=None, directologist=None,
-                      status=status, exclude=exclude, all_active=True)
+                      status=status, exclude=exclude, all_active=True,
+                      allowed=allowed)
 
 
 def enqueue_apply(victory_conn_rw: Callable, created_by: str, items: list[dict]) -> str:
@@ -659,24 +820,32 @@ def queued_apply_jobs(victory_conn: Callable) -> list[dict]:
         conn.close()
 
 
-def apply_queue_for_ui(victory_conn: Callable, limit: int = 100) -> list[dict]:
+def apply_queue_for_ui(victory_conn: Callable, limit: int = 100,
+                       created_by: str | None = None) -> list[dict]:
     """Заявки на изменение цен (kind='apply') для объединённой вкладки «Очередь».
 
     Ночные автосверки (kind='check'/'auto') НЕ включаем — они фоновые, в очереди не нужны.
+    created_by=None → все (админ); строка → только заявки этого пользователя.
     """
     import psycopg2.extras
+    where = ("WHERE kind='apply' AND status <> 'cancelled' "     # удалённые из очереди скрываем
+             "AND (status IN ('queued','running','paused') "
+             "OR created_at > now() - interval '48 hours') ")
+    params: list = []
+    if created_by is not None:
+        where += "AND created_by=%s "
+        params.append(created_by)
+    params.append(limit)
     conn = victory_conn()
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
-            "SELECT job_id, kind, status, created_by, done, total, message, error, control, "
+            "SELECT job_id, kind, status, created_by, done, total, message, error, control, run_now, "
             "extract(epoch FROM created_at) AS created_at, "
-            "extract(epoch FROM coalesce(finished_at, now()) - coalesce(started_at, created_at)) AS elapsed "
+            "extract(epoch FROM coalesce(finished_at, now()) - started_at) AS elapsed "
             "FROM public.direct_price_check_jobs "
-            "WHERE kind='apply' AND status <> 'cancelled' "     # удалённые из очереди скрываем
-            "AND (status IN ('queued','running','paused') "
-            "OR created_at > now() - interval '48 hours') "
-            "ORDER BY created_at DESC LIMIT %s", (limit,))
+            f"{where}"
+            "ORDER BY created_at DESC LIMIT %s", tuple(params))
         return cur.fetchall() or []
     finally:
         conn.close()
@@ -939,11 +1108,22 @@ def _compute_and_store_diff(victory_conn_rw: Callable, login: str, directologist
 
 
 def diff_rows(victory_conn: Callable, *, directologist: str | None,
-              login: str | None, only_mismatch: bool, limit: int = 5000) -> list[dict]:
-    """Строки расхождений для UI (фильтр по директологу/логину)."""
+              login: str | None, only_mismatch: bool, limit: int = 5000,
+              allowed: list[str] | None = None) -> list[dict]:
+    """Строки расхождений для UI (фильтр по директологу/логину).
+
+    allowed=None → полный доступ; allowed=[...] → жёсткий скоуп по директологу
+    текущего пользователя (пустой список → []). Скоуп применяется поверх любых
+    UI-фильтров, поэтому обычный юзер не увидит чужие строки даже задав чужой
+    directologist/login в запросе."""
     import psycopg2.extras
+    if allowed is not None and not allowed:
+        return []
     where = ["1=1"]
     params: list = []
+    if allowed is not None:
+        where.append("directologist = ANY(%s)")
+        params.append(allowed)
     if directologist:
         where.append("directologist=%s")
         params.append(directologist)
@@ -1008,6 +1188,27 @@ def _get_ad_data(v5_call: Callable, token: str, login: str, ad_id: int) -> dict 
     return ads[0] if ads else None
 
 
+def _get_ads_batch(v5_call: Callable, token: str, login: str, ad_ids: list[int]) -> dict[int, dict]:
+    """ads.get одним вызовом на пачку (до PC_BATCH_SIZE Id) вместо запроса на каждое
+    объявление. Возвращает {ad_id: ad_data} только для реально найденных объявлений."""
+    out: dict[int, dict] = {}
+    for i in range(0, len(ad_ids), PC_BATCH_SIZE):
+        chunk = ad_ids[i:i + PC_BATCH_SIZE]
+        j = v5_call("ads", "get", token, login, {
+            "SelectionCriteria": {"Ids": chunk},
+            "FieldNames": _ADS_FIELDS,
+            "TextAdFieldNames": _TEXT_AD_FIELDS,
+            "TextAdPriceExtensionFieldNames": _PRICE_EXT_FIELDS,
+        })
+        if j.get("error"):
+            continue
+        for ad in (j.get("result") or {}).get("Ads") or []:
+            if isinstance(ad, dict) and ad.get("Id") is not None:
+                out[ad["Id"]] = ad
+        time.sleep(PC_THROTTLE)
+    return out
+
+
 def _to_micro(v) -> int:
     """Цена → микроединицы Директа с корректным округлением (не обрезать копейки).
     Decimal + ROUND_HALF_UP: 199999.995 ₽ → 200000000000 мкед, а не 199999994999 (как int())."""
@@ -1015,188 +1216,417 @@ def _to_micro(v) -> int:
     return int((Decimal(str(v)) * 1_000_000).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def _update_ad_price(v5_call: Callable, token: str, login: str, ad_data: dict,
-                     new_price, new_oldprice) -> str:
-    """Одна попытка ads.update PriceExtension. → 'success'|'archived'|'failed'|'no_units'.
+def _price_extension_for(ad_data: dict, new_price, new_oldprice) -> tuple[dict, bool]:
+    """Целевой PriceExtension для одного объявления. → (extension, needs_two_step).
 
-    Баллы: v5_call шлёт заголовок ``Use-Operator-Units: true`` + агентский токен
-    (blueprint._token_for_login) → списывается с пула ОПЕРАТОРА-АГЕНТСТВА (миллионы баллов),
-    НЕ с клиента. Поэтому 152 (нехватка баллов) на заливке цен практически недостижима;
-    ветка 'no_units' — чисто защитная (если бы вдруг подставился клиентский пул).
-    Цена → микроединицы с округлением (_to_micro), а не обрезанием int()."""
-    ad_id = ad_data["Id"]
+    needs_two_step=True — когда фид просит price_feed >= oldprice_feed («скидки»
+    больше нет). Директ жёстко требует OldPrice > Price (код 5005) и не снимает
+    OldPrice частичным апдейтом (пропуск ключа / OldPrice=0 — отклоняются, старое
+    значение остаётся) — единственный подтверждённый способ: сначала обнулить весь
+    PriceExtension (None), затем отдельным вызовом задать только Price (verified
+    2026-07-10, porg-pjvmysez/17766710787)."""
     text_ad = ad_data.get("TextAd") or {}
     pe = text_ad.get("PriceExtension") or {}
+    if new_price is not None and new_oldprice is not None and new_price >= new_oldprice:
+        return {
+            "Price": _to_micro(new_price),
+            "PriceQualifier": "NONE",
+            "PriceCurrency": pe.get("PriceCurrency", "RUB"),
+        }, True
     price_api = _to_micro(new_price) if new_price is not None else pe.get("Price", 0)
     oldprice_api = _to_micro(new_oldprice) if new_oldprice is not None else pe.get("OldPrice", 0)
-    updated_pe = {
+    return {
         "Price": price_api,
         "OldPrice": oldprice_api,
         "PriceQualifier": pe.get("PriceQualifier", "FROM"),
         "PriceCurrency": pe.get("PriceCurrency", "RUB"),
-    }
-    text_ad_update = {
-        "Title": text_ad.get("Title"),
-        "Title2": text_ad.get("Title2"),
-        "Text": text_ad.get("Text"),
-        "Href": text_ad.get("Href"),
-        "PriceExtension": updated_pe,
-    }
-    for opt in ("VCardId", "SitelinkSetId", "DisplayUrlPath"):
-        if text_ad.get(opt):
-            text_ad_update[opt] = text_ad[opt]
-    j = v5_call("ads", "update", token, login,
-                {"Ads": [{"Id": ad_id, "TextAd": text_ad_update}]})
+    }, False
+
+
+def _build_ads_payload(pairs: list[tuple[dict, dict | None]]) -> list[dict]:
+    """pairs: [(entry, price_extension), ...] → Ads[] для ads.update.
+    entry — {"ad_id", "ad_data", ...}."""
+    ads = []
+    for e, pe_target in pairs:
+        text_ad = e["ad_data"].get("TextAd") or {}
+        text_ad_update = {
+            "Title": text_ad.get("Title"),
+            "Title2": text_ad.get("Title2"),
+            "Text": text_ad.get("Text"),
+            "Href": text_ad.get("Href"),
+            "PriceExtension": pe_target,
+        }
+        for opt in ("VCardId", "SitelinkSetId", "DisplayUrlPath"):
+            if text_ad.get(opt):
+                text_ad_update[opt] = text_ad[opt]
+        ads.append({"Id": e["ad_id"], "TextAd": text_ad_update})
+    return ads
+
+
+def _parse_batch_update(j: dict, entries: list[dict]) -> dict[int, str]:
+    """Разбирает ответ ads.update на батч → {ad_id: outcome}.
+
+    success | archived (код 8300, кампания в архиве — нормально, чинить нечего) |
+    rejected (любая другая структурная ошибка Директа вроде 5005 — детерминированная,
+    повтор не поможет, fail-fast) | no_units (баллы 152) |
+    failed (нет ответа/сетевая ошибка — транзиентная, стоит повторить)."""
     if _api_err_is_152(j):
-        return "no_units"
+        return {e["ad_id"]: "no_units" for e in entries}
     if j.get("error"):
-        return "failed"
+        return {e["ad_id"]: "failed" for e in entries}
     upd = (j.get("result") or {}).get("UpdateResults") or []
-    if not upd:
-        return "failed"
-    errors = upd[0].get("Errors") or []
-    if errors:
-        for e in errors:
-            if e.get("Code") == 8300:  # заархивированная кампания
-                return "archived"
-        return "failed"
-    return "success"
+    out: dict[int, str] = {}
+    for e, r in zip(entries, upd):
+        errors = (r or {}).get("Errors") or []
+        if not errors:
+            out[e["ad_id"]] = "success"
+        elif any(er.get("Code") == 8300 for er in errors):
+            out[e["ad_id"]] = "archived"
+        else:
+            out[e["ad_id"]] = "rejected"
+    for e in entries[len(upd):]:
+        out[e["ad_id"]] = "failed"
+    return out
 
 
-def _apply_one_ad(v5_call: Callable, token: str, login: str, ad_id: int,
-                  new_price, new_oldprice) -> str:
-    """get + update с ретраями (5×10с затем 5×20с). → итоговый статус."""
-    ad_data = _get_ad_data(v5_call, token, login, ad_id)
-    if not ad_data:
-        return "failed"
-    schedule = ([PC_APPLY_DELAY_FAST] * PC_APPLY_ATTEMPTS_FAST
-                + [PC_APPLY_DELAY_SLOW] * PC_APPLY_ATTEMPTS_SLOW)
-    for i, delay in enumerate(schedule):
-        res = _update_ad_price(v5_call, token, login, ad_data, new_price, new_oldprice)
-        if res in ("success", "archived", "no_units"):
-            return res
-        if i < len(schedule) - 1:
-            time.sleep(delay)
-    return "failed"
+def _batch_update_prices(v5_call: Callable, token: str, login: str,
+                         entries: list[dict]) -> dict[int, str]:
+    """Обновляет цены пачкой (до PC_BATCH_SIZE объявлений за вызов ads.update) вместо
+    одного объявления за раз. entries: [{"ad_id","ad_data","new_price","new_oldprice"},...].
+    Возвращает {ad_id: outcome}. Записи, где нужно снять OldPrice (needs_two_step),
+    идут отдельным под-батчем в 2 шага (см. _price_extension_for)."""
+    out: dict[int, str] = {}
+    for i in range(0, len(entries), PC_BATCH_SIZE):
+        chunk = entries[i:i + PC_BATCH_SIZE]
+        normal, no_discount = [], []
+        for e in chunk:
+            pe, needs_two_step = _price_extension_for(e["ad_data"], e["new_price"], e["new_oldprice"])
+            (no_discount if needs_two_step else normal).append((e, pe))
+
+        if normal:
+            j = v5_call("ads", "update", token, login, {"Ads": _build_ads_payload(normal)})
+            out.update(_parse_batch_update(j, [e for e, _ in normal]))
+            time.sleep(PC_THROTTLE)
+
+        if no_discount:
+            clear_pairs = [(e, None) for e, _ in no_discount]
+            j1 = v5_call("ads", "update", token, login, {"Ads": _build_ads_payload(clear_pairs)})
+            step1 = _parse_batch_update(j1, [e for e, _ in clear_pairs])
+            time.sleep(PC_THROTTLE)
+            step2_pairs = [(e, pe) for e, pe in no_discount if step1.get(e["ad_id"]) == "success"]
+            if step2_pairs:
+                j2 = v5_call("ads", "update", token, login, {"Ads": _build_ads_payload(step2_pairs)})
+                step1.update(_parse_batch_update(j2, [e for e, _ in step2_pairs]))
+                time.sleep(PC_THROTTLE)
+            out.update(step1)
+
+        # баллы агентства исчерпаны — оставшиеся ещё не отправленные чанки бессмысленны
+        if any(v == "no_units" for v in out.values()):
+            for e in entries[i + len(chunk):]:
+                out.setdefault(e["ad_id"], "no_units")
+            break
+    return out
 
 
-def run_apply_job(deps: dict, job_id: str, items: list[dict]) -> None:
-    """Фоновая заливка: по выбранным строкам расхождений пишем фидовую цену в Директ.
+def run_apply_pool(deps: dict, job_specs: list[dict], chain_after: bool = True) -> None:
+    """Единый движок заливки для ОДНОЙ или НЕСКОЛЬКИХ заявок сразу.
 
-    items: [{login, url, price_direct, oldprice_direct, price_feed, oldprice_feed}, ...].
-    """
+    job_specs: [{"job_id": str, "items": [...]}, ...], где item —
+    {login, url, price_direct, oldprice_direct, price_feed, oldprice_feed}.
+
+    chain_after: после финиша подхватить следующую run_now-заявку (_chain_next_apply).
+    True в долгоживущем Flask-сервисе (кнопка «Запустить»). В КРОНЕ передавать False:
+    крон — одноразовый процесс, и запущенный цепочкой daemon-поток был бы убит на выходе
+    (заявка зависла бы в running); плюс крон и так забирает все queued за один прогон.
+
+    Все позиции всех заявок сливаются в общий пул и группируются по агентству ОДИН раз:
+      • разные агентства  → льются ПАРАЛЛЕЛЬНО (до PC_AGENCY_WORKERS потоков);
+      • одно агентство    → 1 поток на токен (лимит Директа ≤2 на токен, берём 1),
+        внутри — батчами ПО ЛОГИНУ: Client-Login у ads.get/update скоупит вызов на
+        конкретный клиентский аккаунт, поэтому мешать логины в один батч нельзя
+        (иначе вернутся только объявления первого логина — верифицировано 2026-07-11).
+
+    Прогресс (done/message), пауза/отмена (control) и финальный статус — раздельно
+    по каждому job_id. run_apply_job (одиночная заявка) = пул из одной.
+
+    Батчами (до PC_BATCH_SIZE за вызов) вместо одного объявления за раз — инцидент
+    2026-07-10 (Тумашенко): 700+ отдельных вызовов растягивали заливку на часы."""
     victory_conn = deps["victory_conn"]
     victory_conn_rw = deps["victory_conn_rw"]
     token_for_login = deps["token_for_login"]
     direct_tokens = deps["direct_tokens"]
     v5_call = deps["v5_call"]
 
-    # skipped — позиции, НЕ применённые из-за остановки агентства по 152 (отличимы от
-    # применённых: список {login,url}, а не только агрегат). См. пункт 1 code-review.
-    result = {"items": len(items), "ads_updated": 0, "ads_archived": 0,
-              "ads_failed": 0, "no_units_agencies": [], "skipped": [], "errors": []}
-    counters = {"done": 0}
     lock = threading.Lock()
-    # Сигнал паузы/отмены пользователем: проверяется МЕЖДУ аккаунтами (не рвём ads.update
-    # посреди одного аккаунта). None | 'pause' | 'cancel'.
-    control_state = {"signal": None}
+    # Состояние на КАЖДУЮ заявку: свой result/счётчик/сигнал паузы-отмены.
+    jst: dict[str, dict] = {}
+    for spec in job_specs:
+        jid = spec["job_id"]
+        n = len(spec.get("items") or [])
+        jst[jid] = {
+            "total": n, "done": 0, "signal": None,
+            "ads_done": 0,      # ad-level счётчик (гранулярный heartbeat, НЕ пишется в done)
+            "last_hb": 0.0,     # monotonic-время последней записи message (throttle heartbeat)
+            "result": {"items": n, "ads_updated": 0, "ads_archived": 0, "ads_rejected": 0,
+                       "ads_failed": 0, "no_units_agencies": [], "skipped": [], "errors": []},
+        }
 
-    # каждому item нужен свой логин → группируем по агентству
-    keyed = []
-    for it in items:
-        keyed.append({"login": (it.get("login") or "").strip(), "agency": it.get("agency") or "",
-                      "_item": it})
-    by_agency, no_token = _group_by_agency(keyed, token_for_login, direct_tokens)
-    for k in no_token:
-        result["errors"].append(f"{k['login']}: не найден агентский токен")
-        result["skipped"].append({"login": k["login"], "url": (k["_item"].get("url") or ""),
-                                   "reason": "no_token"})
+    def _check_control(jid: str) -> str | None:
+        st = jst[jid]
+        if st["signal"] is not None:
+            return st["signal"]
+        try:
+            ctl = job_control(victory_conn, jid)
+        except Exception:  # noqa: BLE001
+            ctl = ""
+        if ctl in ("pause", "cancel"):
+            with lock:
+                st["signal"] = ctl
+            return ctl
+        return None
+
+    def _mark_item_done(jid: str) -> None:
+        st = jst[jid]
+        with lock:
+            st["done"] += 1
+            done = st["done"]
+            st["last_hb"] = time.monotonic()   # message только что записан → сдвигаем окно heartbeat
+        _job_update(victory_conn_rw, jid, done=done,
+                    message=f"обработано {done}/{st['total']} строк")
+
+    def _heartbeat(jid: str, note: str = "") -> None:
+        """Живой статус в поле message между закрытиями url-позиций (throttled в БД).
+
+        Пока не закрыта первая позиция (done=0), пишем ad-level прогресс, чтобы шкала не
+        выглядела зависшей. Пишет НЕ чаще раза в PC_HEARTBEAT_SECS (защита от спама БД),
+        трогает ТОЛЬКО message — started_at не меняется, reconcile_stuck_jobs не задет.
+        Ошибку глушим: heartbeat не должен ронять заливку."""
+        st = jst[jid]
+        now = time.monotonic()
+        with lock:
+            if (now - st["last_hb"]) < PC_HEARTBEAT_SECS:
+                return
+            st["last_hb"] = now
+            done, total, ads = st["done"], st["total"], st["ads_done"]
+        msg = f"идёт заливка: закрыто {done}/{total} позиций"
+        if ads:
+            msg += f", объявлений обработано {ads}"
+        if note:
+            msg += f" · {note}"
+        try:
+            _job_update(victory_conn_rw, jid, message=msg)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _agency_worker(agency: str, pairs: list[tuple]) -> None:
-        # Баллы агентские (Use-Operator-Units в v5_call) → 152 практически недостижима.
-        # Но если она всё же случится — стопим агентство и ЯВНО фиксируем пропущенные позиции
-        # (не растворяем их в общем счётчике done).
-        stop = False
-        for keyed_it, token in pairs:
-            it = keyed_it["_item"]
-            login = keyed_it["login"]
-            # ── пауза/отмена: проверяем ПЕРЕД началом обработки аккаунта ──
-            if control_state["signal"] is None:
-                try:
-                    ctl = job_control(victory_conn, job_id)
-                except Exception:  # noqa: BLE001
-                    ctl = ""
-                if ctl in ("pause", "cancel"):
-                    with lock:
-                        control_state["signal"] = ctl
-            if control_state["signal"] is not None:
-                break   # остановка МЕЖДУ аккаунтами — этот аккаунт ещё не тронут
-            if stop:
-                with lock:
-                    result["skipped"].append({"login": login, "url": (it.get("url") or ""),
-                                               "reason": "agency_no_units"})
-                    counters["done"] += 1
-                continue
-            new_price = it.get("price_feed")
-            new_oldprice = it.get("oldprice_feed")
-            try:
-                ad_ids = _ad_ids_for(victory_conn, login, it.get("url") or "",
-                                     it.get("price_direct"), it.get("oldprice_direct"))
-                for ad_id in ad_ids:
-                    res = _apply_one_ad(v5_call, token, login, ad_id, new_price, new_oldprice)
-                    with lock:
-                        if res == "success":
-                            result["ads_updated"] += 1
-                        elif res == "archived":
-                            result["ads_archived"] += 1
-                        elif res == "no_units":
-                            if agency not in result["no_units_agencies"]:
-                                result["no_units_agencies"].append(agency)
-                            result["errors"].append(f"{login}: баллы агентства {agency} исчерпаны (152)")
-                            result["skipped"].append({"login": login, "url": (it.get("url") or ""),
-                                                       "reason": "agency_no_units", "ad_id": ad_id})
-                            stop = True
-                        else:
-                            result["ads_failed"] += 1
-                    if stop:
-                        break
-                    time.sleep(PC_THROTTLE)
-            except Exception as e:  # noqa: BLE001
-                with lock:
-                    result["errors"].append(f"{login}: {e}")
-                    result["skipped"].append({"login": login, "url": (it.get("url") or ""),
-                                               "reason": f"error: {str(e)[:80]}"})
-            finally:
-                with lock:
-                    counters["done"] += 1
-                _job_update(victory_conn_rw, job_id, done=counters["done"],
-                            message=f"обработано {counters['done']}/{len(items)} строк")
+        token = pairs[0][1]
+        # Внутри агентства группируем ПО ЛОГИНУ (Client-Login у ads.get/update — на клиента).
+        by_login: dict[str, list] = {}
+        for keyed_it, _tok in pairs:
+            by_login.setdefault(keyed_it["login"], []).append(keyed_it)
 
+        agency_dead = False   # баллы агентства кончились (152) — остальные логины пропускаем
+        for login, group in by_login.items():
+            if agency_dead:
+                for keyed_it in group:
+                    jid = keyed_it["job_id"]
+                    with lock:
+                        jst[jid]["result"]["skipped"].append(
+                            {"login": login, "url": (keyed_it["_item"].get("url") or ""),
+                             "reason": "agency_no_units"})
+                    _mark_item_done(jid)
+                continue
+
+            pending_left: dict[int, set] = {}   # id(item) -> оставшиеся ad_id этой строки
+            tasks: list[dict] = []
+            for keyed_it in group:
+                jid = keyed_it["job_id"]
+                it = keyed_it["_item"]
+                if _check_control(jid) is not None:   # заявка встала на паузу/отмену ещё до старта
+                    with lock:
+                        jst[jid]["result"]["skipped"].append(
+                            {"login": login, "url": (it.get("url") or ""), "reason": "interrupted"})
+                    _mark_item_done(jid)
+                    continue
+                try:
+                    ad_ids = _ad_ids_for(victory_conn, login, it.get("url") or "",
+                                         it.get("price_direct"), it.get("oldprice_direct"))
+                except Exception as e:  # noqa: BLE001
+                    with lock:
+                        jst[jid]["result"]["errors"].append(f"{login}: {e}")
+                        jst[jid]["result"]["skipped"].append(
+                            {"login": login, "url": (it.get("url") or ""), "reason": f"error: {str(e)[:80]}"})
+                    _mark_item_done(jid)
+                    continue
+                if not ad_ids:
+                    _mark_item_done(jid)
+                    continue
+                pending_left[id(it)] = set(ad_ids)
+                for ad_id in ad_ids:
+                    tasks.append({"job_id": jid, "item": it, "login": login, "ad_id": ad_id,
+                                  "new_price": it.get("price_feed"), "new_oldprice": it.get("oldprice_feed")})
+
+            def _finish(task: dict) -> None:
+                it = task["item"]
+                with lock:
+                    jst[task["job_id"]]["ads_done"] += 1   # ad-level прогресс для heartbeat
+                left = pending_left.get(id(it))
+                if left is not None:
+                    left.discard(task["ad_id"])
+                    if not left:
+                        del pending_left[id(it)]
+                        _mark_item_done(task["job_id"])
+
+            schedule = ([PC_APPLY_DELAY_FAST] * PC_APPLY_ATTEMPTS_FAST
+                        + [PC_APPLY_DELAY_SLOW] * PC_APPLY_ATTEMPTS_SLOW)
+            stop_agency = False
+            pending_tasks = tasks
+            for round_i, delay in enumerate([0] + schedule):
+                if not pending_tasks:
+                    break
+                if round_i > 0:
+                    time.sleep(delay)
+                # per-job пауза/отмена: снимаем задачи заявок, которые встали, не трогая остальные
+                active = []
+                for t in pending_tasks:
+                    if _check_control(t["job_id"]) is not None:
+                        with lock:
+                            jst[t["job_id"]]["result"]["skipped"].append(
+                                {"login": t["login"], "url": (t["item"].get("url") or ""),
+                                 "reason": "interrupted", "ad_id": t["ad_id"]})
+                        _finish(t)
+                    else:
+                        active.append(t)
+                pending_tasks = active
+                if not pending_tasks:
+                    break
+                # ── батч-get: один вызов (до PC_BATCH_SIZE Id) на ad_id ЭТОГО логина ──
+                ad_data_by_id = _get_ads_batch(v5_call, token, login,
+                                               [t["ad_id"] for t in pending_tasks])
+                entries = []
+                for t in pending_tasks:
+                    ad_data = ad_data_by_id.get(t["ad_id"])
+                    if not ad_data:
+                        with lock:
+                            jst[t["job_id"]]["result"]["ads_failed"] += 1
+                        _finish(t)
+                        continue
+                    entries.append({"ad_id": t["ad_id"], "ad_data": ad_data,
+                                    "new_price": t["new_price"], "new_oldprice": t["new_oldprice"],
+                                    "_task": t})
+                if not entries:
+                    pending_tasks = []
+                    continue
+                outcomes = _batch_update_prices(v5_call, token, login, entries)
+                next_round = []
+                for e in entries:
+                    t = e["_task"]
+                    res = jst[t["job_id"]]["result"]
+                    outcome = outcomes.get(e["ad_id"], "failed")
+                    if outcome == "success":
+                        with lock:
+                            res["ads_updated"] += 1
+                        _finish(t)
+                    elif outcome == "archived":
+                        with lock:
+                            res["ads_archived"] += 1
+                        _finish(t)
+                    elif outcome == "rejected":
+                        with lock:
+                            res["ads_rejected"] += 1
+                        _finish(t)
+                    elif outcome == "no_units":
+                        with lock:
+                            if agency not in res["no_units_agencies"]:
+                                res["no_units_agencies"].append(agency)
+                            res["errors"].append(f"{t['login']}: баллы агентства {agency} исчерпаны (152)")
+                            res["skipped"].append({"login": t["login"], "url": (t["item"].get("url") or ""),
+                                                   "reason": "agency_no_units", "ad_id": t["ad_id"]})
+                        stop_agency = True
+                        _finish(t)
+                    elif round_i == len(schedule):   # последняя попытка исчерпана
+                        with lock:
+                            res["ads_failed"] += 1
+                        _finish(t)
+                    else:
+                        next_round.append(t)         # транзиентная ошибка — повторим
+                pending_tasks = next_round
+                # heartbeat: живой статус в message (throttled) — пока первая позиция не закрыта,
+                # done стоит на 0; показываем ad-level прогресс, чтобы шкала не казалась зависшей.
+                for _hb_jid in {e["_task"]["job_id"] for e in entries}:
+                    _heartbeat(_hb_jid, f"агентство {agency}, попытка {round_i + 1}")
+                if stop_agency:
+                    break
+
+            for t in pending_tasks:   # прервано паузой/отменой/152 раньше исчерпания ретраев
+                with lock:
+                    jst[t["job_id"]]["result"]["skipped"].append(
+                        {"login": t["login"], "url": (t["item"].get("url") or ""),
+                         "reason": "agency_no_units" if stop_agency else "interrupted", "ad_id": t["ad_id"]})
+                _finish(t)
+            if stop_agency:
+                agency_dead = True   # остальные логины этого агентства пропустим (баллы кончились)
+
+    any_paused = False
+    finalized: set = set()   # уже финализированные job_id — чтобы except не финалил повторно
     try:
+        # ── setup ВНУТРИ try: _group_by_agency бьёт по сети (token_for_login);
+        #    если бросит — заявки не должны остаться навечно в 'running' ──
+        keyed = []
+        for spec in job_specs:
+            jid = spec["job_id"]
+            for it in (spec.get("items") or []):
+                keyed.append({"job_id": jid, "login": (it.get("login") or "").strip(),
+                              "agency": it.get("agency") or "", "_item": it})
+        by_agency, no_token = _group_by_agency(keyed, token_for_login, direct_tokens)
+        for k in no_token:
+            res = jst[k["job_id"]]["result"]
+            with lock:
+                res["errors"].append(f"{k['login']}: не найден агентский токен")
+                res["skipped"].append({"login": k["login"], "url": (k["_item"].get("url") or ""),
+                                       "reason": "no_token"})
+            _mark_item_done(k["job_id"])
+
         with ThreadPoolExecutor(max_workers=PC_AGENCY_WORKERS) as ex:
             futs = [ex.submit(_agency_worker, ag, pairs) for ag, pairs in by_agency.items()]
             for f in as_completed(futs):
                 f.result()
-        # ── остановлено пользователем ────────────────────────────────────────
-        if control_state["signal"] == "pause":
-            _job_update(victory_conn_rw, job_id, status="paused", control="",
-                        done=counters["done"],
-                        message=f"пауза на {counters['done']}/{len(items)} строк")
-            return
-        if control_state["signal"] == "cancel":
-            _job_finish(victory_conn_rw, job_id, "cancelled", result,
-                        message=f"отменено на {counters['done']}/{len(items)} строк")
-            return
-        status = "done" if not result["errors"] else "done_with_errors"
-        skip = len(result["skipped"])
-        msg = (f"заливка: обновлено {result['ads_updated']}, архивных {result['ads_archived']}, "
-               f"ошибок {result['ads_failed']}"
-               + (f", пропущено позиций {skip}" if skip else ""))
-        _job_finish(victory_conn_rw, job_id, status, result, message=msg)
+        # ── финализируем КАЖДУЮ заявку раздельно по её сигналу/результату ──
+        for jid, st in jst.items():
+            res, done, total = st["result"], st["done"], st["total"]
+            if st["signal"] == "pause":
+                any_paused = True
+                _job_update(victory_conn_rw, jid, status="paused", control="",
+                            done=done, message=f"пауза на {done}/{total} строк")
+            elif st["signal"] == "cancel":
+                _job_finish(victory_conn_rw, jid, "cancelled", res,
+                            message=f"отменено на {done}/{total} строк")
+            else:
+                status = "done" if not res["errors"] else "done_with_errors"
+                skip = len(res["skipped"])
+                msg = (f"заливка: обновлено {res['ads_updated']}, архивных {res['ads_archived']}, "
+                       f"отклонено {res['ads_rejected']}, ошибок {res['ads_failed']}"
+                       + (f", пропущено позиций {skip}" if skip else ""))
+                _job_finish(victory_conn_rw, jid, status, res, message=msg)
+            finalized.add(jid)
     except Exception as e:  # noqa: BLE001
-        _job_finish(victory_conn_rw, job_id, "error", result,
-                    error=str(e), message="заливка прервана: " + str(e)[:200])
+        # общий сбой пула — ещё не финализированные заявки помечаем error (не висят в running)
+        for jid, st in jst.items():
+            if jid in finalized:
+                continue
+            _job_finish(victory_conn_rw, jid, "error", st["result"],
+                        error=str(e), message="заливка прервана: " + str(e)[:200])
         traceback.print_exc()
+    finally:
+        # пауза — сознательная остановка, run_now-заявку НЕ дёргаем. В кроне chain_after=False
+        # (одноразовый процесс — daemon-поток цепочки умер бы на выходе, оставив заявку в running).
+        if chain_after and not any_paused:
+            _chain_next_apply(deps)
+
+
+def run_apply_job(deps: dict, job_id: str, items: list[dict]) -> None:
+    """Заливка одной заявки — обёртка над пулом из одной (см. run_apply_pool)."""
+    run_apply_pool(deps, [{"job_id": job_id, "items": items}])
 
 
 # ─────────────────────────── Google Sheet (паритет) ──────────────────────────
