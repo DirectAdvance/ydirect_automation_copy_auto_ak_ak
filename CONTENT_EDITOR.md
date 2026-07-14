@@ -17,20 +17,47 @@ Runtime: отдельный Flask-процесс `direct-content.service` на L
 
 ## Транспорт
 
-Требование сервиса: правки кампаний выполняются только через cookies/Grid, без OAuth write через
-Direct API v5/v501.
-
-Текущий срез:
-- `load`/`preview` используют v5 read-only как источник снимка контента;
-- usage уточнений дополняется cookie/Grid read по `GdCampaignCallouts.assetValue`;
-- `replace` не выполняет OAuth-запись;
-- `ad_title` / `ad_title2` / `ad_text` пишутся через Grid `findAndReplaceText`;
-- `sitelink_title` / `sitelink_description` не пишутся через массовый `findAndReplaceText`:
-  для каждого затронутого набора создаётся новый `SitelinkSet`, затем кампании
-  перепривязываются к нему через Grid `inheritableSitelinkSet`;
+Запись идёт по типу поля — не единым способом:
+- `ad_title` / `ad_title2` / `ad_text` — Grid `findAndReplaceText`;
+- `sitelink_title` / `sitelink_description` / `sitelink_href` — для каждого затронутого набора
+  создаётся новый `SitelinkSet`, затем перепривязка: campaign-level → Grid
+  `set_campaign_sitelink_set`; ad-level (TextAd/DynamicTextAd) → v5 `ads.update` (`_v5_rebind_ads_sitelink_set`);
+  UAC (tp6/tp7) — PATCH `/web-api/uac/campaign/{id}` (см. ниже);
+- `sitelink_reorder` — позиционная перестановка, см. следующий раздел;
 - `callout` не редактируется in-place: если нового текста ещё нет в библиотеке, создаётся
   новый CALLOUT через `adextensions.add`, затем старый id убирается из `inheritableCallouts`
-  кампаний и новый id привязывается через Grid;
+  кампаний и новый id привязывается через Grid.
+
+Задания идут через асинхронную очередь Postgres (`direct_automation.content_jobs`,
+`ensure_jobs_table`), исполняются отдельным процессом `direct-content-worker.service`
+(`content_worker.py`, `make_job_executor`) — **при правке кода записи ОБЯЗАТЕЛЬНО рестартовать
+и `direct-content.service` (веб), и `direct-content-worker.service` (очередь)**: воркер держит
+модуль в памяти, рестарт только веба его не обновляет.
+
+### Перестановка порядка быстрых ссылок (`sitelink_reorder`)
+
+UI: вкладка «Быстрые ссылки» → «↕️ Порядок быстрых ссылок» (`content_editor.html`, `ceReorder*`).
+Позиционная перестановка (`_reorder_sitelinks`, routes_content_editor.py) — целевой порядок задаётся
+массивом индексов `perm`, применяется как `result[i] = items[perm[i]]` к КАЖДОМУ набору аккаунта
+(наборы короче `perm` — пропуск с отчётом, не падение).
+
+- **Область действия** — выпадающий список над чипами: «Все наборы» (по умолчанию) или конкретный
+  набор (`target_set_id`). При конкретном наборе перестановка коснётся ТОЛЬКО его; обёртка
+  задания — JSON `{"perm": [...], "target_set_id": ...}` (старый формат — голый список — тоже
+  разбирается, backward-compat).
+- **UAC (tp6/tp7)** — синтетический набор `set_id="uac:<campaign_id>"`, запись через
+  `_uac_patch_campaign_texts` (PATCH полного тела кампании — узкий patch у UAC ненадёжен,
+  fallback строит full-payload по `_UAC_PATCH_FULL_KEYS`, сверено 1-в-1 с реальным браузерным
+  PATCH через HAR-капture 2026-07-13).
+- **ResponsiveAd (адаптивные объявления) не поддерживается** — v5 `ads.update` не даёт менять
+  `SitelinkSetId` у ResponsiveAd (только TextAd/DynamicTextAd, `_REBIND_SUBTYPE_FIELDS`), Grid для
+  этого тоже ненадёжен. Пропуск честный: `_load_account` считает `responsive_count`/
+  `responsive_examples` (кампания/группа) РЕАЛЬНО по набору — превью показывает точное
+  предупреждение только когда такие объявления реально есть, не для любого ad-level набора.
+- Для пользователя UAC не выделяется отдельной категорией (тег/подпись — как у обычного набора);
+  различие только в реализации записи.
+- Верифицировано вживую 2026-07-13 на `porg-psm5h7q6` (UAC-кампания 712694743): реальный apply →
+  read-back независимым GET подтвердил применение и откат.
 
 ## Endpoint'ы
 
@@ -38,7 +65,10 @@ Direct API v5/v501.
 - `GET /direct/api/content-editor/accounts` — поиск аккаунтов из `local_gsheet_sites`.
 - `POST /direct/api/content-editor/load` — загрузка снимка контента аккаунта.
 - `POST /direct/api/content-editor/preview` — подсчёт объектов, где найден `old_text`.
-- `POST /direct/api/content-editor/replace` — запись через cookie/Grid для объявлений и уточнений.
+- `POST /direct/api/content-editor/replace_async` — постановка в очередь замены поля (title/desc/href/text/callout).
+- `POST /direct/api/content-editor/sitelinks/reorder_async` — постановка в очередь перестановки порядка (`perm`, опционально `target_set_id`).
+- `GET /direct/api/content-editor/jobs` — список заданий текущего пользователя (или всех — админ).
+- `POST /direct/api/content-editor/admin/queue/cleanup` — админ: удалить завершённые задания (done/error/cancelled) старше 3 суток из очереди (текст + сверка цен); активные не трогает.
 
 ## Вкладка «Обзор» (добавлена 2026-07-02)
 
@@ -58,6 +88,8 @@ backend не менялся. Отличие: кнопка «Статистика
 - `ad_text` — текст объявления.
 - `sitelink_title` — текст быстрой ссылки.
 - `sitelink_description` — описание быстрой ссылки.
+- `sitelink_href` — URL быстрой ссылки.
+- `sitelink_reorder` — перестановка порядка позиций (см. раздел выше).
 - `callout` — уточнение кампании.
 
 ## Инварианты

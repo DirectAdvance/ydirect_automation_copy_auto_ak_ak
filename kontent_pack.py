@@ -64,6 +64,14 @@ import base64
 import struct
 import zlib
 
+# Гео-нормализатор ключей (lazy relative import — не ломает standalone python kontent_pack.py).
+try:
+    from .geo_strip import normalize_geo_lines as _normalize_geo_lines
+except ImportError:
+    def _normalize_geo_lines(lines, *, dedup=True):  # type: ignore[misc]
+        """Заглушка при standalone-запуске (нет относительного импорта)."""
+        return list(lines)
+
 INDEX_DIR = "/opt/neuro_kontent_index"
 INDEX_PATH = os.path.join(INDEX_DIR, "manifest.json")
 INDEX_MAX_AGE = 3600                  # сек: считаем индекс свежим до 1 ч (таймер обновляет чаще)
@@ -986,6 +994,65 @@ def _dedup(seq) -> list:
     return out
 
 
+def _group_slug(ident: str | None) -> str:
+    """group-key слаг из gc/gk для per-adgroup раскладки пака.
+
+    Правило (согласовано): у ``gc`` убрать ведущий префикс ``ctNNNN_`` И регион-токен ``_rNNNN``.
+    Напр. gc ``ct0111_aon_n000_r0000_ct001_ag011_g00`` → gk ``aon_n000_ct001_ag011_g00``.
+    Если на вход уже подан gk (нормализованный) — правило идемпотентно (нет ct-префикса/региона).
+    Результат filename-safe ``[a-z0-9а-яё_]`` (кириллица разрешена — gk групп по имени).
+    Пусто/дефолтная группа → "" (легаси-файл ``{slepok}.txt``).
+    """
+    s = (ident or "").strip().lower()
+    if not s:
+        return ""
+    s = re.sub(r"^ct\d{4}_", "", s)          # убрать ведущий ct-префикс (только у gc)
+    s = re.sub(r"_r\d{4}(?=_|$)", "", s)      # убрать регион-токен _rNNNN
+    s = re.sub(r"[^a-z0-9а-яё_]", "_", s)     # filename-safe (кириллица сохраняется для name-gk)
+    return s
+
+
+def _read_lines_opt(path: str) -> tuple[list, bool]:
+    """Как _read_lines, но возвращает (строки, найден_ли_файл).
+
+    Флаг «найден» отличает ПУСТОЙ файл (found=True, []) от ОТСУТСТВУЮЩЕГО (found=False) →
+    корректный фолбэк per-group → легаси. Работает и под sshfs-монтом (FUSE через `timeout cat`:
+    rc!=0 = нет файла/недоступен → found=False), и для локального зеркала (os.path.isfile)."""
+    try:
+        if path.startswith(PACK_MOUNT + os.sep):
+            r = subprocess.run(["timeout", "12", "cat", path], capture_output=True, text=True, timeout=15)
+            if r.returncode != 0:
+                return [], False
+            src = r.stdout.splitlines()
+        else:
+            if not os.path.isfile(path):
+                return [], False
+            with open(path, encoding="utf-8") as f:
+                src = list(f)
+        return [ln.strip() for ln in src if ln.strip() and not ln.lstrip().startswith("#")], True
+    except Exception:  # noqa: BLE001
+        return [], False
+
+
+def _normalize_gather(data: dict) -> dict:
+    """Применить гео-нормализацию к positive-спискам результата gather().
+
+    Мутирует переданный dict IN-PLACE и возвращает его. Вызывается ПОСЛЕ json.loads(r.stdout)
+    в обоих ветках gather() (local и ssh-fallback), чтобы гарантировать один путь очистки.
+    """
+    for ct_vals in data.values():
+        if not isinstance(ct_vals, dict):
+            continue
+        if isinstance(ct_vals.get("positive"), list):
+            ct_vals["positive"] = _normalize_geo_lines(ct_vals["positive"], dedup=True)
+        grps = ct_vals.get("_groups")            # per-adgroup: гео-чистим и positive групп
+        if isinstance(grps, dict):
+            for g in grps.values():
+                if isinstance(g, dict) and isinstance(g.get("positive"), list):
+                    g["positive"] = _normalize_geo_lines(g["positive"], dedup=True)
+    return data
+
+
 # БАГ-5: фильтр картинок с сайтов б/у авто по URL/пути.
 # Паттерны: «bu», «б.у», «bу» (кириллица у), «used», «с-пробегом», «probeg», «с_пробегом» и т.п.
 _BU_IMG_RE = re.compile(
@@ -1004,20 +1071,44 @@ def _ct_dir(segment: str, tp: str, ct: str) -> str:
 
 
 # ── чтение контента по НАШЕМУ ct (= имя папки пака) ──────────────────────────
-def read_keywords(segment: str, tp: str, ct: str, slepok: str) -> dict:
-    """Ключи слепка для (сегмент, tp, наш ct) из пака.
-    → {"positive":[...], "minus":[...]}. ct пустой/нет папки → пусто (caller фолбэчит)."""
+def read_keywords(segment: str, tp: str, ct: str, slepok: str, group: str = "") -> dict:
+    """Ключи слепка для (сегмент, tp, наш ct[, group]) из пака.
+    → {"positive":[...], "minus":[...]}. ct пустой/нет папки → пусто (caller фолбэчит).
+    Позитивные ключи проходят гео-нормализацию (_normalize_geo_lines): токены городов РФ
+    удаляются, чтобы ключи Самарского директолога работали в Кемерово без чужих топонимов.
+    Минус-слова НЕ трогаются — операторные формы «-самара» внутри ключей семантически полезны.
+
+    group (per-adgroup, опц.): непустой gc/gk → читаем per-group файлы ``{slepok}__{slug}.txt`` /
+    ``{slepok}__{slug}_minus.txt`` с ФОЛБЭКОМ на легаси ``{slepok}.txt``/``{slepok}_minus.txt``,
+    когда per-group файла нет. shared-минус ``{slepok}_minus_shared.txt`` — всегда (пер-ct, общий).
+    ``group=""`` → байт-в-байт прежнее поведение (легаси-файлы)."""
     kd = os.path.join(_ct_dir(segment, tp, ct), "keywords")
-    pos = _read_lines(os.path.join(kd, f"{slepok}.txt"))
-    neg = (_read_lines(os.path.join(kd, f"{slepok}_minus.txt"))
-           + _read_lines(os.path.join(kd, f"{slepok}_minus_shared.txt")))
-    return {"positive": _dedup(pos), "minus": _dedup(neg)}
+    slug = _group_slug(group)
+    if slug:
+        pos, found_p = _read_lines_opt(os.path.join(kd, f"{slepok}__{slug}.txt"))
+        if not found_p:
+            pos = _read_lines(os.path.join(kd, f"{slepok}.txt"))
+        neg_pg, found_m = _read_lines_opt(os.path.join(kd, f"{slepok}__{slug}_minus.txt"))
+        if not found_m:
+            neg_pg = _read_lines(os.path.join(kd, f"{slepok}_minus.txt"))
+        neg = neg_pg + _read_lines(os.path.join(kd, f"{slepok}_minus_shared.txt"))
+    else:
+        pos = _read_lines(os.path.join(kd, f"{slepok}.txt"))
+        neg = (_read_lines(os.path.join(kd, f"{slepok}_minus.txt"))
+               + _read_lines(os.path.join(kd, f"{slepok}_minus_shared.txt")))
+    return {"positive": _dedup(_normalize_geo_lines(pos, dedup=False)), "minus": _dedup(neg)}
 
 
-def read_callouts(segment: str, tp: str, ct: str, slepok: str) -> list:
-    """Уточнения слепка для (сегмент, tp, наш ct) — список строк."""
-    p = os.path.join(_ct_dir(segment, tp, ct), "callouts", f"{slepok}.txt")
-    return _dedup(_read_lines(p))
+def read_callouts(segment: str, tp: str, ct: str, slepok: str, group: str = "") -> list:
+    """Уточнения слепка для (сегмент, tp, наш ct[, group]) — список строк.
+    group непустой → ``{slepok}__{slug}.txt`` с фолбэком на легаси ``{slepok}.txt``."""
+    cd = os.path.join(_ct_dir(segment, tp, ct), "callouts")
+    slug = _group_slug(group)
+    if slug:
+        rows, found = _read_lines_opt(os.path.join(cd, f"{slepok}__{slug}.txt"))
+        if found:
+            return _dedup(rows)
+    return _dedup(_read_lines(os.path.join(cd, f"{slepok}.txt")))
 
 
 def read_images(segment: str, tp: str, ct: str) -> list:
@@ -1249,7 +1340,9 @@ def videos_pool_for_ct(ct: str, limit: int = 2, brand_hint: str = "") -> list:
 
     ``brand_hint`` — имя марки (напр. «Haval») от вызывающего кода (из gsheet_naming/ag_part1)
     для брендовых ct сегмента «Марки», у которых нет записи в feeds_ct_model() (нет фид-картинки)
-    и brand_word иначе остался бы пустым, полностью блокируя brand-fallback."""
+    и brand_word иначе остался бы пустым, полностью блокируя brand-fallback. Если caller НЕ
+    передал brand_hint, марка резолвится из справочника ag_part1 по ct (3й источник ниже) —
+    поэтому brand-fallback НЕ зависит от случайного покрытия фид-картинок."""
     ct = _norm_ct(ct)
     if not ct or ct == GENERAL_CT:
         return []
@@ -1276,6 +1369,19 @@ def videos_pool_for_ct(ct: str, limit: int = 2, brand_hint: str = "") -> list:
     brand_word = (my_model.strip().split()[0] if my_model else "").lower()
     if not brand_word and brand_hint:
         brand_word = brand_hint.strip().split()[0].lower()
+    if not brand_word:
+        # 3й приоритет — справочник марок ag_part1 (ct→'Марка Модель' из gsheet_naming),
+        # когда И feeds_ct_model()[ct] пусто, И brand_hint пуст. Устраняет зависимость
+        # brand-fallback от случайного покрытия фид-картинок: brand-level ct без своей
+        # фид-картинки (ct0019 BAIC, ct0111 Haval) резолвит марку из справочника,
+        # а не остаётся с пустым brand_word → ложный VIDEO_NO_POOL при пустом brand_hint.
+        try:
+            from .campaign_naming import _ag_part1_map
+            ref_name = str(_ag_part1_map().get(ct) or "").strip()
+            if ref_name:
+                brand_word = ref_name.split()[0].lower()
+        except Exception:  # noqa: BLE001 — БД/DI недоступны → без 3го источника (как было)
+            pass
     if brand_word:
         brand_rels: list = []
         for key, rows2 in ext_assets.items():
@@ -1297,6 +1403,42 @@ def videos_pool_for_ct(ct: str, limit: int = 2, brand_hint: str = "") -> list:
             got2 = _fetch_many(brand_rels)
             return _filter_valid_videos([got2[r] for r in brand_rels if got2.get(r)])[:_lim]
     return []
+
+
+def video_index_suspect_empty() -> bool:
+    """Гейт свежести видео-индекса. True ТОЛЬКО когда индекс контента НЕ содержит ни
+    одного ключа external_assets ``Video|video|*`` (видео-индекс глобально пуст), НО
+    физический пул роликов на диске существует (локальное зеркало ``_video_pool`` содержит
+    хотя бы одну ct-папку с .mp4).
+
+    Это признак ТРАНЗИЕНТНОГО сбоя чтения/сборки manifest.json (файл переписывался /
+    _load_index вернул пустую заглушку), а НЕ настоящего «нет пула»: при реальном частичном
+    покрытии индекс НЕ пуст — есть ключи покрытых марок → вернём False. Вызывающий код (аудит)
+    при True НЕ финализирует VIDEO_NO_POOL как fixable=False, а даёт хотя бы один retry/reschedule.
+
+    Проверяем ТОЛЬКО локальное зеркало (быстрый диск) — БЕЗ sshfs-обхода M3 (это корень зависаний)."""
+    try:
+        ext = (_load_index().get("external_assets") or {})
+        if any(str(k).startswith("Video|video|") for k in ext):
+            return False                     # видео-индекс не пуст → обычная классификация
+    except Exception:  # noqa: BLE001
+        return False
+    root = os.path.join(_LOCAL_MIRROR_ROOT, "_video_pool") if _LOCAL_MIRROR_ROOT else None
+    if not root or not os.path.isdir(root):
+        return False                         # проверить дёшево нечем → не форсим retry (консервативно)
+    try:
+        for ct in os.listdir(root):
+            if not re.fullmatch(r"ct\d{4}", ct.lower()):
+                continue
+            ctp = os.path.join(root, ct)
+            if not os.path.isdir(ctp):
+                continue
+            for _cur, _dirs, files in os.walk(ctp):
+                if any(f.lower().endswith(".mp4") for f in files):
+                    return True              # индекс пуст, но ролики физически есть → транзиент
+    except Exception:  # noqa: BLE001
+        return False
+    return False
 
 
 def _feeds_index() -> list:
@@ -1381,6 +1523,32 @@ for kf in glob.glob(os.path.join(base, "*", "keywords", slepok + ".txt")):
                         + rd(os.path.join(kd, slepok + "_minus_shared.txt")),
                "callouts": rd(os.path.join(base, ct, "callouts", slepok + ".txt")),
                "images": len(rd(os.path.join(base, ct, "image.txt")))}
+# Второй проход (per-adgroup, аддитивно): per-group файлы {slepok}__{gk}.txt →
+# out[ct]["_groups"][gk] = {positive, minus(per-group+shared), callouts}. Top-level out[ct]
+# НЕ меняем (легаси-консюмеры). ct только с per-group файлами (без легаси {slepok}.txt) —
+# синтезируем безопасный top-level (positive=объединение групп) чтобы легаси не падали.
+pref = slepok + "__"
+synth = set()
+for kf in sorted(glob.glob(os.path.join(base, "*", "keywords", pref + "*.txt"))):
+    name = os.path.basename(kf)[:-4]          # без .txt
+    gk = name[len(pref):]
+    if gk.endswith("_minus"):
+        continue                               # per-group минус — не positive-файл
+    ct = kf.split(os.sep)[-3]
+    kd = os.path.dirname(kf)
+    shared = rd(os.path.join(kd, slepok + "_minus_shared.txt"))
+    grp = {"positive": rd(kf),
+           "minus": rd(os.path.join(kd, pref + gk + "_minus.txt")) + shared,
+           "callouts": rd(os.path.join(base, ct, "callouts", pref + gk + ".txt"))}
+    if ct not in out:
+        out[ct] = {"positive": [], "minus": list(shared), "callouts": [],
+                   "images": len(rd(os.path.join(base, ct, "image.txt"))), "_groups": {}}
+        synth.add(ct)
+    ent = out[ct]
+    ent.setdefault("_groups", {})[gk] = grp
+    if ct in synth:                            # только синтезированные ct агрегируем в top-level
+        ent["positive"] += grp["positive"]
+        ent["callouts"] += grp["callouts"]
 print(json.dumps(out, ensure_ascii=False))
 '''
 
@@ -1391,6 +1559,19 @@ def gather(slepok: str, segment: str, tp: str, timeout: float = 40.0) -> dict:
     → {ctNNNN: {"positive":[...], "minus":[...], "callouts":[...]}}.
     Пусто при сбое связи/таймауте (caller фолбэчит). Картинки тут НЕ берём.
     """
+    # С 2026-07-12: при активном локальном зеркале (NEURO_PACK_MOUNT) читаем тем же _GATHER_PY
+    # ЛОКАЛЬНО (как refresh_index), а не по ssh к M3. Иначе gather уходил на СТАРЫЙ M3-pack
+    # (ct0001–34), тогда как свежий кодер (ct0800+) задеплоен только в зеркало 101 → cts не
+    # пересекались с only_cts плана → «пак M3 пуст», tp2/tp1 падали в defer. ssh M3 — фолбэк.
+    _local_pack = _ensure_local_shim()
+    if _local_pack:
+        try:
+            r = subprocess.run(["python3", "-", slepok, segment, tp, _local_pack],
+                               input=_GATHER_PY, capture_output=True, text=True, timeout=timeout)
+            if r.returncode == 0 and r.stdout.strip():
+                return _normalize_gather(json.loads(r.stdout))
+        except Exception:  # noqa: BLE001 — локальный сбой → ssh-фолбэк ниже
+            pass
     remote = "python3 - " + " ".join(
         shlex.quote(a) for a in (slepok, segment, tp, M3_PACK_ROOT))
     try:
@@ -1398,9 +1579,23 @@ def gather(slepok: str, segment: str, tp: str, timeout: float = 40.0) -> dict:
                            capture_output=True, text=True, timeout=timeout)
         if r.returncode != 0 or not r.stdout.strip():
             return {}
-        return json.loads(r.stdout)
+        return _normalize_gather(json.loads(r.stdout))
     except Exception:  # noqa: BLE001
         return {}
+
+
+def m3_reachable(timeout: float = 12.0) -> bool:
+    """Real-time health-probe M3-relay ТЕМ ЖЕ ssh-транспортом, что и gather().
+    Нужен чтобы отличить РЕАЛЬНЫЙ сбой чтения (relay/sshfs недоступен) от «у слепка
+    просто нет пака сегмента»: оба дают пустой gather(), но при живом M3 пустота =
+    легитимное отсутствие пака (НЕ повод для дефера). БЕЗ обхода каталогов (не виснет):
+    тривиальный `true` по мультиплекс-ssh с ConnectTimeout=10 + жёстким timeout."""
+    try:
+        r = subprocess.run(_M3_SSH + ["true"], capture_output=True,
+                           text=True, timeout=timeout)
+        return r.returncode == 0
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # ── вспомогательный индекс ct→модель из feed-имён (для диагностики/валидации) ─

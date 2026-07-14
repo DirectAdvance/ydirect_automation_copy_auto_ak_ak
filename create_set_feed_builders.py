@@ -120,6 +120,30 @@ def _create_text_via_cookie(
     wkl = int(budget_rub) if budget_rub else int(cpa_rub) * 10
     # Корректировки в AddCampaigns (HAR21): campaignId-плейсхолдер 9999999 — Yandex привяжет к реальной.
     _bm = _grid_bid_modifiers(9999999, corr or {}, ret_map or {})
+    # Минус-слова кампании для Grid-cookie spec (minusKeywords, campaign-level INLINE, без баллов):
+    # глоб. вкладка «Минус-слова» + слепковый пак (_minus_shared) для campaign/shared_set-режимов.
+    # #9 остаточный гэп (ЗАКРЫТИЕ): в cookie-пути слепковый минус раньше не долетал — spec нёс только
+    # глобальные слова, а расшаренный Grid-набор «Минуса общие» (_grid_minus_pack_id, ниже) слов слепка
+    # НЕ содержит. Пак кладём INLINE per-кампания → общий аккаунтный набор НЕ мутируется (др. кампании,
+    # делящие тот же набор, не затронуты). Зеркало _apply_campaign_direct_minus (token-путь): group-режим
+    # (terehov/karavaev) пропускаем — минусы уже на группах; tp1 (РСЯ) пропускаем — минуса режут охват
+    # (в tp2/tp4 tp1 не бывает, гейт для симметрии). Пак недоступен (ssh M3) → деградация к глоб. словам.
+    _mk_words = list((_DEPS.get("_enabled_minus_words") or (lambda: []))() or [])
+    if tp_code != "tp1" and _SLEPOK_MINUS_MODE.get(slepok, "group") != "group":
+        _cpm = _DEPS.get("_collect_pack_minus")
+        if callable(_cpm):
+            try:
+                _pack_minus = _cpm(slepok, site_type, tp_code)
+            except Exception:  # noqa: BLE001 — пак M3 недоступен → деградируем к глоб. словам
+                _pack_minus = []
+            _seen_mk = {w.lower() for w in _mk_words}
+            for _w in _pack_minus:
+                if _w.lower() not in _seen_mk:
+                    _seen_mk.add(_w.lower())
+                    _mk_words.append(_w)
+            _cap = _DEPS.get("_minus_char_budget")
+            if callable(_cap):
+                _mk_words = _cap(_mk_words)   # ≤20 000 симв. без пробелов (кампания)
     spec = {"name": name, "counter_id": counter_id or 0, "goal_id": goal_id or 0,
             "cpa": int(cpa_rub), "weekly_budget": wkl, "start_date": start_date,
             "network": False, "search": True, "pay_for_conversion": (pay == "cpa"),
@@ -128,11 +152,10 @@ def _create_text_via_cookie(
             # Динамика tp4 идёт через organic (platforms), не через placementTypes. Ставим на СОЗДАНИИ,
             # чтобы не было окна с placementTypes=None (=дефолт с динамич. местами), если финализация упадёт.
             "placement_types": ["SEARCH_PAGE"],
-            # Глобальные минус-слова ВСЕГДА в spec через Grid-cookie (minusKeywords, без баллов).
-            # _apply_campaign_direct_minus через v5 для campaign-mode УБРАН (create_set_text.py) —
-            # Grid-spec уже ставит campaign-level, второй v5-вызов создавал бы дубль.
-            # _enabled_minus_words не прокинута в feed_builder_deps — доступ через _DEPS (safe get).
-            "minus_keywords": (_DEPS.get("_enabled_minus_words") or (lambda: []))()}
+            # Минус-слова кампании в spec через Grid-cookie (minusKeywords, без баллов) — собраны выше
+            # (_mk_words: глоб. слова + слепковый пак для campaign/shared_set). _apply_campaign_direct_minus
+            # через v5 downstream НЕ вызывается (Grid-spec уже ставит campaign-level, второй v5 = дубль).
+            "minus_keywords": _mk_words}
 
     # БАГ-10: цены из фида для tp2/tp4 cookie-пути (раньше price_map не прокидывался).
     try:
@@ -839,6 +862,28 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
 
     return out
 
+def _resolve_single_feed_variants(data: dict, token: str, login: str, agency: str, job=None) -> None:
+    """single_feed для tp5/tp3: резолвим ЦЕЛЕВОЙ фид так же, как plan/tp7 (create_set_plan.py:350) —
+    через _first_url_feed(strict=True), а НЕ prefer_single_feed_variants(первый попавшийся allow-фид).
+    Причина: при отсутствии /yandex.xml prefer_single_feed_variants тихо брала variants[:1] (первый
+    разрешённый фид, напр. credit-page-01-a.xml) → tp5/tp3 создавались на ЧУЖОМ фиде, вразрез с
+    планом/превью. /yandex.xml нет → канонический фолбэк (yandex-catalog-model-design-custom-name.xml),
+    но ТОЛЬКО при подтверждённом single_feed_fallback (как plan). Не резолвится → фид не берём
+    (data['feeds']=[]): не создаём товарные галереи на произвольном фиде. Мутирует data['feeds']."""
+    from .create_set_input import FALLBACK_SINGLE_FEED_KEY
+    sf_id = _first_url_feed(token, login, agency, strict=True)
+    # UI шлёт feed_confirmed (кнопка «Продолжить с другим фидом»), plan-гейт исторически читал
+    # single_feed_fallback → рассинхрон, фолбэк на каталог-фид не открывался. Принимаем ОБА ключа.
+    _fb_body = (job or {}).get("body", {})
+    if not sf_id and (_fb_body.get("single_feed_fallback") or _fb_body.get("feed_confirmed")):
+        sf_id = _first_url_feed(token, login, agency, strict=True, url_key=FALLBACK_SINGLE_FEED_KEY)
+    if sf_id:
+        sel = [f for f in data["feeds"] if int(f[0]) == int(sf_id)]
+        data["feeds"] = sel or [(int(sf_id), "", "")]
+    else:
+        data["feeds"] = []
+
+
 def _create_tp5_campaign(token: str, login: str, base_name: str, counter_id: int,
                          goal_id: int, cpa_rub: int, budget_rub: int, region_ids: list,
                          href: str, slepok: str, site_type: str, r_code: str,
@@ -852,15 +897,18 @@ def _create_tp5_campaign(token: str, login: str, base_name: str, counter_id: int
     """Боевая tp5 (комбинированная, эталон Щербаковой 2026-06-22): TEXT_CAMPAIGN поиск-only
     + бренд-группы из пака M3 (TextAd + ListingAd + ShoppingAd), кодер ct010_ag011.
     FAN-OUT: мультиплицируется по ВСЕМ URL-фидам аккаунта — каждый фид своя пара cpc+cpa.
-    single_feed=True → только /yandex.xml (fallback: первый фид).
+    single_feed=True → только /yandex.xml (как plan: _first_url_feed strict; нет → канонический
+    фолбэк лишь при подтверждённом single_feed_fallback, иначе tp5 пропускается — НЕ первый фид).
     agency — для _account_model_feeds (collectionId по модели из listings фида).
     base_name — канон cpc: 'tp5_cpc_site — Поиск + Динамика + Товарная галерея'."""
     data = _tp5_account_data(token, login, slepok, site_type, agency)
     if not data["feeds"]:
         return {"ok": False, "name": base_name, "error": "нет URL-фидов на аккаунте для tp5"}
     if single_feed:
-        from .create_set_input import prefer_single_feed_variants
-        data["feeds"] = prefer_single_feed_variants(data["feeds"])
+        _resolve_single_feed_variants(data, token, login, agency, job)
+        if not data["feeds"]:
+            return {"ok": False, "name": base_name,
+                    "error": "single_feed: целевой фид (/yandex.xml или подтверждённый фолбэк) не найден — tp5 пропущена"}
     # Модельные коллекции фидов (listings 'model_N') — для FeedFilterConditions по модели.
     mf_list = _account_model_feeds(login, agency) if agency else []
     results = []
@@ -956,12 +1004,19 @@ def _create_tp3_single(data: dict, token: str, login: str, name: str, mode: str,
             placement_types=["ADV_GALLERY"])
     except Exception as e:  # noqa: BLE001
         warn = f"Search-докрутка упала: {str(e)[:140]}"
-    # текст по умолчанию на товарном объявлении (как в tp5)
-    if data["default_text"]:
-        try:
-            gf.get_grid_client(login).set_default_text([shop], feed_id, data["default_text"])
-        except Exception:  # noqa: BLE001
-            pass
+    # текст по умолчанию на товарном объявлении: единый SHOPPING_DEFAULT_TEXT БЕЗ кредита,
+    # как в tp5 (create_set_feed_builders R2-8 2026-07-10 «единый ShoppingAd default_text без
+    # кредита, ОДИН общий на все каталожные/товарные кампании»). Раньше tp3 брал
+    # data["default_text"] из slepok_content (тексты с кредитным углом) → «кредит» протекал
+    # в товарное/каталожное объявление (CREDIT_IN_DEFAULT_TEXT_PRODUCT); tp5 уже был исправлен.
+    try:
+        from .create_set_assets import SHOPPING_DEFAULT_TEXT as _SDT3
+    except Exception:  # noqa: BLE001 — fail-safe если импорт недоступен
+        _SDT3 = "Новые автомобили в наличии. Большой выбор. Скидки до 45% при покупке. Тест-драйв."
+    try:
+        gf.get_grid_client(login).set_default_text([shop], feed_id, _SDT3)
+    except Exception:  # noqa: BLE001
+        pass
     # корректировки «Глобальных правил» — ПОСЛЕ Grid (он перезаписывает bidModifiers)
     nmod = 0
     try:
@@ -983,13 +1038,16 @@ def _create_tp3_campaign(token: str, login: str, base_name: str, counter_id: int
                          single_feed: bool = False, agency: str = "") -> dict:
     """Боевая tp3 «Товарная галерея» (ЕПК, Поиск, placementTypes=['ADV_GALLERY'], товарная по фиду) — ПАРА cpc+cpa.
     FAN-OUT (CODER.md): мультиплицируется по ВСЕМ URL-фидам аккаунта — каждый фид своя пара,
-    имя несёт название фида. single_feed=True → только /yandex.xml (fallback: первый фид). job — live-счётчик."""
+    имя несёт название фида. single_feed=True → только /yandex.xml (как plan: _first_url_feed strict;
+    фолбэк лишь при подтверждённом single_feed_fallback, иначе tp3 пропускается — НЕ первый фид). job — live-счётчик."""
     data = _tp5_account_data(token, login, slepok, site_type, agency)
     if not data["feeds"]:
         return {"ok": False, "name": base_name, "error": "нет URL-фидов на аккаунте для tp3"}
     if single_feed:
-        from .create_set_input import prefer_single_feed_variants
-        data["feeds"] = prefer_single_feed_variants(data["feeds"])
+        _resolve_single_feed_variants(data, token, login, agency, job)
+        if not data["feeds"]:
+            return {"ok": False, "name": base_name,
+                    "error": "single_feed: целевой фид (/yandex.xml или подтверждённый фолбэк) не найден — tp3 пропущена"}
     # ct009 = «Товарное/Фид» (CODER.md ag_part5): ShoppingAd+ListingAd по фиду.
     group_name = f"ct0000_aon_n000_{r_code}_ct009_ag001_g00 — Товарная галерея"
     results = []

@@ -16,7 +16,14 @@ def register_reference_routes(
     load_audiences: Callable[[], list[dict]],
     victory_conn: Callable,
     ag_part1_map: Callable[[], dict],
+    ui_structure_payload: Callable[[], dict],
 ) -> None:
+    @bp.route("/api/ui_structure")
+    @access
+    def api_ui_structure():
+        """Heavy slepok/coder maps, fetched lazily by create/structure panels."""
+        return jsonify(ui_structure_payload())
+
     @bp.route("/api/feeds")
     @access
     def api_feeds():

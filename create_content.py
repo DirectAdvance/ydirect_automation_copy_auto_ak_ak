@@ -59,6 +59,9 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
     _DIRECT_CREDIT_RE = re.compile(
         r"(?i)(кредит|автокредит|плат[её]ж|/мес|взнос|одобр|решение\s+банк|банк(?:а|ов|и)?|рассроч)"
     )
+    # Sale-паттерн «складских» слепков (Щербакова: «распродаём стоянку», «перед завозом»,
+    # «нулевой утильсбор») — OR-альтернатива кредитному слову, как в ai_agents.assemble_campaign.
+    _TITLE_SALE_OK_RE = re.compile(r"(?i)(распрод|склад|стоянк|завоз|утильсбор)")
     _TEXT_UTP_RE = re.compile(
         r"(?i)(\d|кредит|плат[её]ж|скидк|выгод|трейд-?ин|каско|подар|в наличии|господдерж|госпрограм|"
         r"одобр|акци|тест-?драйв|шин|взнос|документ|комплект|ключи)")
@@ -102,32 +105,37 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
                 and not (_bu_site and A._bad_for_bu(s))
                 and not (_new_only_site and A._bad_for_new(s)))
 
+    # МЁРТВЫЙ КОД (0 вызовов, подтверждено grep 2026-07-13): реальный гейт заголовков —
+    # _accept_title ниже (единственные вызовы фильтра заголовков в этой функции); sale-OR
+    # фикс живёт ТАМ. Оставлен как исторический эталон логики фильтра; сиблинги _text_ok/_ok —
+    # тот же мёртвый кластер, не тронуты, чтобы не тянуть unrelated cleanup в точечный фикс.
     def _title_ok(t: str) -> bool:
         if not _ok(t):
             return False
+        if _is_dmp:
+            # B2B: бренд не нужен (dmp-контент не упоминает авто-марки); требуем B2B-маркер
+            return bool(_DMP_B2B_UTP_RE.search(t or ""))
         # Для брендовой кампании слабые общие заголовки без марки почти всегда нерелевантны.
         if _brand_re and not _brand_re.search(t or ""):
             return False
-        if _is_dmp:
-            # B2B: принимаем заголовок если содержит B2B-маркер (лид/контакт/клиент/...) — кредит не нужен
-            return bool(_DMP_B2B_UTP_RE.search(t or ""))
         # Заголовок должен нести продающее УТП, а не быть общим «Новые BAIC в городе».
         if not _TITLE_UTP_RE.search(t or ""):
             return False
-        # Для этой задачи каждый заголовок должен явно продавать автокредит, а не просто авто/акцию.
-        if not _DIRECT_CREDIT_RE.search(t or ""):
+        # Заголовок должен нести кредитный угол ЛИБО складской sale-угол (голос Щербаковой),
+        # иначе фирменные фразы «Распродаём стоянку. Скидка 45%» ошибочно резались.
+        if not (_DIRECT_CREDIT_RE.search(t or "") or _TITLE_SALE_OK_RE.search(t or "")):
             return False
         return True
 
     def _text_ok(x: str) -> bool:
         if not _ok(x):
             return False
+        if _is_dmp:
+            # B2B: бренд не нужен (dmp-тексты не упоминают авто-марки); требуем B2B-маркер
+            return bool(_DMP_B2B_UTP_RE.search(x or ""))
         # Для брендовой кампании текст без марки часто оказывается слишком общим и слабым.
         if _brand_re and not _brand_re.search(x or ""):
             return False
-        if _is_dmp:
-            # B2B: принимаем текст если содержит B2B-маркер — кредит/CTA не требуются
-            return bool(_DMP_B2B_UTP_RE.search(x or ""))
         # Текст должен содержать реальную выгоду/условие, а не общий слоган.
         if not _TEXT_UTP_RE.search(x or ""):
             return False
@@ -232,17 +240,17 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
             reject_stats["titles"]["bad_site_fit"] += 1
             _push_example("titles", "bad_site_fit", t)
             return False
-        if _brand_re and not _brand_re.search(t or ""):
-            reject_stats["titles"]["missing_brand"] += 1
-            _push_example("titles", "missing_brand", t)
-            return False
         if _is_dmp:
-            # B2B: требуем B2B-маркер вместо авто-кредитного угла
+            # B2B: бренд не нужен (dmp не упоминает авто-марки); требуем B2B-маркер
             if not _DMP_B2B_UTP_RE.search(t or ""):
                 reject_stats["titles"]["missing_utp"] += 1
                 _push_example("titles", "missing_utp", t)
                 return False
         else:
+            if _brand_re and not _brand_re.search(t or ""):
+                reject_stats["titles"]["missing_brand"] += 1
+                _push_example("titles", "missing_brand", t)
+                return False
             if not _TITLE_UTP_RE.search(t or ""):
                 reject_stats["titles"]["missing_utp"] += 1
                 _push_example("titles", "missing_utp", t)
@@ -251,7 +259,10 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
                 reject_stats["titles"]["missing_number"] += 1
                 _push_example("titles", "missing_number", t)
                 return False
-            if not _DIRECT_CREDIT_RE.search(t or ""):
+            # Кредитный угол ЛИБО складской sale-угол (голос Щербаковой): фразы вроде
+            # «Распродаём стоянку. Скидка 45%» несут склад-оффер без кредитного слова —
+            # не резать. OR с _TITLE_SALE_OK_RE, как в ai_agents.assemble_campaign.
+            if not (_DIRECT_CREDIT_RE.search(t or "") or _TITLE_SALE_OK_RE.search(t or "")):
                 reject_stats["titles"]["missing_credit_angle"] += 1
                 _push_example("titles", "missing_credit_angle", t)
                 return False
@@ -297,17 +308,17 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
             reject_stats["texts"]["bad_site_fit"] += 1
             _push_example("texts", "bad_site_fit", x)
             return False
-        if _brand_re and not _brand_re.search(x or ""):
-            reject_stats["texts"]["missing_brand"] += 1
-            _push_example("texts", "missing_brand", x)
-            return False
         if _is_dmp:
-            # B2B: требуем B2B-маркер; авто-UTP/кредит/CTA не нужны
+            # B2B: бренд не нужен (dmp-тексты не упоминают авто-марки); требуем B2B-маркер
             if not _DMP_B2B_UTP_RE.search(x or ""):
                 reject_stats["texts"]["missing_utp"] += 1
                 _push_example("texts", "missing_utp", x)
                 return False
         else:
+            if _brand_re and not _brand_re.search(x or ""):
+                reject_stats["texts"]["missing_brand"] += 1
+                _push_example("texts", "missing_brand", x)
+                return False
             if not _TEXT_UTP_RE.search(x or ""):
                 reject_stats["texts"]["missing_utp"] += 1
                 _push_example("texts", "missing_utp", x)
@@ -362,6 +373,57 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
                     seen_sl_desc.add(dk)
                 good_sl.append({"title": ti, "description": de})
                 _push_accepted("sitelinks", f"{ti} — {de}".strip(" —"))
+
+    # ── Density-upgrade pass: короткие заголовки (48-52 симв) → LLM расширяет до 53-56 ──
+    # Запускается НЕЗАВИСИМО от count-retry — даже когда count=7 но все заголовки 48-52 симв.
+    # In-place замена (не добавление): seen_t/seen_t_norm обновляются; dedup по UTP-bucket
+    # не применяется (расширяем ту же идею — bucket остаётся прежним).
+    if (not fast_mode) and good_t:
+        _short_t = [t for t in good_t if len(t) < A.TITLE_DENSE_MIN]
+        if _short_t:
+            try:
+                _du_msgs = A.build_density_upgrade_messages(
+                    _short_t, good_t, agent, ctx, item=item, brand=brand)
+                _du_text, _du_err = _m3_complete_url(
+                    urls14[0], _du_msgs,
+                    max_tokens=240, temperature=0.65, top_p=0.88,
+                    repetition_penalty=1.1, tries=1, timeout=_M3_CONTENT_IDLE_TIMEOUT)
+                if not _du_err:
+                    _du_raw = _promo_extract_json(_du_text) or {}
+                    _du_expanded = _du_raw.get("titles") or []
+                    for _di, _orig in enumerate(_short_t):
+                        if _di >= len(_du_expanded):
+                            break
+                        _exp = str(_du_expanded[_di]).strip()
+                        # Базовая валидация расширенного заголовка (dedup по UTP-bucket опущен —
+                        # это замена, а не новый заголовок):
+                        _exp_ok = (
+                            A.TITLE_DENSE_MIN <= len(_exp) <= A.TITLE_MAX
+                            and _exp not in good_t
+                            and _site_fit_ok(_exp)
+                            and not _bad_ad_title(_exp)
+                            and (re.search(r"\d", _exp) is not None)
+                            and (_is_dmp or (
+                                (_brand_re is None or bool(_brand_re.search(_exp)))
+                                and bool(_TITLE_UTP_RE.search(_exp))
+                                and (bool(_DIRECT_CREDIT_RE.search(_exp))
+                                     or bool(_TITLE_SALE_OK_RE.search(_exp)))
+                            ))
+                        )
+                        if _exp_ok and _orig in good_t:
+                            _oi = good_t.index(_orig)
+                            good_t[_oi] = _exp
+                            # обновляем seen_t / seen_t_norm чтобы count-retry не принял дубль _exp
+                            seen_t.discard(_orig.lower())
+                            seen_t.add(_exp.lower())
+                            _on = _variant_norm_key(_orig)
+                            if _on:
+                                seen_t_norm.discard(_on)
+                            _en = _variant_norm_key(_exp)
+                            if _en:
+                                seen_t_norm.add(_en)
+            except Exception:  # noqa: BLE001
+                pass
 
     # Точечный retry: если после первого fan-out уникальности не хватает, просим M3 догенерировать
     # именно недостающие ЗАГОЛОВКИ/БЫСТРЫЕ ССЫЛКИ с запретом на уже предложенные варианты.
@@ -597,6 +659,12 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
     if not last_err:
         last_err = "; ".join(e for e in [err_t, err_x, err_sl] if e) or None
 
+    # Dense-first: ставим плотные заголовки (≥53 симв) перед 48-52-символьными.
+    # assemble_campaign/_pad подбирает итоговый набор из переданного списка, поэтому
+    # порядок влияет — dense заголовки попадут в набор первыми при достаточном количестве.
+    if len(good_t) > 1:
+        good_t.sort(key=lambda _t: (0 if len(_t) >= A.TITLE_DENSE_MIN else 1, -len(_t)))
+
     # Гарантия длины и количества: чего не хватило — добиваем ПОЛНЫМИ примерами из корпуса слепка.
     # Если M3 совсем не дала валидного (good пусто) — сначала пробуем БД-библиотеку слепка,
     # иначе собираем ВЕСЬ контент из код-корпуса слепка (не падаем).
@@ -720,7 +788,8 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
                 "Новые авто по акции. Трейд-ин и кредитные условия. Узнайте выгоду онлайн!",
                 "Кредит на новое авто от 15 банков. Подберите условия онлайн сегодня!",
             ]
-        sitelink_fillers = [  # все заголовки ≥ SITELINK_TITLE_TARGET_MIN=22 (fix 1a, 2026-07-02)
+        if not _is_dmp:  # dmp уже имеет свои B2B sitelink_fillers в if-ветке выше — не перезаписываем
+            sitelink_fillers = [  # все заголовки ≥ SITELINK_TITLE_TARGET_MIN=22 (fix 1a, 2026-07-02)
             {"title": "Кредит за 30 минут онлайн", "description": "Подберем условия от 15 банков онлайн за 30 минут"},
             {"title": "Платеж от 9 000 ₽ в месяц", "description": "Рассчитайте платеж от 9 000 ₽/мес для вашей заявки"},
             {"title": "Автокредит от 15 банков", "description": "Сравним предложения 15 банков и подберем вариант"},
@@ -738,6 +807,8 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
         _foreign_cities = (set(_foreign_cities) | set(_RU_CITIES)) - _ctx_city_words
 
         def _brand_ok_line(s: str) -> bool:
+            if _is_dmp:
+                return True  # dmp: B2B-контент не упоминает авто-марки — бренд не требуем
             return (not _brand_re) or bool(_brand_re.search(s or ""))
 
         def _credit_offer_ok_line(s: str) -> bool:
@@ -786,6 +857,9 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
                         or not _brand_ok_line(s) or not _credit_offer_ok_line(s)
                         or not _site_ok_line(s) or not _common_ok_line(s)
                         or s.lower() in seen):
+                    continue
+                # dmp-стоп-слова: блокируем авто-кредитный контент в B2B заголовках
+                if _is_dmp and _DIRECT_CREDIT_RE.search(s):
                     continue
                 seen.add(s.lower())
                 candidates.append(s)
@@ -839,6 +913,9 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
                         or not _common_ok_line(s) or _bad_ad_text(s)
                         or s.lower() in seen):
                     continue
+                # dmp-стоп-слова: блокируем авто-кредитный контент в B2B текстах
+                if _is_dmp and _DIRECT_CREDIT_RE.search(s):
+                    continue
                 seen.add(s.lower())
                 out.append(s)
                 if len(out) >= A.TEXTS_N:
@@ -858,6 +935,9 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
                         or _bad_inventory(title) or _bad_inventory(desc)
                         or not _site_ok_line(title) or not _site_ok_line(desc)
                         or not _common_ok_line(title) or not _common_ok_line(desc)):
+                    continue
+                # dmp-стоп-слова: блокируем авто-кредитные сайтлинки (кредит/платёж/КАСКО/трейд-ин)
+                if _is_dmp and _DIRECT_CREDIT_RE.search(title + " " + desc):
                     continue
                 candidates.append({"title": title, "description": desc})
             # Three-pass number-gate: ensure descriptions carry concrete figures.

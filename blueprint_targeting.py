@@ -113,6 +113,47 @@ def _ct_segment(ct: str) -> str:
     return _ct_segment_map().get(_gc_ct(ct), "Марки")
 
 
+# ── Не-авто слепки (B2B-лидоген dmp и будущие) ────────────────────────────────────────────────
+# Признак хранится в slepki_structure.json: у directolog поле "auto": false. Для таких слепков
+# сегментация Марки/Модели/Общее (авто-справочник) НЕ применяется — структура показывается и
+# создаётся по splits (реальные темы кабинета), а контент берётся B2B-голосом слепка, не авто.
+def _slepok_is_auto(slepok: str) -> bool:
+    """True для авто-директологов (по умолчанию), False для не-авто (флаг "auto": false в структуре)."""
+    if not slepok:
+        return True
+    try:
+        for x in (_json("slepki_structure.json").get("directologists") or []):
+            if x.get("key") == slepok:
+                return x.get("auto", True) is not False
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
+def _non_auto_slepki() -> list:
+    """key всех не-авто слепков — для UI (рендер splits вместо Марки/Модели) и контент-роутинга."""
+    try:
+        return [x.get("key") for x in (_json("slepki_structure.json").get("directologists") or [])
+                if x.get("auto", True) is False and x.get("key")]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _non_auto_site_types() -> set:
+    """Имена site_type всех не-авто слепков — для text_gen: не применять авто-фильтр ключей
+    (drop «марка+модель») к B2B-группам. Не-авто слепки используют уникальные site_type (напр. dmp)."""
+    out: set = set()
+    try:
+        for x in (_json("slepki_structure.json").get("directologists") or []):
+            if x.get("auto", True) is False:
+                for st in (x.get("site_types") or []):
+                    if st.get("name"):
+                        out.add(st["name"])
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 def _seg_canon(s: str) -> str:
     """Канон сегмента для сверки классификатора с профилем: общие темы → 'общая'
     (классификатор даёт «Общее», профиль из живых имён — «общая»/«Общие запросы»)."""
@@ -204,10 +245,22 @@ def _slepki_structure_for_ui() -> dict:
     out = copy.deepcopy(_json("slepki_structure.json"))
     for d in out.get("directologists", []):
         key = d.get("key") or ""
+        source_manifest = d.get("source_manifest")
+        source_campaigns_by_site: dict[str, list] = {}
+        if source_manifest:
+            try:
+                manifest = _json(source_manifest)
+                if manifest.get("slepok") == key:
+                    source_campaigns_by_site[manifest.get("site_type") or ""] = copy.deepcopy(
+                        manifest.get("campaigns") or [])
+            except Exception:  # noqa: BLE001 — broken manifest is reported by preflight, UI still opens
+                source_campaigns_by_site = {}
         for st in d.get("site_types", []):
             stype = st.get("name") or ""
             st["tp"] = [t for t in st.get("tp", [])
                         if not _slepok_profile_excludes_tp(key, stype, t.get("code") or "")]
+            if source_campaigns_by_site.get(stype):
+                st["source_campaigns"] = source_campaigns_by_site[stype]
     return out
 
 

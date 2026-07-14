@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from flask import jsonify, request
 
+from . import create_set_context as _csctx  # _parse_targeting_modes (чистый хелпер, без configure)
+
 _DEPS: dict = {}
 
 
@@ -165,6 +167,53 @@ def _tp1_plan_names(slepok: str, site_type: str, r_code: str) -> list[dict]:
 _AUTO_SEGMENT_SITE_TYPES = {"Мультибренд", "Монобренд", "С пробегом", "Мульти + БУ", "Квиз"}
 
 
+def _tp_seg_name_override(slepok: str, site_type: str, tp_code: str, seg: str, mode: str) -> str | None:
+    """Переопределённый label кампании (часть после «—», без области) для (слепок, тип, tp, сегмент, режим).
+
+    Читает из tp.name_overrides['{seg}|{mode}'] или tp.name_overrides[seg] в slepki_structure.json.
+    mode = 'КС' или 'Автотаргет' (как приходит из _slepok_tp_modes). Возвращает None если нет override."""
+    key = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
+    struct = _json("slepki_structure.json").get("directologists", [])
+    d = next((x for x in struct if x.get("key") == key), None)
+    if not d:
+        return None
+    st = next((s for s in d.get("site_types", []) if s.get("name") == site_type), None)
+    if not st:
+        return None
+    tp = next((t for t in st.get("tp", []) if t.get("code") == tp_code), None)
+    if not tp:
+        return None
+    overrides = tp.get("name_overrides") or {}
+    return overrides.get(f"{seg}|{mode}") or overrides.get(seg) or None
+
+
+def _tp_seg_modes(slepok: str, site_type: str, tp_code: str, seg: str) -> list | None:
+    """Режимы таргетинга сегмента ИЗ СТРУКТУРЫ слепка (tp.seg_modes[seg]) — приоритетный источник.
+
+    Для гибридных слепков задаёт разведение на 3 варианта: {'Автотаргет','КС','КС+Автотаргет'}
+    (полный автотаргет / только ключи / ключи + автотаргет одной кампанией).
+    None → в структуре не задано (или пусто/битое) → caller делает fallback на боевой профиль
+    _slepok_tp_modes (не-гибридные слепки НЕ меняются). Порядок режимов — как в структуре.
+    Читается аналогично _tp_seg_name_override (тот же tp-узел slepki_structure.json)."""
+    key = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
+    struct = _json("slepki_structure.json").get("directologists", [])
+    d = next((x for x in struct if x.get("key") == key), None)
+    if not d:
+        return None
+    st = next((s for s in d.get("site_types", []) if s.get("name") == site_type), None)
+    if not st:
+        return None
+    tp = next((t for t in st.get("tp", []) if t.get("code") == tp_code), None)
+    if not tp:
+        return None
+    sm = tp.get("seg_modes") or {}
+    raw = sm.get(seg)
+    if not isinstance(raw, list):
+        return None
+    valid = [m for m in raw if m in ("Автотаргет", "КС", "КС+Автотаргет")]
+    return valid or None
+
+
 def _tp_splits(slepok: str, site_type: str, tp_code: str) -> list[dict] | None:
     """splits[] tp-блока слепка (каждый: {sq,label,groups}) или None (нет splits / нет tp).
 
@@ -183,6 +232,56 @@ def _tp_splits(slepok: str, site_type: str, tp_code: str) -> list[dict] | None:
         return None
     return tp.get("splits") or None
 
+
+def _source_campaign_manifest(slepok: str, site_type: str) -> dict | None:
+    """Authoritative archive-derived campaign layout, when a slepok declares one.
+
+    The ordinary ``tp/groups/items`` structure remains available as the coder/content
+    foundation.  A source manifest is a higher-level description of the real campaigns
+    and must not be collapsed back into generic segment campaigns.
+    """
+    key = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
+    directologist = next((item for item in (_json("slepki_structure.json").get("directologists") or [])
+                          if item.get("key") == key), None)
+    manifest_name = (directologist or {}).get("source_manifest")
+    if not manifest_name:
+        return None
+    manifest = _json(manifest_name)
+    if manifest.get("slepok") != key or manifest.get("site_type") != site_type:
+        return None
+    return manifest
+
+def _feed_role_of(feed: dict) -> str:
+    """Роль фида по нормализованному ключу: catalog (модельные листинги) / landing (лендинг/оффер).
+    Использует инжектированные `_feed_key` и `_CATALOG_FEED_KEYS` (см. automation_runtime._create_set_plan_deps)."""
+    key = _feed_key((feed or {}).get("url") or (feed or {}).get("name") or "")
+    return "catalog" if key in _CATALOG_FEED_KEYS else "landing"
+
+def _explicit_feed_subset(g: dict, feeds: list[dict]):
+    """Явно заданный в структуре tp7-позиции фид → подмножество `feeds`.
+
+    Возвращает:
+      • None — фид в позиции НЕ задан (feed_role/feed_id/feed_key пусты) → безопасный дефолт: fan-out.
+      • list  — совпавшие фиды (по id → по ключу/имени → по роли catalog/landing). Может быть пустым,
+                если явно указанного фида НЕТ среди разрешённых фидов аккаунта (тогда позиция пропускается,
+                чтобы НЕ создавать товарку на нерелевантном фиде)."""
+    fid = g.get("feed_id")
+    fkey = (g.get("feed_key") or "").strip()
+    frole = (g.get("feed_role") or "").strip().lower()
+    if not (fid or fkey or frole):
+        return None
+    if fid:
+        try:
+            fid_i = int(fid)
+        except (TypeError, ValueError):
+            fid_i = 0
+        return [f for f in feeds if int((f or {}).get("id") or 0) == fid_i] if fid_i else []
+    if fkey:
+        want = _feed_key(fkey)
+        return [f for f in feeds
+                if _feed_key((f or {}).get("url") or (f or {}).get("name") or "") == want]
+    return [f for f in feeds if _feed_role_of(f) == frole]
+
 def _set_plan_response():
     """План набора (предпросмотр, БЕЗ создания): какие кампании и с какими именами создадутся."""
     import psycopg2.extras
@@ -194,6 +293,9 @@ def _set_plan_response():
     # selected_pos: {tp_num_str: {labels:[...], groups:[...]}} — пер-позиционный выбор с фронта.
     # Если пришёл — фильтруем план по нему. Не пришёл — поведение прежнее (все позиции).
     selected_pos: dict = body.get("selected_pos") or {}
+    # #4 (Семён 2026-07-12): галочка «под стиль сайта» (n) управляет cpc/cpa для НЕ-авто (dmp):
+    # стоит (n=False) → только cpc; снята (n=True) → cpc + cpa (×2). Заменяет копирование split.pay.
+    no_cpa = bool(body.get("n"))
     def _sel_labels(tp_num: int) -> set | None:
         """Выбранные label'ы для tp (tp1). None = нет ограничений."""
         sp = selected_pos.get(str(tp_num)) or selected_pos.get(tp_num)
@@ -240,7 +342,7 @@ def _set_plan_response():
     cpa, budget = rs["cpa"], rs["budget"]                # для resolved (read-only справка в форме)
 
     def _bud(pay):                                       # бюджет недели по типу оплаты
-        return rs["cpa"] * 10 if pay == "cpa" else rs["cpc_budget"]
+        return rs["budget"] if pay == "cpa" else rs["cpc_budget"]
 
     def _cpa_for(pay):                                   # целевой CPA по типу оплаты
         return rs["cpa"] if pay == "cpa" else rs["cpc_cpa"]
@@ -274,7 +376,11 @@ def _set_plan_response():
         # тут не было → tp7 плодил кампанию на КАЖДЫЙ фид аккаунта (вкл. неотмеченные). Фильтруем
         # СЫРЫЕ строки (у них есть name/Name → совпадает с feed_key глобальных правил), затем мапим.
         if token:
-            jf = _v5_get("feeds", token, login, ["Id", "Name", "SourceType", "Url"])
+            # ⚠️ НЕ добавлять "Url" в FieldNames: v5 feeds.get его НЕ знает (валидны Id/Name/BusinessType/
+            # SourceType/Source/UpdateStatus) → весь запрос падает «Некорректный запрос» → молчаливый
+            # фолбэк на Grid. URL URL-фида лежит в nested Source; здесь он не нужен (single_feed /yandex.xml
+            # резолвится через Grid ниже), поэтому url="" — его подхватит Grid-фолбэк.
+            jf = _v5_get("feeds", token, login, ["Id", "Name", "SourceType"])
             _raw = [f for f in (jf.get("result") or {}).get("Feeds", []) if f.get("SourceType") == "URL"]
             feeds = [{"id": f["Id"], "name": f.get("Name"), "url": f.get("Url") or ""} for f in _filter_allowed_feed_rows(_raw)]
         if not feeds:
@@ -301,6 +407,10 @@ def _set_plan_response():
             # Резолвим /yandex.xml через API+Grid (как tp1): _first_url_feed видит полные Grid-объекты
             # с URL-полями, тогда как feeds здесь уже усечены до {id, name} → prefer_single_feed_rows
             # не находит совпадения по имени и молча берёт первый фид (credit-page-01-a.xml и т.п.).
+            # Подтверждение фолбэк-фида: UI шлёт ключ feed_confirmed (кнопка «Продолжить с
+            # другим фидом»), старый путь читал single_feed_fallback → рассинхрон, фолбэк на
+            # каталог-фид не открывался. Принимаем ОБА ключа.
+            _sf_fb_confirmed = bool(body.get("single_feed_fallback") or body.get("feed_confirmed"))
             _sf_id = _first_url_feed(token, login, row.get("agency_account") or "", strict=True)
             if not _sf_id:
                 # /yandex.xml нет → ищем фолбэк-фид (кнопка «Продолжить с другим фидом»)
@@ -314,7 +424,7 @@ def _set_plan_response():
                 if _sf_fallback_id:
                     _sf_fallback_name = next((str(f.get("name") or "") for f in feeds
                                               if int(f.get("id") or 0) == _sf_fallback_id), "")
-                if _sf_fallback_id and bool(body.get("single_feed_fallback")):
+                if _sf_fallback_id and _sf_fb_confirmed:
                     _sf_id = _sf_fallback_id                   # пользователь подтвердил фолбэк
                     _sf_fallback_id = 0
                     warnings.append(f"«по одному фиду»: /{SINGLE_FEED_KEY} нет — по решению пользователя "
@@ -323,7 +433,7 @@ def _set_plan_response():
                 _sf_list = [f for f in feeds if int(f.get("id") or 0) == _sf_id]
                 if _sf_list:
                     feeds = _sf_list
-                    if not body.get("single_feed_fallback"):
+                    if not _sf_fb_confirmed:
                         warnings.append(f"«по одному фиду»: план и создание — только /{SINGLE_FEED_KEY}")
                 else:
                     feeds = prefer_single_feed_rows(feeds)
@@ -348,10 +458,72 @@ def _set_plan_response():
         used.add(name)
         return name, True
 
-    pays = ["tcpa", "cpa"]
+    # gen_ses and future archive-backed slepki: preview the REAL campaign split from the
+    # manifest.  The legacy tp tree is still useful for ct/gc mapping, but must not turn the
+    # six source campaigns into generic "Марки/Модели/Общее" pairs.  These rows are
+    # deliberately pre-draft-only until the source-aware builders are enabled; the async
+    # endpoint rejects them as a second safety gate.
+    source_manifest = _source_campaign_manifest(agent, site_type)
+    if source_manifest:
+        selected_slugs: set[str] = set()
+        selection_was_sent = False
+        for tp_selection in selected_pos.values():
+            if not isinstance(tp_selection, dict):
+                continue
+            selection_was_sent = True
+            selected_slugs.update(str(value) for value in (tp_selection.get("labels") or []))
+            selected_slugs.update(str(value) for value in (tp_selection.get("groups") or []))
+        source_plan = []
+        blockers: list[str] = [
+            "source-aware builder ещё не включён: остановка выполнена до создания черновиков"
+        ]
+        for campaign in source_manifest.get("campaigns") or []:
+            slug = str(campaign.get("slug") or "")
+            if selection_was_sent and slug not in selected_slugs:
+                continue
+            label = str(campaign.get("source_name") or slug)
+            name, renamed = _uniq(
+                f"{campaign.get('tp')}_cpc_site — {label}" + (f" - {oblast}" if oblast else "")
+            )
+            missing = list(campaign.get("missing") or [])
+            blockers.extend(f"{label}: отсутствует {field}" for field in missing)
+            source_plan.append({
+                "type": campaign.get("engine_type"),
+                "variant": campaign.get("engine_type"),
+                "tp": campaign.get("tp"),
+                "pay": "tcpa",
+                "name": name,
+                "renamed": renamed,
+                "budget": campaign.get("weekly_budget"),
+                "cpa": rs.get("cpc_cpa") or rs.get("cpa"),
+                "source_campaign_slug": slug,
+                "source_campaign_id": campaign.get("source_campaign_id"),
+                "source_group_count": len(campaign.get("groups") or []),
+                "source_ready": bool(campaign.get("source_ready")),
+                "missing": missing,
+                "placement": campaign.get("placement"),
+                "bid_modifiers": campaign.get("bid_modifiers") or [],
+                "pre_draft_only": True,
+            })
+        return jsonify({
+            "login": login, "site_type": site_type, "r_code": r_code, "oblast": oblast,
+            "feeds": 0, "count": len(source_plan), "resolved_cpa": cpa,
+            "resolved_budget": budget, "renamed": sum(1 for item in source_plan if item["renamed"]),
+            "plan": source_plan, "warnings": warnings,
+            "source_manifest": source_manifest.get("source"),
+            "pre_draft_only": True,
+            "pre_draft_blockers": list(dict.fromkeys(blockers)),
+            "feed_alert": {"needed": False, "missing": [], "will_skip_types": [],
+                           "fallback_feed": None},
+        })
+
+    # #4 (Семён 2026-07-12): галочка «под стиль сайта» (n) — ЕДИНО для ВСЕХ слепков (авто и dmp):
+    # активна → cpc+cpa; снята (no_cpa) → только cpc. Влияет на всех, кто эмитит per-pay (tp2/tp4/МК).
+    pays = ["tcpa"] if no_cpa else ["tcpa", "cpa"]
     plan = []
     want_master = want_product = False                    # tp6/tp7 строим из структуры после цикла variants
     want_tp3 = False                                       # tp3 (ТГ-Фид) тоже требует URL-фид на аккаунте
+    want_tp5_gallery = False                               # tp5 (Поиск+Динамика+ТГ) — товарная галерея потребляет single feed
     # Текстовые движки: один элемент-кампания на tp (наполняется моделями из пака внутри).
     # tp1_rsy → ЕПК РСЯ v501 mode=network_cpa (правильный путь из CODER.md + CAMPAIGN_INVARIANTS.md)
     _TEXT_PLAN = {"search_test": "Поиск (тест)", "tp1_rsy": "РСЯ", "search_gallery": "Поиск + Динамика + ТГ",
@@ -380,20 +552,33 @@ def _set_plan_response():
                 for seg in segs_present:
                     if sel_tp1 is not None and seg not in sel_tp1:
                         continue
-                    # Режимы (КС/Автотаргет) — РОВНО как у реального аккаунта слепка (профиль).
-                    # None (нет профиля, напр. Терехов) → КС, как раньше. [] → не строить (нет у слепка).
-                    modes = _slepok_tp_modes(agent, site_type, "tp1", seg)
+                    # Источник режимов tp1 (приоритет):
+                    #   1) tp.seg_modes[seg] из структуры — гибридное разведение на 3 варианта
+                    #      {'Автотаргет','КС','КС+Автотаргет'} (полный автотаргет / только ключи /
+                    #      ключи+автотаргет одной кампанией). 3-я ветка возникает ТОЛЬКО если
+                    #      'КС+Автотаргет' явно задан в seg_modes.
+                    #   2) fallback — боевой профиль _slepok_tp_modes (РОВНО как у реального аккаунта;
+                    #      не-гибридные слепки НЕ меняются). None (нет профиля, напр. Терехов) → КС.
+                    modes = _tp_seg_modes(agent, site_type, "tp1", seg)
+                    if modes is None:
+                        modes = _slepok_tp_modes(agent, site_type, "tp1", seg)
                     if modes is None:
                         modes = ["КС"]
                     for mode in modes:
-                        at = mode == "Автотаргет"
-                        suffix = "Автотаргетинг" if at else "КС"
-                        label = f"РСЯ - {seg} - {suffix}" + (f" - {oblast}" if oblast else "")
+                        if mode == "КС+Автотаргет":
+                            at, keep_kw, suffix = True, True, "КС + Автотаргетинг"
+                        elif mode == "Автотаргет":
+                            at, keep_kw, suffix = True, False, "Автотаргетинг"
+                        else:                               # 'КС' и любой неизвестный → КС (совместимость)
+                            at, keep_kw, suffix = False, True, "КС"
+                        _ov1 = _tp_seg_name_override(agent, site_type, "tp1", seg, mode)
+                        label = (_ov1 or f"РСЯ - {seg} - {suffix}") + (f" - {oblast}" if oblast else "")
                         nm, renamed = _uniq(f"tp1_cpc_site — {label}")
                         plan.append({"type": "tp1_rsy", "variant": v, "pay": None, "feed_id": None,
                                      "feed_name": None, "name": nm, "renamed": renamed,
                                      "budget": rs["cpc_budget"], "cpa": rs["cpc_cpa"],
-                                     "tp1_segment": seg, "tp1_label": label, "autotarget": at})
+                                     "tp1_segment": seg, "tp1_label": label, "autotarget": at,
+                                     "autotarget_keep_keywords": keep_kw})
                 # Смарт-Баннер / Фиды — товарные объявления БЕЗ ТГО + автотаргет (как боевые),
                 # отдельной кампанией если профиль слепка их ведёт. В боевых КС-варианта нет.
                 for fmt in ("Смарт-Баннер", "Фиды"):
@@ -508,13 +693,17 @@ def _set_plan_response():
                                 _ct = _gc_ct(gi.get("gc", "")) if isinstance(gi, dict) else ""
                                 if _ct and _ct != "ct0000" and _ct not in grp_cts:
                                     grp_cts.append(_ct)
-                        nm, renamed = _uniq(f"tp2_cpc_site — {label}")
-                        plan.append({"type": "search_test", "variant": v, "pay": "tcpa",
-                                     "feed_id": None, "feed_name": None, "name": nm, "renamed": renamed,
-                                     "budget": _bud("tcpa"), "cpa": _cpa_for("tcpa"), "tp": "tp2",
-                                     "tp4_segment": None, "autotarget": False,
-                                     "tp2_split_sq": sp.get("sq"), "tp2_split_label": label,
-                                     "tp2_split_groups": grp_names, "tp2_split_cts": grp_cts})
+                        # #4 (Семён 2026-07-12): тип оплаты НЕ из split.pay, а по галочке «под стиль
+                        # сайта» — единый механизм pays (активна → cpc+cpa; снята → только cpc).
+                        for _pay in pays:
+                            _paycode = "cpc" if _pay == "tcpa" else "cpa"
+                            nm, renamed = _uniq(f"tp2_{_paycode}_site — {label}")
+                            plan.append({"type": "search_test", "variant": v, "pay": _pay,
+                                         "feed_id": None, "feed_name": None, "name": nm, "renamed": renamed,
+                                         "budget": _bud(_pay), "cpa": _cpa_for(_pay), "tp": "tp2",
+                                         "tp4_segment": None, "autotarget": False,
+                                         "tp2_split_sq": sp.get("sq"), "tp2_split_label": label,
+                                         "tp2_split_groups": grp_names, "tp2_split_cts": grp_cts})
                     continue
                 tp2_items = _tp_plan_names(agent, site_type, "tp2")
                 if not tp2_items:
@@ -538,7 +727,8 @@ def _set_plan_response():
                         suffix = "Автотаргетинг" if at else "КС"
                         for pay in pays:
                             paycode = "cpc" if pay == "tcpa" else "cpa"
-                            label = f"Поиск - {seg} - {suffix}" + (f" - {oblast}" if oblast else "")
+                            _ov2 = _tp_seg_name_override(agent, site_type, "tp2", seg, mode)
+                            label = (_ov2 or f"Поиск - {seg} - {suffix}") + (f" - {oblast}" if oblast else "")
                             nm, renamed = _uniq(f"tp2_{paycode}_site — {label}")
                             plan.append({"type": "search_test", "variant": v, "pay": pay,
                                          "feed_id": None, "feed_name": None, "name": nm, "renamed": renamed,
@@ -556,6 +746,7 @@ def _set_plan_response():
                 if not tp5_items:
                     warnings.append("tp5 (Поиск+Динамика+ТГ): нет в структуре слепка — пропущен")
                     continue
+                want_tp5_gallery = True                    # tp5 в наборе → товарная галерея требует URL-фид (feed_alert)
                 segs5 = []
                 for pos in tp5_items:
                     seg = _ct_segment(pos.get("gc", ""))
@@ -572,7 +763,8 @@ def _set_plan_response():
                     for mode in modes:
                         at = mode == "Автотаргет"
                         suffix = "Автотаргетинг" if at else "КС"
-                        label = f"Поиск + Динамика + ТГ - {seg} - {suffix}" + (f" - {oblast}" if oblast else "")
+                        _ov5 = _tp_seg_name_override(agent, site_type, "tp5", seg, mode)
+                        label = (_ov5 or f"Поиск + Динамика + ТГ - {seg} - {suffix}") + (f" - {oblast}" if oblast else "")
                         nm, renamed = _uniq(f"tp5_cpc_site — {label}")
                         plan.append({"type": "search_gallery", "variant": v, "pay": None, "feed_id": None,
                                      "feed_name": None, "name": nm, "renamed": renamed,
@@ -614,26 +806,51 @@ def _set_plan_response():
             groups = [g for g in groups
                       if (g.get("name") or "") in sel_pos or (g.get("group") or "") in sel_pos]
         allowed = _sq_for("6" if is_master else "7")
+        _fanout_logged = False                            # tp7 fan-out по всем фидам логируем ОДИН раз на _emit_struct
         for g in groups:
             if g["sq"] not in allowed:                   # уважать выбранные оси посадки (site/kviz) из набора
                 continue
             cat = g["name"]
-            targeting_mode = _tp67_targeting_mode(g)
-            is_autotarget_name = targeting_mode == "autotarget"
+            targeting_mode = (g.get("targeting_mode") or _tp67_targeting_mode(g))  # явный режим item'а из структуры имеет приоритет над матчем по имени
+            _modes = _csctx._parse_targeting_modes(targeting_mode)  # ГИБРИД: keywords+audience в одной позиции
+            _has_kw = "keywords" in _modes
+            _has_aud = "audience" in _modes
+            is_autotarget_name = not (_has_kw or _has_aud)  # чистый автотаргет → авто-имя (ag001); гибрид → ручное
             cat_base = (g.get("group") or cat or "").strip()
             interest_cat = g.get("group") or cat
+            # interest_ids заполняем когда audience среди режимов (в т.ч. гибрид keywords+audience),
+            # а не только при exact == "audience" — иначе per-category интересы гибрида терялись.
             ints, ints_source = (_slepok_interest_for_struct(agent, site_type, tp_code, g)
-                                 if targeting_mode == "audience" else ([], "not-audience"))
+                                 if _has_aud else ([], "not-audience"))
             # Если название группы — РЕАЛЬНАЯ марка/модель (tp6 Мастер: «Haval Jolion»), берём её ct
             # (ct0119) в КОДЕР → движок выберет картинку+заголовки этой модели. Тема/общее → ct0000.
-            cat_ct = (_ct_for_name(cat_base) or _ct_for_name(cat) or _gc_ct(g.get("code") or "") or "ct0000")
-            # FAN-OUT (CODER.md): tp7 (Товарка) фидовый → каждый фид своя кампания, имя += фид.
-            # tp6 (Мастер кампаний) — без фида (одна запись).
-            feed_list = ([(None, None, None)] if is_master
-                         else [((f or {}).get("id"), (f or {}).get("name"), (f or {}).get("url") or "")
-                               for f in feeds])
+            cat_ct = (_ct_for_name(cat_base) or _ct_for_name(cat) or _gc_ct(g.get("gc") or "") or _gc_ct(g.get("code") or "") or "ct0000")  # gc item'а (кодер) как источник ct: даёт «Конкуренты»→ct0084 отдельно от «Ключи»→ct0000
+            # tp7 (Товарка) фидовый → кампании по фидам, имя += фид. tp6 (Мастер) — без фида (одна запись).
+            # Приоритет: явно заданный в структуре позиции фид (feed_role/feed_id/feed_key) → только он.
+            # Не задан → безопасный дефолт FAN-OUT по ВСЕМ разрешённым фидам аккаунта (CODER.md) + явный лог.
+            if is_master:
+                feed_list = [(None, None, None)]
+            else:
+                _sub = _explicit_feed_subset(g, feeds)
+                if _sub is None:                          # фид в позиции не указан → fan-out (обратная совместимость)
+                    feed_list = [((f or {}).get("id"), (f or {}).get("name"), (f or {}).get("url") or "")
+                                 for f in feeds]
+                    if feeds and not _fanout_logged:
+                        warnings.append(f"{tp_code}: позиции без явного feed_role/feed_id — товарка "
+                                        f"размножается по всем {len(feeds)} разрешённым фидам (fan-out по умолчанию)")
+                        _fanout_logged = True
+                elif _sub:                                # явный фид найден среди разрешённых → только он
+                    feed_list = [((f or {}).get("id"), (f or {}).get("name"), (f or {}).get("url") or "")
+                                 for f in _sub]
+                else:                                     # явный фид указан, но его нет среди разрешённых → НЕ на чужом
+                    warnings.append(f"{tp_code}: позиция «{g.get('name') or cat}» указывает фид "
+                                    f"(feed_role/feed_id/feed_key), которого нет среди разрешённых фидов — пропущена")
+                    continue
+            # #4 (Семён 2026-07-12): МК — тоже по галочке «под стиль сайта», единый механизм pays
+            # (активна → cpc+cpa; снята → только cpc) для ВСЕХ слепков. Было: не-авто МК всегда cpa, 1 РК.
+            _pays_here = pays
             for f_id, f_name, f_url in feed_list:
-                for pay in pays:
+                for pay in _pays_here:
                     base_nm = _build_name(is_master, is_autotarget_name, pay, r_code, oblast, g["sq"], cat, ct=cat_ct)
                     # Bug D fix: используем URL фида (без https://) вместо короткого имени из кабинета.
                     import re as _re_plan
@@ -656,20 +873,28 @@ def _set_plan_response():
                     emitted_tp67.add(payload_sig)
                     nm, renamed = _uniq(base_nm)
                     plan.append({"type": "master" if is_master else "product",
-                                 "variant": ("master_" if is_master else "product_") + ("manual" if targeting_mode == "keywords" else "auto"),
+                                 "variant": ("master_" if is_master else "product_") + ("manual" if _has_kw else "auto"),
                                  "pay": pay, "sq": g["sq"], "tp": tp_code,
                                  "feed_id": f_id, "feed_name": f_name, "ct": cat_ct,
                                  "coder_ct": cat_ct, "coder_brand": _ag_part1_map().get(cat_ct, ""),
                                  "name": nm, "renamed": renamed, "budget": _bud(pay), "cpa": _cpa_for(pay),
                                  "audience_cat": interest_cat, "position_name": cat,
                                  "targeting_mode": targeting_mode, "audience_source": ints_source,
+                                 # Явные per-position атрибуты слепка → движок применяет их, не угадывает.
+                                 "keyword_source": g.get("keyword_source") or "", "pricing": g.get("pricing") or "",
                                  "structure_code": g.get("code") or "", "interest_ids": ints})
 
     if want_master:
         _emit_struct("tp6", True)
     if want_product:
         _emit_struct("tp7", False)
-    _fal_needed = len(feeds) == 0 and (want_product or want_master or want_tp3)
+    # Мастер кампаний (tp6) фид НЕ требует — master-items всегда строятся с feed_list=[(None,None,None)]
+    # (см. выше). Фид нужен только Товарке (tp7 product) и динамике по фиду (tp3). want_master
+    # СОЗНАТЕЛЬНО исключён из условия (Семён 2026-07-11: ложный диалог «tp6 не создать без фида»).
+    # tp5 (search_gallery) ТОЖЕ потребляет single feed (инцидент SINGLE_FEED_TP5_TP3_WRONG_FEED):
+    # без URL-фида товарная галерея tp5 молча пропадала → поп-ап feed_alert обязан всплыть и для tp5,
+    # чтобы пользователь выбрал фолбэк-фид, а не потерял tp5 тихо (want_tp5_gallery добавлен 2026-07-13).
+    _fal_needed = len(feeds) == 0 and (want_product or want_tp3 or want_tp5_gallery)
     from .create_set_input import FALLBACK_SINGLE_FEED_KEY as _FB_KEY
     return jsonify({"login": login, "site_type": site_type, "r_code": r_code, "oblast": oblast,
                     "feeds": len(feeds), "count": len(plan),
@@ -678,7 +903,7 @@ def _set_plan_response():
                     "feed_alert": {
                         "needed": _fal_needed,
                         "missing": ["yandex.xml"] if _fal_needed else [],
-                        "will_skip_types": ((["product"] if want_product else []) + (["master"] if want_master else []) + (["tp3"] if want_tp3 else [])) if _fal_needed else [],
+                        "will_skip_types": ((["product"] if want_product else []) + (["tp3"] if want_tp3 else []) + (["tp5"] if want_tp5_gallery else [])) if _fal_needed else [],
                         # найден фолбэк-фид → фронт показывает кнопку «Продолжить с другим фидом»
                         # (повторный set_plan с single_feed_fallback=true строит план на нём).
                         # Имя — реального фолбэка (не всегда канонический _FB_KEY: при его

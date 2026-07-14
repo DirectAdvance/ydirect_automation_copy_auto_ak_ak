@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import os
+import threading
+import time
 from typing import Callable
 
 from flask import jsonify, request
+
+
+_ACCOUNTS_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_ACCOUNTS_CACHE_LOCK = threading.Lock()
+_ACCOUNTS_CACHE_TTL = max(5, int(os.environ.get("DIRECT_ACCOUNTS_CACHE_TTL", "60")))
 
 
 def register_account_routes(
@@ -56,6 +64,12 @@ def register_account_routes(
         from .account_filters import base_account_where
         status = (request.args.get("status") or default_status).strip()
         q = (request.args.get("q") or "").strip()
+        cache_key = status if not q else ""
+        if cache_key:
+            with _ACCOUNTS_CACHE_LOCK:
+                cached = _ACCOUNTS_CACHE.get(cache_key)
+            if cached and (time.monotonic() - cached[0]) < _ACCOUNTS_CACHE_TTL:
+                return jsonify({"rows": cached[1], "cached": True})
         where = list(base_account_where()) + [
             "(directologist IS NULL OR directologist <> ALL(%s))",
         ]
@@ -87,7 +101,10 @@ def register_account_routes(
         for r in rows:
             r["mg_counters"] = parse_counter_ids(r.pop("mg_counter_ids", None))
             r["mg_goal"] = r.pop("mg_all_forms", None)
-        return jsonify({"rows": rows})
+        if cache_key:
+            with _ACCOUNTS_CACHE_LOCK:
+                _ACCOUNTS_CACHE[cache_key] = (time.monotonic(), rows)
+        return jsonify({"rows": rows, "cached": False})
 
     @bp.route("/api/accounts_otkrut")
     @access

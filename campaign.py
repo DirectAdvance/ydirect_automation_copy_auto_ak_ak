@@ -1091,6 +1091,9 @@ class MasterCampaignSpec:
     image_files: list[str] = field(default_factory=list)  # отдельные локальные файлы картинок
     image_urls: list[str] = field(default_factory=list)   # прямые ссылки на картинки (по URL)
     image_limit: int = 5                                  # грузим до N успешно принятых картинок
+    visual_dedup: bool = True                             # pHash-дедуп картинок. False → ТОЛЬКО path+md5
+    #   (для dmp/не-авто лидогена: баннеры одного шаблона с разным текстом — РАЗНЫЕ объявления, Директ их
+    #   принимает; pHash их ошибочно схлопывал → в UAC доезжало 2 из ~50). Авто tp6/tp7 = True (защита от клонов).
     video_urls: list[str] = field(default_factory=list)   # прямые ссылки на видео (mp4)
     video_files: list[str] = field(default_factory=list)  # ЛОКАЛЬНЫЕ mp4 — multipart (лимит 2 на мастер)
 
@@ -1466,20 +1469,22 @@ class UacClient:
         return str(cid)
 
     def list_campaigns(self, *, status: str | None = None) -> list[dict]:
-        """Список UAC-кампаний клиента (GET /web-api/uac/campaigns).
+        """Список UAC-кампаний клиента (Мастер tp6 / Товарка tp7).
 
-        UAC-кампании (Мастер tp6 / Товарка tp7) НЕВИДИМЫ в v5 — только через этот эндпоинт.
-        status: 'DRAFT' | 'ACTIVE' | None (=все). Возвращает список dict с полями id, status, name.
+        UAC-кампании НЕВИДИМЫ в v5 — только через Grid. Приватный
+        GET /web-api/uac/campaigns отвечает 405 Method Not Allowed, поэтому список
+        берём тем же рабочим Grid-путём, что и content-editor
+        (routes_content_editor._grid_tp67_campaigns): GraphQL client.campaigns,
+        фильтр tp6_/tp7_ по имени, без архивных.
+        status: 'DRAFT' | 'ACTIVE' | None (=все). dict с полями id, name, typename, status.
         """
-        params: dict = {}
+        # lazy import: routes_content_editor → uac_read → campaign (иначе цикл на импорте).
+        from .routes_content_editor import _grid_tp67_campaigns
+
+        rows = _grid_tp67_campaigns(self.ulogin)
         if status:
-            params["status"] = status
-        data = self._request("GET", "/campaigns", params=params if params else None,
-                             step="list_campaigns")
-        # Ответ может быть list напрямую или {"result": [...]}
-        if isinstance(data, list):
-            return data
-        return (data.get("result") or data.get("campaigns") or data.get("items") or [])
+            rows = [r for r in rows if (r.get("status") or "") == status]
+        return rows
 
     def set_status(self, campaign_id: str, target_status: str) -> dict:
         """Шаг 4: смена статуса. 'started' = запустить (на модерацию), 'stopped' = остановить."""
@@ -1588,7 +1593,15 @@ class UacClient:
         # Аудитории → ca_retargeting_condition
         # Яндекс лимит: не более 100 goals в одном condition_rules.
         # _slepok_audiences_for объединяет все категории → может дать 200+ id → INVALID_COLLECTION_SIZE.
-        goals = _audience_goals(spec)[:100]
+        _all_goals = _audience_goals(spec)
+        goals = _all_goals[:100]
+        if len(_all_goals) > 100:                 # реальный лимит API — режем, но НЕ молча
+            print(
+                f"WARNING build_payload: аудиторных сегментов {len(_all_goals)} > лимита Яндекса 100 "
+                f"в одном condition_rules — {len(_all_goals) - 100} отброшено "
+                f"(display_name={spec.display_name or DEFAULT_DISPLAY_NAME!r}).",
+                file=sys.stderr,
+            )
         if goals:
             payload["ca_retargeting_condition"] = {
                 "condition_rules": [{
@@ -1729,8 +1742,13 @@ def collect_image_files(spec: MasterCampaignSpec, *, visual_threshold: int = 10)
       3) ВИЗУАЛЬНО (pHash, hamming ≤ visual_threshold) — тот же баннер, пересохранённый в другой
          файл (разный md5, но одинаковая картинка). Порог 10 (из 63 бит) — типовой для pHash: ловит
          пересжатый ОДИН баннер, но НЕ схлопывает разные баннеры одного шаблона (иначе UAC недобирал
-         бы 5 картинок). Нечитаемые файлы оставляем (решает upload). Порядок сохраняем."""
+         бы 5 картинок). Нечитаемые файлы оставляем (решает upload). Порядок сохраняем.
+    Для dmp/не-авто лидогена (spec.visual_dedup=False) pHash-уровень ОТКЛЮЧЁН: доменные баннеры
+    одного шаблона (тёмный фон + разный текст) — РАЗНЫЕ объявления, Директ их принимает; pHash их
+    ошибочно схлопывал (dmp МК доезжало 2 из ~50). Тогда остаётся ТОЛЬКО path+md5 (байт-дедуп).
+    Авто tp6/tp7 (visual_dedup=True) — pHash сохранён (защита от клонов)."""
     import hashlib
+    do_visual = visual_threshold > 0 and getattr(spec, "visual_dedup", True)
     raw: list[Path] = []
     if spec.image_dir:
         d = Path(spec.image_dir).expanduser()
@@ -1756,7 +1774,7 @@ def collect_image_files(spec: MasterCampaignSpec, *, visual_threshold: int = 10)
         if h in seen_hashes:                             # байт-идентичный дубль под другим именем
             continue
         seen_hashes.add(h)
-        ph = _image_phash(key)
+        ph = _image_phash(key) if do_visual else None    # do_visual=False (dmp) → pHash пропускаем
         # bin(...).count('1') вместо int.bit_count() — портативно (bit_count есть только в py3.10+).
         if ph is not None and any(bin(ph ^ kh).count("1") <= visual_threshold for kh in kept_phashes):
             continue                                     # визуальный дубль (тот же баннер, иной файл)

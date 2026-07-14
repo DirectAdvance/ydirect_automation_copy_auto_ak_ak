@@ -80,11 +80,16 @@ def run_create_set_text(*, it: dict[str, Any], name: str, tp_code: str,
         if not res.get("ok"):
             # token 152 / сбой API → грациозный фолбэк на куку (недоделанная РК уже удалена token-путём).
             from .create_set_units import is_units_exhausted as _is_units
-            _tok_units = bool(res.get("defer") or _is_units(res.get("error")))
+            # ВАЖНО (FALSE_152_DEFER_LABEL): units-меткой считаем ТОЛЬКО реальный 152 в тексте ошибки.
+            # res.get("defer") ставится и на пустой/недоступный контент-пак ("пак пуст" — НЕ 152), и его
+            # НЕЛЬЗЯ приравнивать к units — иначе orchestrator накопит ложный 152-streak и напишет
+            # «Баллы коммандера исчерпаны». defer при этом по-прежнему уводит пункт в докрутку ниже
+            # (логика defer/докрутки не тронута — меняется только МЕТКА units).
+            _tok_units = bool(_is_units(res.get("error")))
             res = create_text_via_cookie(**cookie_kwargs)
             if _tok_units:
-                # Метка для orchestrator: token упёрся в баллы (даже если кука добила ok) — считается
-                # в строгий 152-streak (после N подряд весь остаток набора уходит на куку без token-попыток).
+                # Метка для orchestrator: token упёрся в РЕАЛЬНЫЕ баллы (даже если кука добила ok) —
+                # считается в строгий 152-streak (после N подряд весь остаток набора уходит на куку).
                 res["token_units_fallback"] = True
     else:
         res = create_text_via_cookie(**cookie_kwargs)

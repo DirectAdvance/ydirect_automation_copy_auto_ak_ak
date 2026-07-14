@@ -9,12 +9,13 @@ registry. This process owns only the Direct blueprint and reuses the same
 Flask session secret, so the existing site cookie remains valid.
 """
 import json
+import gzip
 import os
 import sys
 from datetime import timedelta
 from pathlib import Path
 
-from flask import Flask, redirect, session
+from flask import Flask, redirect, request, session
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +40,29 @@ def create_app() -> Flask:
     )
     app.secret_key = _get("FLASK_SECRET_KEY")
     app.permanent_session_lifetime = timedelta(days=30)
+
+    @app.after_request
+    def compress_large_json(response):
+        """Compress API JSON at the app boundary when nginx has no json gzip type.
+
+        The account directory is highly repetitive (about 681 KiB raw / 49 KiB gzip),
+        so this removes most of the transfer time without changing endpoint contracts.
+        """
+        accepts = request.headers.get("Accept-Encoding", "").lower()
+        content_type = (response.headers.get("Content-Type") or "").lower()
+        if (
+            response.status_code not in (204, 304)
+            and "gzip" in accepts
+            and "application/json" in content_type
+            and not response.headers.get("Content-Encoding")
+        ):
+            body = response.get_data()
+            if len(body) >= 1024:
+                response.set_data(gzip.compress(body, compresslevel=5))
+                response.headers["Content-Encoding"] = "gzip"
+                response.headers["Content-Length"] = str(len(response.get_data()))
+                response.headers.add("Vary", "Accept-Encoding")
+        return response
 
     @app.context_processor
     def inject_nav_context():

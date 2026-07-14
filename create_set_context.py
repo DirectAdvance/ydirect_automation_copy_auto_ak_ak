@@ -102,13 +102,42 @@ def _tp67_targeting_mode(g: dict) -> str:
     """Новый канон tp6/tp7: keywords / autotarget / audience. Старые RA/RC-коды не поддерживаем."""
     text = " ".join(str(g.get(k) or "") for k in ("name", "group", "label", "code")).lower()
     label = str(g.get("label") or "").lower()
-    if ("ключев" in label) or re.search(r"\bкс\b", label):
-        return "keywords"
+    if ("ключев" in text) or ("ключи" in text) or re.search(r"\bкс\b", text):
+        return "keywords"   # «МК Ключи» (t/name) тоже → keywords (было: имя «Ключи» не матчилось, падало в autotarget)
     if re.search(r"автотаргет|автоматическ", text):
         return "autotarget"
     if re.search(r"интерес|автокредит|авито|дром|auto\.ru|авто ру|конкурент", text):
         return "audience"
     return "autotarget"
+
+def _parse_targeting_modes(raw) -> list[str]:
+    """Компонует явный per-position targeting_mode в НАБОР режимов {keywords,audience,autotarget}.
+
+    Поддерживает ГИБРИД: одна tp6/tp7-позиция может нести keywords И audience одновременно
+    (реальные слепки: tp7 RA = ключи + до 8 аудиторий, tp6 RA = ключи + 1 аудитория).
+    Вход — строка ('keywords+audience', 'keywords,audience', 'ключи + интересы') ИЛИ список.
+    Пусто/неизвестно → ['autotarget'] (обратная совместимость: старый одиночный режим сохраняется,
+    т.к. 'keywords'/'audience'/'autotarget' парсятся в один элемент)."""
+    if isinstance(raw, (list, tuple, set)):
+        toks = [str(x) for x in raw]
+    else:
+        toks = re.split(r"[+,/&;\s]+", str(raw or ""))
+    out: list[str] = []
+    for t in toks:
+        tl = t.strip().lower()
+        if not tl:
+            continue
+        if tl in ("keywords", "keyword", "kw", "кс", "ключи", "ключевые"):
+            m = "keywords"
+        elif tl in ("audience", "audiences", "интересы", "интерес", "аудитория", "аудитории"):
+            m = "audience"
+        elif tl in ("autotarget", "auto", "автотаргет", "автотаргетинг"):
+            m = "autotarget"
+        else:
+            continue                                         # неизвестный токен игнорируем
+        if m not in out:
+            out.append(m)
+    return out or ["autotarget"]
 
 def _tp67_audience_category_candidates(g: dict) -> list[str]:
     """Категории только внутри конкретного слепка; aliases нужны для старых подписей структуры."""
@@ -198,6 +227,20 @@ def _slepok_struct_groups(slepok: str, site_type: str, tp: str) -> list[dict]:
                                 "group": gname, "label": label_clean,
                                 "sq": sq, "is_auto": is_auto,
                                 "code": it.get("c") or it.get("code") or "",
+                                "gc": it.get("gc") or "",                       # кодер-строка item'а → источник ct в плане
+                                "targeting_mode": (it.get("targeting_mode") or "").strip(),  # явный режим item'а (важно для не-авто: «Конкуренты»→keywords)
+                                # Явные per-position атрибуты слепка (item > group). Пусто → дефолты движка.
+                                # keyword_source: источник корпуса ключей; НЕпустой = позиция ОБЯЗАНА иметь ключи
+                                # → пустой корпус блокирует позицию (НЕ молчаливый autotarget). См. _emit_struct.
+                                "keyword_source": str(it.get("keyword_source") or g.get("keyword_source") or "").strip(),
+                                "pricing": str(it.get("pricing") or g.get("pricing") or "").strip(),  # PER_CLICK|PER_CONVERSION|PER_ACTION; пусто → derive из pay
+                                # Явно заданный в структуре позиции фид (feed_role/feed_id/feed_key):
+                                # item имеет приоритет над group. Пусто → tp7 fan-out по всем разрешённым
+                                # фидам (безопасный дефолт, обратная совместимость). См. create_set_plan._emit_struct.
+                                "feed_role": str(it.get("feed_role") or g.get("feed_role") or "").strip(),
+                                "feed_id": it.get("feed_id") or g.get("feed_id") or None,
+                                "feed_key": str(it.get("feed_key") or it.get("feed_name")
+                                                or g.get("feed_key") or "").strip(),
                                 "pos_key": f"{sq}|{gname}|{label or idx}"})
     return out
 
@@ -256,6 +299,8 @@ def _tp67_keywords_from_real_library(slepok: str, site_type: str, tp: str, ct: s
     def _score(it: dict) -> tuple[int, int, int, int, int, int] | None:
         if it.get("tp") != tp:
             return None
+        if not (it.get("keywords") or []):
+            return None                                  # пустой decoy-item (напр. dmp position='конкуренты' 0кл) не должен затмевать реальный набор по позиции
         same_slepok = 1 if it.get("slepok") == skey else 0
         site_score = 1 if (not site_type or it.get("site_type") == site_type) else 0
         sq_score = 1 if (not sq_key or it.get("sq") == sq_key) else 0

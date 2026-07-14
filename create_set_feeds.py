@@ -332,8 +332,10 @@ def _grid_feed_offer_urls(login: str, feed_id: int) -> dict:
     return urls
 
 
-def _feed_url_for_model(urls: dict, model: str) -> str | None:
-    """targetUrl из фида для модели/марки. Логика та же, что _ad_price_for_brand."""
+def _feed_url_for_model(urls: dict, model: str, *, no_brand_fallback: bool = False) -> str | None:
+    """targetUrl из фида для модели/марки. Логика та же, что _ad_price_for_brand.
+    no_brand_fallback=True (seg=='Модели'): нет точного/без-года ключа → None, НЕ фолбэчить
+    на b.split()[0] — это URL ДРУГОЙ модели (Changan UNI-T→/auto/changan/cs55 первого оффера бренда)."""
     b = (model or "").strip().lower()
     if not b or not urls:
         return None
@@ -342,6 +344,8 @@ def _feed_url_for_model(urls: dict, model: str) -> str | None:
     b_noyear = re.sub(r"\s*\b20\d\d\b", " ", b).strip()
     if b_noyear != b and b_noyear in urls:
         return urls[b_noyear]
+    if no_brand_fallback:
+        return None                                        # Модели: нет точного ключа → формульный фолбэк
     return urls.get(b.split()[0]) if b else None
 
 
@@ -963,6 +967,61 @@ def _auto_feed_discount_prices(url: str) -> dict:
     return out
 
 
+_AUTO_FEED_URL_CACHE: dict = {}                          # url → (url_map, ts); raw XML парс дорог
+_AUTO_FEED_URL_TTL = 20 * 60
+
+
+def _auto_feed_urls(url: str) -> dict:
+    """Точные targetUrl из авто-фида <homepage>/yandex.xml (вариант B фикса
+    MODEL_URL_BRAND_FALLBACK_WRONG_MODEL): raw XML содержит ВСЕ офферы, а FeedOffersPreview
+    (Grid) — только sample → модель вне выборки (напр. Changan UNI-T) не строила ключ и падала
+    на формульный URL. Здесь берём <url> каждого <car>, ключ = _offer_price_keys(mark_id folder_id)
+    (та же нормализация, что цены/_feed_url_for_model → «changan uni-t»), первый url на ключ.
+    → {ключ: url}. {} при сбое загрузки (не валит создание). Кэш 20 мин (как цены)."""
+    home = _homepage_url(url) or ""
+    if not home:
+        return {}
+    hit = _AUTO_FEED_URL_CACHE.get(url)
+    if hit and (time.time() - hit[1]) < _AUTO_FEED_URL_TTL:
+        return hit[0]
+    feed_url = home.rstrip("/") + "/yandex.xml"
+    text = ""
+    for _try in range(3):                       # tries+backoff — HTTP-правило проекта
+        try:
+            import requests as _rq
+            r = _rq.get(feed_url, timeout=20)
+            if r.status_code == 200 and r.text:
+                text = r.text
+                break
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(1.5 * (_try + 1))
+    if not text:
+        return {}
+    out: dict = {}
+    try:
+        import xml.etree.ElementTree as _ET
+        root = _ET.fromstring(text)
+        for car in root.iter("car"):
+            def _t(tag: str) -> str:
+                el = car.find(tag)
+                return (el.text or "").strip() if el is not None and el.text else ""
+            turl = _t("url")
+            if not turl:
+                continue
+            name = f"{_t('mark_id')} {_t('folder_id')}".strip().lower()
+            if not name:
+                continue
+            for k in _offer_price_keys(name):
+                if k not in out:                # первый url на ключ (как _grid_feed_offer_urls)
+                    out[k] = turl
+    except Exception:  # noqa: BLE001 — битый XML → без доливки
+        return {}
+    if out:
+        _AUTO_FEED_URL_CACHE[url] = (out, time.time())
+    return out
+
+
 def _account_offer_prices(login: str, url: str = "") -> dict:
     """Объединённая карта цен {ключ: (current, old)} из ВСЕХ фидов аккаунта (мердж; на конфликте —
     самый дешёвый оффер «от X»). Покрывает ВСЕ марки (раньше брался один фид → у baic/belgee цены не
@@ -1014,6 +1073,11 @@ def _account_offer_urls(login: str, url: str = "") -> dict:
         for k, v in _grid_feed_offer_urls(login, fid).items():
             if k not in out:   # первый фид на ключ (предпочтительные идут первыми по рангу)
                 out[k] = v
+    # Доливка точных url из авто-фида yandex.xml (вариант B, Семён 2026-07-13): raw XML содержит
+    # ВСЕ офферы, FeedOffersPreview выше — только sample → модель вне выборки (Changan UNI-T)
+    # получает точный url отсюда. setdefault: sample-ключи в приоритете, доливаем ТОЛЬКО пропуски.
+    for k, v in _auto_feed_urls(url).items():
+        out.setdefault(k, v)
     if out:
         _OFFER_URL_CACHE_ACCT[key] = (out, time.time())
     return out

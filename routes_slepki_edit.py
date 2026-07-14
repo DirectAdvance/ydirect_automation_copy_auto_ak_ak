@@ -61,10 +61,13 @@ def register_slepki_edit_routes(
         site_type = (request.args.get("site_type") or "").strip()
         tp = (request.args.get("tp") or "").strip()
         ct = (request.args.get("ct") or "").strip()
+        # group (=gk группы) → per-group файл {slepok}__{gk}.txt (фикс «одинаковые ключи по группам»:
+        # без него читался ct-агрегат и все группы одного ct показывали одинаковые ключи). Пусто → легаси-агрегат.
+        group = (request.args.get("group") or request.args.get("gk") or "").strip()
         if not (slepok and site_type and tp and ct):
             return jsonify({"error": "нужны slepok/site_type/tp/ct"}), 400
-        data = slepki_editor.read_group_keywords(site_type, tp, ct, slepok)
-        return jsonify({"slepok": slepok, "site_type": site_type, "tp": tp, "ct": ct, **data})
+        data = slepki_editor.read_group_keywords(site_type, tp, ct, slepok, group=group)
+        return jsonify({"slepok": slepok, "site_type": site_type, "tp": tp, "ct": ct, "group": group, **data})
 
     # ── компоненты кодера для мастера add-ct ──────────────────────────────────
     @bp.route("/api/slepki/coder_components", methods=["GET"])
@@ -90,6 +93,9 @@ def register_slepki_edit_routes(
         spec = {
             "slepok": b.get("slepok"), "site_type": b.get("site_type"),
             "tp": b.get("tp"), "ct": b.get("ct"),
+            # group (=gk) → правка пишет per-group файл {slepok}__{gk}.txt (apply_edit_keywords поддерживает).
+            # Пусто → легаси ct-агрегат (обратная совместимость для групп без gk).
+            "group": (b.get("group") or b.get("gk") or ""),
             "positive": b.get("positive") or [], "minus": b.get("minus") or [],
         }
         # Библиотечные минусы — редактируются, только если ключ прислан (иначе файл не трогаем).

@@ -8,13 +8,18 @@ build_slepok_structure.py — Генератор уникальных секци
 --------
 1.  Загружает slepki_structure.json (входящий файл — используется как суперсет-источник
     для group-структуры и как база для staging).
-2.  Для каждого целевого слепка сканирует adgroups.jsonl по всем login-папкам корпуса:
-      - Извлекает ct4-коды (первые 6 символов имени группы: ct####) → corpus_ct4 (set).
-      - Извлекает tp-коды из campaigns.jsonl → used_tps (set строк типа 'tp1', 'tp2'…).
-3.  Для каждой секции site_type → tp → group → items применяет фильтр:
+2.  Для каждого целевого слепка сканирует корпус С РАЗБИВКОЙ ПО site_type
+    (site_type login-папки берётся из _logins.json → поле "type"):
+      - Извлекает ct4-коды (первые 6 символов имени группы: ct####) → corpus_ct4_by_st
+        ({site_type: set}).
+      - Извлекает tp-коды из campaigns.jsonl → used_tps_by_st ({site_type: set строк
+        типа 'tp1', 'tp2'…}).
+3.  Для каждой секции site_type → tp → group → items применяет фильтр, используя наборы
+    ИМЕННО этого site_type (чтобы бренды/tp разных site_type не смешивались):
       - ct0000 → всегда оставляем (общие/фид группы, не привязаны к бренду).
-      - tp.code NOT IN used_tps → все items группы обнуляются (директолог этот tp не ведёт).
-      - иначе → item остаётся если ct4(item) ∈ corpus_ct4.
+      - tp.code NOT IN used_tps[site_type] → все items группы обнуляются (директолог этот
+        tp в этом site_type не ведёт).
+      - иначе → item остаётся если ct4(item) ∈ corpus_ct4[site_type].
 4.  Пересобирает раздел для каждого целевого слепка; остальные — без изменений.
 
 Порог присутствия: ≥1 вхождение ct4-кода в adgroups.jsonl хотя бы одного login'а.
@@ -45,7 +50,7 @@ import argparse
 import json
 import re
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
 
@@ -59,22 +64,51 @@ _CT4_IN_C_RE = re.compile(r'_(ct\d{4})_')
 _TP_RE = re.compile(r'^(tp\d+)_')
 
 
-def scan_corpus(corpus_dir: Path) -> tuple[set[str], set[str]]:
-    """Сканирует все login-папки директолога, возвращает (used_tps, corpus_ct4_set).
+# site_type для login-папки, отсутствующей в _logins.json (site_type неизвестен).
+# Такие логины складываются в общий бакет и через _st_sets подмешиваются во ВСЕ
+# site_type — чтобы не терять данные; при этом бренды разных ИЗВЕСТНЫХ site_type
+# между собой НЕ смешиваются (в этом и был баг единого flat-set).
+_UNKNOWN_ST = ""
 
-    used_tps    — множество tp-кодов (строки 'tp1'..'tp8'), реально используемых
-                  (присутствующих в имени хотя бы одной кампании).
-    corpus_ct4  — множество ct4-кодов (строки 'ct0000'..'ct9999'), встречающихся
-                  в именах adgroups с порогом ≥1.
+
+def scan_corpus(corpus_dir: Path) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Сканирует login-папки директолога С РАЗБИВКОЙ ПО site_type.
+
+    Возвращает (used_tps_by_st, corpus_ct4_by_st):
+      used_tps_by_st   — {site_type: set(tp-кодов 'tp1'..'tp8', используемых
+                         в кампаниях логинов этого site_type)}.
+      corpus_ct4_by_st — {site_type: set(ct4-кодов 'ct0000'..'ct9999' из adgroups
+                         логинов этого site_type; порог ≥1 = само присутствие)}.
+
+    site_type определяется по login-папке из _logins.json (поле "type"). Логины без
+    записи (site_type неизвестен) попадают в бакет _UNKNOWN_ST — см. _st_sets.
+
+    Ранее ct4/tp собирались в один плоский set на всего директолога, из-за чего при
+    пересборке бренды одного site_type (напр. «С пробегом») протекали в секции
+    другого («Мультибренд»). Разбивка по site_type это устраняет.
     """
-    used_tps: set[str] = set()
-    ct4_counter: Counter[str] = Counter()
+    # login → site_type из _logins.json
+    login_site_type: dict[str, str] = {}
+    logins_file = corpus_dir / "_logins.json"
+    if logins_file.exists():
+        try:
+            for entry in json.loads(logins_file.read_text(encoding="utf-8")):
+                login = entry.get("login")
+                st = entry.get("type")
+                if login and st:
+                    login_site_type[login] = st
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    used_tps_by_st: dict[str, set[str]] = defaultdict(set)
+    ct4_by_st: dict[str, set[str]] = defaultdict(set)
 
     for login_dir in corpus_dir.iterdir():
         if login_dir.name.startswith("_") or not login_dir.is_dir():
             continue
+        site_type = login_site_type.get(login_dir.name, _UNKNOWN_ST)
 
-        # campaigns.jsonl → tp-коды
+        # campaigns.jsonl → tp-коды этого site_type
         camp_file = login_dir / "campaigns.jsonl"
         if camp_file.exists():
             with camp_file.open(encoding="utf-8") as f:
@@ -86,9 +120,9 @@ def scan_corpus(corpus_dir: Path) -> tuple[set[str], set[str]]:
                     name = obj.get("Name", "")
                     m = _TP_RE.match(name)
                     if m:
-                        used_tps.add(m.group(1))
+                        used_tps_by_st[site_type].add(m.group(1))
 
-        # adgroups.jsonl → ct4-коды
+        # adgroups.jsonl → ct4-коды этого site_type
         ag_file = login_dir / "adgroups.jsonl"
         if ag_file.exists():
             with ag_file.open(encoding="utf-8") as f:
@@ -100,11 +134,14 @@ def scan_corpus(corpus_dir: Path) -> tuple[set[str], set[str]]:
                     name = obj.get("Name", "")
                     m = _CT4_RE.match(name)
                     if m:
-                        ct4_counter[m.group(1)] += 1
+                        ct4_by_st[site_type].add(m.group(1))
 
-    # Порог ≥1
-    corpus_ct4: set[str] = {code for code, cnt in ct4_counter.items() if cnt >= 1}
-    return used_tps, corpus_ct4
+    return dict(used_tps_by_st), dict(ct4_by_st)
+
+
+def _st_sets(by_st: dict[str, set[str]], site_type: str) -> set[str]:
+    """Множество кодов конкретного site_type ∪ общий бакет неизвестных логинов."""
+    return by_st.get(site_type, set()) | by_st.get(_UNKNOWN_ST, set())
 
 
 # ---------------------------------------------------------------------------
@@ -165,10 +202,14 @@ def filter_items(
 
 def rebuild_directologist_section(
     directologist: dict,
-    used_tps: set[str],
-    corpus_ct4: set[str],
+    used_tps_by_st: dict[str, set[str]],
+    corpus_ct4_by_st: dict[str, set[str]],
 ) -> dict:
     """Перестраивает секцию одного директолога, фильтруя items в каждой группе.
+
+    used_tps_by_st / corpus_ct4_by_st — словари {site_type: set(...)} из scan_corpus.
+    Для каждой секции берётся набор кодов ИМЕННО её site_type (через _st_sets), так
+    что бренды/tp одного site_type не протекают в секции другого.
 
     Возвращает новый dict директолога (глубокая копия с отфильтрованными items).
     """
@@ -178,8 +219,11 @@ def rebuild_directologist_section(
         "site_types": [],
     }
     for site_type in directologist.get("site_types", []):
+        st_name = site_type["name"]
+        st_used_tps = _st_sets(used_tps_by_st, st_name)
+        st_corpus_ct4 = _st_sets(corpus_ct4_by_st, st_name)
         new_st: dict = {
-            "name": site_type["name"],
+            "name": st_name,
             "tp": [],
         }
         for tp in site_type.get("tp", []):
@@ -199,8 +243,8 @@ def rebuild_directologist_section(
                 filtered = filter_items(
                     group.get("items", []),
                     tp_code,
-                    used_tps,
-                    corpus_ct4,
+                    st_used_tps,
+                    st_corpus_ct4,
                 )
                 new_group = {k: v for k, v in group.items() if k != "items"}
                 new_group["items"] = filtered
@@ -300,11 +344,21 @@ def build_staging(
         corpus_dir = corpus_base / corpus_subdir
         if not corpus_dir.exists():
             print(f"[WARN] Корпус не найден: {corpus_dir}", file=sys.stderr)
-            corpus_info[slepok_key] = {"used_tps": set(), "corpus_ct4": set(), "ct4_counter": Counter()}
+            corpus_info[slepok_key] = {
+                "used_tps": set(),
+                "corpus_ct4": set(),
+                "used_tps_by_st": {},
+                "corpus_ct4_by_st": {},
+                "ct4_counter": Counter(),
+            }
             continue
         print(f"[build_staging] Сканируем корпус {slepok_key} ({corpus_dir.name})...", file=sys.stderr)
         # Для отчёта нам нужен counter, поэтому продублируем логику
-        used_tps, corpus_ct4 = scan_corpus(corpus_dir)
+        used_tps_by_st, corpus_ct4_by_st = scan_corpus(corpus_dir)
+        # Плоские агрегаты (объединение по site_type) — только для логов/отчёта;
+        # фильтрация при пересборке идёт по site_type (см. rebuild_directologist_section).
+        used_tps = set().union(*used_tps_by_st.values()) if used_tps_by_st else set()
+        corpus_ct4 = set().union(*corpus_ct4_by_st.values()) if corpus_ct4_by_st else set()
         # Пересканируем для counter
         ct4_counter: Counter[str] = Counter()
         for login_dir in corpus_dir.iterdir():
@@ -325,6 +379,8 @@ def build_staging(
         corpus_info[slepok_key] = {
             "used_tps": used_tps,
             "corpus_ct4": corpus_ct4,
+            "used_tps_by_st": used_tps_by_st,
+            "corpus_ct4_by_st": corpus_ct4_by_st,
             "ct4_counter": ct4_counter,
         }
         print(f"  → used_tps={sorted(used_tps)}, corpus_ct4={len(corpus_ct4)} кодов", file=sys.stderr)
@@ -343,8 +399,10 @@ def build_staging(
             continue
 
         info = corpus_info[key]
-        used_tps = info["used_tps"]
-        corpus_ct4 = info["corpus_ct4"]
+        used_tps = info["used_tps"]          # плоский агрегат — только для rebuild_stats/отчёта
+        corpus_ct4 = info["corpus_ct4"]      # плоский агрегат — только для rebuild_stats/отчёта
+        used_tps_by_st = info["used_tps_by_st"]
+        corpus_ct4_by_st = info["corpus_ct4_by_st"]
 
         # Считаем суперсет (items ДО)
         superset_counts: dict[str, int] = {}  # skey → count_before
@@ -355,7 +413,7 @@ def build_staging(
                 total = sum(len(g.get("items", [])) for g in tp.get(groups_key, []))
                 superset_counts[skey] = total
 
-        new_d = rebuild_directologist_section(d, used_tps, corpus_ct4)
+        new_d = rebuild_directologist_section(d, used_tps_by_st, corpus_ct4_by_st)
         new_directologists.append(new_d)
 
         # Считаем items ПОСЛЕ

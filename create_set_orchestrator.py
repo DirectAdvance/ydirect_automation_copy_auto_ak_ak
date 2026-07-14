@@ -115,6 +115,38 @@ def create_set_response(deps: dict):
     agent = _input["agent"]            # ключ слепка — для привязки нативных интересов
     content_source = _input["content_source"]  # "slepok_library" → БД-контент без M3
     callouts = _input["callouts"]
+    # Авто-подтяжка уточнений слепка, когда попап ничего не передал (headless: test_client /
+    # воркер без UI → body["callouts"] пуст, т.к. никто не отмечал уточнения вручную). Берём
+    # уточнения СОЗДАВАЕМОГО слепка из public.direct_slepok_callouts — тот же источник и SELECT,
+    # что UI-роут /api/slepok_callouts (routes_pack.py). Так библиотека callouts аккаунта
+    # наполняется на precreate и в UI-, и в headless-пути (иначе dmp-набор шёл с 0 уточнений).
+    # UI-путь НЕ трогаем: если пользователь отметил конкретные уточнения (callouts непусто) —
+    # уважаем его выбор, подтяжку не делаем. Только slepok текущего набора (agent) — чужие не
+    # заливаем. Кап = _CALLOUT_PER_CAMPAIGN_CAP (лимит уточнений на кампанию): >кап → берём
+    # первые N по usage_count (порядок ORDER BY = приоритет частоты использования).
+    if not callouts and (agent or "").strip():
+        _slepok_for_callouts = _selected_slepok_key(agent or "")
+        if _slepok_for_callouts:
+            try:
+                from .direct_repository import victory_conn as _victory_conn_callouts
+                _cco_conn = _victory_conn_callouts()
+                try:
+                    _cco_cur = _cco_conn.cursor()
+                    _cco_cur.execute(
+                        "SELECT text FROM public.direct_slepok_callouts WHERE slepok=%s "
+                        "ORDER BY usage_count DESC, accounts_count DESC, text",
+                        (_slepok_for_callouts,))
+                    _cco_rows = [row[0] for row in _cco_cur.fetchall()]
+                finally:
+                    _cco_conn.close()
+                from .create_set_input import normalize_callouts as _normalize_callouts_db
+                callouts = _normalize_callouts_db(
+                    _cco_rows,
+                    normalize_text=_normalize_callout_text,
+                    semantic_key=_callout_semantic_key,
+                )[:_CALLOUT_PER_CAMPAIGN_CAP]
+            except Exception:  # noqa: BLE001 — подтяжка уточнений НЕ должна ронять создание набора
+                pass
     # ⛔ ПРАВИЛО: сервис создаёт ВСЕ кампании ТОЛЬКО ЧЕРНОВИКАМИ (никогда не публикует
     # автоматически — публикация = ручной шаг в Директе после проверки). launch принудительно
     # False для ВСЕХ типов, включая UAC tp6/tp7 (раньше они уходили на показы при «Создать и
@@ -1142,6 +1174,7 @@ def create_set_response(deps: dict):
         deferred_id = None
         deferred_at = None
         _auto_cookie_jid = None                          # id немедленной куки-джобы (возвращается в ответе)
+        _false152_unplaced = False                       # ложный 152 при ЖИВЫХ баллах + token-ретрай упал технически → остаток НЕ размещён
         if _units_block:
             # Остаток = ИМЕННО пункты, чей результат нёс 152 и НЕ создан (по имени, с fan-out-префиксом).
             _remaining = items_for_result_names(items, _units_failed_names)
@@ -1186,8 +1219,11 @@ def create_set_response(deps: dict):
                     units_note = (f"⚠️ Транзиентный/ложный 152 при ЖИВЫХ баллах оператора — остаток "
                                   f"({_pend} пунктов) добивается ТОКЕНОМ (не по куке){_tail}. "
                                   f"Создано: {created}. Дублей не будет.")
-            if _remaining and not _token_retry_did:
-                # ПОДТВЕРЖДЁННОЕ исчерпание баллов ИЛИ исчерпан токен-ретрай → куки-remainder (реальный 152).
+            if _remaining and not _token_retry_did and (_units_dead_confirmed or _rc >= _RESUME_MAX):
+                # ПОДТВЕРЖДЁННОЕ исчерпание баллов (_units_dead_confirmed) ИЛИ исчерпан токен-ретрай
+                # (_rc >= _RESUME_MAX) → куки-remainder (реальный 152). Гейт ЖЁСТКО требует одно из двух:
+                # без него «_token_retry_did is None» из-за ТЕХНИЧЕСКОГО падения token-ретрая при ЖИВЫХ
+                # баллах ложно уводил бы на куку + текст «баллы исчерпаны» (инцидент porg-asfbs7qe 13.07).
                 # п.1: немедленно ставим куки-джобу — не ждём демона (~10 мин) и не блокируемся на
                 # _RESUME_MAX (cookie-путь не тратит баллов; дублей нет — RESUME-SKIP пропустит созданные).
                 if _job_new:
@@ -1216,6 +1252,35 @@ def create_set_response(deps: dict):
                         body, _remaining, body.get("_job_id"), resume_count=_def_rc)
                     if deferred_id:
                         deferred_at = _next_units_reset_utc().isoformat()
+            elif _remaining and not _token_retry_did and not _units_dead_confirmed and _rc < _RESUME_MAX:
+                # ЛОЖНЫЙ 152 при ЖИВЫХ/нечитаемых баллах + token-ретрай (_deferred_save) упал ТЕХНИЧЕСКОЙ
+                # ошибкой (DB-хиккап и т.п., НЕ исчерпание баллов). НЕ уводим на куку (потеряли бы
+                # сегментный tp5 → NO_BRAND_SEGMENTS_AVAILABLE) и НЕ пишем ложное «баллы исчерпаны».
+                # Инвариант «пункты не теряются»: ещё раз кладём остаток в TOKEN-деферред
+                # (_resume_via_token=True, БЕЗ via_cookie) — демон повторит API-путём. Не вышло → честный
+                # note про ручной перезапуск + parent НЕ гасим в done (waiting, см. parent-handling ниже).
+                try:
+                    _tb2 = dict(body)
+                    _tb2["_resume_via_token"] = True
+                    _tb2.pop("via_cookie", None)
+                    _tb2_parent = _tb2.pop("_deferred_id", None)   # self-reference-guard (см. SEGMENT_TP5)
+                    deferred_id = _deferred_save(
+                        login, (_w_agency or body.get("agency") or ""),
+                        _tb2, _remaining, body.get("_job_id"), resume_count=_rc,
+                        exclude_id=_tb2_parent)
+                except Exception:  # noqa: BLE001
+                    deferred_id = None
+                if deferred_id:
+                    units_note = (f"⚠️ Ложный/транзиентный 152 при ЖИВЫХ баллах оператора; первая "
+                                  f"попытка постановки остатка ({_pend} пунктов) упала техошибкой — "
+                                  f"остаток повторно поставлен на докрутку ТОКЕНОМ (не по куке){_tail}. "
+                                  f"Создано: {created}. Дублей не будет.")
+                else:
+                    _false152_unplaced = True
+                    units_note = (f"⚠️ Ложный/транзиентный 152: баллы у оператора ЕСТЬ, но остаток "
+                                  f"({_pend} пунктов) не удалось поставить на докрутку — техническая "
+                                  f"ошибка. Требуется РУЧНОЙ перезапуск остатка{_tail}. "
+                                  f"Создано: {created}. Баллы НЕ исчерпаны (это НЕ реальный 152).")
             if _auto_cookie_jid:
                 units_note = (f"⛔ Баллы коммандера исчерпаны (error 152). Создано: {created}{_tail}. "
                               f"Остаток ({_pend} пунктов) автоматически поставлен в очередь по куке "
@@ -1226,9 +1291,22 @@ def create_set_response(deps: dict):
                               f"Создано кампаний: {created}{_tail}. Остаток ({_pend} пунктов) "
                               f"поставлен на докрутку по куке — повторно кликать не нужно. Дублей не будет.")
             elif units_note is None:
-                _no_rem = ("нет несозданного остатка — всё создано или добито" if not _pend
-                           else f"не создано {_pend} пунктов; повторите после сброса баллов (полночь МСК)")
-                units_note = f"⛔ Баллы коммандера исчерпаны (error 152). Создано: {created}. {_no_rem}."
+                if not _pend:
+                    # _pend=0 → несозданного остатка ПО БАЛЛАМ нет (всё создано/добито inline).
+                    # Реальное исчерпание в этой ветке не подтверждено (_units_dead_confirmed ставится
+                    # только при непустом _remaining). НЕ пишем ложное «Баллы исчерпаны»: если пункты
+                    # ушли в docrutka-defer (пустой/недоступный контент-пак — НЕ 152), честно называем
+                    # причину. (FALSE_152_DEFER_LABEL)
+                    if _defer_names:
+                        units_note = (f"Создано: {created}. Часть пунктов отложена на докрутку "
+                                      f"(контент-пак пуст/недоступен) — это не исчерпание баллов.")
+                    else:
+                        units_note = (f"Создано: {created}. Несозданного остатка нет — "
+                                      f"всё создано или добито.")
+                else:
+                    # Реальный остаток ПО БАЛЛАМ не размещён → корректное сообщение про баллы (не ломаем).
+                    units_note = (f"⛔ Баллы коммандера исчерпаны (error 152). Создано: {created}. "
+                                  f"не создано {_pend} пунктов; повторите после сброса баллов (полночь МСК).")
         elif _units_switched and not units_note:
             # 152 случился в середине набора → остаток БЕСШОВНО создан по куке (без баллов).
             units_note = (f"Баллы коммандера исчерпаны (error 152) во время набора — остаток автоматически "
@@ -1247,7 +1325,7 @@ def create_set_response(deps: dict):
             try:
                 if deferred_id:
                     _deferred_set_status(_parent_did, "done", f"остаток перенесён → {deferred_id}")
-                elif _defer_keep:
+                elif _defer_keep or _false152_unplaced:
                     _deferred_set_status(_parent_did, "waiting",
                                          "токен/баллы не готовы — отложено, демон повторит токеном")
                 else:

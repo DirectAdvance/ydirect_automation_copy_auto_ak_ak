@@ -370,8 +370,17 @@ def executable_images_repairs(plan: dict[str, Any]) -> tuple[list[int], list[dic
 
 
 def executable_adprice_repairs(plan: dict[str, Any]) -> tuple[list[int], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Pick campaign ids for adprice_repair actions (tp1 ads with null bannerPrice)."""
-    return _executable_cid_actions(plan, "adprice_repair")
+    """Pick campaign ids for adprice_repair actions (tp1 ads with null bannerPrice).
+
+    ⚠️ adprice_repair НЕ реализован (стаб `_campaign_adprice_repair`: нужен rebuild price_map из
+    offer_prices + ad→brand маппинг). Пока стаб не наполнен — помечаем NO_ADPRICE_LIVE как известный
+    НЕИСПОЛНИМЫЙ гэп: НИ одного executable id, все adprice_repair-действия → unsupported. Это убирает
+    гарантированный молчаливый провал из цикла авто-добивки (иначе execute_all_in_place звал бы стаб,
+    получал ok=False и гонял reschedule вхолостую). Вернуть в executable ПОСЛЕ реализации стаба.
+    """
+    actions = [a for a in (plan or {}).get("actions") or [] if isinstance(a, dict)]
+    matched = [a for a in actions if a.get("action") == "adprice_repair"]
+    return [], [], matched
 
 
 def executable_default_text_repairs(plan: dict[str, Any]) -> tuple[list[int], list[dict[str, Any]], list[dict[str, Any]]]:

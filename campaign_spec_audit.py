@@ -102,11 +102,11 @@ SPEC: dict[str, dict[str, Any]] = {
                          "при создании видео НЕ грузится — каркас не ждёт медиа)",
     },
     "tp6": {  # Мастер (UAC)
-        "titles_full_length": "заголовки добиты до 48–56 симв (≥2 коротких ≤45 → SHORT_TITLES, авто-добивка)",
+        "titles_full_length": "заголовки 48–56 симв (≥2 коротких ≤45 → SHORT_TITLES, LLM-регенерация)",
     },
     "tp7": {  # Товарка (UAC)
         "feed_filters": "feed_filters по тому же ct-правилу, что tp1-товарка (detail через uac_read)",
-        "titles_full_length": "как tp6 (SHORT_TITLES, авто-добивка суффиксами)",
+        "titles_full_length": "как tp6 (SHORT_TITLES, LLM-регенерация коротких заголовков)",
     },
     "plan": {
         "tp_subset_of_slepok": "типы кампаний аккаунта ⊆ структуре слепка (лишний tp → EXTRA_TP_NOT_IN_SLEPOK)",
@@ -770,12 +770,17 @@ def _audit_group_count_vs_slepok(grid: gf.GridClient, tool: list[dict], slepok: 
 
 
 # ── tp1 combo-ads audit (BUTTON_MISSING + SHORT_TITLES grid) ─────────────────────
-def _ct_has_pool_video(ct: str) -> bool:
-    """Есть ли в пуле РЕАЛЬНО СУЩЕСТВУЮЩЕЕ валидное видео для ct.
+def _ct_has_pool_video(login: str, ct: str) -> bool:
+    """Есть ли РЕАЛЬНО СУЩЕСТВУЮЩЕЕ валидное видео для ct (СЛЕПОК-aware).
 
-    Проверяем через videos_pool_for_ct (резолв локального _video_pool, лёгкий чек exists+size,
-    без ffprobe). Возвращает True ТОЛЬКО если есть хотя бы один валидный ролик в сжатом пуле.
-    Это предотвращает эмиссию VIDEO_MISSING для ct без реально пригодного видео (бракованные
+    Проверяем через ``videos_for_ct(login, ct, ...)`` — ТУ ЖЕ цепочку, что и создание РК
+    (create_set_tp1_builders.py:122): сначала видео-пул слепка аккаунта
+    (``_slepki_data/<slepok>/videos/``), затем общий per-ct пул + brand-fallback. Возвращает
+    True ТОЛЬКО если есть хотя бы один валидный ролик. Симметрия с create обязательна: раньше
+    здесь звался pool-only ``videos_pool_for_ct(ct)`` БЕЗ login → для слепка со СВОИМИ видео
+    (марки вне общего _video_pool) аудит эмитил ложный VIDEO_NO_POOL, хотя ролики в слепковом
+    пуле есть (зеркальная к tp3-#6 пропущенная симметричная точка).
+    Это также предотвращает эмиссию VIDEO_MISSING для ct без реально пригодного видео (бракованные
     или отсутствующие файлы не попадут в добивку → нет вечного цикла и HTTP 400 от Яндекса)."""
     kp_mod = _DEPS.get("kp")
     if not kp_mod:
@@ -801,7 +806,9 @@ def _ct_has_pool_video(ct: str) -> bool:
                 brand_hint = full_name.strip().split()[0] if full_name else ""
             except Exception:  # noqa: BLE001
                 pass
-        paths = kp_mod.videos_pool_for_ct(ct_norm, limit=1, brand_hint=brand_hint)
+        # СЛЕПОК-aware: videos_for_ct(login, ...) сам делает слепок→общий пул + чек exists/size,
+        # зеркально create-пути. Пустой login → videos_for_ct деградирует до общего пула.
+        paths = kp_mod.videos_for_ct(login, ct_norm, limit=1, brand_hint=brand_hint)
         return bool(paths)
     except Exception:  # noqa: BLE001
         return False
@@ -872,8 +879,21 @@ def _audit_tp1_adaptive(rc: gr.GridReadClient, login: str, campaign_id: int,
         gid = str(g.get("adgroup_id") or "")
         if gid:
             agid_to_ct[gid] = _ct_of_name(g.get("adgroup_name"))
-    video_missing = []   # [{ad_id, ct}]
+    def _brand_hint_for(ct: str) -> str:
+        # brand_hint: резолв из ag_part1 (зеркально _ct_has_pool_video) — нужен фетчеру
+        # videos_for_ct для «Марки»-ct без записи в feeds_ct_model() (иначе brand-fallback пуст).
+        _ag1 = _DEPS.get("_ag_part1_map")
+        if not _ag1:
+            return ""
+        try:
+            _fn = (_ag1() or {}).get((ct or "").strip().lower(), "")
+            return _fn.strip().split()[0] if _fn else ""
+        except Exception:  # noqa: BLE001
+            return ""
+
+    video_missing = []   # [{ad_id, ct, brand}]
     video_no_pool: list[str] = []   # ct без роликов в пуле M3 (детерминированный пропуск — норма)
+    no_pool_ads: list[dict] = []    # ad-level слепок no_pool — на случай транзиентно пустого индекса
     if agid_to_ct:
         for r in rows:
             if r.get("hasVideo") is not False:
@@ -881,23 +901,34 @@ def _audit_tp1_adaptive(rc: gr.GridReadClient, login: str, campaign_id: int,
             ct = agid_to_ct.get(str(r.get("adGroupId") or ""))
             if not ct or ct == "ct0000":
                 continue
-            if _ct_has_pool_video(ct):
-                # brand_hint: резолв из ag_part1 (зеркально _ct_has_pool_video) —
-                # нужен фетчеру videos_for_ct для «Марки»-ct без записи в feeds_ct_model()
-                _brand_h = ""
-                _ag1 = _DEPS.get("_ag_part1_map")
-                if _ag1:
-                    try:
-                        _ct_n = (ct or "").strip().lower()
-                        _fn = (_ag1() or {}).get(_ct_n, "")
-                        _brand_h = _fn.strip().split()[0] if _fn else ""
-                    except Exception:  # noqa: BLE001
-                        pass
-                video_missing.append({"ad_id": str(r.get("id")), "ct": ct, "brand": _brand_h})
-            elif ct not in video_no_pool:
-                # Пул M3 пуст для этого ct → пропуск детерминированный (не дефект добивки).
-                # Логируем чтобы отличать «пула нет» от «репар не доработал» (п.4 fix 2.3).
-                video_no_pool.append(ct)
+            if _ct_has_pool_video(login, ct):
+                video_missing.append({"ad_id": str(r.get("id")), "ct": ct, "brand": _brand_hint_for(ct)})
+            else:
+                no_pool_ads.append({"ad_id": str(r.get("id")), "ct": ct})
+                if ct not in video_no_pool:
+                    # Пул M3 пуст для этого ct → пропуск детерминированный (не дефект добивки).
+                    # Логируем чтобы отличать «пула нет» от «репар не доработал» (п.4 fix 2.3).
+                    video_no_pool.append(ct)
+    # Гейт свежести индекса: _ct_has_pool_video читает external_assets из manifest.json. Если
+    # индекс транзиентно не прочитался (пуст), пул НАЙДЕН не будет и ВСЕ hasVideo=false уйдут в
+    # no_pool (fixable=False → deferred-video молча НЕ перепланируется), хотя живые ролики на диске.
+    # Признак транзиента: видео-индекс глобально пуст, НО физический пул на диске существует —
+    # тогда НЕ финализируем «нет пула», а переводим ролики в VIDEO_MISSING (retryable): следующий
+    # цикл (индекс перечитан) корректно разложит covered→attach / genuinely-uncovered→VIDEO_NO_POOL.
+    # Настоящее частичное покрытие сюда НЕ попадает (индекс НЕпуст → гейт вернёт False).
+    if no_pool_ads:
+        _kp = _DEPS.get("kp")
+        _suspect = False
+        if _kp is not None and hasattr(_kp, "video_index_suspect_empty"):
+            try:
+                _suspect = bool(_kp.video_index_suspect_empty())
+            except Exception:  # noqa: BLE001
+                _suspect = False
+        if _suspect:
+            for _a in no_pool_ads:
+                video_missing.append({"ad_id": _a["ad_id"], "ct": _a["ct"], "brand": _brand_hint_for(_a["ct"])})
+            video_no_pool = []
+            no_pool_ads = []
     if video_missing:
         _issue_vm: dict = {
             "code": "VIDEO_MISSING",
@@ -1294,12 +1325,25 @@ def _audit_uac_video_missing(login: str, campaign_id: int, campaign_name: str,
     # не знаем, есть ли видео → НЕ флагаем (fail-safe против ложного детекта на неполном detail).
     if int(summ.get("images") or 0) <= 0 and int(summ.get("content") or 0) <= 0:
         return []
-    # Пул для марки существует? Пусто → VIDEO_NO_POOL, не дефект.
+    # Видео для марки существует? Пусто → VIDEO_NO_POOL, не дефект.
+    # СЛЕПОК-aware, зеркально create-пути UAC (create_set_master_product.py:579):
+    # `videos_for_ct(login, c_ct, brand_hint) or videos_for_login(login)`. В аудите ct нет
+    # (только имя→brand_hint), поэтому проверяем ДВА арма, как в create: (1) общий пул по марке
+    # `videos_pool_for_ct("", brand_hint)`; (2) слепковый пул аккаунта `videos_for_login(login)`
+    # (ролики _slepki_data/<slepok>/videos/, brand-независимо — тот же fallback, что цепляет
+    # видео при создании). Пусто ТОЛЬКО когда пусты ОБА арма → тогда VIDEO_NO_POOL, не дефект.
+    # Раньше проверялся лишь pool-only арм → для слепка со СВОИМИ видео (марка вне общего пула)
+    # аудит НЕ довкладывал видео при videos==0 (пропущенная симметричная точка, зеркало tp1).
     kp_mod = _DEPS.get("kp")
     try:
         pool = kp_mod.videos_pool_for_ct("", limit=1, brand_hint=brand_hint) if kp_mod else []
     except Exception:  # noqa: BLE001
         pool = []
+    if not pool:
+        try:
+            pool = kp_mod.videos_for_login(login, limit=1) if kp_mod else []
+        except Exception:  # noqa: BLE001
+            pool = []
     if not pool:
         return []
     return [{

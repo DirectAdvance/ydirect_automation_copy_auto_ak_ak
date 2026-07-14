@@ -34,7 +34,9 @@ from loader import _get  # noqa: E402
 # We reuse its DB/token/API helpers, then register content routes on a clean bp.
 os.environ.setdefault("DIRECT_REGISTER_CONTENT_EDITOR", "0")
 from auth import _service_required_any  # noqa: E402
-from direct import blueprint as direct_legacy  # noqa: E402
+from direct import account_service as accounts  # noqa: E402
+from direct import direct_repository as repository  # noqa: E402
+from direct import yandex_gateway as yandex  # noqa: E402
 from direct.routes_content_editor import register_content_editor_routes  # noqa: E402
 
 
@@ -92,21 +94,21 @@ def create_app() -> Flask:
     def _balance_response():
         import requests as requests_module
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        return direct_legacy._do_balance(requests_module, ThreadPoolExecutor, as_completed)
+        return accounts._do_balance(requests_module, ThreadPoolExecutor, as_completed)
 
     register_content_editor_routes(
         bp,
         _service_required_any("work", "work:direct", "direct:content", "direct"),
-        victory_conn=direct_legacy._victory_conn,
-        token_for_login=direct_legacy._token_for_login,
-        direct_tokens=direct_legacy._direct_tokens,
-        v5_call=direct_legacy._v5_call,
-        v501_svc=direct_legacy._v501_svc,
-        default_status=direct_legacy.DEFAULT_STATUS,
-        exclude_directologs=direct_legacy._EXCLUDE_DIRECTOLOGS,
+        victory_conn=repository.victory_conn,
+        token_for_login=yandex.token_for_login,
+        direct_tokens=yandex.direct_tokens,
+        v5_call=yandex.v5_call,
+        v501_svc=yandex.v501_svc,
+        default_status=accounts.DEFAULT_STATUS,
+        exclude_directologs=accounts._EXCLUDE_DIRECTOLOGS,
         balance_response=_balance_response,
-        check_blocks_response=direct_legacy._check_blocks_response,
-        victory_conn_rw=direct_legacy._victory_conn_rw,
+        check_blocks_response=accounts._check_blocks_response,
+        victory_conn_rw=repository.victory_conn_rw,
     )
     app.register_blueprint(bp)
     return app

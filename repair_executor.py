@@ -656,9 +656,12 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
     if deps.group_keywords_context is None:
         return {"error": "group_keywords_context не прокинут в RepairDeps", "uses_direct_units": False}, 422
     body_obj = ctx.get("body") or {}
-    acc = deps.account_ctx(login)
-    if not acc:
-        return {"error": f"аккаунт {login} не найден в БД", "uses_direct_units": False}, 404
+    # Отсутствие аккаунта в БД (незарегистрированные dmp-аккаунты) больше НЕ прерывает
+    # автотаргет-репейр: узкий профиль поиска возвращается по куке+Grid, строка аккаунта
+    # из БД тут не нужна. Куку для login резолвим по кабинету, agency берём из ctx/body
+    # (или из acc, если аккаунт всё же зарегистрирован — поведение для него не меняется).
+    # Реальная невозможность (нет куки/agency) отлавливается ниже как 502, не маскируется.
+    acc = deps.account_ctx(login) or {}
     agency = (ctx.get("agency") or body_obj.get("agency") or acc.get("agency") or "").strip()
     try:
         client = cmc.build_client(login, account=(agency or None))
@@ -670,6 +673,7 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
 
     results: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
+    unfixable: list[dict[str, Any]] = []        # КС-группы без источника ключей (пак пуст/недоступен) — нечинимый остаток, НЕ провал докрутки
     write_items: list[dict[str, Any]] = []
     intents: dict[int, dict[str, Any]] = {}     # adgroup_id -> intent row (для отчёта)
     skipped = 0
@@ -720,20 +724,24 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
             if need_kw and not writable_kw and not need_at:
                 # Источник контента не даёт ключей для этого ct. Два разных случая:
                 # (а) «…-Автотаргетинг-…» — группа живёт на AT по дизайну, 0 ключей норма → ok.
-                # (б) КС-кампания (без «автотаргетинг» в имени) — пак пуст / M3 недоступен → failed,
-                #     чтобы repair вернул реальный статус (а не «всё уже корректно/идемпотентно»),
-                #     что позволяет audit↔repair не расходиться: аудит флагует NO_KEYWORDS_LIVE,
-                #     repair возвращает failed → caller видит реальную ошибку вместо «ок».
-                # Ключи не выдумываем (аналог «цены только из фида»).
+                # (б) КС-кампания (без «автотаргетинг» в имени) — пак пуст / M3 недоступен → это
+                #     НЕ провал докрутки, а нечинимый СЕЙЧАС остаток по ЭТОЙ группе (аналог
+                #     video_no_pool): ключей физически нет, пока пак не появится. Кладём в
+                #     ОТДЕЛЬНЫЙ bucket `unfixable`, а НЕ в `failed`, чтобы одна беспаковая группа
+                #     не роняла ok/executed всей докрутки (иначе реально применённые группы
+                #     репортятся как «0 действий» и уходят в reschedule вхолостую). audit↔repair
+                #     не расходятся: unfixable-группы явно возвращаются в ответе (unfixable_no_pack),
+                #     а если применить не удалось НИЧЕГО (только беспаковые) — ok=False ниже, т.е.
+                #     «всё идемпотентно/ок» по-прежнему НЕ выдаётся. Ключи не выдумываем.
                 _at_by_design = "автотаргетинг" in (camp_name or "").lower()
                 if _at_by_design:
                     results.append({"ok": True, "skipped": "нет источника ключей (автотаргет активен)",
                                     "campaign_id": cid, "adgroup_id": gid})
                     skipped += 1
                 else:
-                    failed.append({"campaign_id": cid, "adgroup_id": gid,
-                                   "error": ("нет ключей от pack для этого ct "
-                                             "(pack недоступен/пуст; поисковая группа без ключей)")})
+                    unfixable.append({"campaign_id": cid, "adgroup_id": gid,
+                                      "error": ("нет ключей от pack для этого ct "
+                                                "(pack недоступен/пуст; поисковая группа без ключей)")})
                 continue
             # Кап 200/группа (лимит Яндекса): иначе Grid AddKeywords отклонит всю пачку
             # (MAX_KEYWORDS_PER_AD_GROUP_EXCEEDED) → группа останется без ключей (NO_KEYWORDS_LIVE).
@@ -745,7 +753,13 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
                          "relevanceMatchCategories": ["EXACT_V2_MARK"],
                          "autotargetingBrandSettings": ["WITHOUT_BRAND"]}
             try:
-                item = grid.build_update_item(grp, keywords=final_kw, relevance_match=target_rm)
+                # keywords=[] намеренно: UpdateUnifiedAdGroups — подтверждённый no-op для ключей
+                # (они живут отдельно и заливаются AddKeywords ниже; этот апдейт их НЕ добавляет и
+                # НЕ удаляет). Round-trip существующих ключей группы сюда лишь ловил
+                # MUST_NOT_CONTAIN_DUPLICATED_ELEMENTS на дублях фраз и рубил весь батч. Шлём пустой
+                # массив → валидация коллекции ключей проходит, а relevanceMatch (EXACT_V2_MARK/
+                # WITHOUT_BRAND) применяется. Живые ключи группы не трогаются.
+                item = grid.build_update_item(grp, keywords=[], relevance_match=target_rm)
             except Exception as e:  # noqa: BLE001
                 failed.append({"campaign_id": cid, "adgroup_id": gid,
                                "error": f"сборка тела: {str(e)[:180]}"})
@@ -780,18 +794,36 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
 
     # Обновляем relevanceMatch через UpdateUnifiedAdGroups для групп с need_at=True.
     # UpdateUnifiedAdGroups no-op для keywords → безопасно для NO_KEYWORDS_LIVE-only групп.
+    # Пишем ПО ОДНОЙ КАМПАНИИ (per-cid): валидационная ошибка одной группы рубит только её
+    # кампанию (~8 групп), а не весь батч из 68 групп — остальные кампании всё равно сужаются.
     at_gids = {gid for gid, intent in intents.items() if intent.get("fixed_autotarget")}
+    at_failed_gids: set[int] = set()
     if at_gids and write_items:
-        try:
-            grid.update_unified_adgroups(write_items)
-        except Exception as e:  # noqa: BLE001
-            failed.append({"error": f"Grid UpdateUnifiedAdGroups (autotarget): {str(e)[:200]}"})
+        items_by_cid: dict[int, list[dict]] = {}
+        gids_by_cid: dict[int, list[int]] = {}
+        for it in write_items:
+            try:
+                _gid = int(it.get("adGroupId") or 0)
+            except (TypeError, ValueError):
+                _gid = 0
+            _cid = int((intents.get(_gid) or {}).get("campaign_id") or 0)
+            items_by_cid.setdefault(_cid, []).append(it)
+            gids_by_cid.setdefault(_cid, []).append(_gid)
+        for _cid, _items in items_by_cid.items():
+            try:
+                grid.update_unified_adgroups(_items)
+            except Exception as e:  # noqa: BLE001
+                failed.append({"campaign_id": _cid,
+                               "error": f"Grid UpdateUnifiedAdGroups (autotarget): {str(e)[:200]}"})
+                at_failed_gids.update(gids_by_cid.get(_cid, []))
 
     updated_set: set[int] = set()
     for gid, intent in intents.items():
         # Считаем группу «применённой» если: ключи залиты (kw_added) ИЛИ нужна только
-        # автотаргет-правка (need_at без need_kw — update_unified_adgroups вызван выше).
-        if gid in kw_added or (not intent.get("fixed_keywords") and intent.get("fixed_autotarget")):
+        # автотаргет-правка (need_at без need_kw — update_unified_adgroups вызван выше) И её
+        # кампания не упала при per-cid записи (at_failed_gids).
+        if gid in kw_added or (not intent.get("fixed_keywords") and intent.get("fixed_autotarget")
+                               and gid not in at_failed_gids):
             updated_set.add(gid)
 
     for gid, intent in intents.items():
@@ -804,8 +836,12 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
         failed.extend({"campaign_id": i["campaign_id"], "adgroup_id": i["adgroup_id"],
                        "error": "группа не подтверждена AddKeywords"} for i in not_applied)
 
-    ok = not failed
-    if not write_items and not failed:
+    # ok отражает РЕАЛЬНЫЙ прогресс: True если нет настоящих провалов (failed) И есть что зачесть —
+    # либо реально применённые группы (applied), либо вообще нет беспаковых остатков (штатный идемпотент).
+    # Если применить не удалось НИЧЕГО, а есть только беспаковые группы (unfixable) → ok=False:
+    # честно сообщаем «ничего не добили» (executed=0 у вызывающего верно), а не «всё ок».
+    ok = (not failed) and (bool(applied) or not unfixable)
+    if not write_items and not failed and not unfixable:
         return {
             "ok": True,
             "execute": True,
@@ -824,6 +860,8 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
         "repaired_campaign_ids": repaired_campaign_ids,
         "updated_adgroup_ids": sorted(updated_set)[:80],
         "skipped_groups": skipped,
+        "unfixable_no_pack": len(unfixable),
+        "unfixable_groups": unfixable[:40],
         "results": results[:80],
         "failed_campaigns": failed[:40],
         "transport": "grid",

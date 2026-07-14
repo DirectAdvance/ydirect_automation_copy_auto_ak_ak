@@ -25,6 +25,8 @@ import sys
 import time
 from pathlib import Path
 
+from flask import Flask
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -35,15 +37,23 @@ for _p in Path(__file__).resolve().parents:
         sys.path.insert(0, str(_p / ".secret"))
         break
 
-# Role must be set BEFORE importing direct.main (its module-level create_app() reads it).
+# Role must be set before queue/runtime initialization.
 os.environ.setdefault("DIRECT_ROLE", "worker")
 
-from direct import main as direct_main  # noqa: E402
-from direct import blueprint as _bp      # noqa: E402
+from loader import _get  # noqa: E402
+from direct import automation_runtime as _runtime  # noqa: E402,F401
+from direct import queue_server as _bp  # noqa: E402
 
 
 _STOP = {"on": False}
 _DRAIN_DEADLINE_SEC = 540   # < systemd TimeoutStopSec (600): выйти ДО SIGKILL
+
+
+def create_worker_app() -> Flask:
+    """Minimal request-context host for background create-set execution."""
+    app = Flask(__name__)
+    app.secret_key = _get("FLASK_SECRET_KEY")
+    return app
 
 
 def _handle_term(signum, _frame) -> None:
@@ -61,7 +71,7 @@ def main() -> int:
         print(f"[direct-worker] WARNING: DIRECT_ROLE={role!r} (ожидался 'worker'); "
               f"продолжаю, но БД-поллер стартует только при role=worker", flush=True)
 
-    app = direct_main.app                 # переиспользуем уже созданный create_app() (без второй инициализации)
+    app = create_worker_app()             # worker needs request/session context, not the web blueprint
     _bp._worker_bootstrap(app)            # jobs_db_init + recover + watchdog + пул воркеров + демоны + БД-поллер
 
     n_threads = int(_bp._CREATE_WORKERS or _bp._create_workers_count())

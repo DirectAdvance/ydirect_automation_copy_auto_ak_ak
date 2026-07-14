@@ -92,9 +92,20 @@ def _get_or_create_minus_set(token: str, login: str,
                          (msets[0][0] if msets else None))
         if minus_set:
             return minus_set
-        # Аккаунт без shared-set: собираем из ЕДИНОГО источника — вкладки «Минус-слова»
-        # (не из пака M3: пак как источник минус-фраз отключён — принцип «только оттуда»).
-        words = _enabled_minus_words()
+        # Аккаунт без shared-set: собираем НОВЫЙ library-набор из глоб. вкладки «Минус-слова»
+        # + библиотечный слепок {slepok}_minus_shared (+ per-ct _minus) из пака M3.
+        # (#9 SLEPOK_MINUS_MISSING_ONLY_GLOBAL: слепковый минус должен попасть в library-набор,
+        #  а не только глобальные слова — иначе снапшот слепка не долетает до кампании.)
+        words = list(_enabled_minus_words() or [])
+        try:
+            _pack_minus = _collect_pack_minus(slepok, site_type, tp_code)
+        except Exception:  # noqa: BLE001 — пак M3 недоступен → деградируем к глоб. словам
+            _pack_minus = []
+        _seen = {w.lower() for w in words}
+        for _w in _pack_minus:
+            if _w.lower() not in _seen:
+                _seen.add(_w.lower())
+                words.append(_w)
         words = _minus_char_budget(words, _MINUS_SHARED_SET_CHAR_BUDGET)  # набор ≤4096, не 20000
         if not words:
             return None
@@ -147,11 +158,28 @@ def _apply_campaign_direct_minus(token: str, login: str,
     Возвращает None при успехе, строку ошибки при неудаче.
     """
     try:
-        # ЕДИНЫЙ источник минус-фраз — вкладка «Минус-слова» (пак M3 как источник отключён).
-        words = _enabled_minus_words()
+        # Источники минус-фраз КАМПАНИИ: глоб. вкладка «Минус-слова» + библиотечный слепок
+        # {slepok}_minus_shared (+ per-ct _minus) из пака M3 (#9 SLEPOK_MINUS_MISSING_ONLY_GLOBAL —
+        # раньше слепковый минус до кампании не долетал, ставились только глобальные слова).
+        # Исключения:
+        #  • group-режим (terehov/karavaev): паковые минусы уже висят на ГРУППАХ
+        #    (_build_tp2_adgroups g["minus"]) → на кампанию НЕ дублируем (экономим бюджет 20k);
+        #  • tp1 (РСЯ): минус-слова режут охват сети без пользы (там же намеренно снят групповой
+        #    минус _build_tp1_adgroups) → на РСЯ оставляем ТОЛЬКО глобальные слова.
+        words = list(_enabled_minus_words() or [])
+        if tp_code != "tp1" and _SLEPOK_MINUS_MODE.get(slepok, "group") != "group":
+            try:
+                _pack_minus = _collect_pack_minus(slepok, site_type, tp_code)
+            except Exception:  # noqa: BLE001 — пак M3 недоступен → деградируем к глоб. словам
+                _pack_minus = []
+            _seen = {w.lower() for w in words}
+            for _w in _pack_minus:
+                if _w.lower() not in _seen:
+                    _seen.add(_w.lower())
+                    words.append(_w)
         words = _minus_char_budget(words, _MINUS_CAMPAIGN_CHAR_BUDGET)  # ≤20 000 симв.
         if not words:
-            return "нет минус-слов во вкладке «Минус-слова» (campaign-direct пропущен)"
+            return "нет минус-слов (ни вкладка «Минус-слова», ни пак слепка) — campaign-direct пропущен"
         j = _v5_call("campaigns", "update", token, login, {
             "Campaigns": [{
                 "Id": campaign_id,

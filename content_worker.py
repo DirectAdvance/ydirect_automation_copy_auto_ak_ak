@@ -35,7 +35,8 @@ for _p in Path(__file__).resolve().parents:
 
 os.environ.setdefault("DIRECT_REGISTER_CONTENT_EDITOR", "0")
 
-from direct import blueprint as direct_legacy  # noqa: E402
+from direct import direct_repository as repository  # noqa: E402
+from direct import yandex_gateway as yandex  # noqa: E402
 from direct import routes_content_editor as ce  # noqa: E402
 
 WORKER_THREADS = int(os.environ.get("CE_WORKER_THREADS") or 4)
@@ -47,11 +48,11 @@ WORKER_NAME = f"{socket.gethostname()}:{os.getpid()}"
 T = ce.CE_JOBS_TABLE
 
 _execute = ce.make_job_executor(
-    victory_conn=direct_legacy._victory_conn,
-    token_for_login=direct_legacy._token_for_login,
-    direct_tokens=direct_legacy._direct_tokens,
-    v5_call=direct_legacy._v5_call,
-    v501_svc=direct_legacy._v501_svc,
+    victory_conn=repository.victory_conn,
+    token_for_login=yandex.token_for_login,
+    direct_tokens=yandex.direct_tokens,
+    v5_call=yandex.v5_call,
+    v501_svc=yandex.v501_svc,
 )
 
 

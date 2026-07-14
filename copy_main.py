@@ -36,10 +36,15 @@ for _p in Path(__file__).resolve().parents:
 
 from loader import _get  # noqa: E402
 
-# Import the legacy wiring with copy routes disabled on ITS blueprint — мы переиспользуем
-# его DB/token/API-хелперы, но вешаем copy-роуты на чистый bp этого процесса и на СВОЙ воркер.
-os.environ.setdefault("DIRECT_REGISTER_COPY", "0")
-from direct import blueprint as direct_legacy  # noqa: E402
+from auth import _service_required_any  # noqa: E402
+# Domain wiring only: no direct.blueprint, no main Flask app and no unrelated routes.
+from direct import automation_runtime as _runtime  # noqa: E402,F401
+from direct import account_service as accounts  # noqa: E402
+from direct import blueprint_metrika as metrika  # noqa: E402
+from direct import copy_engine  # noqa: E402
+from direct import queue_server as queue  # noqa: E402
+from direct import yandex_gateway as yandex  # noqa: E402
+from direct.routes_copy import register_copy_routes  # noqa: E402
 
 
 def _inject_nav_context():
@@ -60,6 +65,13 @@ def _inject_nav_context():
     except Exception:
         user_svcs = session.get("user_services") or []
     return {"other_services": [s for s in all_services if s["name"] in (user_svcs or [])]}
+
+
+def _parse_number(value, default=0):
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def create_app() -> Flask:
@@ -86,8 +98,27 @@ def create_app() -> Flask:
         url_prefix="/direct",
         template_folder=str(ROOT / "templates"),
     )
-    # Own isolated copy queue: ensure_worker=_ensure_copy_worker (не create-set пул/демоны).
-    direct_legacy._wire_copy_routes(bp, ensure_worker=direct_legacy._ensure_copy_worker)
+    # Own isolated copy queue: queue.ensure_copy_worker starts no create-set daemons/poller.
+    register_copy_routes(
+        bp,
+        _service_required_any("work", "work:direct"),
+        api_campaigns_func=accounts._campaigns_response,
+        account_prefill_func=accounts._account_prefill_response,
+        metrika_goals_for=metrika._metrika_goals_for,
+        parse_number=_parse_number,
+        copy_default_feed_path=copy_engine._COPY_DEFAULT_FEED_PATH,
+        counter_foreign_owner=metrika._counter_foreign_owner,
+        resolve_agency_hint=yandex.resolve_agency_hint,
+        ensure_create_worker=queue._ensure_copy_worker,
+        job_new=queue._job_new,
+        copy_job_upsert=copy_engine._copy_job_upsert,
+        create_jobs_ahead=queue._create_jobs_ahead,
+        create_jobs=queue._CREATE_JOBS,
+        create_jobs_lock=queue._CREATE_JOBS_LOCK,
+        copy_jobs=copy_engine._COPY_JOBS,
+        copy_jobs_lock=copy_engine._COPY_JOBS_LOCK,
+        feeds_preview_func=copy_engine._copy_feeds_preview,
+    )
     app.register_blueprint(bp)
     return app
 

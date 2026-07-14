@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from . import campaign as cmc
+from . import create_set_context as _csctx  # _parse_targeting_modes (чистый хелпер, без configure)
 from . import kontent_pack as kp
 
 
@@ -78,10 +79,14 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     _tp7_listings_minus_filters = deps['_tp7_listings_minus_filters']
     _trim_to_word = deps['_trim_to_word']
     _variant_norm_key = deps['_variant_norm_key']
+    _slepok_is_auto = deps['_slepok_is_auto']
     results = []
+    # Не-авто признак: False для B2B-слепков (dmp и будущих), True для авто-директологов.
+    # Влияет на базу заголовков/текстов (B2B-корпус vs _GENERIC_AT_TITLES) и number-gate.
+    _is_non_auto = not _slepok_is_auto(agent or "")
     is_manual = str(it.get("variant", "")).endswith("manual")
     is_product = it.get("type") == "product"
-    targeting_mode = str(it.get("targeting_mode") or (
+    _raw_mode = str(it.get("targeting_mode") or (
         "keywords" if is_manual else _tp67_targeting_mode({
             "name": it.get("position_name") or name,
             "group": it.get("audience_cat") or "",
@@ -89,6 +94,16 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             "code": it.get("structure_code") or "",
         })
     )).strip()
+    # ГИБРИД: одна tp6/tp7-позиция может нести keywords И audience одновременно (реальные слепки:
+    # tp7 RA = ключи + до 8 аудиторий, tp6 RA = ключи + 1 аудитория). Парсим в НАБОР режимов.
+    _modes = _csctx._parse_targeting_modes(_raw_mode)
+    _want_keywords = "keywords" in _modes
+    _want_audience = "audience" in _modes
+    # Явный per-position источник ключей: НЕпустой → позиция ОБЯЗАНА иметь ключи (keyword_source-гейт).
+    _keyword_source = str(it.get("keyword_source") or "").strip()
+    # Скаляр для легаси-веток «autotarget vs ручной» (имя/socdem/relevance/minus): autotarget ТОЛЬКО
+    # когда нет ни ключей, ни аудиторий; иначе ручной (гибрид → keywords-приоритет = ручной режим).
+    targeting_mode = "keywords" if _want_keywords else ("audience" if _want_audience else "autotarget")
     # Ось посадки: kviz-кодер → домен/quiz, иначе обычный домен
     it_sq = it.get("sq") or "site"
     it_href = href + ("/quiz" if it_sq == "kviz" else "")
@@ -106,7 +121,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     it_keywords: list[str] = []
     it_minus_keywords: list[str] = []
     it_targeting_warnings: list[str] = []
-    if targeting_mode == "keywords":
+    if _want_keywords:
         it_keywords, it_minus_keywords = _tp67_keywords_for(
             agent, eff_site, it_tp, c_ct or str(it.get("ct") or "ct0000"), ctx.get("city") or "",
             it.get("position_name") or it.get("audience_cat") or name,
@@ -115,15 +130,36 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
         if not it_keywords:
             _err = (f"tp6/tp7 КС без ключей: slepok={agent}, site_type={eff_site}, "
                     f"tp={it_tp}, ct={c_ct or it.get('ct') or 'ct0000'}")
-            targeting_mode = "autotarget"
-            it_targeting_warnings.append(_err + " → fallback autotarget")
+            if _keyword_source:
+                # keyword_source-ГЕЙТ: позиция ЯВНО объявлена keyword-driven (keyword_source задан),
+                # но корпус ключей пуст → НЕ уходить молча в autotarget (это баг). Блокируем позицию
+                # с явной ошибкой в DoD/логе; кампанию НЕ создаём.
+                _blk = (_err + f" → BLOCKED (keyword_source={_keyword_source!r}: молчаливая "
+                        "подмена на autotarget запрещена)")
+                _add_job_err(_job, _blk)
+                results.append({"name": name, "ok": False, "error": _blk[:240], "blocked": True})
+                _bump_job(_job, False)
+                _bump_item(_job)
+                if _job:
+                    _job_db_progress(_job)
+                return results, _tp7_mf
+            # Обратная совместимость (keyword_source НЕ задан): старый мягкий фолбэк — снимаем keywords,
+            # остаёмся на audience (если гибрид) либо на autotarget (если ключи были единственным режимом).
+            _want_keywords = False
+            if not _want_audience:
+                targeting_mode = "autotarget"
+            it_targeting_warnings.append(
+                _err + " → fallback " + ("audience" if _want_audience else "autotarget"))
             _add_job_err(_job, it_targeting_warnings[-1])
-    it_audiences = _audience_objects(native_ints) if targeting_mode == "audience" else []
-    if targeting_mode == "audience" and not it_audiences:
+    it_audiences = _audience_objects(native_ints) if _want_audience else []
+    if _want_audience and not it_audiences:
         _err = (f"tp6/tp7 аудитория без аудиторий слепка: slepok={agent}, "
                 f"site_type={eff_site}, tp={it_tp}, category={it.get('audience_cat') or it.get('position_name') or ''}")
-        targeting_mode = "autotarget"
-        it_targeting_warnings.append(_err + " → fallback autotarget")
+        _want_audience = False
+        if not _want_keywords:
+            targeting_mode = "autotarget"
+        it_targeting_warnings.append(
+            _err + " → fallback " + ("keywords" if _want_keywords else "autotarget"))
         _add_job_err(_job, it_targeting_warnings[-1])
     if is_product and not c_brand and it_sq != "kviz":
         it_href = re.sub(r"/+$", "", href) + "/auto"
@@ -135,14 +171,28 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
         title_supp = title_primary + _sc["titles"] + tpl_titles + _GENERIC_TITLE_FILLERS
     elif is_product:
         # tp7 ct0000 (общая кампания) - заголовки ТОЛЬКО без марки/модели.
-        # _sc["titles"] часто брендовые («Haval…», «Chery…») - НЕ используем как base.
-        title_primary = _GENERIC_AT_TITLES
-        title_supp = _GENERIC_AT_TITLES + _GENERIC_TITLE_FILLERS
-    else:                                          # tp6 МК ct0000 → общие (баг #8: без брендов)
-        # баг #8: _sc["titles"] часто содержат марки («Haval у дилера»…) — для общей МК (ct0000)
-        # это неверно. Используем _GENERIC_AT_TITLES как base; _sc["titles"] только в supp-добавке.
-        title_primary = _GENERIC_AT_TITLES
-        title_supp = _sc["titles"] + tpl_titles + _GENERIC_TITLE_FILLERS
+        # _sc["titles"] часто брендовые («Haval…», «Chery…») - НЕ используем как base для авто.
+        # Для не-авто (dmp и будущие B2B): база = корпус слепка, авто-дженерики не подмешиваем.
+        if _is_non_auto:
+            _b2b_titles_p = [t for t in (_sc.get("titles") or []) if t and str(t).strip()]
+            title_primary = _b2b_titles_p
+            title_supp = _b2b_titles_p + tpl_titles
+        else:
+            title_primary = _GENERIC_AT_TITLES
+            title_supp = _GENERIC_AT_TITLES + _GENERIC_TITLE_FILLERS
+    else:                                          # tp6 МК ct0000 → авто: _GENERIC_AT_TITLES; не-авто: B2B-корпус
+        if _is_non_auto:
+            # Не-авто (dmp и будущие B2B): база = B2B-корпус слепка; авто-дженерики НЕ подмешиваем.
+            # B2B-строки часто без цифр («Получайте контакты потенциальных клиентов…») —
+            # поэтому number-gate ниже отключён для не-авто.
+            _b2b_titles = [t for t in (_sc.get("titles") or []) if t and str(t).strip()]
+            title_primary = _b2b_titles
+            title_supp = _b2b_titles + tpl_titles
+        else:
+            # баг #8: _sc["titles"] часто содержат марки («Haval у дилера»…) — для общей МК (ct0000)
+            # это неверно. Используем _GENERIC_AT_TITLES как base; _sc["titles"] только в supp-добавке.
+            title_primary = _GENERIC_AT_TITLES
+            title_supp = _sc["titles"] + tpl_titles + _GENERIC_TITLE_FILLERS
     # ЖЁСТКОЕ ПРАВИЛО tp6/tp7: РОВНО 5 заголовков / 3 текста / 8 быстрых ссылок.
     # ГОРОД В КОНТЕНТЕ обязан совпадать с городом аккаунта.
     _acc_city = (ctx.get("city") or "").strip()
@@ -167,7 +217,9 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
         _words = set(re.sub(r"[^\wа-яё]+", " ", str(_s or "").lower()).split())
         return not (_words & _foreign_brand_tokens) and not (_words & _foreign_city_tokens)
     # Сборка заголовков с пост-обработкой (БАГ 1+2+3+4+7+8)
-    _raw_titles = _fill_variants(_cf(_t_base), _cf(title_supp) + _GENERIC_TITLE_FILLERS, 12)
+    # Для не-авто (B2B): _GENERIC_TITLE_FILLERS — авто-кредитные, не добавляем в пул.
+    _title_fill_pool = _cf(title_supp) + ([] if _is_non_auto else _GENERIC_TITLE_FILLERS)
+    _raw_titles = _fill_variants(_cf(_t_base), _title_fill_pool, 12)
     it_titles = []
     _seen_tk: set = set()
     for _t in _raw_titles:
@@ -175,8 +227,8 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             continue
         _t = _sanitize_content(str(_t), max_len=56)   # БАГ 3+4+8
         _t = _fill_title(_replace_sep_hyphen(_replace_emdash(_strip_credit_rate(_t))), 45, 56)  # добить до 45-56 (#26)
-        if not _t or _is_bad_start(_t) or _bad_ad_title(_t) or not _common_content_ok(_t) or not _has_number(_t):
-            continue  # number-gate: каждый заголовок tp6/tp7 обязан содержать цифру
+        if not _t or _is_bad_start(_t) or _bad_ad_title(_t) or not _common_content_ok(_t) or (not _is_non_auto and not _has_number(_t)):
+            continue  # number-gate: для авто tp6/tp7 обязан содержать цифру; для не-авто (B2B) отключён
         if c_brand:
             _own = _own_brand_tokens(c_brand)
             _tl = _t.lower()
@@ -214,14 +266,21 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             if len(it_titles) >= 5:
                 break
     # Сборка текстов с пост-обработкой (БАГ 2+3+4+8)
-    # баг #8: для ct0000 (общая кампания) тексты из ИИ/слепка могут содержать марки →
+    # баг #8: для ct0000 (авто, общая кампания) тексты из ИИ/слепка могут содержать марки →
     # при ct0000 используем только _GENERIC_TEXT_FILLERS как base (без брендовых текстов ИИ).
+    # Для не-авто (dmp и будущие B2B): база = B2B-тексты корпуса слепка; авто-дженерики НЕ используем.
     if not c_brand:
-        _x_base = _GENERIC_TEXT_FILLERS
+        if _is_non_auto:
+            _b2b_texts = [t for t in (_sc.get("texts") or []) if t and str(t).strip()]
+            _x_base = _b2b_texts or _GENERIC_TEXT_FILLERS
+        else:
+            _x_base = _GENERIC_TEXT_FILLERS
     else:
         _x_base = _rsya_texts((_lines(it.get("texts")) or []) + (_sc["texts"] or []),
                               eff_site, ctx.get("city") or "", c_brand, cap=8)
-    _raw_texts = _fill_variants(_cf(_x_base), tpl_texts + _GENERIC_TEXT_FILLERS, 8)
+    # Для не-авто: _GENERIC_TEXT_FILLERS авто-кредитные — не добавляем в пул.
+    _text_fill_pool = tpl_texts + ([] if _is_non_auto else _GENERIC_TEXT_FILLERS)
+    _raw_texts = _fill_variants(_cf(_x_base), _text_fill_pool, 8)
     it_texts = []
     _seen_xk: set = set()
     for _x in _raw_texts:
@@ -230,8 +289,8 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
         _x = _sanitize_content(str(_x), max_len=81)   # БАГ 3+4+8
         _x = _strip_credit_rate(_x)
         _x = _trim_to_word(_x, 81).rstrip()           # БАГ 3: обрезка по целому слову
-        if not _x or _is_bad_start(_x) or _bad_ad_text(_x) or not _common_content_ok(_x) or not _has_number(_x):
-            continue  # number-gate: каждый текст tp6/tp7 обязан содержать цифру
+        if not _x or _is_bad_start(_x) or _bad_ad_text(_x) or not _common_content_ok(_x) or (not _is_non_auto and not _has_number(_x)):
+            continue  # number-gate: для авто — обязательна цифра; для не-авто (B2B) отключён
         _nk = _variant_norm_key(_x)                   # БАГ 2
         if _nk and _nk in _seen_xk:
             continue
@@ -313,7 +372,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
                         break
                     _t = _sanitize_content(str(_t), max_len=56)
                     _t = _strip_credit_rate(_t)[:56].rstrip()
-                    if not _t or _is_bad_start(_t) or _bad_ad_title(_t) or not _common_content_ok(_t) or not _has_number(_t):
+                    if not _t or _is_bad_start(_t) or _bad_ad_title(_t) or not _common_content_ok(_t) or (not _is_non_auto and not _has_number(_t)):
                         continue  # number-gate regen
                     if c_brand:
                         _own = _own_brand_tokens(c_brand)
@@ -338,7 +397,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
                         break
                     _x = _sanitize_content(str(_x), max_len=81)
                     _x = _trim_to_word(_strip_credit_rate(_x), 81).rstrip()
-                    if not _x or _is_bad_start(_x) or _bad_ad_text(_x) or not _common_content_ok(_x) or not _has_number(_x):
+                    if not _x or _is_bad_start(_x) or _bad_ad_text(_x) or not _common_content_ok(_x) or (not _is_non_auto and not _has_number(_x)):
                         continue  # number-gate regen
                     _nk = _variant_norm_key(_x)
                     if _nk and (_nk in _seen_xk or any(_variant_norm_key(x) == _nk for x in it_texts)):
@@ -372,7 +431,9 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             list(dict.fromkeys(_trim_to_word(t, 81).rstrip() for t in it_texts if t and t.strip())),
             3,
         )
-    if len(it_titles) < 5:
+    # _fallback_master_titles возвращает авто-кредитный контент («Авто в кредит», «КАСКО»…).
+    # Для не-авто (B2B dmp) — не добираем авто-фолбэком; используем что есть из B2B-корпуса.
+    if len(it_titles) < 5 and not _is_non_auto:
         for _t in _fallback_master_titles(c_brand or "", _acc_city, eff_site, 5):
             if len(it_titles) >= 5:
                 break
@@ -384,8 +445,10 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     # (один — расширение другого) → оставляем более информативную. ПОСЛЕ — добор из банка до 3.
     it_texts = [x for x in _dedup_prefix_absorb(it_texts) if len(str(x).strip()) >= _TP67_MIN_TEXT_LEN]
     if len(it_texts) < 3:
+        # Для не-авто: _GENERIC_TEXT_FILLERS авто-кредитные — не добираем ими.
+        _txt_fallback = [] if _is_non_auto else list(_GENERIC_TEXT_FILLERS)
         it_texts = _diverse_text_offers(
-            _dedup_prefix_absorb(it_texts + list(_GENERIC_TEXT_FILLERS)), 3)
+            _dedup_prefix_absorb(it_texts + _txt_fallback), 3)
     # R2-4 2026-07-10 (c1): topic/semantic-дедуп быстрых ссылок ВСЕГДА (не только при <8).
     # UAC-путь (tp6/tp7) собирал 8 сайтлинков с дедупом ТОЛЬКО по ТОЧНОЙ строке title+desc →
     # кредитный дубль «Платеж от 9 000 ₽/мес» + «Автокредит от 9 000 ₽/мес» проходил как две
@@ -494,16 +557,24 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     # общий пул по типу сайта. Иначе пул Мультибренда общий на ВСЕ слепки → Павлов брал бы
     # картинки Кудерко (баг: read_images ключ = тип сайта, не слепок). ВИДЕО — по логину.
     _sk = _SLEPOK_KEY.get((agent or "").lower(), (agent or "").lower())   # канон слепка
+    # Per-domain картинки для не-авто слепков (dmp и будущие): нормализуем домен из ctx.
+    # lower + strip + убрать схему + убрать www. + убрать trailing /
+    _raw_domain = (ctx.get("domain") or "").strip()
+    _norm_domain = re.sub(r"^https?://", "", _raw_domain).lower()
+    _norm_domain = re.sub(r"^www\.", "", _norm_domain).rstrip("/").strip()
+    _img_domain = _norm_domain if _sk == "dmp" else ""
     try:
         _candidate_image_limit = 12
         if c_ct and not _is_common_ct(c_ct):        # модель/кузов в кодере (tp6/tp7)
             img_ct = _image_ct_for_content(c_ct)
             it_images = _creative_images_for_ct(eff_site, it_tp, img_ct, _sk,
+                                                domain=_img_domain,
                                                 limit=_candidate_image_limit)
         else:                                      # ct0000 (Общее) → только безопасный общий пул.
             # M3 ct0000 и image_slepki сейчас содержат модельные баннеры, поэтому для общих
             # групп не используем их вообще.
             it_images = _creative_images_for_ct(eff_site, it_tp, "ct0000", _sk,
+                                                domain=_img_domain,
                                                 limit=_candidate_image_limit)
     except Exception:  # noqa: BLE001
         it_images = []
@@ -573,14 +644,16 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             it_lff = [{"conditions": [{"field": "collectionId", "operator": "CONTAINS",
                                        "value": f'["{coll_id}"]'}]}]
     elif is_product and it_feed:
-        if not c_ct or c_ct == "ct0000":
-            # ct0000 = «Страницы каталога»: БЕЗ mark-фильтров → весь каталог (все 198+ стр.).
-            # Страницы каталога НЕ входят в mark_* коллекции → CONTAINS(mark_*) даёт 0 результатов.
+        if not c_brand or not c_ct or c_ct == "ct0000":
+            # Небрендовые группы: ct0000 «Страницы каталога» ИЛИ любая товарка без марки
+            # (напр. ct0014 «Общие запросы») — БЕЗ mark-фильтров → весь каталог (все 198+ стр.).
+            # Такие страницы НЕ входят в mark_* коллекции → CONTAINS(mark_*) даёт 0 результатов.
             # UAC принимает фильтр без Exception → except-retry-без-фильтра (ниже) не срабатывает.
-            # Требование Семёна: каталог показывает ВСЕ страницы, mark-фильтры не нужны.
+            # Требование Семёна: небрендовым группам mark-фильтр НЕ ставим.
             it_lff = []
         else:
-            # ct0111 или нетоварный без c_brand/c_ct: allow-list по mark_* с вычетом минус-марок.
+            # брендовая товарка (есть c_brand, но не попала в модельную ветку выше, напр. ct0111):
+            # allow-list по mark_* с вычетом минус-марок.
             it_lff = _tp7_listings_minus_filters(login, it_feed, _w_agency or "")
     try:
         spec = cmc.MasterCampaignSpec(
@@ -590,6 +663,11 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             display_name=disp_name, sitelinks=it_sitelinks,
             image_files=it_images, video_files=it_videos,
             image_limit=5,
+            # dmp (не-авто лидоген): ОТКЛЮЧАЕМ pHash-дедуп картинок в collect_image_files —
+            # доменные баннеры одного шаблона (тёмный фон + разный текст) РАЗНЫЕ для Директа,
+            # pHash их ошибочно схлопывал (доезжало 2 из ~50). md5-дедуп остаётся. Авто-слепки
+            # (_sk != "dmp") → True: pHash-защита от клонов сохранена.
+            visual_dedup=(_sk != "dmp"),
             campaign_type="product" if is_product else "master",
             feed_id=it_feed,
             listings_feed_id=(it_listings or None) if is_product else None,
@@ -612,8 +690,12 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             relevance_match_categories=(_TP67_OPTIMAL_CATEGORIES if targeting_mode == "autotarget"
                                         else _TP67_RELEVANCE_CATEGORIES),
             alternative_texts_enabled=False,   # #3 персонализация (адаптивные тексты) ВЫКЛ
-            # tcpa = оплата за клики (PER_CLICK), cpa = оплата за конверсии (PER_CONVERSION)
-            pricing="PER_CONVERSION" if it.get("pay") == "cpa" else "PER_CLICK",
+            # Явный per-position pricing слепка имеет приоритет (PER_CLICK|PER_CONVERSION|PER_ACTION);
+            # пусто/невалидно → derive из pay: tcpa=оплата за клики (PER_CLICK), cpa=за конверсии (PER_CONVERSION).
+            pricing=(str(it.get("pricing")).strip().upper()
+                     if str(it.get("pricing") or "").strip().upper()
+                     in ("PER_CLICK", "PER_CONVERSION", "PER_ACTION")
+                     else ("PER_CONVERSION" if it.get("pay") == "cpa" else "PER_CLICK")),
             # Возраст 35+ (age_35) — для ВСЕХ ручных режимов tp6/Мастер (keywords И audience):
             # DoD §3.6 требует исключить ОБА младших брекета (18-24 И 25-34) → socdem-range стартует
             # с 35-44 (age_lower=age_35, age_upper=age_inf по дефолту). Раньше стоял age_25 (исключал

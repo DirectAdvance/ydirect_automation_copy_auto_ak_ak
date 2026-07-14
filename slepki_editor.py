@@ -140,17 +140,31 @@ def _clean_kw_lines(rows, *, minus: bool) -> tuple[list[str], list[str]]:
 
 
 # ── пути пака (DST + M3) ─────────────────────────────────────────────────────
-def _pack_rel(site_type: str, tp: str, ct: str, fname: str) -> str:
-    """Относительный путь файла пака внутри kontent_oktyabr (подпапка keywords)."""
+def _group_fname(fname: str, slug: str) -> str:
+    """Вставить per-adgroup слаг в имя пак-файла по контракту:
+    ``{slepok}.txt`` → ``{slepok}__{slug}.txt``; ``{slepok}_minus.txt`` → ``{slepok}__{slug}_minus.txt``.
+    ``_minus_shared.txt`` (общий пер-ct) НЕ трогаем. Пустой slug → без изменений (легаси)."""
+    if not slug or fname.endswith("_minus_shared.txt"):
+        return fname
+    if fname.endswith("_minus.txt"):
+        return f"{fname[:-len('_minus.txt')]}__{slug}_minus.txt"
+    if fname.endswith(".txt"):
+        return f"{fname[:-4]}__{slug}.txt"
+    return fname
+
+
+def _pack_rel(site_type: str, tp: str, ct: str, fname: str, group: str = "") -> str:
+    """Относительный путь файла пака внутри kontent_oktyabr (подпапка keywords).
+    group непустой → имя файла с per-adgroup слагом (см. _group_fname); shared остаётся общим."""
     ctn = kp._norm_ct(ct) or kp.GENERAL_CT
-    return posixpath.join(site_type, tp, ctn, "keywords", fname)
+    return posixpath.join(site_type, tp, ctn, "keywords", _group_fname(fname, kp._group_slug(group)))
 
 
-def _pack_rel_callouts(site_type: str, tp: str, ct: str, fname: str) -> str:
+def _pack_rel_callouts(site_type: str, tp: str, ct: str, fname: str, group: str = "") -> str:
     """Относительный путь файла уточнений (callouts) внутри kontent_oktyabr.
-    Зеркалит kontent_pack.read_callouts: {site_type}/{tp}/{ct}/callouts/{slepok}.txt."""
+    Зеркалит kontent_pack.read_callouts: {site_type}/{tp}/{ct}/callouts/{slepok}[__{slug}].txt."""
     ctn = kp._norm_ct(ct) or kp.GENERAL_CT
-    return posixpath.join(site_type, tp, ctn, "callouts", fname)
+    return posixpath.join(site_type, tp, ctn, "callouts", _group_fname(fname, kp._group_slug(group)))
 
 
 def _dst_abs(rel: str) -> str:
@@ -282,15 +296,26 @@ def _write_profile(profile: dict) -> str:
 
 
 # ── чтение ключей группы (для просмотра в UI) ────────────────────────────────
-def read_group_keywords(site_type: str, tp: str, ct: str, slepok: str) -> dict:
-    """{positive, minus, minus_shared, callouts} по (тип сайта, tp, ct, слепок).
-    minus_shared — библиотечный набор (просмотр); callouts — уточнения кампании."""
+def read_group_keywords(site_type: str, tp: str, ct: str, slepok: str, group: str = "") -> dict:
+    """{positive, minus, minus_shared, callouts} по (тип сайта, tp, ct, слепок[, group]).
+    minus_shared — библиотечный набор (просмотр, пер-ct); callouts — уточнения кампании.
+    group непустой → per-group файлы ``{slepok}__{slug}...`` с фолбэком на легаси; ``group=""`` —
+    прежнее поведение."""
     ctn = kp._norm_ct(ct) or kp.GENERAL_CT
     kd = os.path.join(kp._ct_dir(site_type, tp, ctn), "keywords")
-    pos = kp._read_lines(os.path.join(kd, f"{slepok}.txt"))
-    neg = kp._read_lines(os.path.join(kd, f"{slepok}_minus.txt"))
+    slug = kp._group_slug(group)
+    if slug:
+        pos, fp = kp._read_lines_opt(os.path.join(kd, f"{slepok}__{slug}.txt"))
+        if not fp:
+            pos = kp._read_lines(os.path.join(kd, f"{slepok}.txt"))
+        neg, fm = kp._read_lines_opt(os.path.join(kd, f"{slepok}__{slug}_minus.txt"))
+        if not fm:
+            neg = kp._read_lines(os.path.join(kd, f"{slepok}_minus.txt"))
+    else:
+        pos = kp._read_lines(os.path.join(kd, f"{slepok}.txt"))
+        neg = kp._read_lines(os.path.join(kd, f"{slepok}_minus.txt"))
     neg_shared = kp._read_lines(os.path.join(kd, f"{slepok}_minus_shared.txt"))
-    callouts = kp.read_callouts(site_type, tp, ctn, slepok)
+    callouts = kp.read_callouts(site_type, tp, ctn, slepok, group=group)
     return {"positive": kp._dedup(pos), "minus": kp._dedup(neg),
             "minus_shared": kp._dedup(neg_shared), "callouts": callouts}
 
@@ -313,6 +338,7 @@ def apply_edit_keywords(spec: dict, actor: str = "") -> dict:
     site_type = (spec.get("site_type") or "").strip()
     tp = (spec.get("tp") or "").strip()
     ct = (spec.get("ct") or "").strip()
+    group = (spec.get("group") or "").strip()   # per-adgroup (опц.): непустой → {slepok}__{slug}...
     if not (slepok and site_type and tp and ct):
         return {"ok": False, "error": "нужны slepok/site_type/tp/ct"}
     pos, e1 = _clean_kw_lines(spec.get("positive"), minus=False)
@@ -326,13 +352,14 @@ def apply_edit_keywords(spec: dict, actor: str = "") -> dict:
     if errs:
         return {"ok": False, "error": "валидация ключей: " + "; ".join(errs[:10])}
     with _EDIT_LOCK:
-        rel_pos = _pack_rel(site_type, tp, ct, f"{slepok}.txt")
-        rel_neg = _pack_rel(site_type, tp, ct, f"{slepok}_minus.txt")
+        rel_pos = _pack_rel(site_type, tp, ct, f"{slepok}.txt", group=group)
+        rel_neg = _pack_rel(site_type, tp, ct, f"{slepok}_minus.txt", group=group)
         r_pos = _dual_write_pack_file(rel_pos, "\n".join(pos) + ("\n" if pos else ""))
         r_neg = _dual_write_pack_file(rel_neg, "\n".join(neg) + ("\n" if neg else ""))
         writes_ok = bool(r_pos["ok"] and r_neg["ok"])
         r_shared = None
         if has_shared:
+            # shared-минус — ОБЩИЙ пер-ct (без слага): group здесь НЕ применяем.
             rel_shared = _pack_rel(site_type, tp, ct, f"{slepok}_minus_shared.txt")
             r_shared = _dual_write_pack_file(
                 rel_shared, "\n".join(neg_shared) + ("\n" if neg_shared else ""))

@@ -327,11 +327,21 @@ def _campaign_images_repair(login: str, campaign_id: int, ctx: dict) -> dict:
                                       "запусти аудит с --agent", "no_image_ads": len(ads_need_images)}
     site_type = (body.get("site_type") or acc.get("site_type") or "").strip()
     ct_hashes: dict[str, list[str]] = {}
+    # Раздельный учёт двух разных причин «объявление без картинок» (ревью 2026-07-13):
+    #  • content_gap_cts — резолвер вернул [] (нет НИ ОДНОГО пути к файлу: пусто в Manual/<ct>,
+    #    паке слепка, explicit; cross-слепок fallback выключен) → грузить нечего, это НЕ ошибка.
+    #  • upload_fail_cts — пути БЫЛИ, но upload/хеши не получились → реальная ошибка загрузки.
+    content_gap_cts: list[str] = []
+    upload_fail_cts: list[str] = []
     for ct in {row["ct"] for row in ads_need_images}:
         try:
             paths = _creative_images_for_ct(site_type, "tp1", ct, slepok) or []
         except Exception:  # noqa: BLE001
             paths = []
+        if not paths:
+            # КОНТЕНТ-ГЭП: нет путей к креативам — это не upload-fail, добивать нечем.
+            content_gap_cts.append(ct)
+            continue
         # Репейр — сознательная повторная попытка: снимаем 15-мин blacklist ТОЧЕЧНО по путям
         # этой кампании (сброс всего логина ре-армил бы чужие свежезаблэклищенные файлы —
         # ревью 03.07), иначе delayed-repair (T+180с) попадает в окно TTL и получает None.
@@ -356,6 +366,9 @@ def _campaign_images_repair(login: str, campaign_id: int, ctx: dict) -> dict:
                 pass
         if hashes:
             ct_hashes[ct] = hashes
+        else:
+            # UPLOAD-FAIL: пути к файлам были, но ни один не дал хеш — реальная ошибка загрузки.
+            upload_fail_cts.append(ct)
 
     items = [
         {"id": ad["id"], "image_hashes": ct_hashes[ad["ct"]]}
@@ -363,16 +376,37 @@ def _campaign_images_repair(login: str, campaign_id: int, ctx: dict) -> dict:
         if ct_hashes.get(ad["ct"])
     ]
     if not items:
-        return {"ok": False, "error": "не удалось загрузить картинки ни для одного ct из кп",
-                "no_image_ads": len(ads_need_images)}
+        # Ни один ct не дал хеши. Разделяем причину: upload-fail (были картинки) — hard-fail;
+        # чистый контент-гэп — НЕ ошибка (грузить нечего), ok=True со списком gap-ct, чтобы
+        # авто-добивка не считала это провалом и не гоняла reschedule вхолостую.
+        if upload_fail_cts:
+            return {"ok": False,
+                    "error": ("upload-fail: не удалось загрузить картинки для ct "
+                              f"{sorted(upload_fail_cts)} (пути есть, хеши не получены)"),
+                    "no_image_ads": len(ads_need_images),
+                    "content_gap_cts": sorted(content_gap_cts),
+                    "upload_fail_cts": sorted(upload_fail_cts)}
+        return {"ok": True, "ads_updated": 0, "skipped_content_gap": True,
+                "note": ("контент-гэп: нет креативов для ct "
+                         f"{sorted(content_gap_cts)} (нужны картинки в Manual/<ct> или паке слепка)"),
+                "no_image_ads": len(ads_need_images),
+                "content_gap_cts": sorted(content_gap_cts)}
     try:
         updated = _grid_update_adaptive_ads(login, items, campaign_ids=[campaign_id])
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"UpdateAdaptiveTextAds: {str(e)[:200]}"}
-    return {
-        "ok": updated > 0, "ads_updated": updated,
+    # ok=True если для ВСЕХ ct с доступными картинками загрузка прошла (контент-гэп — не провал);
+    # ok=False только при реальном upload-fail по ct, где картинки БЫЛИ.
+    out = {
+        "ok": bool(updated > 0 and not upload_fail_cts), "ads_updated": updated,
         "attempted": len(items), "no_image_ads": len(ads_need_images),
+        "content_gap_cts": sorted(content_gap_cts),
+        "upload_fail_cts": sorted(upload_fail_cts),
     }
+    if upload_fail_cts:
+        out["error"] = ("upload-fail: картинки есть, но загрузка не удалась для ct "
+                        f"{sorted(upload_fail_cts)}")
+    return out
 
 
 def _campaign_adprice_repair(login: str, campaign_id: int, ctx: dict) -> dict:
@@ -381,11 +415,14 @@ def _campaign_adprice_repair(login: str, campaign_id: int, ctx: dict) -> dict:
     TODO: Полная реализация требует rebuilding price_map из offers + маппинга ad→brand.
     Вызывается только когда NO_ADPRICE_LIVE задетектирован live-verification.
     """
-    # Stub: возвращает ok=False с понятным сообщением.
-    # Pipeline замкнут: detect→plan→gate→executor→callback. Реализацию наполнить после
-    # live-тестирования offer_prices API и определения структуры price_map для repair.
+    # Stub: возвращает ok=False с ЯВНЫМ error (не молча). Планировщик/гейт больше НЕ считает
+    # adprice_repair исполнимым (repair_gate.executable_adprice_repairs → все в unsupported),
+    # поэтому в норме сюда не заходят; ключ error оставлен на случай прямого вызова, чтобы
+    # провал не был безмолвным ("ok=False" без причины). Реализацию наполнить после live-теста
+    # offer_prices API и определения структуры price_map для repair.
     return {
         "ok": False,
+        "error": "adprice_repair не реализован (стаб; нужен rebuild price_map из offer_prices + ad→brand маппинг)",
         "note": "adprice_repair: не реализован (нужен rebuild price_map из offer_prices + ad→brand маппинг)",
         "campaign_id": campaign_id,
     }

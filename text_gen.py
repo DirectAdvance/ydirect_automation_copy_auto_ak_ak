@@ -47,6 +47,7 @@ _GENERIC_TITLE_FILLERS: list = []   # DI из blueprint
 _GENERIC_AT_TITLES: list = []       # DI из blueprint
 _RA_TITLES_CAP: int = 7             # DI из blueprint
 _RA_TEXTS_CAP: int = 3              # DI из blueprint
+_NON_AUTO_SITE_TYPES: set = set()   # DI из blueprint: site_type не-авто слепков (B2B) — без авто-фильтра ключей
 
 
 def configure(deps: dict) -> None:
@@ -75,7 +76,15 @@ def _next_title_promo() -> str:
 # Несклоняемые (Кемерово, Тольятти) — стоят как есть. Составные (Нижний Новгород,
 # Ростов-на-Дону, Южно-Сахалинск, Санкт-Петербург) — прописаны явно.
 # Источник: SELECT DISTINCT city FROM local_gsheet_sites WHERE direction='Авто' (2026-06-22).
-def _title_from_template(brand: str, city: str = "") -> str:
+
+# Слепки, для которых город НЕ вставляется в шаблонные заголовки (template-based).
+# Влияет на _title_from_template и _rsya_titles/_brand_title_set (via slepok= param).
+# Решение Семёна #15, 2026-07-11. Город всё равно передаётся в LLM-промпт (Город: city),
+# но явные шаблоны «{brand} в {city_loc}» для этих слепков строятся без города.
+_SLEPOKS_NO_CITY_TITLES: frozenset[str] = frozenset({"terehov"})
+
+
+def _title_from_template(brand: str, city: str = "", slepok: str = "") -> str:
     """Сформировать Title по эталонному шаблону «Новые {brand} в {город}. {акция}».
     Лимит Директа для ЕПК TextAd — 35 символов (поле Title). Обрезаем аккуратно.
 
@@ -85,6 +94,8 @@ def _title_from_template(brand: str, city: str = "") -> str:
     Город подставляется в предложном падеже через _city_locative().
     Фолбэк: если шаблон не влезает даже без акции — возвращаем brand[:35].
     """
+    if slepok in _SLEPOKS_NO_CITY_TITLES:                 # terehov: город в заголовках запрещён (#15)
+        city = ""
     city = _content_city(city)                            # мультигород (через запятую) → без города
     city_loc = _city_locative(city) if city else ""
     promo = _next_title_promo()
@@ -370,6 +381,11 @@ def _filter_group_keywords(positive: list, seg: str, brand: str, city: str, site
     model: полное имя модели группы из ct-кодера (напр. 'Changan CS35Plus'). При непустом значении
     для seg='Модели' дропаются ключи с дискриминирующими токенами других моделей той же марки."""
     kws = _drop_used_car(_drop_foreign_city_keywords(positive or [], city), site_type)
+    # НЕ-АВТО слепок (B2B-лидоген dmp и будущие): авто-фильтр «убрать марка+модель» / «оставить только
+    # авто-термины» ЛОМАЕТ B2B-ключи (сегмент «Общее» → _keep_general_common выкинет «купить лиды» и
+    # уронит в авто-фолбэк). Для не-авто site_type — только базовые дропы (б/у + чужой город), ключи as-is.
+    if site_type in _NON_AUTO_SITE_TYPES:
+        return kws
     if seg == "Модели":
         if model:
             disc = _foreign_model_discriminators(model)
@@ -623,6 +639,22 @@ def _rsya_texts(incoming: list, site_type: str, city: str,
     как есть, длинные «кашеобразные» — РАЗБИВАЕМ на отдельные УТП (`_split_utp`). Чистый пул
     `_RSYA_TEXT_POOL` — только добивка, если своих не хватило. Чистка: не-Б/У сайт → без «б/у»;
     чужой город → город аккаунта. Когерентность с заголовками — в _responsive_ad."""
+    # B2B-лидоген (dmp): вместо авто-текстов — B2B-корпус из агентского словаря.
+    # Авто-шаблоны (_brand_text_set, _RSYA_TEXT_POOL, pad_tails) для dmp неприменимы.
+    if site_type == "dmp":
+        from . import ai_agents as _A  # lazy import во избежание кругового импорта
+        _dmp_ads = (_A.AGENT_ADS.get("dmp") or {})
+        _dmp_corpus = list(_dmp_ads.get("texts") or [])
+        _b2b_text_fillers = [
+            "Предоставляем контакты клиентов, готовых купить прямо сейчас — без холодных звонков",
+            "Горячая база клиентов для вашей ниши. Получите доступ к заинтересованным покупателям",
+            "Платформа лидогенерации: контакты реальных клиентов для роста продаж вашего бизнеса",
+            "Идентифицируем заинтересованных клиентов в вашей нише и передаём контакты онлайн",
+            "Горячие лиды для бизнеса: контакты людей, которые ищут ваши товары прямо сейчас",
+        ]
+        _b2b_base = [t for t in (list(incoming or []) + _dmp_corpus) if t]
+        _all = list(dict.fromkeys(_b2b_base + _b2b_text_fillers))
+        return [t for t in _all if t][:cap]
     _, _cities_bl = _title2_blocklist()
     acc_city = (city or "").strip()
 
@@ -1008,11 +1040,38 @@ def _brand_title_set(brand: str, city: str) -> list:
 # Дополняет города из local_gsheet_sites — ловит ключи слепка с городами, где нет наших аккаунтов.
 def _rsya_titles(brand: str, city: str, site_type: str, ai_title2: str = "",
                  base: list | None = None, pool: list | None = None, is_brand: bool = True,
-                 cap: int = _RA_TITLES_CAP) -> list:
+                 cap: int = _RA_TITLES_CAP, slepok: str = "") -> list:
     """≤cap заголовков комбинаторного РСЯ. Группа по МАРКЕ (is_brand) → ВСЕ заголовки ПОЛНЫЕ и с
     маркой (`_brand_title_set`), без бледных дженериков; пул слепка — лишь добивка если не хватило.
     Группа «Общее» (тема, не марка) → бренд-шаблоны НЕ применяем, ведём пулом слепка. Чистка:
     не-Б/У сайт → без «б/у»; чужой город → город аккаунта; длина ≤56. Когерентность — в _responsive_ad."""
+    # B2B-лидоген (dmp): вместо авто-заголовков — B2B-заголовки из агентского корпуса.
+    # Авто-шаблоны (_brand_title_set, _GENERIC_TITLE_FILLERS) для dmp неприменимы.
+    if site_type == "dmp":
+        from . import ai_agents as _A  # lazy import во избежание кругового импорта
+        _dmp_ads = (_A.AGENT_ADS.get("dmp") or {})
+        _dmp_corpus = list(_dmp_ads.get("titles") or [])
+        _b2b_fillers = [
+            "До 150% горячих лидов для вашего бизнеса сегодня",
+            "50+ горячих контактов для компании. Попробуй сейчас",
+            "Получите 50+ горячих лидов для бизнеса за 24 часа",
+            "Идентификация 1000+ клиентов для вашего бизнеса онлайн",
+            "Контакты 100% заинтересованных клиентов за 24 часа",
+            "Рост продаж на 150%. Горячие контакты для компании",
+            "Источник клиентов. 50+ заявок в день для бизнеса",
+        ]
+        # base/pool из слепка тоже берём (ai_title2 — из M3 для этой конкретной группы)
+        _b2b_base = [t for t in (list(base or []) + _dmp_corpus) if t]
+        if ai_title2:
+            _b2b_base = [str(ai_title2)[:56]] + _b2b_base
+        _all = list(dict.fromkeys(_b2b_base + _b2b_fillers))
+        return [t for t in _all if t][:cap]
+
+    # terehov (#15, Семён 2026-07-11): город в шаблонных заголовках запрещён.
+    # Обнуляем city ДО всех дальнейших операций, в т.ч. _brand_title_set и _replace_foreign_city.
+    if slepok in _SLEPOKS_NO_CITY_TITLES:
+        city = ""
+
     _, _cities_bl = _title2_blocklist()
     acc_city = (city or "").strip()
 

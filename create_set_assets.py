@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time                                    # _v5_callout_pool троттлит adextensions.add (стр.687); без импорта — NameError, уточнения молча не привязывались
 
 from .text_norm import _trim_clean
 from .text_gen import _brand_first_reorder
@@ -269,10 +270,19 @@ def _finalize_text_line(s: str, maxlen: int = _RA_TEXT_MAX, minlen: int = 79) ->
     return line
 
 
+_DMP_B2B_TITLE_RE = re.compile(
+    r"(?i)(лид|заявк|контакт|клиент|компани|бизнес|источник|идентифик|горяч)"
+)
+
+
 def _needs_credit_title_upgrade(items: list[str]) -> bool:
     seq = [str(x or "").strip() for x in (items or []) if str(x or "").strip()]
     if not seq:
         return True
+    # B2B-лидоген (dmp): если хоть один заголовок содержит B2B-маркер — апгрейд авто-кредитными
+    # заголовками не нужен и вреден (навесит «Автокредит от 9000₽/мес» на B2B-контент).
+    if any(_DMP_B2B_TITLE_RE.search(t) for t in seq):
+        return False
     buckets = {_credit_title_bucket(x) for x in seq}
     first_words = [x.split()[0].lower().rstrip(".,!?") for x in seq if x.split()]
     same_prefix = max((first_words.count(w) for w in set(first_words)), default=0)

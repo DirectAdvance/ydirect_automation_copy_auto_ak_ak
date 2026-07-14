@@ -359,6 +359,7 @@ def _slepok_content_get(slepok: str, site_type: str, kind: str):
         conn = _victory_conn()
     except Exception:  # noqa: BLE001
         return None
+    raw = None
     try:
         cur = conn.cursor()
         # NB: НЕ зовём _slepok_content_ensure здесь — она делает CREATE TABLE IF NOT EXISTS,
@@ -366,11 +367,23 @@ def _slepok_content_get(slepok: str, site_type: str, kind: str):
         cur.execute("SELECT content FROM public.direct_slepok_content "
                     "WHERE slepok=%s AND site_type=%s AND kind=%s", (slepok, site_type, kind))
         row = cur.fetchone()
-        return row[0] if row else None
+        raw = row[0] if row else None
     except Exception:  # noqa: BLE001
-        return None
+        raw = None
     finally:
         conn.close()
+    # Нормализация: legacy-засев мог сохранить sitelinks как список строк (не dict).
+    # Приводим к {title, description}, чтобы isinstance(s,dict)-фильтры в _common_sitelinks_fast
+    # и аналогичных читалках не обнуляли набор → кампании не получали авто-ассеты аккаунта.
+    if isinstance(raw, dict) and isinstance(raw.get("sitelinks"), list):
+        sl_list = raw["sitelinks"]
+        if any(not isinstance(s, dict) for s in sl_list):
+            raw = dict(raw)
+            raw["sitelinks"] = [
+                s if isinstance(s, dict) else {"title": str(s), "description": ""}
+                for s in sl_list if s
+            ]
+    return raw
 
 def _slepok_content_save(slepok: str, site_type: str, kind: str, content, source: str = "slepok") -> bool:
     try:
@@ -498,4 +511,24 @@ def _seed_slepok_content(only_missing: bool = True, m3_timeout: float = 45.0) ->
                     csrc = "slepok"
                 _slepok_content_save(key, st, "campaign", content, csrc)
                 rep["campaign"][csrc] += 1
+    # Агенты с нестандартными site_type (вне SITE_TYPE_PROFILE, пример: slepok=dmp → site_type="dmp"):
+    # основной цикл выше их не охватывает → в БД могли остаться строки вместо dict-сайтлинков.
+    # assemble_campaign(site_type=st) корректно тянет B2B-пул: sitelink_bank_for(st) +
+    # AGENT_ADS[key]["sitelinks"] — и сохраняет готовые {title,description}-dict-сайтлинки.
+    # Запуск: python3 -m direct.seed_slepok_content --all  (ключ --all нужен чтобы перезаписать
+    # существующую запись с плохими строками; без него only_missing=True пропустит).
+    for a in A.agent_list():
+        key = a["key"]
+        agent = A.get_agent(key)
+        if not agent:
+            continue
+        extra_sts = [st for st in (agent.get("site_fit") or []) if st not in site_types]
+        for st in extra_sts:
+            rep["combos"] += 1
+            if only_missing and _slepok_content_get(key, st, "campaign"):
+                rep["campaign"]["skip"] += 1
+                continue
+            content, _ = A.assemble_campaign([], [], [], agent, site_type=st, brand="")
+            _slepok_content_save(key, st, "campaign", content, "slepok")
+            rep["campaign"]["slepok"] += 1
     return rep

@@ -41,6 +41,23 @@ def test_create_set_authenticated_smoke_reaches_api_create_set():
     assert "login" in response.get_json()["error"]
 
 
+def test_create_set_async_rejects_pre_draft_source_plan():
+    app.testing = True
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["logged_in"] = True
+        session["is_admin"] = True
+        session["username"] = "route-smoke"
+
+    response = client.post("/direct/api/create_set_async", json={
+        "login": "gen-ses-test",
+        "items": [{"name": "source campaign", "pre_draft_only": True}],
+    })
+
+    assert response.status_code == 409
+    assert "до этапа создания черновиков" in response.get_json()["error"]
+
+
 def test_single_feed_prefers_yandex_xml_rows_and_items():
     rows = [
         {"Id": 1, "Name": "yandex-catalog-new.xml"},
@@ -95,6 +112,7 @@ def test_direct_route_map_smoke_for_extraction_groups():
         ("/direct/api/account_audiences", "GET"): "api_account_audiences",
         ("/direct/api/statuses", "GET"): "api_statuses",
         ("/direct/api/feeds", "GET"): "api_feeds",
+        ("/direct/api/ui_structure", "GET"): "api_ui_structure",
         ("/direct/api/feed-rules", "GET"): "api_feed_rules_get",
         ("/direct/api/feed-rules", "POST"): "api_feed_rules_post",
         ("/direct/api/rules", "GET"): "api_rules_get",

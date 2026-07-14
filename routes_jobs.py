@@ -69,6 +69,11 @@ def register_job_routes(
         login = (body.get("login") or "").strip()
         if not items:
             return jsonify({"error": "items обязательны"}), 400
+        if any(isinstance(item, dict) and item.get("pre_draft_only") for item in items):
+            return jsonify({
+                "error": "Этот набор подготовлен только до этапа создания черновиков: "
+                         "source-aware builder ещё не включён, запуск намеренно заблокирован."
+            }), 409
         # Провайдер генерации из попапа (m3 | openrouter) — в КАЖДЫЙ item: генерация читает
         # item.llm_provider, а докрутки/деферреды наследуют body как есть (Семён 03.07).
         _llmp = str(body.get("llm_provider") or "").strip().lower()
@@ -101,12 +106,40 @@ def register_job_routes(
             saved_session = dict(session)
             job_id = job_new(len(items), login, body, saved_session, dedup_login=True)
             deduped = bool(pre_existing and pre_existing == job_id)
+            if deduped:
+                # Дедуп по логину ловит и ИСТИННЫЙ дубль (повторный клик на тот же слепок),
+                # и ЧУЖУЮ активную джобу логина — например реактивированную фоновым ремонтом
+                # уже показанного пользователю как "готово" слепка (_auto_queue_recreate_after_done).
+                # Раньше оба случая молча отдавали existing=True с ЧУЖИМ job_id — новый слепок
+                # тихо терялся, вызывающий код (UI/скрипт) не мог отличить "это мой job_id" от
+                # "это чужая задача" (инцидент 2026-07-11: kuderko подменился job_id chepelev).
+                # Сверяем agent+site_type активной джобы с текущим запросом — если они СОВПАДАЮТ,
+                # это истинный дубль (безопасно вернуть existing). Если РАЗНЫЕ — это НЕ дубль,
+                # логин занят чужой задачей: явно отказываем (409), а не притворяемся успехом.
+                _busy_row = job_db_get(job_id) if job_db_get else None
+                _busy_body = (_busy_row or {}).get("body") or {}
+                if not isinstance(_busy_body, dict):
+                    _busy_body = {}
+                _same_task = (str(_busy_body.get("agent") or "") == str(body.get("agent") or "") and
+                              str(_busy_body.get("site_type") or "") == str(body.get("site_type") or ""))
+                if not _same_task:
+                    return jsonify({
+                        "error": (f"Аккаунт «{login}» занят другой активной задачей "
+                                  f"(слепок «{_busy_body.get('agent') or '?'}», "
+                                  f"{_busy_body.get('site_type') or '?'}, job_id={job_id}) — "
+                                  "вероятно, идёт фоновый ремонт предыдущего набора. "
+                                  "Повторите запуск через 1-2 минуты."),
+                        "busy": True, "busy_job_id": job_id,
+                        "busy_agent": _busy_body.get("agent"),
+                        "busy_site_type": _busy_body.get("site_type"),
+                    }), 409
+                resp = {"job_id": job_id, "total": len(items), "login": login,
+                        "ahead": job_db_ahead(job_id) if job_db_ahead else 0,
+                        "existing": True,
+                        "note": "для аккаунта уже есть активная задача; дубль не создан"}
+                return jsonify(resp)
             resp = {"job_id": job_id, "total": len(items), "login": login,
                     "ahead": job_db_ahead(job_id) if job_db_ahead else 0}
-            if deduped:
-                resp["existing"] = True
-                resp["note"] = "для аккаунта уже есть активная задача; дубль не создан"
-                return jsonify(resp)
             _fa = body.get("feed_alert") or {}
             if _fa.get("needed") and not body.get("feed_confirmed") and job_db_web_await_feed:
                 _dl = _time.time() + 300
@@ -119,6 +152,22 @@ def register_job_routes(
         with create_jobs_lock:
             for _jid, _j in create_jobs.items():
                 if _j.get("status") not in job_terminal and (_j.get("login") or "").strip() == login:
+                    _busy_body = _j.get("body") or {}
+                    if not isinstance(_busy_body, dict):
+                        _busy_body = {}
+                    _same_task = (str(_busy_body.get("agent") or "") == str(body.get("agent") or "") and
+                                  str(_busy_body.get("site_type") or "") == str(body.get("site_type") or ""))
+                    if not _same_task:
+                        return jsonify({
+                            "error": (f"Аккаунт «{login}» занят другой активной задачей "
+                                      f"(слепок «{_busy_body.get('agent') or '?'}», "
+                                      f"{_busy_body.get('site_type') or '?'}, job_id={_jid}) — "
+                                      "вероятно, идёт фоновый ремонт предыдущего набора. "
+                                      "Повторите запуск через 1-2 минуты."),
+                            "busy": True, "busy_job_id": _jid,
+                            "busy_agent": _busy_body.get("agent"),
+                            "busy_site_type": _busy_body.get("site_type"),
+                        }), 409
                     return jsonify({
                         "job_id": _jid, "total": int(_j.get("total") or len(items)),
                         "login": login, "ahead": create_jobs_ahead(_jid),
@@ -272,7 +321,7 @@ def register_job_routes(
             else:
                 _body = j.get("body") or {}
                 if decision == "run_without_feed":
-                    _body["_skip_feed_types"] = ["product", "master"]
+                    _body["_skip_feed_types"] = ["product"]   # master (tp6) фид не требует — не скипать (Семён 2026-07-11)
                 else:  # run_all
                     _body.pop("_skip_feed_types", None)
                 j["status"] = "queued"
