@@ -21,8 +21,21 @@ def register_reference_routes(
     @bp.route("/api/ui_structure")
     @access
     def api_ui_structure():
-        """Heavy slepok/coder maps, fetched lazily by create/structure panels."""
-        return jsonify(ui_structure_payload())
+        """Heavy slepok/coder maps, fetched lazily by create/structure panels.
+
+        no-cache + ETag: браузер обязан ревалидировать, но пока структура не менялась
+        получает дешёвый 304 вместо мегабайтов. Без этого ответ кэшировался эвристически
+        и вкладка показывала структуру многочасовой давности.
+        """
+        payload = ui_structure_payload()
+        resp = jsonify(payload)
+        sig = payload.get("sig")
+        if sig:
+            resp.set_etag(sig)
+            resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+            return resp.make_conditional(request)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     @bp.route("/api/feeds")
     @access

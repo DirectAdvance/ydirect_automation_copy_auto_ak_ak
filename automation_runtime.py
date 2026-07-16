@@ -624,6 +624,11 @@ def _ui_structure_payload() -> dict:
         "ct_segments": _ct_segment_map(),
         "non_auto_slepki": _non_auto_slepki(),
         "donor_tp4_models": _donor_tp4_models_map(),
+        # Версия среза = та же signature (mtime+size источников). Уходит в ETag: браузер
+        # ревалидирует и получает 304, пока структура не поменялась. Без этого вкладка,
+        # открытая часами, рисует старое дерево из памяти (инцидент 2026-07-16: UI показывал
+        # tp5 kuderko с Фидами через 8 часов после их удаления из структуры).
+        "sig": hashlib.md5(repr(signature).encode()).hexdigest(),
     }
     with _UI_STRUCTURE_CACHE_LOCK:
         _UI_STRUCTURE_CACHE.update(signature=signature, data=data)
