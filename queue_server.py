@@ -68,6 +68,11 @@ _DELAYED_REPAIR_STUCK_TIMEOUT_SECONDS = 1800
 _DELAYED_REPAIR_TIME_BUDGET_SECONDS = 1200
 _DELAYED_REPAIR_MAX_RESCHEDULES = 1
 _CLAIMED_WATCHDOG_TS = {"t": 0.0}
+# Монитор зависшей edit-очереди слепков (find #3 код-ревью): если direct-slepki-worker упал,
+# edit-джобы копятся в 'queued' без исполнения. create-worker (всегда живой) это замечает и алертит.
+_EDIT_STUCK_TS = {"check": 0.0, "last_alert": 0.0}
+_EDIT_STUCK_AGE_SEC = 180          # edit-джоба в 'queued' дольше 3 мин = slepki-worker не разбирает
+_EDIT_STUCK_ALERT_THROTTLE = 900   # Telegram-алерт не чаще раза в 15 мин
 _REPAIR_NONFIXABLE_FIELD_MARKERS = (
     "UNAVAILABLE_FIELD", "UNKNOWN_FIELD", "MINUS_MARKS_FILTER_MISSING",
     "FIELD_NOT_ALLOWED", "INVALID_FIELD",
@@ -2210,7 +2215,58 @@ def _worker_reclaim_stuck_claimed() -> None:
     except Exception:  # noqa: BLE001 — watchdog best-effort, поллер не валим
         pass
 
+def _tg_alert(text: str) -> None:
+    """Best-effort Telegram-алерт в личный канал (паттерн tools/check_tone_of_voice.py)."""
+    try:
+        from loader import load_telegram, send_telegram_message  # noqa: PLC0415
+        tg = load_telegram("personal")
+        tok, chat = tg.get("bot_token"), tg.get("chat_id")
+        if tok and chat:
+            send_telegram_message(tok, chat, text)
+    except Exception:  # noqa: BLE001 — алерт не критичен, не валим поллер
+        pass
+
+
+def _monitor_stuck_edit_queue() -> None:
+    """create-worker (всегда живой) следит: edit-джобы слепков, зависшие в 'queued' дольше
+    _EDIT_STUCK_AGE_SEC — признак что direct-slepki-worker упал/не поднялся (иначе правки слепков
+    молча копятся без исполнения — find #3 код-ревью). Лог WARNING + троттлённый Telegram-алерт.
+    Только scope=create: slepki-worker сам себя мониторить не может (если он мёртв — некому)."""
+    if _worker_scope() != "create":
+        return
+    if time.time() - _EDIT_STUCK_TS["check"] < 60:      # проверяем раз в минуту, не каждый тик
+        return
+    _EDIT_STUCK_TS["check"] = time.time()
+    try:
+        _ek = _edit_kinds_list()
+        # Свежий коннект (как _worker_reclaim_stuck_claimed рядом), НЕ пул _victory_conn():
+        # пулled read-only в поллер-треде занятого воркера отдаёт сбой/таймаут, который глотался
+        # except'ом → монитор молчал. _rw-коннект в этой же функции проверенно работает.
+        conn = _victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT count(*) FROM public.direct_automation_jobs "
+                        "WHERE status='queued' AND coalesce(body->>'_web_posted','')='true' "
+                        "  AND coalesce(kind,'') = ANY(%s) "
+                        "  AND updated_at < now() - make_interval(secs => %s)",
+                        (_ek, int(_EDIT_STUCK_AGE_SEC)))
+            n = int(cur.fetchone()[0] or 0)
+        finally:
+            conn.close()
+        if n > 0:
+            print(f"[edit-queue-monitor] ⚠️ {n} edit-джоб(ы) слепков зависли в 'queued' >"
+                  f"{_EDIT_STUCK_AGE_SEC}с — direct-slepki-worker не разбирает очередь?", flush=True)
+            if time.time() - _EDIT_STUCK_TS["last_alert"] > _EDIT_STUCK_ALERT_THROTTLE:
+                _EDIT_STUCK_TS["last_alert"] = time.time()
+                _tg_alert(f"⚠️ Нейродиректолог: {n} правок слепков зависли в очереди "
+                          f">{_EDIT_STUCK_AGE_SEC // 60} мин. Проверь direct-slepki-worker.service "
+                          f"(systemctl status direct-slepki-worker).")
+    except Exception:  # noqa: BLE001 — монитор best-effort, поллер не валим
+        pass
+
+
 def _worker_poll_once(app) -> None:
+    _monitor_stuck_edit_queue()
     _worker_expire_awaiting_feed()
     for row in _worker_claim_web_jobs():
         try:
