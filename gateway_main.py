@@ -51,6 +51,10 @@ os.environ.setdefault("DIRECT_ROLE", "web")
 # Роуты редактора контента/копирования/слепков этому процессу не нужны.
 os.environ.setdefault("DIRECT_REGISTER_CONTENT_EDITOR", "0")
 os.environ.setdefault("DIRECT_REGISTER_COPY", "0")
+# ЭТО сам брокер: gateway_client в этом процессе должен ходить в ЛОКАЛЬНЫЕ функции, а не по HTTP
+# к самому себе (Фаза 2 перецеливает _-алиасы automation_runtime на gateway_client → без этого
+# флага брокер звал бы свой же :5025 = самопетля). Ставим ДО импорта automation_runtime.
+os.environ["DIRECT_GATEWAY_SELF"] = "1"
 
 # Импорт automation_runtime на импорте выполняет ВСЮ DI-проводку
 # (campaign / yandex_gateway / repository готовы) — как content_main.py берёт accounts/yandex.

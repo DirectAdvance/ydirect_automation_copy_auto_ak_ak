@@ -21,6 +21,13 @@ import os
 _DEFAULT_TIMEOUT = 4.0
 
 
+def _self_mode() -> bool:
+    """Внутри самого direct-gateway процесса (он ставит DIRECT_GATEWAY_SELF=1) HTTP к себе НЕ делаем —
+    сразу уходим в локальную функцию. Страховка от самопетли, даже если брокер начнёт вызывать
+    _-алиасы automation_runtime, переключённые на этот клиент."""
+    return os.environ.get("DIRECT_GATEWAY_SELF") == "1"
+
+
 def _base_url() -> str:
     url = (os.environ.get("GATEWAY_URL") or "").strip()
     if url:
@@ -32,7 +39,9 @@ def _base_url() -> str:
 
 def _get(path: str, params: dict, timeout: float = _DEFAULT_TIMEOUT) -> dict:
     """GET к брокеру. Бросает исключение при любой сетевой/HTTP-ошибке — вызывающая
-    обёртка ловит и уходит в фолбэк."""
+    обёртка ловит и уходит в фолбэк. В self-режиме бросает сразу → фолбэк на локальную функцию."""
+    if _self_mode():
+        raise RuntimeError("gateway self-process → local")
     import requests  # noqa: PLC0415
 
     resp = requests.get(f"{_base_url()}{path}", params=params, timeout=timeout)
@@ -41,6 +50,8 @@ def _get(path: str, params: dict, timeout: float = _DEFAULT_TIMEOUT) -> dict:
 
 
 def _post(path: str, payload: dict, timeout: float = _DEFAULT_TIMEOUT) -> dict:
+    if _self_mode():
+        raise RuntimeError("gateway self-process → local")
     import requests  # noqa: PLC0415
 
     resp = requests.post(f"{_base_url()}{path}", json=payload, timeout=timeout)

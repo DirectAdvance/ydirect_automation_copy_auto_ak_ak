@@ -116,7 +116,7 @@ from .blueprint_targeting import (         # ре-экспорт: внутр. в
 from . import blueprint_metrika as _bmt    # Метрика (счётчики/цели) + гео-справочник Директа (DI ниже)
 from .blueprint_metrika import (           # ре-экспорт: внутр. вызовы (routes/DI-словари)
     _parse_counter_ids, _metrika_goals_for, _counter_foreign_owner,
-    _geo_load, _geo_id, _metrika_token, _goal_vse_formy,
+    _geo_load, _geo_id, _geo_name_by_id, _geo_type_by_id, _metrika_token, _goal_vse_formy,
 )
 from . import blueprint_content_rules as _bcr  # правила вкладки «Контент» + фильтрация ассетов (DI ниже)
 from .blueprint_content_rules import (     # ре-экспорт: внутр. вызовы + route-registration (_CONTENT_RULES_CACHE)
@@ -138,6 +138,14 @@ from .yandex_gateway import (
     grid_post as _grid_post, grid_csrf as _grid_csrf,
     block_bootstrap as _block_bootstrap, block_check as _block_check,
 )
+
+# ── Фаза 2 gateway: доступ к Директу через внутренний брокер direct-gateway (:5025) ──────────────
+# gateway_client каждую функцию: HTTP к брокеру → при недоступности ФОЛБЭК на локальную (тот же
+# yandex_gateway.*), плюс self-guard (в самом брокере HTTP не делается). Перецеливаем _-алиасы,
+# которые ниже раздаются по DI во все под-модули → потребители переключаются прозрачно.
+# Инкремент 1: ТОЛЬКО units_alive (2 потребителя, не горячий путь) — остальные алиасы пока локальны.
+from . import gateway_client as _gwc  # noqa: E402
+_units_alive_for_login = _gwc.gw_units_alive
 from . import pack_resolver as _pack_resolver
 from .pack_resolver import (
     _CALLOUT_MAX_EACH, _CALLOUT_MAX_TOTAL_DESKTOP, _CALLOUT_MAX_TOTAL_MOBILE,
@@ -925,11 +933,13 @@ def _enabled_minus_words() -> list[str]:
     return _minus_words_all("*")
 
 
-# ── Минус-площадки РСЯ (#21): глобальный список URL, добавляется в disabledPlaces всех tp1 ─────────
-_MINUS_PLACES_ENSURED = False                            # DDL гоняем 1 раз на процесс, не на каждый вызов
+# ── Минус-площадки РСЯ (#21): per-слепок список URL, добавляется в disabledPlaces tp1 ─────────
+_MINUS_PLACES_ENSURED = False                            # DDL глобальной таблицы — 1 раз на процесс
+_SLEPOK_MINUS_PLACES_ENSURED = False                     # DDL per-слепок таблицы — 1 раз на процесс
 
 
 def _minus_places_ensure(cur) -> None:
+    """DDL глобальной таблицы (legacy, нужна для UI обратной совместимости)."""
     global _MINUS_PLACES_ENSURED
     if _MINUS_PLACES_ENSURED:
         return
@@ -941,7 +951,24 @@ def _minus_places_ensure(cur) -> None:
     _MINUS_PLACES_ENSURED = True
 
 
+def _slepok_minus_places_ensure(cur) -> None:
+    """DDL per-слепок таблицы минус-площадок (строго per-слепок, без глобального слоя)."""
+    global _SLEPOK_MINUS_PLACES_ENSURED
+    if _SLEPOK_MINUS_PLACES_ENSURED:
+        return
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS public.direct_slepok_minus_places ("
+        "slepok text NOT NULL, url text NOT NULL, "
+        "enabled boolean NOT NULL DEFAULT true, "
+        "sort integer NOT NULL DEFAULT 0, "
+        "updated_at timestamptz NOT NULL DEFAULT now(), "
+        "PRIMARY KEY (slepok, url))"
+    )
+    _SLEPOK_MINUS_PLACES_ENSURED = True
+
+
 def _global_minus_places() -> list[dict]:
+    """Legacy read глобальной таблицы (для UI / миграции). НЕ используется движком создания РК."""
     import psycopg2.extras
     conn = _victory_conn_rw()
     try:
@@ -949,6 +976,24 @@ def _global_minus_places() -> list[dict]:
         _minus_places_ensure(cur)
         conn.commit()
         cur.execute("SELECT url, enabled, sort FROM public.direct_global_minus_places ORDER BY sort, url")
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _slepok_minus_places(slepok: str) -> list[dict]:
+    """Список минус-площадок конкретного слепка → [{url, enabled, sort}]. [] при сбое."""
+    import psycopg2.extras
+    conn = _victory_conn_rw()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        _slepok_minus_places_ensure(cur)
+        conn.commit()
+        cur.execute(
+            "SELECT url, enabled, sort FROM public.direct_slepok_minus_places "
+            "WHERE slepok=%s ORDER BY sort, url",
+            (slepok,),
+        )
         return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -965,8 +1010,29 @@ def _place_host(u: str) -> str:
     return s.split("/", 1)[0].strip()                        # срезаем путь/слэш → остаётся хост
 
 
-def _enabled_minus_places() -> list[str]:
-    """Хосты включённых минус-площадок для disabledPlaces tp1 (домен, не URL; дедуп). [] при сбое/пустом."""
+def _enabled_minus_places(slepok: str = "") -> list[str]:
+    """Хосты включённых минус-площадок для disabledPlaces tp1 (per-слепок; домен, не URL; дедуп).
+    Возвращает [] если slepok не передан или при сбое. Без глобального fallback (строго per-слепок)."""
+    if not (slepok or "").strip():
+        return []
+    try:
+        out: list[str] = []
+        seen: set[str] = set()
+        for r in _slepok_minus_places(slepok):
+            if not r.get("enabled"):
+                continue
+            h = _place_host(r.get("url"))
+            if h and h not in seen:
+                seen.add(h)
+                out.append(h)
+        return out
+    except Exception:  # noqa: BLE001 — недоступность БД не валит создание
+        return []
+
+
+def _enabled_global_minus_places() -> list[str]:
+    """Хосты включённых минус-площадок из ГЛОБАЛЬНОЙ таблицы (для copy/legacy: клон 1:1 без слепка).
+    Тело = _enabled_minus_places ДО per-слепок правки: домен (не URL), только enabled, дедуп. [] при сбое."""
     try:
         out: list[str] = []
         seen: set[str] = set()
@@ -978,7 +1044,55 @@ def _enabled_minus_places() -> list[str]:
                 seen.add(h)
                 out.append(h)
         return out
-    except Exception:  # noqa: BLE001 — недоступность БД не валит создание
+    except Exception:  # noqa: BLE001 — недоступность БД не валит копирование
+        return []
+
+
+_BASELINE_MINUS_PLACES_ENSURED = False                   # DDL baseline-таблицы — 1 раз на процесс
+
+
+def _baseline_minus_places_ensure(cur) -> None:
+    """DDL baseline-таблицы стандартных анти-фрод минус-площадок (источник для copy: клон 1:1 без слепка)."""
+    global _BASELINE_MINUS_PLACES_ENSURED
+    if _BASELINE_MINUS_PLACES_ENSURED:
+        return
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS public.direct_baseline_minus_places ("
+        "url text PRIMARY KEY, enabled boolean NOT NULL DEFAULT true, "
+        "sort integer NOT NULL DEFAULT 0, updated_at timestamptz NOT NULL DEFAULT now())"
+    )
+    _BASELINE_MINUS_PLACES_ENSURED = True
+
+
+def _baseline_minus_places() -> list[dict]:
+    """Baseline список стандартных минус-площадок → [{url, enabled, sort}]. [] при сбое."""
+    import psycopg2.extras
+    conn = _victory_conn_rw()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        _baseline_minus_places_ensure(cur)
+        conn.commit()
+        cur.execute("SELECT url, enabled, sort FROM public.direct_baseline_minus_places ORDER BY sort, url")
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _enabled_baseline_minus_places() -> list[str]:
+    """Хосты включённых минус-площадок из BASELINE-таблицы (стандартный анти-фрод список для copy).
+    Тело как _enabled_global_minus_places: домен (не URL), только enabled, дедуп. [] при сбое."""
+    try:
+        out: list[str] = []
+        seen: set[str] = set()
+        for r in _baseline_minus_places():
+            if not r.get("enabled"):
+                continue
+            h = _place_host(r.get("url"))
+            if h and h not in seen:
+                seen.add(h)
+                out.append(h)
+        return out
+    except Exception:  # noqa: BLE001 — недоступность БД не валит копирование
         return []
 
 
@@ -3199,7 +3313,10 @@ _ce.configure({
     "_grid_feed_offer_prices": _grid_feed_offer_prices, "_group_ad_price": _group_ad_price,
     "_grid_set_ad_prices": _grid_set_ad_prices, "_grid_update_adaptive_ads": _grid_update_adaptive_ads,
     "_account_offer_prices": _account_offer_prices, "_account_ctx": _account_ctx,
-    "_geo_id": _geo_id, "_enabled_minus_places": _enabled_minus_places,
+    "_geo_id": _geo_id, "_geo_name_by_id": _geo_name_by_id, "_geo_type_by_id": _geo_type_by_id,
+    "_enabled_minus_places": _enabled_minus_places,
+    "_enabled_global_minus_places": _enabled_global_minus_places,   # copy → глобальная таблица (не per-слепок)
+    "_enabled_baseline_minus_places": _enabled_baseline_minus_places,   # copy → baseline анти-фрод список (стандартный)
     "_filter_allowed_feed_rows": _filter_allowed_feed_rows, "_feed_key": _feed_key,
     "_create_set_live_verification": _create_set_live_verification,
     "_attach_post_repair_verification": _attach_post_repair_verification, "_repair_deps": _repair_deps,
