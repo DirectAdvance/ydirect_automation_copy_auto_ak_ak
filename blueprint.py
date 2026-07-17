@@ -83,13 +83,26 @@ from .routes_ready_logins import register_ready_logins_routes
 
 from .routes_slepki_edit import register_slepki_edit_routes
 
-register_slepki_edit_routes(
-    bp,
-    _direct_access,
-    slepki_editor=_sed,
-    job_new=_job_new,
-    ag_part1_map=_ag_part1_map,
-)
+# Страница+API слепков живут в своём процессе direct-slepki.service (:5023, direct/slepki_main.py).
+# Флаг DIRECT_REGISTER_SLEPKI=0 (drop-in direct-create.service) снимает их с этого процесса,
+# чтобы рестарт одного сервиса не ронял другой. Дефолт "1" — single-process обратная
+# совместимость (как DIRECT_REGISTER_CONTENT_EDITOR ниже).
+if os.environ.get("DIRECT_REGISTER_SLEPKI", "1") != "0":
+    register_slepki_edit_routes(
+        bp,
+        _direct_access,
+        slepki_editor=_sed,
+        job_new=_job_new,
+        ag_part1_map=_ag_part1_map,
+    )
+
+from .routes_tags import register_tags_routes, ensure_tags_tables
+
+register_tags_routes(bp, _direct_access)
+try:
+    ensure_tags_tables()
+except Exception:  # noqa: BLE001 — не валим сервис, если БД временно недоступна на импорте
+    pass
 
 register_reference_routes(
     bp,
@@ -124,6 +137,8 @@ register_settings_routes(
     feed_rules_ensure=_feed_rules_ensure,
     global_minus_places=_global_minus_places,
     minus_places_ensure=_minus_places_ensure,
+    slepok_minus_places=_slepok_minus_places,
+    slepok_minus_places_ensure=_slepok_minus_places_ensure,
     place_host=_place_host,
     minus_words_slice=_global_minus_words_slice,
     minus_words_ensure=_minus_words_ensure,
@@ -260,7 +275,14 @@ def _wire_copy_routes(target_bp, *, ensure_worker):
         feeds_preview_func=_copy_feeds_preview,
     )
 
-if os.environ.get("DIRECT_REGISTER_COPY", "1") != "0":
+# Копирование живёт в ОТДЕЛЬНОМ сервисе direct-copy.service (:5022); nginx отдаёт ему
+# /direct/automation/copy и /direct/api/copy_*. Здесь роуты копирования по умолчанию НЕ поднимаем:
+# дефолт "1" делал изоляцию зависимой от наличия drop-in copy.conf — пропади файл, и direct-create
+# начал бы исполнять копирование в ОЧЕРЕДИ СОЗДАНИЯ (ensure_worker=_ensure_create_worker), да ещё
+# деградированно: _wire_copy_routes здесь получает не все зависимости (feeds_check/images_upload/
+# geo_regions_tree/geo_validate_id/target_campaigns_info = None) → «Прочие сферы» молча поехали бы.
+# Теперь это explicit opt-in: DIRECT_REGISTER_COPY=1 только для локального запуска всё-в-одном.
+if os.environ.get("DIRECT_REGISTER_COPY", "0") == "1":
     _wire_copy_routes(bp, ensure_worker=_ensure_create_worker)
 
 register_job_routes(
