@@ -97,6 +97,7 @@ from .ai_content import (              # ре-экспорт: deps-словар�
     _account_content_get, _account_content_put,   # #16: account-level content reuse (в пределах прохода)
 )
 from . import copy_engine as _ce       # копирование кампаний 1:1 (вынесено; 28 DI инъектим ниже)
+from . import copy_verify as _cv       # сверка source↔target после копирования (report-only)
 from .copy_engine import (             # ре-экспорт: _create_worker_loop/_ensure_copy_worker/_wire_copy_routes
     _copy_run_job, _copy_job_upsert, _copy_feeds_preview, _copy_jobs_recover,
     _COPY_JOBS, _COPY_JOBS_LOCK, _COPY_DEFAULT_FEED_PATH,
@@ -111,7 +112,7 @@ from .blueprint_targeting import (         # ре-экспорт: внутр. в
     _gc_ct, _ct_is_model_map, _ct_segment_map, _ct_segment, _seg_canon, _model_cts,
     _segment_donor, _targeting_profile, _slepok_tp_modes, _slepok_profile_excludes_tp,
     _slepki_structure_for_ui, _donor_tp4_models_map, _pack_for_item,
-    _slepok_is_auto, _non_auto_slepki, _non_auto_site_types,
+    _slepok_is_auto, _non_auto_slepki, _non_auto_site_types, _slepki_pack_facts,
 )
 from . import blueprint_metrika as _bmt    # Метрика (счётчики/цели) + гео-справочник Директа (DI ниже)
 from .blueprint_metrika import (           # ре-экспорт: внутр. вызовы (routes/DI-словари)
@@ -216,7 +217,15 @@ def _json(name: str):
     single request.  Re-reading and decoding it for every helper added avoidable
     latency.  The editor writes files atomically, so ``mtime_ns + size`` gives us a
     cheap invalidation key without making UI edits stale.
+
+    slepki_structure.json больше НЕ монолит на диске — он разбит на per-slepok файлы
+    (direct/slepki/<key>.json). Собираем единый словарь в памяти через slepki_store (у него
+    свой кэш по сигнатуре частей). Этот перехват — единственная точка: все читатели ходят через
+    инъектированный _json (== этот), поэтому call-sites НЕ меняются.
     """
+    if name == "slepki_structure.json":
+        from . import slepki_store as _sstore  # noqa: PLC0415
+        return _sstore.assemble()
     path = _HERE / name
     stat = path.stat()
     key = str(path)
@@ -626,8 +635,14 @@ def _ui_structure_payload() -> dict:
     with _UI_STRUCTURE_CACHE_LOCK:
         if _UI_STRUCTURE_CACHE.get("signature") == signature:
             return _UI_STRUCTURE_CACHE["data"]
+    struct_ui = _slepki_structure_for_ui()
     data = {
-        "slepki_structure": _slepki_structure_for_ui(),
+        "slepki_structure": struct_ui,
+        # Пер-групповой факт ключей (real/auto) для бейджей таргетинга tp1/2/4/5, посчитанный
+        # на СЕРВЕРЕ по тем же пер-групповым пакам (ct~gk), что раньше UI тянул лениво через
+        # /direct/api/slepki/keywords. Клиент сидит этим _SL_PACK_CACHE ДО первого рендера →
+        # бейдж сразу верный, без «прыжка» эвристики. Кэшируется той же signature, что и структура.
+        "pack_facts": _slepki_pack_facts(struct_ui),
         "model_cts": _model_cts(),
         "ct_segments": _ct_segment_map(),
         "non_auto_slepki": _non_auto_slepki(),
@@ -1011,23 +1026,10 @@ def _place_host(u: str) -> str:
 
 
 def _enabled_minus_places(slepok: str = "") -> list[str]:
-    """Хосты включённых минус-площадок для disabledPlaces tp1 (per-слепок; домен, не URL; дедуп).
-    Возвращает [] если slepok не передан или при сбое. Без глобального fallback (строго per-слепок)."""
-    if not (slepok or "").strip():
-        return []
-    try:
-        out: list[str] = []
-        seen: set[str] = set()
-        for r in _slepok_minus_places(slepok):
-            if not r.get("enabled"):
-                continue
-            h = _place_host(r.get("url"))
-            if h and h not in seen:
-                seen.add(h)
-                out.append(h)
-        return out
-    except Exception:  # noqa: BLE001 — недоступность БД не валит создание
-        return []
+    """Хосты включённых минус-площадок для disabledPlaces tp1 — ОБЩИЙ список (единый для всех слепков).
+    Читает direct_global_minus_places (домен, не URL; только enabled; дедуп). Параметр slepok
+    сохранён для обратной совместимости 6 call-sites tp1, но ИГНОРИРУЕТСЯ. [] при сбое."""
+    return _enabled_global_minus_places()
 
 
 def _enabled_global_minus_places() -> list[str]:
@@ -3323,6 +3325,11 @@ _ce.configure({
     "_CREATE_JOBS": _CREATE_JOBS, "_CREATE_JOBS_LOCK": _CREATE_JOBS_LOCK, "_JOB_TERMINAL": _JOB_TERMINAL,
     "_job_touch": _job_touch, "_job_db_save": _job_db_save,
     "_CALLOUT_PER_CAMPAIGN_CAP": _CALLOUT_PER_CAMPAIGN_CAP,
+})
+
+# copy_verify: движок сверки source↔target (нужны только v5-читатели цели).
+_cv.configure({
+    "_v5_call": _v5_call, "_token_for_login": _token_for_login, "_direct_tokens": _direct_tokens,
 })
 
 

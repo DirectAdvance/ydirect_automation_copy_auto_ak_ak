@@ -2348,6 +2348,23 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                 rep["live_verification"] = auto["post_repair_live_verification"]
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"verification/repair: {str(e)[:220]}")
+
+    # Обязательная сверка source↔target после создания (REPORT-ONLY, движок copy_verify).
+    try:
+        from . import copy_verify as cv
+        verify_result = cv.run_copy_verification(
+            src_dir=src_dir, workdir=workdir,
+            target_login=target_login, target_agency=target_agency,
+            grid=grid, source_grid=cstep_ctx.source_grid,
+            log=(lambda m: _copy_job_log(job_id, m)),
+        )
+        rep["copy_verify"] = verify_result
+        _s = verify_result.get("summary") or {}
+        _copy_job_log(job_id, f"copy_verify: ok={_s.get('ok')}, mismatch={_s.get('mismatch')}, "
+                              f"missing={_s.get('missing')}, unreadable={_s.get('unreadable')}")
+    except Exception as _ve:  # noqa: BLE001
+        rep["errors"].append(f"copy_verify: {str(_ve)[:200]}")
+
     rep["results"] = results
     return rep
 
