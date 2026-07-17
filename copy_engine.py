@@ -252,6 +252,14 @@ def _copy_geo_id_for_target(city: str | None, region: str | None) -> tuple[int |
     (11111), while generic create_set still keeps city-first _geo_id().
     """
     region_name = _copy_canonical_region_name(region or "")
+    # Страновой таргетинг: РФ/Россия/Russia → GeoRegionId России (225). Мультигород-аккаунты
+    # префилл сводит к 225 (account_service.py:623, «регион не распознан по городу → Россия»),
+    # но текст региона уходит как «РФ»/«Россия» — резолвим его тем же id, иначе city-мультистрока
+    # («Краснодар, Нижний Новгород, …») не матчится и копирование падает (не найден GeoRegionId).
+    if (region_name or "").strip().lower().replace("ё", "е") in {
+        "рф", "россия", "russia", "ru", "российская федерация",
+    }:
+        return 225, "Россия"
     if region_name:
         gid, used = _geo_id(None, region_name)
         if gid:
