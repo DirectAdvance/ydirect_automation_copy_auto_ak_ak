@@ -7,6 +7,44 @@ from typing import Callable
 from flask import current_app, jsonify, render_template, request, session
 
 
+# GeoRegionId России в справочнике GeoRegions Директа. Виджет выбора регионов
+# «Прочих сфер» показывает ТОЛЬКО Россию и её вложенность (округа → области →
+# города → районы города): копируем кампании российских аккаунтов, остальные
+# страны в дереве — шум. Фильтр живёт здесь, а не в blueprint_metrika._geo_regions_tree,
+# потому что общий справочник (_geo_load / _geo_id / _geo_is_valid_id) нужен целиком.
+#
+# ⚠️ ФАКТ справочника Директа (проверено 2026-07-17 живым запросом dictionaries):
+# «Республика Крым» (977) и её города, включая Севастополь (959), в GeoRegions висят
+# ОТДЕЛЬНЫМ корнем — ParentId=0, они НЕ потомки 225. Поэтому в корни фильтра включены
+# ОБА: Россия (225) и Крым (977) — по решению Семёна 2026-07-17 гео по Крыму нужно.
+# Каждый корень раскрывается в своё поддерево; если понадобится ещё регион — дописать id.
+_GEO_ROOT_IDS = (225, 977)
+
+
+def _geo_only_russia(rows: list) -> list:
+    """Оставляет корни _GEO_ROOT_IDS (Россия 225 + Крым 977) и ВСЕХ их транзитивных
+    потомков. Порядок исходного списка сохраняется; корни имеют parent_id=0 и станут
+    корнями дерева на фронте. Если ни одного корня в справочнике нет — возвращает
+    список как есть (лучше показать всё, чем пустое дерево)."""
+    ids = {int(r.get("id")) for r in rows if r.get("id") is not None}
+    roots = [rid for rid in _GEO_ROOT_IDS if rid in ids]
+    if not roots:
+        return rows
+    children: dict = {}
+    for r in rows:
+        pid = int(r.get("parent_id") or 0)
+        if pid:
+            children.setdefault(pid, []).append(int(r["id"]))
+    keep = set(roots)
+    stack = list(roots)
+    while stack:                       # обход всего поддерева, не только прямых детей
+        for cid in children.get(stack.pop(), ()):
+            if cid not in keep:
+                keep.add(cid)
+                stack.append(cid)
+    return [r for r in rows if int(r.get("id")) in keep]
+
+
 def _parse_campaign_ids(body: dict, *, as_set: bool = False):
     """Единый разбор campaign_ids из тела запроса (устраняет троекратное дублирование).
     Принимает список строк/чисел, пропускает нечисловые. as_set=True → frozenset для O(1) lookup."""
@@ -89,6 +127,7 @@ def register_copy_routes(
         """Дерево GeoRegions Директа [{id,name,type,parent_id}] для виджета «Прочие сферы».
         Показывает Country / Federal district / Region / Federation subject / City / City district.
         Скрытые типы переподвешены к ближайшему показанному предку.
+        Отдаётся ТОЛЬКО Россия и её вложенность (см. _geo_only_russia).
         Переиспользует кэш blueprint_metrika._geo_load — дополнительных запросов к API нет."""
         fn = geo_regions_tree_func or geo_regions_func
         if fn is None:
@@ -97,6 +136,10 @@ def register_copy_routes(
             rows = fn()
         except Exception as e:  # noqa: BLE001
             return jsonify({"error": f"не удалось получить GeoRegions: {str(e)[:200]}"}), 502
+        # legacy geo_regions_func отдаёт [{id,name}] без parent_id — фильтр по дереву
+        # применим только к древовидному источнику.
+        if geo_regions_tree_func is not None:
+            rows = _geo_only_russia(rows)
         return jsonify({"regions": rows})
 
     @bp.route("/api/copy_target_campaigns")
