@@ -407,6 +407,43 @@ def register_copy_routes(
             return jsonify(data), 502
         return jsonify(data)
 
+    @bp.route("/api/copy_feed_upload", methods=["POST"])
+    @access
+    def api_copy_feed_upload():
+        """Загрузить фид source-аккаунта в target-аккаунт (feeds.add v5) с адаптацией URL
+        под целевой домен (source-домен → target_domain в ссылке фида).
+
+        Body (JSON): {source_login, target_login, source_feed_id, target_domain}
+        Returns: {ok:true, feed_id:int, name:str, url:str} | {error:str}
+
+        ⚠️ Имя начинается с /api/copy_: nginx отдаёт на :5022 только ^~ /direct/api/copy_.
+        """
+        from direct import copy_feed_upload as _cfu  # noqa: PLC0415 — lazy; модуль этой задачи
+        body = request.json or {}
+        source_login = (body.get("source_login") or "").strip()
+        target_login = (body.get("target_login") or "").strip()
+        source_feed_id_raw = body.get("source_feed_id")
+        target_domain = (body.get("target_domain") or "").strip()
+        if not source_login or not target_login:
+            return jsonify({"error": "source_login и target_login обязательны"}), 400
+        if source_feed_id_raw is None:
+            return jsonify({"error": "source_feed_id обязателен"}), 400
+        try:
+            source_feed_id = int(source_feed_id_raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "source_feed_id должен быть целым числом"}), 400
+        if not target_domain:
+            return jsonify({"error": "target_domain обязателен"}), 400
+        try:
+            result = _cfu.upload_feed_to_target(
+                source_login, target_login, source_feed_id, target_domain
+            )
+        except RuntimeError as e:
+            return jsonify({"error": str(e)[:400]}), 502
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"error": f"внутренняя ошибка: {str(e)[:300]}"}), 500
+        return jsonify({"ok": True, **result})
+
     @bp.route("/automation/copy")
     @access
     def copy_page():
