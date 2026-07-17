@@ -78,7 +78,8 @@ def run_create_set_gallery(*, kind: str, it: dict[str, Any], name: str,
         # ct0000-группу «Товарная галерея» для ВСЕХ сегментов — тихий fallback маскирует
         # ошибку как «успех» (инцидент 2026-07-06: 5 одинаковых tp5 porg-psm5h7q6).
         # → явный провал NO_BRAND_SEGMENTS_AVAILABLE; retry нужен с API-токеном.
-        _seg5 = it.get("tp5_segment") if kind == "tp5" else None
+        # camp_names tp5 (only_gks/only_cts) — как сегментная: НЕ падать на cookie-ct0000-пустышку при 152.
+        _seg5 = (it.get("tp5_segment") or it.get("only_gks") or it.get("only_cts")) if kind == "tp5" else None
         if _seg5:
             # РЕЗЮМ ТОКЕНОМ, но мы оказались на cookie-пути (пустой st_token или units-152 форсили
             # via_cookie). Куку НЕ пробуем (сегменты она не умеет → NO_BRAND повторялся бы вечно) и
@@ -178,7 +179,10 @@ def run_create_set_gallery(*, kind: str, it: dict[str, Any], name: str,
                 city=(city or ""),
                 segment=it.get("tp5_segment"), autotarget=bool(it.get("autotarget")),
                 products_only=bool(it.get("products_only")), no_cpa=no_cpa,
-                single_feed=single_feed, grid_cookie=grid_cookie)
+                single_feed=single_feed, grid_cookie=grid_cookie,
+                only_gks=(set(it.get("only_gks") or ()) or None),
+                only_cts=(set(it.get("only_cts") or ()) or None),
+                all_feeds=bool(it.get("tp5_all_feeds")))
         else:  # tp3
             res = create_tp3_campaign(
                 token=st_token, login=login, base_name=name,
@@ -186,8 +190,12 @@ def run_create_set_gallery(*, kind: str, it: dict[str, Any], name: str,
                 cpa_rub=cpa_val, budget_rub=budget_val,
                 region_ids=region_ids, href=href, slepok=slepok,
                 site_type=site_type, r_code=r_code, corr=corr, ret_map=ret_map,
-                job=job, no_cpa=no_cpa, single_feed=single_feed, agency=(w_agency or ""))
-        _seg5 = it.get("tp5_segment") if kind == "tp5" else None
+                job=job, no_cpa=no_cpa, single_feed=single_feed, agency=(w_agency or ""),
+                only_cts=(set(it.get("only_cts") or ()) or None),
+                only_gks=(set(it.get("only_gks") or ()) or None),
+                all_feeds=bool(it.get("tp3_all_feeds")))
+        # camp_names tp5 (only_gks/only_cts) — как сегментная: НЕ падать на cookie-ct0000-пустышку при 152.
+        _seg5 = (it.get("tp5_segment") or it.get("only_gks") or it.get("only_cts")) if kind == "tp5" else None
         if (not res.get("ok")) and units_in_result(res) and not _seg5:
             # tp5 без сегмента (products_only/Фиды) — обычный fallback на cookie.
             res = create_shopping_via_cookie(**cookie_kwargs)

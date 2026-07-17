@@ -503,15 +503,25 @@ def _do_assets(login: str, agency: str):
         out["errors"]["all"] = "нет рабочего агентского токена для этого логина"
         return jsonify(out)
 
-    jf = _v5_get("feeds", token, login, ["Id", "Name", "BusinessType", "SourceType", "Url"])
+    jf = _v5_get("feeds", token, login, ["Id", "Name", "BusinessType", "SourceType"])
     if "error" in jf:
         out["errors"]["feeds"] = jf["error"].get("error_string")
     else:
         raw_feeds = (jf.get("result") or {}).get("Feeds", [])
         out["feeds"] = [{"id": f["Id"], "name": f.get("Name"), "business_type": f.get("BusinessType"),
                          "source_type": f.get("SourceType")} for f in raw_feeds]
-        # Количество разрешённых URL-фидов для предпланового бейджа tp5/tp7 (fan-out по фидам).
-        out["allowed_feeds_count"] = len(_filter_allowed_feed_rows(raw_feeds))
+        # Количество разрешённых URL-фидов для предпланового бейджа tp3/tp5/tp7 (fan-out по фидам).
+        # v5 feeds.get НЕ отдаёт URL фида → матч в _filter_allowed_feed_rows идёт по Name. Если фид в
+        # кабинете назван ЯРЛЫКОМ (не URL), матч по имени даёт ЛОЖНЫЙ 0 (напр. porg-zv6tyvg4). Реальное
+        # создание (create_set_plan.py:385-393) при пустом v5-матче фолбэчит на Grid (читает настоящие URL
+        # по куке, без баллов) — зеркалим ту же логику здесь, чтобы счётчик совпадал с созданием.
+        _allowed = len(_filter_allowed_feed_rows(raw_feeds))
+        if _allowed == 0:
+            try:
+                _allowed = len(_filter_allowed_feed_rows(_grid_feeds(login, agency_used or "")))
+            except Exception:  # noqa: BLE001 — Grid может вернуть пусто/упасть → честный 0
+                _allowed = 0
+        out["allowed_feeds_count"] = _allowed
 
     ja = _v5_get("retargetinglists", token, login, ["Id", "Name", "Type", "Scope"], criteria={})
     if "error" in ja:

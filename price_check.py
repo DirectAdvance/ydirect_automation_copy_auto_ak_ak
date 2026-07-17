@@ -828,9 +828,9 @@ def apply_queue_for_ui(victory_conn: Callable, limit: int = 100,
     created_by=None → все (админ); строка → только заявки этого пользователя.
     """
     import psycopg2.extras
-    where = ("WHERE kind='apply' AND status <> 'cancelled' "     # удалённые из очереди скрываем
-             "AND (status IN ('queued','running','paused') "
-             "OR created_at > now() - interval '48 hours') ")
+    # Показываем ВСЁ, что лежит в таблице: заявка уходит из UI только после кнопки
+    # «Очистить очередь» (завершённые старше 3 суток), а не сама по времени.
+    where = "WHERE kind='apply' AND status <> 'cancelled' "      # удалённые из очереди скрываем
     params: list = []
     if created_by is not None:
         where += "AND created_by=%s "

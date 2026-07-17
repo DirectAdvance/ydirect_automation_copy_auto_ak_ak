@@ -601,6 +601,14 @@ _UAC_PATCH_FULL_KEYS = (
 def _uac_campaign_patch_payload(detail: dict, field_key: str, values: list) -> dict:
     """Build the browser-shaped full UAC PATCH body, dropping read-only fields."""
     payload = {k: detail.get(k) for k in _UAC_PATCH_FULL_KEYS if k in detail}
+    # Full PATCH = replace: креативы читаются как `contents`, а пишутся как `content_ids` —
+    # без переноса патч любого другого поля обнуляет картинки кампании.
+    _content_ids = [
+        str(c.get("id")) for c in (detail.get("contents") or [])
+        if isinstance(c, dict) and c.get("id")
+    ]
+    if _content_ids:
+        payload["content_ids"] = _content_ids
     payload[field_key] = values
     # tp6/tp7 autotargeting details can contain feed ids from read model, while
     # the save endpoint validates them as MUST_BE_NULL. Browser sends keywords:[]
@@ -2678,7 +2686,7 @@ def register_content_editor_routes(
             pc.reconcile_stuck_jobs(victory_conn_rw)   # зависшие running → interrupted
             # full access → вся очередь; обычный юзер → только свои заявки
             cb = None if _content_full_access() else (session.get("username") or "").strip()
-            return jsonify({"jobs": pc.apply_queue_for_ui(victory_conn, 100, created_by=cb)})
+            return jsonify({"jobs": pc.apply_queue_for_ui(victory_conn, 500, created_by=cb)})
 
         # ── Управление заданием очереди: пауза / старт / удаление ─────────────
         @bp.route("/api/content-editor/admin/pricecheck/pause", methods=["POST"])
@@ -3163,13 +3171,21 @@ def register_content_editor_routes(
     @bp.route("/api/content-editor/jobs")
     @access
     def ce_jobs():
-        where = "NOT dismissed AND (status IN ('queued','running') OR created_at > now() - interval '48 hours')"
+        # Показываем ВСЁ, что лежит в таблице: задание пропадает только после кнопки
+        # «Очистить очередь» (завершённые старше 3 суток), а не само по времени.
+        #
+        # dismissed=true ставится, когда юзер закрывает карточку завершённого задания
+        # на рабочей вкладке («Тексты»/«Заголовки»). Это скрывает только КАРТОЧКУ —
+        # вкладка «Очередь» (?include_dismissed=1) обязана показывать такие задания,
+        # иначе закрыл карточку → задание пропало из очереди совсем.
+        include_dismissed = request.args.get("include_dismissed") == "1"
+        where = "TRUE" if include_dismissed else "NOT dismissed"
         params: tuple = ()
         if not _content_full_access():
             where += " AND username=%s"
             params = ((session.get("username") or "").strip(),)
         rows = _jobs_exec(
-            f"SELECT * FROM {CE_JOBS_TABLE} WHERE {where} ORDER BY created_at DESC LIMIT 200",
+            f"SELECT * FROM {CE_JOBS_TABLE} WHERE {where} ORDER BY created_at DESC LIMIT 500",
             params, "all") or []
         ahead = _queued_ahead_map()
         jobs = []

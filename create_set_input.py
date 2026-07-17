@@ -8,9 +8,12 @@ TextNormalizer = Callable[[Any], str]
 SemanticKey = Callable[[str], str]
 NumberParser = Callable[[Any, int], int]
 SINGLE_FEED_KEY = "yandex.xml"
-# Фолбэк-фид для галочки «по одному фиду», когда /yandex.xml в аккаунте отсутствует
+# Фолбэк-фид для «профильных фидов» когда ни один профильный не найден в аккаунте
 # (кнопка «Продолжить с другим фидом» в feed_alert; правило Семёна 2026-07-02).
 FALLBACK_SINGLE_FEED_KEY = "yandex-catalog-model-design-custom-name.xml"
+# «Профильные фиды» — целевой набор для режима single_feed:
+# фид-кампании (tp5/tp7/tp1-товарка) строятся по ОБОИМ, если оба есть в аккаунте.
+PROFILE_FEED_KEYS = ("yandex.xml", "yandex-used-auto.xml")
 
 
 def normalize_callouts(raw_callouts: list[Any], *,
@@ -69,29 +72,41 @@ def feed_row_matches_single_feed(row: dict[str, Any]) -> bool:
     return feed_row_matches_key(row, SINGLE_FEED_KEY)
 
 
+def feed_row_matches_profile_feed(row: dict[str, Any]) -> bool:
+    """True when a Direct/Grid feed row points to ANY of the profile feeds
+    (yandex.xml OR yandex-used-auto.xml)."""
+    return any(feed_row_matches_key(row, k) for k in PROFILE_FEED_KEYS)
+
+
 def prefer_single_feed_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Prefer /yandex.xml rows for single-feed mode; fallback to the first row."""
+    """Prefer profile feed rows (yandex.xml / yandex-used-auto.xml) for single-feed mode;
+    returns ALL matching profile rows (fan-out up to 2); fallback to the first row.
+    NOTE: при вызове из _first_url_feed (strict=False) итерация возвращает первый матч."""
     rows = list(rows or [])
-    preferred = [row for row in rows if feed_row_matches_single_feed(row)]
-    return preferred[:1] if preferred else rows[:1]
+    preferred = [row for row in rows if feed_row_matches_profile_feed(row)]
+    return preferred if preferred else rows[:1]
 
 
 def prefer_single_feed_variants(variants: list[tuple]) -> list[tuple]:
-    """Prefer a tuple matching /yandex.xml by name OR url; fallback to the first tuple.
+    """Prefer tuples matching any profile feed by name OR url; returns ALL profile matches
+    (fan-out); fallback to the first tuple.
 
     Кортежи _tp5_account_data = (id, name, url): имя кабинета может быть человекочитаемым
     («Основной фид»), реальный маркер — url (ревью 03.07 #12: матч только по name брал
     первый попавшийся фид вместо /yandex.xml)."""
     variants = list(variants or [])
     preferred = [v for v in variants
-                 if len(v) > 1 and feed_row_matches_single_feed(
+                 if len(v) > 1 and feed_row_matches_profile_feed(
                      {"name": v[1], "url": (v[2] if len(v) > 2 else "")})]
-    return preferred[:1] if preferred else variants[:1]
+    return preferred if preferred else variants[:1]
 
 
 def first_feed_items(items: list[dict[str, Any]], *, parse_number: NumberParser) -> list[dict[str, Any]]:
-    """Keep yandex.xml feed items when present, otherwise the first non-zero feed_id."""
-    target_items = [item for item in (items or []) if feed_row_matches_single_feed(item)]
+    """Keep profile feed items (yandex.xml / yandex-used-auto.xml) when present;
+    fan-out по обоим профильным фидам: если оба найдены, возвращаем items для КАЖДОГО.
+    Фолбэк: нет профильных по имени → возвращаем все items as-is (план уже отфильтровал
+    по профильным фидам через single_feed — кастомноназванные фиды сохраняются)."""
+    target_items = [item for item in (items or []) if feed_row_matches_profile_feed(item)]
     if target_items:
         target_feeds = {
             parse_number(item.get("feed_id"), 0)
@@ -106,17 +121,10 @@ def first_feed_items(items: list[dict[str, Any]], *, parse_number: NumberParser)
             filtered.append(item)
         return filtered
 
-    first_feed = None
-    filtered: list[dict[str, Any]] = []
-    for item in items or []:
-        feed_id = parse_number(item.get("feed_id"), 0)
-        if feed_id:
-            if first_feed is None:
-                first_feed = feed_id
-            if feed_id != first_feed:
-                continue
-        filtered.append(item)
-    return filtered
+    # Нет совпадений по имени профильного фида → план уже был отфильтрован single_feed-логикой
+    # на сервере (или фиды названы кастомными ярлыками). Возвращаем все items как есть:
+    # fan-out по двум кастомноназванным профильным фидам сохраняется.
+    return list(items or [])
 
 
 def normalize_create_set_input(body: dict[str, Any], *,

@@ -73,7 +73,13 @@ def run_create_set_tp1(*, it: dict[str, Any], name: str,
     # Товарные/динамика в группах tp1 — как в слепке (Щербакова): нужен XML-фид аккаунта.
     # Смарт-Баннер/Фиды (products_only) — товарные ОБЯЗАТЕЛЬНЫ (это их суть), форсим shopping.
     tp1_products_only = bool(it.get("products_only"))
-    tp1_shopping = slepok_uses_shopping(slepok, "tp1") or tp1_products_only
+    # camp_names-маршрутизация (задача 7): группы кампании из structure_to_campaigns (gk/ct set).
+    # Пусто → прежнее сегмент-поведение (segment-фильтр по tp1_segment).
+    _only_gks = set(it.get("tp1_only_gks") or ()) or None
+    _only_cts = set(it.get("tp1_only_cts") or ()) or None
+    # tp1_catalog: тег «каталоги» вручную назначен на кампанию → форсить ShoppingAd+ListingAd.
+    # Catalog-role гейт (catalog_only=True в account_model_feeds) блокирует лендинг/оффер-фиды — guard цел.
+    tp1_shopping = slepok_uses_shopping(slepok, "tp1") or tp1_products_only or bool(it.get("tp1_catalog"))
     # FAN-OUT (CODER.md: фидовые tp мультиплицируются по ВСЕМ фидам аккаунта, имя += фид).
     # Товарные с фильтром по модели — фиды С модельными коллекциями (listings 'model_N').
     tp1_mf = account_model_feeds(login, w_agency or "") if tp1_shopping else []
@@ -84,15 +90,31 @@ def run_create_set_tp1(*, it: dict[str, Any], name: str,
         feed_variants = [(int(ff), "", None)] if ff else [(0, "", None)]
     else:
         feed_variants = [(0, "", None)]                # tp1 без товарных (не Щербакова) → одна РСЯ
+    # «Все фиды» (тег all_feeds): collapse fan-out → ОДНА кампания, group PER feed внутри.
+    # Применяем ДО single_feed-коллапса: all_feeds и single_feed взаимоисключают (all_feeds = все фиды).
+    _tp1_all_feeds = bool(it.get("tp1_all_feeds")) and tp1_shopping and not single_feed
+    _all_feeds_list: list | None = None
+    if _tp1_all_feeds and feed_variants:
+        # Все разрешённые фиды в ONE кампанию; feed_id=0, with_shopping через all_feeds_list
+        _all_feeds_list = [(int(fv[0]), str(fv[1]) if len(fv) > 1 and fv[1] else "")
+                           for fv in feed_variants if fv[0]]
+        feed_variants = [(0, "", None)]  # ONE iteration, no per-feed name suffix
     if single_feed and feed_variants:
-        # «По одному фиду» теперь означает именно /yandex.xml. Для tp1 catalog_only-список
-        # может не содержать сырой yandex.xml, поэтому берём его через first_url_feed.
-        ff = first_url_feed(st_token, login, w_agency or "") if tp1_shopping else 0
-        if ff:
-            feed_variants = [(int(ff), "yandex.xml", None)]
-        else:
-            from .create_set_input import prefer_single_feed_variants
-            feed_variants = prefer_single_feed_variants(feed_variants)
+        # «Профильные фиды» → tp1-товарка по { yandex.xml, yandex-used-auto.xml } ∩ аккаунт.
+        # Для tp1 catalog_only-список может не содержать сырой yandex.xml (только model-фиды),
+        # поэтому каждый профильный фид находим через first_url_feed(strict=True, url_key=pk).
+        if tp1_shopping:
+            from .create_set_input import PROFILE_FEED_KEYS
+            _profile_fvs: list = []
+            for _pk in PROFILE_FEED_KEYS:
+                _ff = first_url_feed(st_token, login, w_agency or "", strict=True, url_key=_pk)
+                if _ff and not any(int(fv[0]) == int(_ff) for fv in _profile_fvs):
+                    _profile_fvs.append((int(_ff), _pk, None))
+            if _profile_fvs:
+                feed_variants = _profile_fvs
+            else:
+                from .create_set_input import prefer_single_feed_variants
+                feed_variants = prefer_single_feed_variants(feed_variants)
     multi = sum(1 for fv in feed_variants if fv[0]) > 1
     for f_id, f_name, f_models in feed_variants:
         if job and job.get("cancel"):            # отмена: стоп ПЕРЕД следующим фидом fan-out
@@ -118,12 +140,14 @@ def run_create_set_tp1(*, it: dict[str, Any], name: str,
                 budget_rub=tp1_budget, segment=it.get("tp1_segment"),
                 ai_title2=(it.get("title2") or ""), city=(city or ""),
                 autotarget=bool(it.get("autotarget")), no_cpa=no_cpa,
+                only_gks=_only_gks, only_cts=_only_cts,
                 token=st_token or "", corr=corr, ret_map=ret_map,
                 callout_texts=callouts,
                 callout_ids=callout_ids,
                 sitelinks=(it.get("sitelinks") if isinstance(it.get("sitelinks"), list) else None),
                 feed_id=f_id, with_shopping=f_shopping, feed_models=f_models,
                 job=job,                          # отмена: проверка cancel между cpc/cpa внутри
+                all_feeds_list=_all_feeds_list,   # «все фиды»: per-feed shopping groups в одной кампании
             )
             if via_cookie or not st_token:
                 # Cookie-first: либо принудительно, либо токена нет вовсе.
@@ -148,6 +172,8 @@ def run_create_set_tp1(*, it: dict[str, Any], name: str,
                     no_cpa=no_cpa,
                     grid_cookie=grid_cookie,
                     job=job,                      # отмена: проверка cancel между cpc/cpa
+                    only_gks=_only_gks, only_cts=_only_cts,
+                    all_feeds_list=_all_feeds_list,  # «все фиды»
                 )
                 if (not res.get("ok")) and (
                     units_in_result(res)

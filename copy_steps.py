@@ -556,6 +556,84 @@ def _promo_attach_err(attach: dict) -> str:
     return json.dumps(errors, ensure_ascii=False)[:200] if errors else ""
 
 
+# ── Перенос Grid-only настроек из источника на копию (organic / placementTypes) ─────
+
+def step_fix_organic_placement(ctx: CopyCtx) -> dict:
+    """Перенести isOrganicSearchEnabled и placementTypes из источника на копию (1:1).
+
+    Grid-only поля: v5-путь копирования создаёт кампании с дефолтами Директа
+    (organic=True, placementTypes=[ADV_GALLERY, SEARCH_PAGE]). Здесь читаем значения
+    ИСТОЧНИКА через source_grid и ставим их на TARGET через narrow UpdateCampaigns.
+
+    Кампании с DEFAULT / OPTIMIZE_CLICKS-без-лимита — в skipped (нет безопасного write-enum).
+    Добавлено 2026-07-17 для исправления расхождений, найденных step_settings_diff.
+    """
+    rep = {"fixed": 0, "skipped": {}, "already_ok": 0, "errors": []}
+    if ctx.source_grid is None or ctx.grid is None:
+        rep["errors"].append("нет куки источника или цели — organic/placement перенос пропущен")
+        return rep
+    camp_map = ctx.maps.get("campaigns") or {}
+    if not camp_map:
+        rep["errors"].append("нет маппинга кампаний — organic/placement перенос пропущен")
+        return rep
+    pairs: list[tuple[int, int]] = []
+    for src_id, tgt_id in camp_map.items():
+        try:
+            pairs.append((int(src_id), int(tgt_id)))
+        except (TypeError, ValueError):
+            continue
+    if not pairs:
+        return rep
+
+    try:
+        src_rows = ctx.source_grid.campaigns_edit_rows([s for s, _ in pairs])
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"source grid read: {str(e)[:200]}")
+        return rep
+    try:
+        tgt_rows = ctx.grid.campaigns_edit_rows([t for _, t in pairs])
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"target grid read: {str(e)[:200]}")
+        return rep
+
+    campaign_values: dict[int, dict] = {}
+    for src_id, tgt_id in pairs:
+        src = src_rows.get(src_id)
+        tgt = tgt_rows.get(tgt_id)
+        if not src or not tgt:
+            continue
+        src_organic = bool(src.get("isOrganicSearchEnabled"))
+        src_pts = src.get("placementTypes") or None
+        tgt_organic = bool(tgt.get("isOrganicSearchEnabled"))
+        # Нормализуем для сравнения: сортировка для нечувствительности к порядку.
+        src_pts_sorted = sorted(src_pts) if src_pts else []
+        tgt_pts_sorted = sorted(tgt.get("placementTypes") or [])
+        if src_organic == tgt_organic and src_pts_sorted == tgt_pts_sorted:
+            rep["already_ok"] += 1
+            continue
+        campaign_values[tgt_id] = {
+            "isOrganicSearchEnabled": src_organic,
+            "placementTypes": src_pts,
+        }
+
+    if not campaign_values:
+        ctx.log(f"organic/placement: все пары уже совпадают ({rep['already_ok']} кампаний)")
+        return rep
+
+    try:
+        result = ctx.grid.set_campaign_organic_and_placement(campaign_values)
+        rep["fixed"] = len(result.get("updated") or [])
+        rep["skipped"] = result.get("skipped") or {}
+        rep["errors"] += result.get("errors") or []
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"set_campaign_organic_and_placement: {str(e)[:220]}")
+
+    ctx.log(f"organic/placement: исправлено {rep['fixed']}, "
+            f"пропущено {len(rep['skipped'])} (стратегия), "
+            f"уже верных {rep['already_ok']}, ошибок {len(rep['errors'])}")
+    return rep
+
+
 # ── П.8: adPrice из ФИДА TARGET-аккаунта на созданные адаптивные объявления ─────
 
 def _merge_cheaper(prev: tuple | None, new: tuple) -> tuple:
@@ -812,9 +890,25 @@ def step_keywords(ctx: CopyCtx, grid_batch: int = 1000, v5_batch: int = 200) -> 
         for rows_b, keys_b in zip(_chunks(grid_rows, grid_batch), _chunks(grid_keys, grid_batch)):
             try:
                 added = ctx.grid.add_keywords(rows_b)
-                for key in keys_b:                # Grid raise-on-error → успех = батч принят
-                    done_kw.add(key)
-                rep["via_grid"] += len(added or []) or len(rows_b)
+                n_added = len(added or [])
+                # Считаем ТОЛЬКО фактически принятое Grid. Раньше стояло
+                # `len(added or []) or len(rows_b)`: при пустом addedItems счётчик подставлял размер
+                # ОТПРАВЛЕННОГО батча → отчёт рисовал via_grid=1396 при 0 реально залитых фраз
+                # (прогон 2026-07-17, три аккаунта; провал выглядел успехом).
+                rep["via_grid"] += n_added
+                if n_added == len(rows_b):
+                    for key in keys_b:            # полный успех → фиксируем идемпотентность
+                        done_kw.add(key)
+                else:
+                    # Неполный батч: какие именно фразы приняты — Grid не сообщает (addedItems без
+                    # текста фразы). Не помечаем done (иначе повторный прогон пропустит их как
+                    # already_done и недолив станет вечным) и отдаём батч в v5-фолбэк; уже
+                    # залетевшие отсеются там как дубли.
+                    grid_failed_rows += rows_b
+                    grid_failed_keys += keys_b
+                    rep["grid_short_batches"] = rep.get("grid_short_batches", 0) + 1
+                    rep["errors"].append(
+                        f"grid kw batch неполный: принято {n_added} из {len(rows_b)} → v5-фолбэк")
             except Exception as e:  # noqa: BLE001
                 grid_failed_rows += rows_b
                 grid_failed_keys += keys_b
@@ -905,7 +999,7 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
     source-домен; RMW сохраняет target-кнопку). Идемпотентно, фолбэк-безопасно: нет source/target
     grid, апдейтера или маппинга — пропуск с отчётом, job не падает."""
     rep = {"src_ads_read": 0, "candidates": 0, "updated": 0, "geo_applied": 0,
-           "images_remapped": 0, "no_target": 0, "no_content": 0, "errors": []}
+           "images_remapped": 0, "images_filled": 0, "no_target": 0, "no_content": 0, "errors": []}
     if ctx.grid is None:
         rep["errors"].append("нет target grid — адаптивы пропущены")
         return rep
@@ -938,6 +1032,11 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
     from . import copy_geo_morph as cgm
     from .text_norm import _trim_clean
     pairs = ctx.geo_pairs or []
+    # image_mode=upload: v5 переносит на объявление только ОДИН AdImageHash, остальные 4 живут лишь в
+    # Grid → доливаем картинки ЦЕЛЕВОГО аккаунта round-robin до 5 (максимум Директа). Пул пуст → не трогаем.
+    img_pool = ([str(h).strip() for h in (ctx.body.get("image_hashes") or []) if str(h).strip()]
+                if str(ctx.body.get("image_mode") or "") == "upload" else [])
+    pool_pos = 0
     items: list[dict] = []
     for src_ad_id, comp in src_ads.items():
         tgt_ad_id = ads_map.get(str(src_ad_id))
@@ -956,13 +1055,15 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
             out, n = cgm.apply_replacements(t, pairs)
             n_geo += n
             # гео-замена могла УДЛИНИТЬ строку (Москве→Нижневартовске) — обрезка по слову
-            # + чистка оборванного хвоста, а не жёсткий срез посреди слова (ревью 06.07)
-            new_titles.append(_trim_clean(out, 56))    # лимит заголовка ≤56
+            # + чистка оборванного хвоста, а не жёсткий срез посреди слова (ревью 06.07).
+            # Только при ПРЕВЫШЕНИИ лимита: _trim_clean безусловно срезает хвостовую пунктуацию
+            # (rstrip " .,;:!?-") и у копии 1:1 съедал легитимный «!» из текста источника.
+            new_titles.append(out if len(out) <= 56 else _trim_clean(out, 56))    # лимит заголовка ≤56
         new_bodies = []
         for b in bodies:
             out, n = cgm.apply_replacements(b, pairs)
             n_geo += n
-            new_bodies.append(_trim_clean(out, 81))    # лимит текста ≤81
+            new_bodies.append(out if len(out) <= 81 else _trim_clean(out, 81))    # лимит текста ≤81
         if n_geo:
             rep["geo_applied"] += 1
         new_imgs = []
@@ -971,9 +1072,22 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
             if th:
                 new_imgs.append(th)
                 rep["images_remapped"] += 1
+        if img_pool:
+            for _ in range(len(img_pool)):
+                if len(new_imgs) >= 5:
+                    break
+                h = img_pool[pool_pos % len(img_pool)]
+                pool_pos += 1
+                if h not in new_imgs:
+                    new_imgs.append(h)
+                    rep["images_filled"] += 1
         item = {"id": int(tgt_ad_id), "titles": new_titles, "bodies": new_bodies}
         if new_imgs:
             item["image_hashes"] = new_imgs            # RMW: пустой → сохранит target-картинки
+        # отображаемая ссылка источника (linkTail) — часть контента 1:1; иначе на target останется
+        # то, что переживёт full-replace (у копий это null)
+        if comp.get("displayHref"):
+            item["display_href"] = comp["displayHref"]
         items.append(item)
 
     if not items:
@@ -986,6 +1100,7 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
         rep["errors"].append(f"grid update adaptive: {str(e)[:200]}")
     ctx.log(f"адаптивы 1:1 (Grid, 0 баллов): контент обновлён у {rep['updated']}/{len(items)} "
             f"объявлений (гео у {rep['geo_applied']}, картинок ремаплено {rep['images_remapped']}, "
+            f"долито {rep['images_filled']}, "
             f"без target {rep['no_target']}, без контента {rep['no_content']})")
     return rep
 
@@ -1081,4 +1196,202 @@ def step_videos(ctx: CopyCtx) -> dict:
             rep["errors"].append(f"attach {tgt_ad_id}: {str(e)[:150]}")
     ctx.log(f"видео 1:1 (куки, 0 баллов): залито {rep['uploaded']}, привязано к {rep['attached']} "
             f"объявлениям (без файла {rep['no_source_file']}, без target {rep['no_target']})")
+    return rep
+
+
+# ── Сверка настроек источник ↔ копия ПО КУКАМ (Grid, 0 v5-баллов) ────────────────────────────
+#
+# Зачем: v5 показывает лишь часть настроек кампании, поэтому молчаливые потери мы ловили руками
+# (прогон 2026-07-17: минус-слова кампаний 267→0 — pull их вообще не читал, ошибки не было).
+# Этот шаг снимает настройки ОБЕИХ сторон так, как их видит редактор Директа, и сравнивает.
+#
+# Сравниваем ВСЁ, кроме того, что меняем НАМЕРЕННО (иначе отчёт утонет в ложных расхождениях):
+#   • идентификаторы/имена/даты        — новые по определению;
+#   • домен и ссылки                   — целевой сайт;
+#   • гео                              — geo_mode=change;
+#   • счётчики и цели Метрики          — целевые counter_id/goal_id;
+#   • картинки                         — image_mode=upload;
+#   • НАШ стандарт поверх источника     — минус-площадки (step_disabled_places), возрастные
+#     корректировки (step_age_bidmods), инварианты кампании (repair) — они и ДОЛЖНЫ отличаться;
+#   • статистика/статусы/служебное      — волатильно, к настройкам не относится.
+_DIFF_SKIP_KEYS = {
+    # идентичность и время
+    "id", "exportId", "name", "startDate", "endDate", "createTime", "lastShowTime",
+    "reqId", "telemetryTraceId", "__typename", "source", "flowType", "brandSurveyId",
+    # статусы/статистика/права — не настройки
+    "status", "aggregatedStatusInfo", "access", "stat", "statistics", "groupsCount",
+    "strategyLearningStatus", "isObsolete", "tags",
+    # намеренно меняем
+    "domain", "domains", "hasDomain", "href", "counters", "counterIds", "goals", "meaningfulGoals",
+    "priorityGoals", "geo", "regionIds", "restrictedRegionIds", "images", "imageHashes",
+    "isCampaignUrlEcomWithIndustry",
+    # strategyId — идентификатор стратегии в аккаунте, у копии он НОВЫЙ по определению.
+    # Сам ТИП стратегии (strategyName/strategyType/budget) сравниваем — он совпадать обязан.
+    "strategyId",
+    # наш стандарт поверх источника
+    "disabledPlaces", "bidModifiers", "disabledIps",
+}
+
+# Автопочинка (решение Семёна: «отчёт + автопочинка чего может»). Grid-поле → опция v5 Settings.
+# Путь записи — v5 campaigns.update TextCampaign.Settings, а НЕ Grid: доказано зондом на
+# porg-r7ro6tei 712850040 (стратегия DEFAULT/ручные ставки — та самая, которую Grid-апдейт
+# пропускает как _unsupported_strategy):
+#   • update с ОДНОЙ опцией — частичный: остальные 13 опций Settings не поехали (сверено до/после);
+#   • Grid-имена подтверждены round-trip'ом: v5 ADD_METRICA_TAG YES→NO → Grid hasAddMetrikaTagToUrl
+#     true→false (не по созвучию имён). isAlternativeTextsEnabled/hasExtendedGeoTargeting — те же
+#     имена, что уже читает grid_finalize.read_campaign_invariants для галочек #3/#5.
+# Только эти 3: остальные расхождения (organic/placementTypes) — Grid-only, их чинит
+# step_fix_organic_placement; промо — step_attach_promos.
+# ⚠️ Ставим значение ИСТОЧНИКА (1:1), а не константу: для этих трёх «как в источнике» и наш
+# стандарт совпадают (в источнике все три false = NO), поэтому конфликта нет.
+_DIFF_V5_SETTINGS_FIX = {
+    "hasAddMetrikaTagToUrl": "ADD_METRICA_TAG",
+    "hasExtendedGeoTargeting": "ENABLE_AREA_OF_INTEREST_TARGETING",
+    "isAlternativeTextsEnabled": "ALTERNATIVE_TEXTS_ENABLED",
+}
+
+
+def _diff_norm(val, _depth: int = 0):
+    """Нормализация значения для сравнения: выкидываем skip-ключи, пустое приравниваем к None."""
+    if _depth > 6:
+        return "…"
+    if isinstance(val, dict):
+        out = {}
+        for k, v in val.items():
+            if k in _DIFF_SKIP_KEYS:
+                continue
+            nv = _diff_norm(v, _depth + 1)
+            if nv in (None, {}, [], ""):
+                continue
+            out[k] = nv
+        return out
+    if isinstance(val, list):
+        items = [_diff_norm(v, _depth + 1) for v in val]
+        items = [i for i in items if i not in (None, {}, [], "")]
+        try:
+            return sorted(items, key=lambda x: json.dumps(x, ensure_ascii=False, sort_keys=True))
+        except (TypeError, ValueError):
+            return items
+    return val
+
+
+def _diff_rows(src_row: dict, tgt_row: dict) -> list[dict]:
+    """Плоский список расхождений [{path, source, target}] между двумя нормализованными строками."""
+    out: list[dict] = []
+
+    def walk(a, b, path: str):
+        if isinstance(a, dict) and isinstance(b, dict):
+            for k in sorted(set(a) | set(b)):
+                walk(a.get(k), b.get(k), f"{path}.{k}" if path else k)
+            return
+        if a != b:
+            sa = json.dumps(a, ensure_ascii=False)[:160]
+            sb = json.dumps(b, ensure_ascii=False)[:160]
+            out.append({"path": path, "source": sa, "target": sb})
+
+    walk(_diff_norm(src_row), _diff_norm(tgt_row), "")
+    return out
+
+
+def _fix_v5_settings(ctx: CopyCtx, pairs: list, src_rows: dict, tgt_rows: dict, rep: dict) -> bool:
+    """Автопочинка 3 опций Settings по значению ИСТОЧНИКА через v5 campaigns.update.
+
+    Возвращает True, если хоть одна кампания реально обновлена (тогда target-строки надо перечитать).
+    Только TEXT_CAMPAIGN: у прочих типов блок Settings живёт в другом блоке — вслепую не трогаем.
+    Любая ошибка → в rep['fix_errors'], сверка ниже всё равно покажет остаточное расхождение."""
+    if not (ctx.v5_call and ctx.target_token):
+        return False
+    types = {}
+    for c in (_rj(ctx.src_dir / "campaigns.json") or []):
+        if isinstance(c, dict):
+            types[str(c.get("Id") or "")] = str(c.get("Type") or "")
+    updated = False
+    for src_id, tgt_id in pairs:
+        s, t = src_rows.get(src_id), tgt_rows.get(tgt_id)
+        if not s or not t:
+            continue
+        if types.get(str(src_id)) != "TEXT_CAMPAIGN":
+            rep["fix_skipped"] += 1
+            continue
+        settings = []
+        for grid_key, option in _DIFF_V5_SETTINGS_FIX.items():
+            src_val, tgt_val = s.get(grid_key), t.get(grid_key)
+            # Grid не отдал поле у источника → чинить не от чего (fail-safe, не гадаем).
+            if not isinstance(src_val, bool) or not isinstance(tgt_val, bool) or src_val == tgt_val:
+                continue
+            settings.append({"Option": option, "Value": "YES" if src_val else "NO"})
+        if not settings:
+            continue
+        try:
+            j = ctx.v5_call("campaigns", "update", ctx.target_token, ctx.target_login,
+                            {"Campaigns": [{"Id": int(tgt_id), "TextCampaign": {"Settings": settings}}]})
+            errs = ((j.get("result") or {}).get("UpdateResults") or [{}])[0].get("Errors") or j.get("error")
+            if errs:
+                rep["fix_errors"].append(f"кампания {tgt_id}: {json.dumps(errs, ensure_ascii=False)[:180]}")
+                continue
+            rep["fixed_campaigns"] += 1
+            rep["fixed_options"] += len(settings)
+            updated = True
+        except Exception as e:  # noqa: BLE001
+            rep["fix_errors"].append(f"кампания {tgt_id}: {str(e)[:180]}")
+    return updated
+
+
+def step_settings_diff(ctx: CopyCtx) -> dict:
+    """Сверка настроек источник ↔ копия по кукам + автопочинка того, что умеем.
+
+    Чиним ТОЛЬКО 3 опции v5 Settings (`_DIFF_V5_SETTINGS_FIX`) — ставим значение источника 1:1.
+    Остальное — по-прежнему report-only (organic/placement чинит step_fix_organic_placement,
+    промо — step_attach_promos; оба зовутся ДО этого шага). Сверка считается ПОСЛЕ починки —
+    отчёт показывает остаточное расхождение, а не то, что мы уже исправили.
+
+    Требует обе куки (source_grid + grid). Нет одной — честный skip, а не молчаливый «ок»:
+    пустой отчёт не должен выглядеть как «расхождений нет»."""
+    rep = {"status": "skip", "pairs": 0, "diff_campaigns": 0, "diffs": [], "errors": [],
+           "fixed_campaigns": 0, "fixed_options": 0, "fix_skipped": 0, "fix_errors": []}
+    if ctx.source_grid is None or ctx.grid is None:
+        rep["errors"].append("нет куки источника или цели — сверка настроек не выполнена")
+        return rep
+    pairs = []
+    for src_id, tgt_id in (ctx.maps.get("campaigns") or {}).items():
+        try:
+            pairs.append((int(src_id), int(tgt_id)))
+        except (TypeError, ValueError):
+            continue
+    if not pairs:
+        rep["errors"].append("нет пар кампаний источник→цель")
+        return rep
+    try:
+        src_rows = ctx.source_grid.campaigns_edit_rows([s for s, _ in pairs])
+        tgt_rows = ctx.grid.campaigns_edit_rows([t for _, t in pairs])
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"чтение настроек по кукам: {str(e)[:200]}")
+        return rep
+
+    # Автопочинка ДО сверки: иначе отчёт покажет расхождения, которые мы только что закрыли.
+    if _fix_v5_settings(ctx, pairs, src_rows, tgt_rows, rep):
+        try:
+            tgt_rows = ctx.grid.campaigns_edit_rows([t for _, t in pairs])
+        except Exception as e:  # noqa: BLE001
+            rep["fix_errors"].append(f"перечитывание цели после починки: {str(e)[:160]}")
+        ctx.log(f"настройки Settings: починено {rep['fixed_campaigns']} кампаний "
+                f"({rep['fixed_options']} опций 1:1 с источником)"
+                + (f", ошибок {len(rep['fix_errors'])}" if rep["fix_errors"] else ""))
+
+    for src_id, tgt_id in pairs:
+        s, t = src_rows.get(src_id), tgt_rows.get(tgt_id)
+        if not s or not t:
+            rep["errors"].append(f"кампания {src_id}→{tgt_id}: нет данных Grid "
+                                 f"({'источник' if not s else 'цель'})")
+            continue
+        rep["pairs"] += 1
+        d = _diff_rows(s, t)
+        if d:
+            rep["diff_campaigns"] += 1
+            rep["diffs"].append({"source_id": src_id, "target_id": tgt_id,
+                                 "name": str(s.get("name") or "")[:70], "items": d[:20]})
+    rep["status"] = "ok" if rep["pairs"] and not rep["diff_campaigns"] else (
+        "diff" if rep["diff_campaigns"] else "skip")
+    ctx.log(f"сверка настроек по кукам: пар {rep['pairs']}, с расхождениями {rep['diff_campaigns']}"
+            + (f", ошибок {len(rep['errors'])}" if rep["errors"] else ""))
     return rep

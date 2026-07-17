@@ -199,6 +199,7 @@ def _build_tp1_adgroups(
     grid_cookie: str | None = None,
     base_sitelinks: list | None = None,
     tp_code: str = "tp1",
+    all_feeds_list: list | None = None,
 ) -> dict:
     """Наполнить РСЯ (tp1 ЕПК) группами БАТЧЕМ через v501:
     adgroups.add (с TrackingParams и minus) → keywords.add → adimages.add → ads.add(TextAd+Image).
@@ -586,6 +587,80 @@ def _build_tp1_adgroups(
                         rep["shopping_filters"][int(_raw_id)] = {"tab": "CONDITION", "conditions": _conds}
             except Exception as e:  # noqa: BLE001
                 rep["errors"].append(f"shopping(Grid addShoppingAds): {str(e)[:120]}")
+
+    # ── Фаза 4a: «Все фиды» — ОДНА группа на каждый разрешённый фид (shopping + listing) ──────
+    # Тег «все фиды»: вместо fan-out N кампаний (по фидам) — ОДНА кампания с group-on-feed.
+    # Группы не несут TextAd/ключей — только ShoppingAd + ListingAd. Имя уникально по фиду.
+    # Независимо от with_shopping: Phase 4a запускается как отдельный путь при наличии all_feeds_list.
+    if all_feeds_list:
+        rep.setdefault("listing_ads", 0)
+        rep.setdefault("shopping_ads", 0)
+        rep.setdefault("shopping_ad_ids", [])
+        _af_default_text = "Новые автомобили в наличии. Большой выбор. Скидки до 45% при покупке. Тест-драйв."
+        try:
+            from .create_set_assets import SHOPPING_DEFAULT_TEXT as _af_sdt  # noqa: PLC0415
+            _af_default_text = _af_sdt
+        except Exception:  # noqa: BLE001
+            pass
+        for _feed_entry in all_feeds_list:
+            if not _feed_entry:
+                continue
+            _fid = int(_feed_entry[0]) if _feed_entry[0] else 0
+            _fnm = str(_feed_entry[1]) if len(_feed_entry) > 1 and _feed_entry[1] else ""
+            if not _fid:
+                continue
+            _gn_af = f"Товарная галерея · {(_fnm or str(_fid))}"[:255]
+            _new_ag = None
+            if tp_code == "tp5":
+                # tp5 (TEXT_CAMPAIGN): группа через GridClient с search-профилем (атомарно)
+                try:
+                    _gcl_af = gc.GridCreateClient(login, cookie=grid_cookie)
+                    _gaf_items = [gc.build_adgroup(
+                        campaign_id=int(campaign_id), name=_gn_af, region_ids=rids,
+                        keywords=[], minus_keywords=[], autotargeting_profile="search_tp2")]
+                    _gaf_ids = _gcl_af.add_adgroups(_gaf_items)
+                    _new_ag = _gaf_ids[0] if _gaf_ids else None
+                except Exception as _e:  # noqa: BLE001
+                    rep.setdefault("errors", []).append(f"all_feeds grp tp5({_fid}): {str(_e)[:120]}")
+            else:
+                # tp1 ЕПК: группа через v501 adgroups.add
+                try:
+                    _ja_af = _v5_call("adgroups", "add", token, login, {"AdGroups": [{
+                        "Name": _gn_af, "CampaignId": int(campaign_id),
+                        "RegionIds": rids, "TrackingParams": _UTM_TEMPLATE_TP1,
+                    }]})
+                    _r_af = ((_ja_af.get("result") or {}).get("AddResults") or [{}])[0]
+                    if not _r_af.get("Errors"):
+                        _new_ag = _r_af.get("Id")
+                    else:
+                        rep.setdefault("errors", []).append(
+                            f"all_feeds grp tp1({_fid}): {_r_af.get('Errors')}")
+                except Exception as _e:  # noqa: BLE001
+                    rep.setdefault("errors", []).append(f"all_feeds grp tp1({_fid}): {str(_e)[:120]}")
+            if not _new_ag:
+                continue
+            # ShoppingAd + ListingAd через Grid (без баллов). Без brand-фильтра — весь фид.
+            _af_shop_item = [{"adgroup_id": int(_new_ag), "feed_id": _fid,
+                              "vendor": None, "collection_id": None, "model": [],
+                              "name": _gn_af, "brand_field": "vendor", "model_field": "model"}]
+            _af_build: dict = {"listing_name_by_shop": {}}
+            try:
+                _gcl_afs = gf.get_grid_client(login, cookie=grid_cookie)
+                _af_ids = _gcl_afs.add_shopping_ads(_af_shop_item)
+                _af_shop = [int(x) for x in _af_ids if x]
+                rep["shopping_ad_ids"].extend(_af_shop)
+                rep["shopping_ads"] += len(_af_shop)
+                if _af_shop:
+                    try:
+                        _gcl_afs.set_default_text(_af_shop, _fid, _af_default_text)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    _grid_add_listings_with_name_filters(
+                        gf.get_grid_client(login, cookie=grid_cookie),
+                        _af_shop, _af_build, _fid, _af_default_text)
+                    rep["listing_ads"] += _af_build.get("listing_ads", 0)
+            except Exception as _e:  # noqa: BLE001
+                rep.setdefault("errors", []).append(f"all_feeds shop({_fid}): {str(_e)[:120]}")
     return rep
 
 def _pack_read_glitch(key: str, site_type: str, pack_tp: str) -> bool:
@@ -632,8 +707,16 @@ def _build_tp1_from_pack(
     tp_code: str = "tp1",
     sitelinks: list | None = None,
     grid_cookie: str | None = None,
+    only_gks: set | None = None,
+    only_cts: set | None = None,
+    all_feeds_list: list | None = None,
 ) -> dict:
     """Наполнить РСЯ (tp1/tp5 ЕПК) бренд-группами из пака M3.
+
+    all_feeds_list (тег «все фиды»): [(feed_id, feed_name, …), …] — в одной кампании создаётся
+    ГРУППА НА КАЖДЫЙ фид (ShoppingAd + ListingAd) вместо fan-out N кампаний. Бренд-группы из
+    пака получают только TextAd (without_shopping=True при all_feeds_list). Если all_feeds_list
+    пуст или None — прежнее поведение (per-brand-group shopping через feed_id).
 
     tp_code: код пака M3 для gather() — 'tp1' для РСЯ-кампаний, 'tp5' для комбинированных
     поисковых. По умолчанию 'tp1' (обратная совместимость).
@@ -652,9 +735,41 @@ def _build_tp1_from_pack(
         # Для ТОВАРНОЙ ГАЛЕРЕИ по фиду это НЕ блокер: фид-товарка не зависит от бренд-пака →
         # проваливаемся в фид-фолбэк ниже (создаст товарную галерею по фиду). Иначе — честный скип
         # (defer=True при глобальном сбое чтения M3 — пункт уйдёт на докрутку).
+        # ИСКЛЮЧЕНИЕ: пак пуст ПО ЗАМЫСЛУ (ЕПК/аудиторные группы avtolajt_bu/sk_krs — нет ключей).
+        # Два пути:
+        #   (а) only_gks задан (tp5): ct0000+gk роутинг → дефолтный bypass.
+        #   (б) only_gks=None (tp1): проверяем структуру — если у tp_code есть semantic-ct0000-gk items,
+        #       тоже обходим «пак недоступен». При реальном глитче — дефолт-дефер в обоих случаях.
         if not (with_shopping and feed_id):
-            return {"skipped": "пак недоступен (мост M3?)",
-                    "defer": _pack_read_glitch(key, site_type, tp_code)}
+            _glitch = _pack_read_glitch(key, site_type, tp_code)
+            _can_bypass = False
+            if not _glitch:
+                if only_gks:
+                    _can_bypass = True          # tp5/camp_names-маршрут: only_gks задан
+                else:
+                    # tp1-путь: нет only_gks → смотрим структуру на ct0000+semantic-gk
+                    try:
+                        from .create_set_structure import _load_struct as _ls0, _slepok_key as _sk0
+                        _sd0 = _ls0()
+                        _dl0 = next((x for x in (_sd0.get("directologists") or [])
+                                     if x.get("key") == _sk0(slepok)), None)
+                        _st0 = next((s for s in ((_dl0.get("site_types") or []) if _dl0 else [])
+                                     if s.get("name") == site_type), None)
+                        for _tp0 in ((_st0.get("tp") or []) if _st0 else []):
+                            if _tp0.get("code") != tp_code:
+                                continue
+                            _can_bypass = any(
+                                (it.get("gk") or "").strip()
+                                and not re.search(r"aon_n000", it.get("gk") or "")
+                                for _g in (_tp0.get("groups") or [])
+                                for it in (_g.get("items") or [])
+                                if (it.get("gc") or "").startswith("ct0000")
+                            )
+                            break
+                    except Exception:   # noqa: BLE001 — структура недоступна: дефолт-пропуск
+                        pass
+            if not _can_bypass:
+                return {"skipped": "пак недоступен (мост M3?)", "defer": _glitch}
         pack = {}
 
     text0 = _trim_clean(texts[0] if texts else "", 81) or "Официальный дилер. Тест-драйв и выгодные условия по кредиту. Авто в наличии."
@@ -682,17 +797,56 @@ def _build_tp1_from_pack(
     _items = [] if _struct_names else _struct_items(slepok, site_type, tp_code)
     if segment:
         _items = [it for it in _items if _ct_segment(it["ct"]) == segment]
+    # camp_names-маршрутизация (задача 7): группы кампании ограничены её gk/ct (structure_to_campaigns).
+    # gk-фильтр — приоритетен (per-adgroup, _multi); ct-фильтр — для нон-мульти (нет ct-коллизии).
+    _og = {g for g in (only_gks or ()) if g} or None
+    _oc = {c for c in (only_cts or ()) if c} or None
+    if _og is not None:
+        _items = [it for it in _items
+                  if (it.get("gk") or "") in _og
+                  or (not (it.get("gk") or "") and _oc is not None and it["ct"] in _oc)]
     _multi = bool(_items) and any(v > 1 for v in Counter(it["ct"] for it in _items).values())
     if _multi:
         _units = [(it["ct"], it.get("gk") or "", it.get("name") or "")
                   for it in _items if it["ct"] in pack]
     else:
-        _units = [(ct, "", "") for ct in sorted(pack.keys())]
+        _pk = sorted(pack.keys())
+        if _oc is not None:                       # нон-мульти camp_names: только ct кампании
+            _pk = [ct for ct in _pk if ct in _oc]
+        _units = [(ct, "", "") for ct in _pk]
+    # Фолбэк для ЕПК/аудиторных групп (ct0000+явный семантичный gk, напр. avto_sk, avtolajt_bu):
+    # _struct_items пропускает ct0000 → _items пуст → _units тоже пуст, но only_gks задаёт
+    # конкретные структурные группы. Читаем их напрямую из структуры (кэш _load_struct).
+    # Явный gk в JSON + нет "aon_n000" (gc-артефактов харвеста) = семантичный слаг.
+    if not _units:
+        try:
+            from .create_set_structure import _load_struct as _ls_ct0, _slepok_key as _sk_ct0
+            _sd_ct0 = _ls_ct0()
+            _k_ct0 = _sk_ct0(slepok)
+            _dl_ct0 = next((x for x in (_sd_ct0.get("directologists") or []) if x.get("key") == _k_ct0), None)
+            _st_ct0 = next((s for s in ((_dl_ct0.get("site_types") or []) if _dl_ct0 else [])
+                            if s.get("name") == site_type), None)
+            _ct0_found: list = []
+            for _tp_ct0 in ((_st_ct0.get("tp") or []) if _st_ct0 else []):
+                if _tp_ct0.get("code") != tp_code:
+                    continue
+                for _g_ct0 in (_tp_ct0.get("groups") or []):
+                    for _it_ct0 in (_g_ct0.get("items") or []):
+                        _igk = (_it_ct0.get("gk") or "").strip()
+                        # Только явный семантичный gk (не gc-производный вида aon_n000_…)
+                        if _igk and not re.search(r"aon_n000", _igk) and (_og is None or _igk in _og):
+                            _ct0_found.append({"ct": "ct0000", "gk": _igk,
+                                               "name": (_it_ct0.get("t") or _g_ct0.get("name") or "").strip()})
+            if _ct0_found:
+                _units = [(it["ct"], it.get("gk") or "", it.get("name") or "") for it in _ct0_found]
+                _multi = True   # group_name берётся из _uname (структурный item.t), а не авто-ct
+        except Exception:       # noqa: BLE001 — фолбэк не должен ронять создание
+            pass
     for ct, _gk, _uname in _units:
         _grp_pack = (pack.get(ct, {}).get("_groups") or {}).get(_gk) if _gk else None
         data = _grp_pack or pack.get(ct) or {}
-        if not data.get("positive"):
-            continue                           # пропускаем ct без ключей слепка
+        if not data.get("positive") and not (ct == "ct0000" and _gk):
+            continue  # ct0000+gk = ЕПК/аудиторная группа без ключей (норма); остальные → пропускаем
         if segment and _ct_segment(ct) != segment:
             continue                           # сегментный фильтр (Марки/Модели как в боевых)
         # не-авто (dmp): имя = leadgen(описание кодера) → структура t(выгрузка) → ct; НИКОГДА авто-фид «Авто».
@@ -846,13 +1000,17 @@ def _build_tp1_from_pack(
     # products_only (Смарт-Баннер/Фиды «без ТГО»): пропускаем Phase 3 (TextAd/ComboAd).
     # tp5 TextAd/комбинированные создаются в той же Фазе 3 — условие tp5 убрано (2026-07-07).
     _skip_text_ads = products_only
+    # all_feeds_list: бренд-группы NOT получают per-group shopping (Phase 4 off);
+    # Phase 4a внутри _build_tp1_adgroups создаёт shopping+listing PER feed.
+    _eff_shopping = with_shopping and not bool(all_feeds_list)
     rep = _build_tp1_adgroups(token, login, campaign_id, region_ids, href, groups,
                                sitelink_set_id=sitelink_set_id,
                                base_sitelinks=base_sitelinks or None,
-                               feed_id=feed_id, with_shopping=with_shopping, feed_models=feed_models,
+                               feed_id=feed_id, with_shopping=_eff_shopping, feed_models=feed_models,
                                autotarget=autotarget, keep_keywords=keep_keywords,
                                products_only=_skip_text_ads,
-                               grid_cookie=grid_cookie, tp_code=tp_code)
+                               grid_cookie=grid_cookie, tp_code=tp_code,
+                               all_feeds_list=all_feeds_list)
     rep["cts"] = len(pack)
     rep["groups_built"] = len(groups)
     rep["callouts_pool"] = len(co_pool)
@@ -995,6 +1153,9 @@ def _create_tp1_single(
     products_only: bool = False,
     grid_cookie: str | None = None,
     job=None,
+    only_gks: set | None = None,
+    only_cts: set | None = None,
+    all_feeds_list: list | None = None,
 ) -> dict:
     """Создать ОДНУ кампанию tp1 (РСЯ) через ЕПК v501 с указанным mode.
 
@@ -1059,7 +1220,7 @@ def _create_tp1_single(
         # единственный надёжный путь для tp1 v5 = прямой v5 campaigns.update после создания.
         _minus_note = None
         try:
-            _minus_note = _apply_campaign_direct_minus(token, login, campaign_id, slepok, site_type, "tp1")
+            _minus_note = _apply_campaign_direct_minus(token, login, campaign_id, slepok, site_type, "tp1", city=city)
         except Exception as _me:  # noqa: BLE001 — best-effort, не валим кампанию
             _minus_note = f"minus upd упал: {str(_me)[:120]}"
 
@@ -1070,7 +1231,9 @@ def _create_tp1_single(
             feed_id=feed_id, with_shopping=with_shopping, feed_models=feed_models,
             segment=segment, ai_title2=ai_title2, city=city, autotarget=autotarget,
             keep_keywords=keep_keywords,
-            products_only=products_only, sitelinks=sitelinks, grid_cookie=grid_cookie)
+            products_only=products_only, sitelinks=sitelinks, grid_cookie=grid_cookie,
+            only_gks=only_gks, only_cts=only_cts,
+            all_feeds_list=all_feeds_list)
         if tp1_build.get("error") or tp1_build.get("skipped") or not tp1_build.get("adgroups"):
             _fail = _cleanup_partial("tp1 не дозаполнена: " + str(tp1_build.get("error") or tp1_build.get("skipped") or "группы не созданы"))
             if tp1_build.get("defer"):
@@ -1166,7 +1329,7 @@ def _create_tp1_single(
                                      grid_cookie=grid_cookie)
         slset = a.get("sitelink_set_id")
         wkl = int(budget_rub) if budget_rub else int(cpa_value_rub) * 10
-        _mp_disabled = _enabled_minus_places()            # #21 минус-площадки РСЯ (v5-путь tp1)
+        _mp_disabled = _enabled_minus_places(slepok)      # #21 минус-площадки РСЯ (v5-путь tp1, per-слепок)
         try:
             _finalize_rsya(
                 login, campaign_id, name=name, goal_id=goal_id or 0,
@@ -1223,6 +1386,9 @@ def _create_tp1_campaign(
     no_cpa: bool = False,
     grid_cookie: str | None = None,
     job=None,
+    only_gks: set | None = None,
+    only_cts: set | None = None,
+    all_feeds_list: list | None = None,
 ) -> dict:
     """Создать ПАРУ кампаний tp1 (РСЯ): cpc-вариант (AVERAGE_CPA) + cpa-вариант (PAY_FOR_CONVERSION).
 
@@ -1255,7 +1421,8 @@ def _create_tp1_campaign(
         ai_title2=ai_title2, sitelinks=sitelinks,
         callout_texts=callout_texts, callout_ids=callout_ids,
         autotarget=autotarget, keep_keywords=keep_keywords, products_only=products_only,
-        grid_cookie=grid_cookie, job=job,
+        grid_cookie=grid_cookie, job=job, only_gks=only_gks, only_cts=only_cts,
+        all_feeds_list=all_feeds_list,
     )
     cpa_result = None
     # no_cpa → пропускаем вариант оплаты за конверсии; отмена → cpa тоже пропускаем (cpc уже достроен).
@@ -1270,7 +1437,8 @@ def _create_tp1_campaign(
             ai_title2=ai_title2, sitelinks=sitelinks,
             callout_texts=callout_texts, callout_ids=callout_ids,
             autotarget=autotarget, keep_keywords=keep_keywords, products_only=products_only,
-            grid_cookie=grid_cookie, job=job,
+            grid_cookie=grid_cookie, job=job, only_gks=only_gks, only_cts=only_cts,
+            all_feeds_list=all_feeds_list,
         )
     # Сводный результат: ok=True если хоть одна создалась
     ok = cpc_result.get("ok") or (bool(cpa_result) and cpa_result.get("ok"))
@@ -1677,7 +1845,8 @@ def _create_tp1_via_cookie(
     callout_texts: list | None = None, sitelinks: list | None = None,
     callout_ids: list | None = None,
     feed_id: int = 0, with_shopping: bool = False, feed_models: dict | None = None,
-    job=None,
+    job=None, only_gks: set | None = None, only_cts: set | None = None,
+    all_feeds_list: list | None = None,
 ) -> dict:
     """tp1 РСЯ ПО КУКЕ (без баллов v5) — когда исчерпан лимит (152) и пользователь согласился через
     попап. Кампания+группы+комбинаторные объявления через grid_create.create_full.
@@ -1694,7 +1863,8 @@ def _create_tp1_via_cookie(
                                                 segment=segment, ai_title2=ai_title2, city=city, tp_code="tp1",
                                                 image_map=_img_map, autotarget=autotarget,
                                                 with_shopping=with_shopping,
-                                                feed_url_by_model=_feed_url_map or None)
+                                                feed_url_by_model=_feed_url_map or None,
+                                                only_cts=only_cts)
     if not groups:
         seg_note = f", segment={segment}" if segment else ""
         # Пак пуст после ретраев → НЕ permanent-fail: помечаем defer (пункт уйдёт на отложенную
@@ -1756,7 +1926,7 @@ def _create_tp1_via_cookie(
         slepok=slepok, site_type=site_type, prefer_callout_texts=callout_texts,
         prefer_callout_ids=callout_ids)
     _slset = _assets.get("sitelink_set_id")
-    _mp_disabled = _enabled_minus_places()                   # #21 минус-площадки РСЯ (1 раз на аккаунт)
+    _mp_disabled = _enabled_minus_places(slepok)              # #21 минус-площадки РСЯ (per-слепок, 1 раз на аккаунт)
     out_campaigns = []
     for nm, _mode, pay_conv in variants:
         if job and job.get("cancel"):                        # отмена: стоп ПЕРЕД cpa-вариантом пары
@@ -1942,6 +2112,57 @@ def _create_tp1_via_cookie(
                         f"листинги(куки): 0 ListingAd из {len(_shop_ids)} ShoppingAd (feed={feed_id}) — "
                         "0 ListingAd из by-shopping — оставлена товарка без листингов")
                     print(f"[tp1-cookie] {nm}: ListingAd=0 shop={len(_shop_ids)} feed={feed_id} (graceful)", flush=True)
+            # ── Phase 4a куки: «Все фиды» — группа на каждый фид (shopping + listing) ──────────
+            # Зеркало Phase 4a в _build_tp1_adgroups (token-путь). При all_feeds_list И ok кампании
+            # создаём по одной группе Товарная галерея · {фид} на каждый фид без brand-фильтра.
+            elif ok and cid and all_feeds_list:
+                _af_ck_default = "Новые автомобили в наличии. Большой выбор. Скидки до 45% при покупке. Тест-драйв."
+                try:
+                    from .create_set_assets import SHOPPING_DEFAULT_TEXT as _af_ck_sdt  # noqa: PLC0415
+                    _af_ck_default = _af_ck_sdt
+                except Exception:  # noqa: BLE001
+                    pass
+                for _af_entry in all_feeds_list:
+                    if not _af_entry:
+                        continue
+                    _af_fid = int(_af_entry[0]) if _af_entry[0] else 0
+                    _af_fnm = str(_af_entry[1]) if len(_af_entry) > 1 and _af_entry[1] else ""
+                    if not _af_fid:
+                        continue
+                    _af_gn = f"Товарная галерея · {(_af_fnm or str(_af_fid))}"[:255]
+                    # Создаём группу через GridClient (куки-путь — только Grid)
+                    _af_new_ag = None
+                    try:
+                        _af_gcl = gc.GridCreateClient(login)
+                        _af_gitems = [gc.build_adgroup(
+                            campaign_id=int(cid), name=_af_gn, region_ids=region_ids,
+                            keywords=[], minus_keywords=[])]
+                        _af_gids = _af_gcl.add_adgroups(_af_gitems)
+                        _af_new_ag = _af_gids[0] if _af_gids else None
+                    except Exception as _afe:  # noqa: BLE001
+                        rep.setdefault("warnings", []).append(
+                            f"all_feeds(куки) grp({_af_fid}): {str(_afe)[:120]}")
+                    if not _af_new_ag:
+                        continue
+                    try:
+                        _af_gcl2 = gc.GridCreateClient(login)
+                        _af_shop_items = [{"adgroup_id": int(_af_new_ag), "feed_id": _af_fid,
+                                           "vendor": None, "collection_id": None, "model": [],
+                                           "name": _af_gn, "brand_field": "vendor", "model_field": "model"}]
+                        _af_sids = _af_gcl2.add_shopping_ads(_af_shop_items)
+                        _af_sids = [int(x) for x in _af_sids if x]
+                        if _af_sids:
+                            try:
+                                _af_gcl2.set_default_text(_af_sids, _af_fid, _af_ck_default)
+                            except Exception:  # noqa: BLE001
+                                pass
+                            _af_b2: dict = {"listing_name_by_shop": {}}
+                            _grid_add_listings_with_name_filters(
+                                _af_gcl2, _af_sids, _af_b2, _af_fid, _af_ck_default)
+                            _shop_ids.extend(_af_sids)
+                    except Exception as _afse:  # noqa: BLE001
+                        rep.setdefault("warnings", []).append(
+                            f"all_feeds(куки) shop({_af_fid}): {str(_afse)[:120]}")
             # Grid-докрутка РСЯ: уточнения/быстрые ссылки/промо на уровне кампании (без баллов).
             # БАГ-1 FIX: вызываем ВСЕГДА при ok+cid, не только при goal_id.
             # Grid принимает goalId="0" без ошибки (verified live 2026-06-24): ассеты ставятся корректно.

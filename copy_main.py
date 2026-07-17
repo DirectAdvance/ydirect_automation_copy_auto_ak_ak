@@ -82,6 +82,13 @@ def create_app() -> Flask:
     )
     app.secret_key = _get("FLASK_SECRET_KEY")
     app.permanent_session_lifetime = timedelta(days=30)
+    # Жёсткий лимит multipart-запросов на уровне Flask (до f.read() в роуте).
+    # Flask сам вернёт 413 при превышении — RAM direct-copy.service не пострадает.
+    # 64 МБ: достаточно для пачки фото (~15-20 больших JPEG) или zip-архива с десятками PNG.
+    # Должно совпадать с client_max_body_size в nginx (location ^~ /direct/api/copy_).
+    # Если лимит nginx меньше — он режет запрос СВОЕЙ HTML-страницей 413 до Flask,
+    # и фронт падает на «Unexpected token '<'» вместо внятной ошибки.
+    app.config["MAX_CONTENT_LENGTH"] = 256 * 1024 * 1024  # 256 МБ
     app.context_processor(_inject_nav_context)
 
     @app.route("/login", endpoint="login")
@@ -118,6 +125,12 @@ def create_app() -> Flask:
         copy_jobs=copy_engine._COPY_JOBS,
         copy_jobs_lock=copy_engine._COPY_JOBS_LOCK,
         feeds_preview_func=copy_engine._copy_feeds_preview,
+        feeds_check_func=copy_engine._copy_feeds_check,
+        geo_regions_func=metrika._geo_regions_list,          # legacy fallback
+        geo_regions_tree_func=metrika._geo_regions_tree,     # дерево для нового виджета
+        geo_validate_id_func=metrika._geo_is_valid_id,       # валидация id от клиента
+        images_upload_func=copy_engine._copy_images_upload,
+        target_campaigns_info_func=copy_engine._copy_target_campaigns_info,  # кол-во кампаний на цели
     )
     app.register_blueprint(bp)
     return app

@@ -67,7 +67,10 @@ def run_create_set_text(*, it: dict[str, Any], name: str, tp_code: str,
         # only_cts (split-driven слепки, напр. dmp/tp2): ct-коды ИМЕННО этого split-блока из плана
         # (create_set_plan: "tp2_split_cts"). None для авто-слепков → поведение сегмент-пути неизменно.
         # Без него cookie-путь (_tp1_pack_groups) брал весь пул слепка (34 ct) в КАЖДУЮ из 4 кампаний.
-        only_cts=it.get("tp2_split_cts"),
+        # Задача 7: camp_names-кампании передают маршрутизацию через generic only_cts/only_gks
+        # (fallback на tp2_split_cts — dmp split-путь). only_gks — per-adgroup (token-путь).
+        only_cts=(it.get("only_cts") or it.get("tp2_split_cts")),
+        only_gks=(set(it.get("only_gks") or ()) or None),
         corr=corr, ret_map=ret_map,
         token=(st_token or ""), callout_texts=callouts,
         callout_ids=callout_ids,
@@ -110,7 +113,7 @@ def run_create_set_text(*, it: dict[str, Any], name: str, tp_code: str,
                     res["minus_set_note"] = f"shared-set {_grid_minus[0]} OK (Grid)"
                 elif st_token:
                     # Grid не нашёл набор по имени → пробуем v5 как fallback
-                    _msid = get_or_create_minus_set(st_token, login, slepok, site_type, tp_code)
+                    _msid = get_or_create_minus_set(st_token, login, slepok, site_type, tp_code, city=city)
                     if _msid:
                         _mse = attach_minus_set_to_text_campaign(st_token, login, res["campaign_id"], _msid)
                         res["minus_set_id"] = _msid

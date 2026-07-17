@@ -15,6 +15,211 @@ def configure(deps: dict) -> None:
 
 
 _MINUS_SET_NAME_MARKER = "Минуса общие"  # маркер имени, как у слепков Щербаковой
+
+# ── Geo-strip guard: не допускаем собственный город аккаунта в минус-слова ──────────────────────
+# Если город аккаунта (или его склонная/адъективная форма) попадёт в минус-список кампании,
+# она заминусует собственный трафик.  Применяется ко ВСЕМ трём источникам минусов
+# (global, shared-set, pack) сразу перед финальным _minus_char_budget.
+
+_OP_STRIP_CHARS = "!+-[]\""   # операторные символы Яндекс.Директа (токен под оператором)
+
+
+def _city_geo_stems(city_name: str) -> list[str]:
+    """Prefix stems для всех падежных/адъективных форм русского названия города.
+
+    Возвращает список lowercase-стемов.  Минус-фраза ОТСЕИВАЕТСЯ, если хотя бы
+    один её токен (после снятия операторов) начинается с любого из стемов.
+
+    Алгоритм:
+    • Noun stem: снимаем флексию существительного (а/я/ь/е/о) → корень падежных форм.
+      Используем root как stем только если len(root) ≥ 5 (иначе ложные срабатывания);
+      при коротком root берём полную именительную форму (как fallback-стем).
+      ⚠ Для КОРОТКИХ городов (root < 5) именительная форма как стем НЕ покрывает склонения —
+      «уфе/уфы» не начинаются с «уфа».  Падежные формы коротких городов закрывает
+      _city_geo_declensions (точное совпадение токена), вызываемая из _strip_account_geo.
+    • Adj stem: root + «ск» — покрывает ский/ская/ского/ской/ском и т.д.
+
+    Примеры:
+      «волгоград» → ['волгоград', 'волгоградск']
+      «самара»    → ['самар', 'самарск']
+      «казань»    → ['казан', 'казанск']
+      «пермь»     → ['пермь', 'пермск']   # root «перм» = 4 < 5; «перми» поймает _city_geo_declensions
+      «уфа»       → ['уфа']              # adj_stem «уфск» < 5 → не добавляем; «уфе/уфы» → declensions
+    """
+    base = city_name.strip().lower()
+    if not base:
+        return []
+    # Вычисляем declension root (без флексии)
+    if base.endswith(("а", "я", "е", "о")):
+        root = base[:-1]
+    elif base.endswith("ь"):
+        root = base[:-1]
+    else:
+        root = base   # согласный финаль: волгоград, новосибирск, краснодар
+
+    stems: list[str] = []
+    # Noun stem (для падежных форм)
+    noun_stem = root if len(root) >= 5 else base
+    stems.append(noun_stem)
+    # Adj stem = root + «ск» (волгоградск*, самарск*, казанск*, пермск*)
+    if root.endswith("ск"):
+        adj_stem = root          # уже оканчивается на «ск» (редко)
+    else:
+        adj_stem = root + "ск"
+    if len(adj_stem) >= 5 and adj_stem not in stems:
+        stems.append(adj_stem)
+    return stems
+
+
+# ── Exact declension forms for SHORT cities (root < 5) ───────────────────────────────────────────
+# Irregular short cities whose genitive/dative/prepositional forms can't be safely
+# derived by mechanical suffix-stripping (e.g. Орёл→Орла involves vowel alternation).
+_CITY_EXACT_IRREGULAR: dict[str, set[str]] = {
+    # Орёл: ё/о alternation in declension (Орёл→Орла, not Орёла)
+    "орёл": {"орёл", "орла", "орлу", "орле", "орлом", "орлах"},
+    "орел": {"орел", "орла", "орлу", "орле", "орлом", "орлах"},  # ascii variant
+}
+
+
+def _city_geo_declensions(city_name: str) -> set[str] | None:
+    """Return exact declension forms for SHORT cities where prefix-stem matching is unsafe.
+
+    Returns None for cities with root >= 5 chars (prefix stems from _city_geo_stems suffice).
+    For short cities returns a set of lowercase exact word forms (nominative + common
+    declensions) to be matched as WHOLE TOKEN EQUALITY (core == form), NOT as a prefix.
+
+    This prevents two failure modes:
+    1. «уфе/уфы» not caught by prefix «уфа» (short-city declined forms miss).
+    2. «ковровое покрытие» falsely caught by prefix «ковров» when account is NOT in Ковров.
+       (Ковров has root len=6 → stays in stem mode; exact mode isn't used for it.)
+
+    Declension derivation:
+      -а ending (Уфа):    base + ы/е/у/ой/ою  (standard first-declension feminine)
+      -ь ending (Пермь/Тверь): root + и/ью     (third-declension feminine)
+      consonant ending:   hardcoded irregular table or nominative only (safe fallback)
+
+    Examples:
+      «уфа»   → {'уфа','уфы','уфе','уфу','уфой','уфою'}
+      «пермь» → {'пермь','перми','пермью'}
+      «тверь» → {'тверь','твери','тверью'}
+      «орёл»  → {'орёл','орла','орлу','орле','орлом','орлах'}  # irregular
+      «самара»→ None  (root «самар» len=5 ≥ 5 → prefix stem mode)
+    """
+    if not city_name:
+        return None
+    b = city_name.strip().lower()
+    if not b:
+        return None
+
+    # Compute root (same logic as _city_geo_stems)
+    if b.endswith(("а", "я", "е", "о")):
+        root = b[:-1]
+    elif b.endswith("ь"):
+        root = b[:-1]
+    else:
+        root = b
+
+    if len(root) >= 5:
+        return None  # long city — prefix stem mode is sufficient
+
+    # Irregular table first
+    if b in _CITY_EXACT_IRREGULAR:
+        return set(_CITY_EXACT_IRREGULAR[b])
+
+    forms: set[str] = {b}  # nominative always included
+
+    if b.endswith(("а", "я")):
+        r = b[:-1]
+        # Standard first-declension: gen=ы, dat=е, acc=у, instr=ой/ою, prep=е
+        forms.update({r + "ы", r + "е", r + "у", r + "ой", r + "ою"})
+    elif b.endswith("ь"):
+        r = b[:-1]
+        # Third-declension feminine: gen/dat/prep=и, instr=ью
+        forms.update({r + "и", r + "ью"})
+    # else: short consonant-ending city not in irregular table → nominative only (safe fallback)
+
+    return forms
+
+
+def _region_geo_stems(region: str) -> list[str]:
+    """Извлечь adj-стем из строки области (напр. «Волгоградская область» → «волгоградск»).
+
+    Обрабатывает только первое слово строки (прилагательное), снимает адъективное
+    окончание и восстанавливает стем на «ск».  Возвращает [] если строка пустая
+    или первое слово не распознаётся как прилагательное.
+    """
+    if not region:
+        return []
+    first = region.strip().lower().split()[0] if region.strip() else ""
+    if not first:
+        return []
+    for sfx in ("ская", "ский", "ское", "ские", "ских", "ского", "ской", "ском", "скому", "скими"):
+        if first.endswith(sfx) and len(first) > len(sfx):
+            root = first[: -len(sfx)]
+            stem = root + "ск"
+            return [stem] if len(stem) >= 5 else []
+    return []
+
+
+def _strip_account_geo(minus_words: list[str], city: str, region: str = "") -> list[str]:
+    """Убрать из minus_words фразы, содержащие собственный город/регион аккаунта.
+
+    *city*   — строка города аккаунта (может быть «Самара, Тольятти» — мультигород).
+    *region* — строка области/региона («Волгоградская область»), опционально.
+
+    Для каждой фразы из minus_words: если хотя бы один токен (после снятия операторов
+    !+-[]") начинается с вычисленного города/региона стема — фраза отсеивается.
+    Фразы без гео-вхождений остаются нетронутыми.
+
+    Returns: отфильтрованный список в исходном порядке.
+    """
+    if not minus_words or (not city and not region):
+        return minus_words
+
+    all_stems: list[str] = []
+    # all_exact: whole-token equality set for short cities (root < 5 chars).
+    # Short cities use exact declension matching instead of prefix matching to avoid
+    # both missed forms («уфе» not caught by prefix «уфа») and over-stripping
+    # («уфавтодор» falsely caught by prefix «уфа»).
+    all_exact: set[str] = set()
+
+    for part in city.split(","):
+        p = part.strip()
+        if not p:
+            continue
+        for s in _city_geo_stems(p):
+            if s and s not in all_stems:
+                all_stems.append(s)
+        forms = _city_geo_declensions(p)
+        if forms:
+            all_exact.update(forms)
+
+    for s in _region_geo_stems(region):
+        if s and s not in all_stems:
+            all_stems.append(s)
+
+    if not all_stems and not all_exact:
+        return minus_words
+
+    def _tok_core(tok: str) -> str:
+        return tok.strip(_OP_STRIP_CHARS).lower()
+
+    def _phrase_has_own_geo(phrase: str) -> bool:
+        for tok in phrase.lower().split():
+            core = _tok_core(tok)
+            if not core:
+                continue
+            # Whole-token equality for short cities (declension set)
+            if core in all_exact:
+                return True
+            # Prefix-stem match for long cities and adjective forms (…ская область)
+            for stem in all_stems:
+                if core.startswith(stem):
+                    return True
+        return False
+
+    stripped = [w for w in minus_words if not _phrase_has_own_geo(w)]
+    return stripped
 # Лимиты Директа, символы БЕЗ пробелов (офиц. дока + v5 ref, см. CODER.md):
 _MINUS_SHARED_SET_CHAR_BUDGET = 4_096    # библиотечный набор (negativekeywordsharedsets) — как группа
 _MINUS_CAMPAIGN_CHAR_BUDGET = 20_000     # минусы НАПРЯМУЮ на кампании (NegativeKeywords кампании)
@@ -72,7 +277,8 @@ def _minus_char_budget(words: list[str], budget: int = _MINUS_CAMPAIGN_CHAR_BUDG
 
 
 def _get_or_create_minus_set(token: str, login: str,
-                              slepok: str, site_type: str, tp_code: str) -> int | None:
+                              slepok: str, site_type: str, tp_code: str,
+                              city: str = "", region: str = "") -> int | None:
     """Вернуть id shared минус-набора для tp2/tp4 (зеркалит путь tp1/tp5).
 
     1. Берём существующий набор «Минуса общие» из аккаунта — КАК ДЕЛАЮТ tp1/tp5
@@ -106,6 +312,8 @@ def _get_or_create_minus_set(token: str, login: str,
             if _w.lower() not in _seen:
                 _seen.add(_w.lower())
                 words.append(_w)
+        # GEO-GUARD: убрать собственный город/регион аккаунта — иначе заминусует свой трафик
+        words = _strip_account_geo(words, city, region)
         words = _minus_char_budget(words, _MINUS_SHARED_SET_CHAR_BUDGET)  # набор ≤4096, не 20000
         if not words:
             return None
@@ -149,7 +357,8 @@ def _attach_minus_set_to_text_campaign(token: str, login: str,
 
 def _apply_campaign_direct_minus(token: str, login: str,
                                   campaign_id: int,
-                                  slepok: str, site_type: str, tp_code: str) -> str | None:
+                                  slepok: str, site_type: str, tp_code: str,
+                                  city: str = "", region: str = "") -> str | None:
     """Повесить минусы campaign-direct (pavlov/kryuchkova) напрямую на кампанию.
 
     Механизм: campaigns.update с NegativeKeywords: {"Items": [...]}.
@@ -177,6 +386,8 @@ def _apply_campaign_direct_minus(token: str, login: str,
                 if _w.lower() not in _seen:
                     _seen.add(_w.lower())
                     words.append(_w)
+        # GEO-GUARD: убрать собственный город/регион аккаунта из всех источников минусов
+        words = _strip_account_geo(words, city, region)
         words = _minus_char_budget(words, _MINUS_CAMPAIGN_CHAR_BUDGET)  # ≤20 000 симв.
         if not words:
             return "нет минус-слов (ни вкладка «Минус-слова», ни пак слепка) — campaign-direct пропущен"

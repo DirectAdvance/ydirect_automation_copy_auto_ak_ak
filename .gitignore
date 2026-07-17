@@ -36,8 +36,35 @@ _tmp*
 check_*
 tmp_*
 
+# Исключения: это ПРОД-инструменты, а не разовые check_*-скрипты. Под правило выше они
+# попали случайно — из-за чего их правки не версионировались (2026-07-17).
+#   check_tone_of_voice.py — импортируется tone_of_voice_watcher.py (systemd) и tone_baseline.py
+#   check_minus_geo.py     — CLI-аудит: свой город аккаунта в его же минус-словах
+!tools/check_tone_of_voice.py
+!scripts/check_minus_geo.py
+
 # Пароли пользователей редактора контента (plaintext) — НЕ в git
 content_editor_access.json
 
 # Локальные бэкап-снапшоты правок (анти-коллизии двух окон) — НЕ в git
 dev/snapshots/
+
+# Рабочий мусор — НЕ в git (2026-07-17, разгребали 98 незакоммиченных файлов)
+# ВНИМАНИЕ: в .gitignore комментарий — только ОТДЕЛЬНОЙ строкой. Inline "#" после
+# паттерна НЕ комментарий: строка целиком станет паттерном и не совпадёт ни с чем.
+
+# черновики агентов, аудиты, разовые дампы (12k+ файлов)
+scratchpad/
+# staging-факты слепков, пересобираются харвестом
+reconciler_staging/
+# бэкапы редактора и снапшоты перед массовыми правками
+*.editbak
+*.editbak.*
+.bak_*
+# разовые пробы (логи + json-результаты)
+_probe_*
+_grind_*
+_tone_baseline_result.json
+# рантайм-журнал edit-очереди и staging-структура
+slepki_edits_audit.jsonl
+slepki_structure.staging.json

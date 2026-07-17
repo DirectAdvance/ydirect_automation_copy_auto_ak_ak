@@ -53,8 +53,8 @@ _AUDIT_JSONL = _HERE / "slepki_edits_audit.jsonl"
 # Сериализует правки между собой в пределах процесса (доп. к бакет-гейту "" в воркере).
 _EDIT_LOCK = threading.RLock()
 
-_EDIT_KINDS = {"edit_keywords", "edit_callouts", "toggle_aon_aoff",
-               "add_ct_group", "remove_ct_group", "set_name_override"}
+_EDIT_KINDS = {"edit_keywords", "edit_callouts", "save_assets", "save_minus_sets",
+               "toggle_aon_aoff", "add_ct_group", "remove_ct_group", "set_name_override"}
 
 # gc-формат (кодер группы): ct0019_aon_n000_r0000_ct001_ag011_g00
 _GC_RE = re.compile(
@@ -167,6 +167,14 @@ def _pack_rel_callouts(site_type: str, tp: str, ct: str, fname: str, group: str 
     return posixpath.join(site_type, tp, ctn, "callouts", _group_fname(fname, kp._group_slug(group)))
 
 
+def _pack_rel_minus_sets(site_type: str, slepok: str) -> str:
+    """Относительный путь файла ИМЕНОВАННЫХ наборов минус-слов внутри kontent_oktyabr.
+    Уровень (слепок × тип сайта): {site_type}/_minus_sets/{slepok}.json.
+    НЕ per-(tp,ct) (в отличие от keywords/callouts): наборы — свойство кабинета целиком.
+    Отдельно от {slepok}_minus_shared.txt (тот читает движок создания — не трогаем)."""
+    return posixpath.join(site_type, "_minus_sets", f"{slepok}.json")
+
+
 def _dst_abs(rel: str) -> str:
     return os.path.join(kp.PACK_ROOT, *rel.split("/"))
 
@@ -204,6 +212,50 @@ def _ssh_write_m3(remote_abs: str, text: str) -> tuple[bool, str]:
         return True, ""
     except Exception as e:  # noqa: BLE001
         return False, str(e)[:200]
+
+
+def _ssh_write_m3_many(remote_abs_list: list[str], text: str) -> tuple[bool, str]:
+    """Записать ОДИН И ТОТ ЖЕ text во МНОЖЕСТВО файлов M3 за ОДНУ ssh-сессию (батч).
+    Пишем text во временный файл, затем cp→временный per-файл + атомарный mv в цель
+    (читатель create-РК видит либо старое, либо новое целое). Пустой список → no-op."""
+    if not remote_abs_list:
+        return True, ""
+    tmp = f"/tmp/.slepki_asset.{int(time.time()*1000)}.{os.getpid()}"
+    parts = [f"cat > {shlex.quote(tmp)}"]
+    for ra in remote_abs_list:
+        rdir = posixpath.dirname(ra)
+        dtmp = f"{ra}.tmpasset"
+        parts.append(
+            f"mkdir -p {shlex.quote(rdir)} && cp {shlex.quote(tmp)} {shlex.quote(dtmp)} "
+            f"&& mv -f {shlex.quote(dtmp)} {shlex.quote(ra)}")
+    parts.append(f"rm -f {shlex.quote(tmp)}")
+    cmd = " && ".join(parts)
+    try:
+        r = subprocess.run(
+            kp._M3_SSH + [cmd],
+            input=text, text=True, capture_output=True, timeout=300,
+        )
+        if r.returncode != 0:
+            return False, (r.stderr or "")[-300:]
+        return True, ""
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)[:200]
+
+
+def _dual_write_pack_files_same(rels: list[str], text: str) -> dict:
+    """Записать один и тот же text во МНОЖЕСТВО пак-файлов: DST (локально, атомарно, по одному —
+    быстро) + M3 (одна батч-ssh-сессия). Возвращает сводный отчёт. Оба назначения обязательны:
+    только DST → orphan-cleanup синка сотрёт; только M3 → следующая джоба увидит после ночного синка."""
+    dst_fail: list[dict] = []
+    for rel in rels:
+        try:
+            _atomic_write_local(_dst_abs(rel), text)
+        except Exception as e:  # noqa: BLE001
+            dst_fail.append({"rel": rel, "error": str(e)[:120]})
+    m3_ok, m3_err = _ssh_write_m3_many([_m3_abs(r) for r in rels], text)
+    return {"ok": (not dst_fail) and m3_ok,
+            "count": len(rels), "dst_ok": len(rels) - len(dst_fail),
+            "m3_ok": m3_ok, "m3_error": (m3_err or None), "dst_fail": dst_fail[:20]}
 
 
 def _dual_write_pack_file(rel: str, text: str) -> dict:
@@ -398,6 +450,198 @@ def apply_edit_callouts(spec: dict, actor: str = "") -> dict:
     _audit("edit_callouts", actor,
            {"slepok": slepok, "site_type": site_type, "tp": tp, "ct": ct,
             "callouts_rows": len(calls)}, result)
+    return result
+
+
+# ── ассеты слепка (агрегат уточнений + библиотечных минусов по слепку × тип сайта) ──
+def _iter_tp_ct(slepok: str, site_type: str) -> list[tuple[str, str]]:
+    """Уникальные (tp_code, ct) пары структуры для (слепок, тип сайта).
+    ct = ct#### из gc элемента (нормализованный); gc без ct → GENERAL_CT (ct0000).
+    Порядок стабилен (первое вхождение). Не найден слепок/тип → []."""
+    struct = _load_struct()
+    d = _find_dir(struct, slepok)
+    s = _find_site(d, site_type) if d else None
+    if not s:
+        return []
+    seen: set = set()
+    out: list[tuple[str, str]] = []
+    for t in (s.get("tp") or []):
+        tp = (t.get("code") or "").strip()
+        if not tp:
+            continue
+        for g in _iter_containers(t):
+            for it in (g.get("items") or []):
+                if not isinstance(it, dict):
+                    continue
+                ct = kp._norm_ct(_gc_ct(it.get("gc") or "")) or kp.GENERAL_CT
+                key = (tp, ct)
+                if key not in seen:
+                    seen.add(key)
+                    out.append(key)
+    return out
+
+
+def read_assets(slepok: str, site_type: str) -> dict:
+    """Агрегат УНИКАЛЬНЫХ уточнений (callouts) и библиотечных минус-слов (minus_shared) по ВСЕМ
+    (tp,ct) слепка × тип сайта. Read-only (вызывается синхронно из web). Не падает без файлов."""
+    slepok = (slepok or "").strip()
+    site_type = (site_type or "").strip()
+    calls: list[str] = []
+    minus_shared: list[str] = []
+    try:
+        pairs = _iter_tp_ct(slepok, site_type)
+    except Exception:  # noqa: BLE001
+        pairs = []
+    for tp, ct in pairs:
+        try:
+            calls.extend(kp.read_callouts(site_type, tp, ct, slepok))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            kd = os.path.join(kp._ct_dir(site_type, tp, ct), "keywords")
+            minus_shared.extend(kp._read_lines(os.path.join(kd, f"{slepok}_minus_shared.txt")))
+        except Exception:  # noqa: BLE001
+            pass
+    return {"callouts": kp._dedup(calls), "minus_shared": kp._dedup(minus_shared), "pairs": len(pairs)}
+
+
+def apply_save_assets(spec: dict, actor: str = "") -> dict:
+    """spec: {slepok, site_type, callouts?:[...], minus_shared?:[...]}.
+    ВЕЕРОМ пишет переданный набор во ВСЕ (tp,ct) слепка × тип сайта (dual-write DST+M3):
+      • callouts    → callouts/{slepok}.txt   (уровень слепок×тип, продублирован по ct);
+      • minus_shared → keywords/{slepok}_minus_shared.txt (библиотека, тоже по ct).
+    Пишутся ТОЛЬКО ключи, присланные в spec (отсутствует callouts → уточнения не трогаем;
+    отсутствует minus_shared → библиотеку не трогаем → не затираем пустым)."""
+    slepok = (spec.get("slepok") or "").strip()
+    site_type = (spec.get("site_type") or "").strip()
+    if not (slepok and site_type):
+        return {"ok": False, "error": "нужны slepok/site_type"}
+    has_callouts = "callouts" in spec
+    has_minus = "minus_shared" in spec
+    if not (has_callouts or has_minus):
+        return {"ok": False, "error": "нечего сохранять (нет callouts/minus_shared)"}
+    calls: list[str] = []
+    minus_shared: list[str] = []
+    errs: list[str] = []
+    if has_callouts:
+        calls, e1 = _clean_kw_lines(spec.get("callouts"), minus=False)
+        errs += e1
+    if has_minus:
+        minus_shared, e2 = _clean_kw_lines(spec.get("minus_shared"), minus=True)
+        errs += e2
+    if errs:
+        return {"ok": False, "error": "валидация: " + "; ".join(errs[:10])}
+    with _EDIT_LOCK:
+        pairs = _iter_tp_ct(slepok, site_type)
+        if not pairs:
+            return {"ok": False, "error": f"нет (tp,ct) в структуре для {slepok}/{site_type}"}
+        write: dict = {}
+        ok = True
+        if has_callouts:
+            rels = [_pack_rel_callouts(site_type, tp, ct, f"{slepok}.txt") for tp, ct in pairs]
+            r = _dual_write_pack_files_same(rels, "\n".join(calls) + ("\n" if calls else ""))
+            write["callouts"] = r
+            ok = ok and bool(r["ok"])
+        if has_minus:
+            rels = [_pack_rel(site_type, tp, ct, f"{slepok}_minus_shared.txt") for tp, ct in pairs]
+            r = _dual_write_pack_files_same(rels, "\n".join(minus_shared) + ("\n" if minus_shared else ""))
+            write["minus_shared"] = r
+            ok = ok and bool(r["ok"])
+        result = {"ok": ok, "pairs": len(pairs),
+                  "callouts_rows": (len(calls) if has_callouts else None),
+                  "minus_shared_rows": (len(minus_shared) if has_minus else None),
+                  "write": write}
+    _audit("save_assets", actor,
+           {"slepok": slepok, "site_type": site_type, "pairs": len(pairs),
+            "callouts_rows": (len(calls) if has_callouts else None),
+            "minus_shared_rows": (len(minus_shared) if has_minus else None)}, result)
+    return result
+
+
+# ── именованные наборы минус-слов (несколько на слепок × тип сайта) ───────────
+def _norm_set_name(raw) -> str:
+    """Имя набора: trim + вырезаем управляющие символы; каскад пробелов → один."""
+    s = (str(raw) if raw is not None else "").strip()
+    s = _CTRL_RE.sub("", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def read_minus_sets(slepok: str, site_type: str) -> dict:
+    """Прочитать ИМЕНОВАННЫЕ наборы минус-слов слепка × тип сайта из ЛОКАЛЬНОЙ копии пака.
+    Возвращает {"sets": [{"name","phrases":[...]}], "count": N}. Read-only (синхронно из web).
+    Файла нет / битый JSON → пустой список (не падаем)."""
+    slepok = (slepok or "").strip()
+    site_type = (site_type or "").strip()
+    out: list[dict] = []
+    if slepok and site_type:
+        path = _dst_abs(_pack_rel_minus_sets(site_type, slepok))
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            data = None
+        # формат файла: {"slug","site_type","sets":[...]} ИЛИ голый список [...] — принимаем оба
+        raw_sets = None
+        if isinstance(data, dict):
+            raw_sets = data.get("sets")
+        elif isinstance(data, list):
+            raw_sets = data
+        for it in (raw_sets or []):
+            if not isinstance(it, dict):
+                continue
+            name = _norm_set_name(it.get("name"))
+            phrases = [str(p) for p in (it.get("phrases") or []) if str(p).strip()]
+            if name or phrases:
+                out.append({"name": name, "phrases": phrases})
+    return {"sets": out, "count": len(out)}
+
+
+def apply_save_minus_sets(spec: dict, actor: str = "") -> dict:
+    """spec: {slepok, site_type, sets:[{name, phrases:[...]}]}.
+    ЗАМЕНЯЕТ (перезаписывает целиком) файл именованных наборов слепка × тип сайта — dual-write
+    DST+M3. Пустой список sets → пишем пустой файл (легитимное «наборов нет»). Каждый набор:
+    имя (обязательно) + фразы (валидация как минус-слова, дедуп caseless внутри набора).
+    НЕ трогает {slepok}_minus_shared.txt (библиотека движка) и keywords/callouts."""
+    slepok = (spec.get("slepok") or "").strip()
+    site_type = (spec.get("site_type") or "").strip()
+    if not (slepok and site_type):
+        return {"ok": False, "error": "нужны slepok/site_type"}
+    raw_sets = spec.get("sets")
+    if not isinstance(raw_sets, list):
+        return {"ok": False, "error": "нужен список sets"}
+    clean: list[dict] = []
+    errs: list[str] = []
+    seen_names: set = set()
+    for idx, it in enumerate(raw_sets):
+        if not isinstance(it, dict):
+            errs.append(f"набор #{idx + 1}: не объект")
+            continue
+        name = _norm_set_name(it.get("name"))
+        phrases, e = _clean_kw_lines(it.get("phrases"), minus=True)
+        errs += [f"«{name or ('#' + str(idx + 1))}»: {x}" for x in e]
+        if not name and not phrases:
+            continue  # полностью пустой набор — тихо отбрасываем
+        if not name:
+            errs.append(f"набор #{idx + 1}: пустое имя")
+            continue
+        key = name.lower()
+        if key in seen_names:
+            errs.append(f"дубль имени набора: «{name}»")
+            continue
+        seen_names.add(key)
+        clean.append({"name": name, "phrases": phrases})
+    if errs:
+        return {"ok": False, "error": "валидация: " + "; ".join(errs[:10])}
+    payload = {"slug": slepok, "site_type": site_type, "sets": clean}
+    text = json.dumps(payload, ensure_ascii=False, indent=1) + "\n"
+    with _EDIT_LOCK:
+        rel = _pack_rel_minus_sets(site_type, slepok)
+        r = _dual_write_pack_file(rel, text)
+    result = {"ok": bool(r["ok"]), "sets": len(clean),
+              "phrases_total": sum(len(s["phrases"]) for s in clean), "write": r}
+    _audit("save_minus_sets", actor,
+           {"slepok": slepok, "site_type": site_type, "sets": len(clean),
+            "phrases_total": result["phrases_total"]}, result)
     return result
 
 
@@ -668,6 +912,8 @@ def handle_job(body: dict) -> dict:
     fn = {
         "edit_keywords": apply_edit_keywords,
         "edit_callouts": apply_edit_callouts,
+        "save_assets": apply_save_assets,
+        "save_minus_sets": apply_save_minus_sets,
         "toggle_aon_aoff": apply_toggle_aon_aoff,
         "add_ct_group": apply_add_ct_group,
         "remove_ct_group": apply_remove_ct_group,

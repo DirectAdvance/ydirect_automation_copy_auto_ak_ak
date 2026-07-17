@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from flask import jsonify, request
 
 from . import create_set_context as _csctx  # _parse_targeting_modes (чистый хелпер, без configure)
@@ -59,6 +61,10 @@ def _resolve_region(city: str | None):
         return (r[0] if r else "r0000"), oblast
     finally:
         conn.close()
+
+# Плейсхолдер города в именах позиций slepki_structure.json (город-агностичный шаблон слепка).
+# Подставляется городом аккаунта в _emit_struct (tp6/tp7). Токен согласован с Семёном 2026-07-16.
+_CITY_PLACEHOLDER = "ГОРОД"
 
 def _build_name(is_master: bool, is_autotarget: bool, pay: str, r_code: str, oblast: str,
                 sq: str = "site", cat: str | None = None, ct: str = "ct0000") -> str:
@@ -118,6 +124,34 @@ def _rule_sets(site_type: str, city: str) -> dict:
         pass
     return d
 
+def _resolve_struct_site_type(slepok: str, requested_site_type: str) -> str:
+    """Резолвит тип сайта для чтения СТРУКТУРЫ/КОНТЕНТ-ПАКА слепка.
+
+    Нормальный путь: requested_site_type есть в структуре → возвращает его 1:1.
+    Фолбэк: нет → берёт первый доступный site_type слепка с контентом (tp или
+    source_campaigns), возвращает его имя.
+    Нет ни одного → возвращает requested_site_type (поведение прежнее: пусто).
+
+    ВАЖНО: применять ТОЛЬКО для чтения структуры/пака. НЕ применять к _rule_sets,
+    бюджету, CPA, региону, городу — там нужен именно запрошенный тип сайта из формы."""
+    key = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
+    struct = _json("slepki_structure.json").get("directologists", [])
+    d = next((x for x in struct if x.get("key") == key), None)
+    if not d:
+        return requested_site_type
+    site_types = d.get("site_types") or []
+    # Нормальный путь: запрошенный тип найден → возвращаем как есть
+    if any(s.get("name") == requested_site_type for s in site_types):
+        return requested_site_type
+    # Фолбэк: первый тип с реальным контентом (tp или source_campaigns)
+    for s in site_types:
+        if (s.get("tp") and len(s["tp"]) > 0) or (
+                s.get("source_campaigns") and len(s["source_campaigns"]) > 0):
+            return s.get("name") or requested_site_type
+    # Вообще нет доступного типа → прежнее поведение (пусто)
+    return requested_site_type
+
+
 def _tp_plan_names(slepok: str, site_type: str, tp_code: str) -> list[dict]:
     """Позиции tp из структуры слепка — одна запись на каждый item (per-кампания).
 
@@ -134,7 +168,8 @@ def _tp_plan_names(slepok: str, site_type: str, tp_code: str) -> list[dict]:
     d = next((x for x in struct if x.get("key") == key), None)
     if not d:
         return []
-    st = next((s for s in d.get("site_types", []) if s.get("name") == site_type), None)
+    _st_key = _resolve_struct_site_type(slepok, site_type)
+    st = next((s for s in d.get("site_types", []) if s.get("name") == _st_key), None)
     if not st:
         return []
     result: list[dict] = []
@@ -177,7 +212,8 @@ def _tp_seg_name_override(slepok: str, site_type: str, tp_code: str, seg: str, m
     d = next((x for x in struct if x.get("key") == key), None)
     if not d:
         return None
-    st = next((s for s in d.get("site_types", []) if s.get("name") == site_type), None)
+    _st_key = _resolve_struct_site_type(slepok, site_type)
+    st = next((s for s in d.get("site_types", []) if s.get("name") == _st_key), None)
     if not st:
         return None
     tp = next((t for t in st.get("tp", []) if t.get("code") == tp_code), None)
@@ -200,7 +236,8 @@ def _tp_seg_modes(slepok: str, site_type: str, tp_code: str, seg: str) -> list |
     d = next((x for x in struct if x.get("key") == key), None)
     if not d:
         return None
-    st = next((s for s in d.get("site_types", []) if s.get("name") == site_type), None)
+    _st_key = _resolve_struct_site_type(slepok, site_type)
+    st = next((s for s in d.get("site_types", []) if s.get("name") == _st_key), None)
     if not st:
         return None
     tp = next((t for t in st.get("tp", []) if t.get("code") == tp_code), None)
@@ -224,7 +261,8 @@ def _tp_splits(slepok: str, site_type: str, tp_code: str) -> list[dict] | None:
     d = next((x for x in struct if x.get("key") == key), None)
     if not d:
         return None
-    st = next((s for s in d.get("site_types", []) if s.get("name") == site_type), None)
+    _st_key = _resolve_struct_site_type(slepok, site_type)
+    st = next((s for s in d.get("site_types", []) if s.get("name") == _st_key), None)
     if not st:
         return None
     tp = next((t for t in st.get("tp", []) if t.get("code") == tp_code), None)
@@ -247,7 +285,8 @@ def _source_campaign_manifest(slepok: str, site_type: str) -> dict | None:
     if not manifest_name:
         return None
     manifest = _json(manifest_name)
-    if manifest.get("slepok") != key or manifest.get("site_type") != site_type:
+    _st_key = _resolve_struct_site_type(slepok, site_type)
+    if manifest.get("slepok") != key or manifest.get("site_type") != _st_key:
         return None
     return manifest
 
@@ -281,6 +320,20 @@ def _explicit_feed_subset(g: dict, feeds: list[dict]):
         return [f for f in feeds
                 if _feed_key((f or {}).get("url") or (f or {}).get("name") or "") == want]
     return [f for f in feeds if _feed_role_of(f) == frole]
+
+_KW_NAME_RE = re.compile(r"(^|[^а-яё])кс([^а-яё]|$)")
+
+
+def _txt_autotarget(name: str, tgt: str) -> bool:
+    """Автотаргет tp2/tp4/tp5 из ИМЕНИ camp_names (авторитетно) → метка кодера (fallback).
+    «Автотаргетинг» в имени → True; «КС/ключев» → False; иначе — по gc-таргетингу."""
+    low = (name or "").lower()
+    if "автотаргет" in low:
+        return True
+    if _KW_NAME_RE.search(low) or "ключев" in low:
+        return False
+    return str(tgt) == "автотаргетинг"
+
 
 def _set_plan_response():
     """План набора (предпросмотр, БЕЗ создания): какие кампании и с какими именами создадутся."""
@@ -351,6 +404,11 @@ def _set_plan_response():
         warnings.append("аккаунт не найден в local_gsheet_sites — используются значения из формы")
     if r_code == "r0000":
         warnings.append("регион не определён — r0000")
+    # Фолбэк структуры: если у слепка нет site_type из формы — используем первый доступный.
+    # Бюджет/CPA/регион/цель — по-прежнему по запрошенному site_type (из формы).
+    struct_site_type = _resolve_struct_site_type(agent, site_type)
+    if struct_site_type != site_type:
+        warnings.append(f"нет структуры для «{site_type}» — набор построен из «{struct_site_type}»")
 
     token, _ = _token_for_login(login, row.get("agency_account") or "", _direct_tokens())
     existing = set()
@@ -393,55 +451,69 @@ def _set_plan_response():
                 feeds = []
         if not feeds:
             warnings.append("у аккаунта нет РАЗРЕШЁННЫХ фидов в «Глобальных правилах» — товарные не создадутся")
-        # Галочка «по одному фиду» (single_feed): план тоже строим по /yandex.xml, чтобы
-        # предпросмотр/счётчик совпадали с реальным созданием (иначе превью показывало все фиды,
-        # а создавался один → выглядело как «галочка не работает»).
-        # len(feeds) >= 1 (не >1): единственный ЧУЖОЙ фид (credit-page и т.п.) тоже должен
-        # проходить strict-проверку /yandex.xml — иначе галочка «по одному фиду» игнорировалась.
+        # Галочка «профильные фиды» (single_feed): план строим по профильному набору
+        # { yandex.xml, yandex-used-auto.xml } ∩ разрешённые в аккаунте.
+        # Оба фида есть → tp7/tp5/tp1-товарка ×2 (fan-out); один → ×1; ни одного → feed_alert.
+        # len(feeds) >= 1 (не >1): единственный ЧУЖОЙ фид тоже должен проходить strict-проверку.
         if bool(body.get("single_feed")) and len(feeds) >= 1:
-            from .create_set_input import (SINGLE_FEED_KEY, FALLBACK_SINGLE_FEED_KEY,
-                                           feed_row_matches_single_feed, prefer_single_feed_rows)
+            from .create_set_input import (PROFILE_FEED_KEYS, FALLBACK_SINGLE_FEED_KEY,
+                                           prefer_single_feed_rows)
             # ⚠️ НЕ импортировать _first_url_feed из create_set_feeds напрямую: тот модуль требует
             # configure() (инъекции _filter_allowed_feed_rows и др.) → NameError на свежем процессе.
-            # Берём инжектированную blueprint-обёртку (сама вызывает configure) из наших deps.
-            # Резолвим /yandex.xml через API+Grid (как tp1): _first_url_feed видит полные Grid-объекты
-            # с URL-полями, тогда как feeds здесь уже усечены до {id, name} → prefer_single_feed_rows
-            # не находит совпадения по имени и молча берёт первый фид (credit-page-01-a.xml и т.п.).
-            # Подтверждение фолбэк-фида: UI шлёт ключ feed_confirmed (кнопка «Продолжить с
-            # другим фидом»), старый путь читал single_feed_fallback → рассинхрон, фолбэк на
-            # каталог-фид не открывался. Принимаем ОБА ключа.
+            # Берём инжектированную blueprint-обёртку из наших deps (globals().update(deps)).
+            # _first_url_feed видит полные Grid-объекты с URL-полями — feeds здесь уже усечены до
+            # {id, name} и prefer_single_feed_rows не находит совпадения по имени.
+            # Подтверждение фолбэк-фида: UI шлёт feed_confirmed (кнопка «Продолжить с другим фидом»),
+            # старый путь читал single_feed_fallback → рассинхрон. Принимаем ОБА ключа.
             _sf_fb_confirmed = bool(body.get("single_feed_fallback") or body.get("feed_confirmed"))
-            _sf_id = _first_url_feed(token, login, row.get("agency_account") or "", strict=True)
-            if not _sf_id:
-                # /yandex.xml нет → ищем фолбэк-фид (кнопка «Продолжить с другим фидом»)
+            # Collect IDs for ALL present profile feeds (strict per-key lookup via API+Grid).
+            _profile_ids: list[int] = []
+            _profile_keys: list[str] = []   # реально совпавшие ключи (для честного текста warning)
+            for _pk in PROFILE_FEED_KEYS:
+                _pid = _first_url_feed(token, login, row.get("agency_account") or "",
+                                       strict=True, url_key=_pk)
+                if _pid and _pid not in _profile_ids:
+                    _profile_ids.append(_pid)
+                    _profile_keys.append(_pk)
+            if _profile_ids:
+                # Profile feeds found → filter plan to those feeds only (fan-out по 1-2 фидам)
+                _sf_list = [f for f in feeds if int(f.get("id") or 0) in _profile_ids]
+                if _sf_list:
+                    feeds = _sf_list
+                    if not _sf_fb_confirmed:
+                        warnings.append(
+                            f"«профильные фиды»: план и создание — {len(feeds)} фид(а): "
+                            + ", ".join(f"/{k}" for k in _profile_keys))
+                else:
+                    feeds = prefer_single_feed_rows(feeds)
+                    warnings.append(
+                        f"«профильные фиды»: целевые фиды (ids={_profile_ids}) "
+                        f"не в allow-list — взяты первые доступные")
+            else:
+                # Ни одного профильного фида → ищем фолбэк (кнопка «Продолжить с другим фидом»)
                 _sf_fallback_id = _first_url_feed(token, login, row.get("agency_account") or "",
                                                   strict=True, url_key=FALLBACK_SINGLE_FEED_KEY)
                 if not _sf_fallback_id and feeds:
                     # канонического фолбэка тоже нет → предлагаем ПЕРВЫЙ разрешённый фид аккаунта
-                    # (правило Семёна 03.07 #86: выбор второго фида должен быть всегда, когда
-                    # в аккаунте есть хоть один фид — иначе кнопка пропадала из модалки)
+                    # (правило Семёна 03.07 #86: выбор второго фида должен быть всегда)
                     _sf_fallback_id = int(feeds[0].get("id") or 0)
                 if _sf_fallback_id:
                     _sf_fallback_name = next((str(f.get("name") or "") for f in feeds
                                               if int(f.get("id") or 0) == _sf_fallback_id), "")
                 if _sf_fallback_id and _sf_fb_confirmed:
-                    _sf_id = _sf_fallback_id                   # пользователь подтвердил фолбэк
-                    _sf_fallback_id = 0
-                    warnings.append(f"«по одному фиду»: /{SINGLE_FEED_KEY} нет — по решению пользователя "
-                                    f"используется фолбэк-фид {FALLBACK_SINGLE_FEED_KEY}")
-            if _sf_id:
-                _sf_list = [f for f in feeds if int(f.get("id") or 0) == _sf_id]
-                if _sf_list:
-                    feeds = _sf_list
-                    if not _sf_fb_confirmed:
-                        warnings.append(f"«по одному фиду»: план и создание — только /{SINGLE_FEED_KEY}")
+                    # пользователь подтвердил фолбэк-фид (кнопка в feed_alert)
+                    _sf_list = [f for f in feeds if int(f.get("id") or 0) == _sf_fallback_id]
+                    feeds = _sf_list if _sf_list else prefer_single_feed_rows(feeds)
+                    _sf_fallback_id = 0   # feed_alert не нужен (уже подтверждено)
+                    warnings.append(
+                        f"«профильные фиды»: профильных нет — по решению пользователя "
+                        f"используется фолбэк-фид {FALLBACK_SINGLE_FEED_KEY}")
                 else:
-                    feeds = prefer_single_feed_rows(feeds)
-                    warnings.append(f"«по одному фиду»: целевой фид не в allow-list (id={_sf_id}), взят первый доступный")
-            else:
-                # strict-поиск не нашёл /yandex.xml ни через API, ни через Grid
-                warnings.append(f"⚠️ /{SINGLE_FEED_KEY} не найден в аккаунте — товарные кампании (tp7) не будут созданы")
-                feeds = []  # убрать product из плана (_emit_struct выдаёт кампании только по feeds)
+                    # strict-поиск не нашёл ни одного профильного фида → feed_alert
+                    warnings.append(
+                        f"⚠️ профильные фиды ({', '.join('/' + k for k in PROFILE_FEED_KEYS)}) "
+                        f"не найдены в аккаунте — товарные кампании (tp7/tp5) не будут созданы")
+                    feeds = []  # убрать product из плана (_emit_struct выдаёт только по feeds)
 
     used: set = set()
 
@@ -506,7 +578,8 @@ def _set_plan_response():
                 "pre_draft_only": True,
             })
         return jsonify({
-            "login": login, "site_type": site_type, "r_code": r_code, "oblast": oblast,
+            "login": login, "site_type": site_type, "struct_site_type": struct_site_type,
+            "r_code": r_code, "oblast": oblast,
             "feeds": 0, "count": len(source_plan), "resolved_cpa": cpa,
             "resolved_budget": budget, "renamed": sum(1 for item in source_plan if item["renamed"]),
             "plan": source_plan, "warnings": warnings,
@@ -533,57 +606,119 @@ def _set_plan_response():
             # tp1_rsy: имя кампании строим по канону CODER.md из структуры слепка.
             # Каждый item структуры tp1 = отдельная кампания (item.t = имя таргетинга/кампании).
             if str(v) == "tp1_rsy":
-                # СЕГМЕНТЫ, как в боевых аккаунтах Щербаковой: 1 РСЯ-кампания на «Марки» и
-                # 1 на «Модели» (бренды/модели — ГРУППЫ ВНУТРИ, не отдельные кампании).
-                # Сегмент позиции структуры определяем по первому ct её группового кодера (gc).
-                # cpc+cpa-пара строится внутри движка (_create_tp1_campaign).
-                tp1_items = _tp1_plan_names(agent, site_type, r_code)
-                if not tp1_items:
-                    warnings.append("tp1 (РСЯ): нет в структуре слепка — пропущен")
-                    continue
-                segs_present = []
-                for pos in tp1_items:
-                    seg = _ct_segment(pos.get("gc", ""))
-                    if seg not in segs_present:
-                        segs_present.append(seg)
-                segs_present = [s for s in ("Марки", "Модели", "Общее") if s in segs_present] or ["Марки"]
-                # Фильтр по выбранным сегментам (selected_pos[1].labels = ["Марки","Модели"]).
+                # ЗАДАЧА 7: КАМПАНИЯ = item.camp_names (1:1 со «Структурой слепков»), НЕ сегмент-коллапс.
+                # Источник — structure_to_campaigns (зеркало _build_export_rows). Управляющие теги
+                # «х3»/«все фиды» — ТОЛЬКО из campaign_tags (не seg_modes, DoD 7.4/7.6).
+                from .create_set_structure import (
+                    structure_to_campaigns as _s2c, campaign_protected_tags_bulk as _cptags,
+                    detect_protected_tags as _detect_tags,
+                    X3_TAG as _X3, ALL_FEEDS_TAG as _ALLF, X3_VARIANTS as _X3V,
+                    CATALOG_TAG as _CAT)
                 sel_tp1 = _sel_labels(1)
-                for seg in segs_present:
-                    if sel_tp1 is not None and seg not in sel_tp1:
+                camps1 = _s2c(agent, site_type, "tp1")
+                _cn_words = " ".join((c.get("name") or "") for c in camps1).lower()
+
+                def _tp1_mode(nm: str, tgt: str) -> tuple:
+                    """(autotarget, keep_keywords). Явная метка режима В ИМЕНИ кампании — авторитетна
+                    (1:1 с реальным именем; «КС» → автотаргет ВЫКЛ, не угадываем по gc-состоянию).
+                    Имя без метки → падаем на таргетинг из кодера (gc-состояние)."""
+                    low = (nm or "").lower()
+                    has_at_name = "автотаргет" in low
+                    has_kw_name = bool(re.search(r"(^|[^а-яё])кс([^а-яё]|$)", low)) or "ключев" in low
+                    if has_at_name and has_kw_name:
+                        return True, True                       # «КС + Автотаргетинг»
+                    if has_at_name:
+                        return True, False                      # «Автотаргетинг»
+                    if has_kw_name:
+                        return False, True                      # «КС» — автотаргет ВЫКЛ (как имя)
+                    # имя без явного режима → по таргетингу кодера (gc-состояние aon/aoff)
+                    return (True, False) if str(tgt) == "автотаргетинг" else (False, True)
+
+                if camps1:
+                    tags1 = _cptags(agent, site_type, "tp1")
+                    _sib1 = [x.get("name") or "" for x in camps1]  # guard х3: сверка КС/Автотаргет-сиблингов
+                    for c in camps1:
+                        cname = c.get("name") or ""
+                        # фильтр выбранных позиций: по имени кампании ИЛИ по её доминантному сегменту
+                        if sel_tp1 is not None and cname not in sel_tp1 and (c.get("segment") not in sel_tp1):
+                            continue
+                        # управляющие теги: реестр OVERRIDE → UI-эвристика (х3/все фиды)
+                        _ctags = _detect_tags(c, tags1.get(cname), siblings=_sib1)
+                        _og = list(c.get("gks") or [])          # маршрутизация контента per-group
+                        _oc = list(c.get("cts") or [])
+                        _all_feeds = _ALLF in _ctags            # tp1-РСЯ: все фиды группами (флаг движку)
+                        _low_cn = cname.lower()
+                        # Фид/Смарт-Баннер кампания camp_names → товарная БЕЗ ТГО (load-bearing:
+                        # products_only форсит shopping, как прежняя процедурная добавка).
+                        _prod_only = ("фид" in _low_cn) or ("смарт-баннер" in _low_cn) or ("смарт-банер" in _low_cn)
+
+                        def _emit_tp1(label_body: str, at: bool, keep: bool):
+                            label = label_body + (f" - {oblast}" if oblast else "")
+                            nm, renamed = _uniq(f"tp1_cpc_site — {label}")
+                            _p = {"type": "tp1_rsy", "variant": v, "pay": None, "feed_id": None,
+                                  "feed_name": None, "name": nm, "renamed": renamed,
+                                  "budget": rs["cpc_budget"], "cpa": rs["cpc_cpa"],
+                                  "tp1_segment": None, "tp1_label": label,
+                                  "autotarget": (at or _prod_only), "autotarget_keep_keywords": keep,
+                                  "tp1_only_gks": _og, "tp1_only_cts": _oc,
+                                  "tp1_all_feeds": _all_feeds, "camp_key": cname}
+                            if _prod_only:
+                                _p["products_only"] = True
+                            # тег «каталоги»: форсит shopping/листинги в tp1 (SchoppingAd+ListingAd).
+                            # Для tp3/tp5/tp7 листинги эмитируются ВСЕГДА — тег no-op, не проставляем.
+                            if _CAT in _ctags:
+                                _p["tp1_catalog"] = True
+                            plan.append(_p)
+
+                        if _X3 in _ctags:
+                            # тег «х3» → 3 кампании (КС / автотаргет / КС+автотаргет), КАЖДОЙ ПОЛНЫЙ бюджет
+                            for _var in _X3V:
+                                _emit_tp1(f"{cname} - {_var['suffix']}", _var["autotarget"], _var["keep_keywords"])
+                        else:
+                            _at, _keep = _tp1_mode(cname, c.get("targeting") or "")
+                            _emit_tp1(cname, _at, _keep)
+                else:
+                    # FALLBACK (нет camp_names/парс-сбой): прежний сегмент-путь — слепки без данных не ломаем.
+                    tp1_items = _tp1_plan_names(agent, site_type, r_code)
+                    if not tp1_items:
+                        warnings.append("tp1 (РСЯ): нет в структуре слепка — пропущен")
                         continue
-                    # Источник режимов tp1 (приоритет):
-                    #   1) tp.seg_modes[seg] из структуры — гибридное разведение на 3 варианта
-                    #      {'Автотаргет','КС','КС+Автотаргет'} (полный автотаргет / только ключи /
-                    #      ключи+автотаргет одной кампанией). 3-я ветка возникает ТОЛЬКО если
-                    #      'КС+Автотаргет' явно задан в seg_modes.
-                    #   2) fallback — боевой профиль _slepok_tp_modes (РОВНО как у реального аккаунта;
-                    #      не-гибридные слепки НЕ меняются). None (нет профиля, напр. Терехов) → КС.
-                    modes = _tp_seg_modes(agent, site_type, "tp1", seg)
-                    if modes is None:
-                        modes = _slepok_tp_modes(agent, site_type, "tp1", seg)
-                    if modes is None:
-                        modes = ["КС"]
-                    for mode in modes:
-                        if mode == "КС+Автотаргет":
-                            at, keep_kw, suffix = True, True, "КС + Автотаргетинг"
-                        elif mode == "Автотаргет":
-                            at, keep_kw, suffix = True, False, "Автотаргетинг"
-                        else:                               # 'КС' и любой неизвестный → КС (совместимость)
-                            at, keep_kw, suffix = False, True, "КС"
-                        _ov1 = _tp_seg_name_override(agent, site_type, "tp1", seg, mode)
-                        label = (_ov1 or f"РСЯ - {seg} - {suffix}") + (f" - {oblast}" if oblast else "")
-                        nm, renamed = _uniq(f"tp1_cpc_site — {label}")
-                        plan.append({"type": "tp1_rsy", "variant": v, "pay": None, "feed_id": None,
-                                     "feed_name": None, "name": nm, "renamed": renamed,
-                                     "budget": rs["cpc_budget"], "cpa": rs["cpc_cpa"],
-                                     "tp1_segment": seg, "tp1_label": label, "autotarget": at,
-                                     "autotarget_keep_keywords": keep_kw})
-                # Смарт-Баннер / Фиды — товарные объявления БЕЗ ТГО + автотаргет (как боевые),
-                # отдельной кампанией если профиль слепка их ведёт. В боевых КС-варианта нет.
+                    segs_present = []
+                    for pos in tp1_items:
+                        seg = _ct_segment(pos.get("gc", ""))
+                        if seg not in segs_present:
+                            segs_present.append(seg)
+                    segs_present = [s for s in ("Марки", "Модели", "Общее") if s in segs_present] or ["Марки"]
+                    for seg in segs_present:
+                        if sel_tp1 is not None and seg not in sel_tp1:
+                            continue
+                        modes = _tp_seg_modes(agent, site_type, "tp1", seg)
+                        if modes is None:
+                            modes = _slepok_tp_modes(agent, site_type, "tp1", seg)
+                        if modes is None:
+                            modes = ["КС"]
+                        for mode in modes:
+                            if mode == "КС+Автотаргет":
+                                at, keep_kw, suffix = True, True, "КС + Автотаргетинг"
+                            elif mode == "Автотаргет":
+                                at, keep_kw, suffix = True, False, "Автотаргетинг"
+                            else:
+                                at, keep_kw, suffix = False, True, "КС"
+                            _ov1 = _tp_seg_name_override(agent, site_type, "tp1", seg, mode)
+                            label = (_ov1 or f"РСЯ - {seg} - {suffix}") + (f" - {oblast}" if oblast else "")
+                            nm, renamed = _uniq(f"tp1_cpc_site — {label}")
+                            plan.append({"type": "tp1_rsy", "variant": v, "pay": None, "feed_id": None,
+                                         "feed_name": None, "name": nm, "renamed": renamed,
+                                         "budget": rs["cpc_budget"], "cpa": rs["cpc_cpa"],
+                                         "tp1_segment": seg, "tp1_label": label, "autotarget": at,
+                                         "autotarget_keep_keywords": keep_kw})
+                # Смарт-Баннер / Фиды — товарные БЕЗ ТГО + автотаргет (процедурная добавка, load-bearing).
+                # Пропускаем формат, если он УЖЕ покрыт camp_names-кампанией (нет двойной эмиссии).
                 for fmt in ("Смарт-Баннер", "Фиды"):
                     if sel_tp1 is not None and fmt not in sel_tp1:
                         continue
+                    if ("фид" if fmt == "Фиды" else "смарт") in _cn_words:
+                        continue                        # формат уже есть как отдельная camp_names-кампания
                     if "Автотаргет" not in (_slepok_tp_modes(agent, site_type, "tp1", fmt) or []):
                         continue                        # формат есть только как автотаргет (как боевые)
                     label = f"РСЯ - {fmt} - Автотаргетинг" + (f" - {oblast}" if oblast else "")
@@ -613,23 +748,52 @@ def _set_plan_response():
                     if seg not in segs4:
                         segs4.append(seg)
                 segs4 = [s for s in ("Марки", "Модели", "Общее") if s in segs4] or ["Марки"]
-                # Донор-сегмент: у слепка нет своих «Моделей» в tp4 (напр. Терехов) → добавляем
-                # «Модели» от донора, чтобы структура совпала с другими слепками (контент в fill
-                # возьмёт _build_text_from_pack у донора). Только если донор реально покрывает site_type.
-                if "Модели" not in segs4 and _segment_donor("Модели", "tp4", site_type):
-                    segs4.append("Модели")
                 sel4 = _sel_labels(4)
-                for seg in segs4:
-                    if sel4 is not None and seg not in sel4:
-                        continue
+                # ЗАДАЧА 7: КАМПАНИЯ = item.camp_names (не сегмент-коллапс). pays + profile-гейт целы.
+                from .create_set_structure import structure_to_campaigns as _s2c4
+                camps4 = _s2c4(agent, site_type, "tp4")
+                if camps4:
+                    for c in camps4:
+                        cname = c.get("name") or ""
+                        if sel4 is not None and cname not in sel4 and (c.get("segment") not in sel4):
+                            continue
+                        _at4 = _txt_autotarget(cname, c.get("targeting") or "")
+                        _og4 = list(c.get("gks") or [])
+                        _oc4 = list(c.get("cts") or [])
+                        for pay in pays:
+                            paycode = "cpc" if pay == "tcpa" else "cpa"
+                            label = cname + (f" - {oblast}" if oblast else "")
+                            nm, renamed = _uniq(f"tp4_{paycode}_site — {label}")
+                            plan.append({"type": "search_dynamic", "variant": v, "pay": pay,
+                                         "feed_id": None, "feed_name": None, "name": nm, "renamed": renamed,
+                                         "budget": _bud(pay), "cpa": _cpa_for(pay), "tp": "tp4",
+                                         "tp4_segment": None, "tp4_label": label, "autotarget": _at4,
+                                         "only_gks": _og4, "only_cts": _oc4, "camp_key": cname})
+                else:
+                    # FALLBACK — прежний сегмент-путь (нет camp_names)
+                    for seg in segs4:
+                        if sel4 is not None and seg not in sel4:
+                            continue
+                        for pay in pays:
+                            paycode = "cpc" if pay == "tcpa" else "cpa"
+                            label = f"Поиск + Динамика - {seg} - КС" + (f" - {oblast}" if oblast else "")
+                            nm, renamed = _uniq(f"tp4_{paycode}_site — {label}")
+                            plan.append({"type": "search_dynamic", "variant": v, "pay": pay,
+                                         "feed_id": None, "feed_name": None, "name": nm, "renamed": renamed,
+                                         "budget": _bud(pay), "cpa": _cpa_for(pay), "tp": "tp4",
+                                         "tp4_segment": seg, "tp4_label": label})
+                # Донор-сегмент «Модели» (LOAD-BEARING, Терехов): у слепка нет своих «Моделей» в tp4 →
+                # добавляем «Модели» от донора отдельной кампанией (segment-путь: контент от донора).
+                if ("Модели" not in segs4 and _segment_donor("Модели", "tp4", site_type)
+                        and (sel4 is None or "Модели" in sel4)):
                     for pay in pays:
                         paycode = "cpc" if pay == "tcpa" else "cpa"
-                        label = f"Поиск + Динамика - {seg} - КС" + (f" - {oblast}" if oblast else "")
+                        label = f"Поиск + Динамика - Модели - КС" + (f" - {oblast}" if oblast else "")
                         nm, renamed = _uniq(f"tp4_{paycode}_site — {label}")
                         plan.append({"type": "search_dynamic", "variant": v, "pay": pay,
                                      "feed_id": None, "feed_name": None, "name": nm, "renamed": renamed,
                                      "budget": _bud(pay), "cpa": _cpa_for(pay), "tp": "tp4",
-                                     "tp4_segment": seg, "tp4_label": label})
+                                     "tp4_segment": "Модели", "tp4_label": label})
                 continue
             if str(v) == "rsya_gallery":
                 if _slepok_profile_excludes_tp(agent, site_type, "tp3"):
@@ -640,24 +804,44 @@ def _set_plan_response():
                     warnings.append("tp3 пропущен: в выбранном слепке нет tp3 для этого типа сайта")
                     continue
                 sel3 = _sel_labels(3)
-                if sel3 is not None:
-                    # tp3 — НЕ-сегментный tp: фронт шлёт data-desc=posName с префиксом имени группы
-                    # ("ТГ · товары (фид) — из слепка - ТГ - Фид (товары)"), а pos["label"] = голый
-                    # item.t ("ТГ - Фид (товары)"). Точное равенство никогда не совпадало → tp3
-                    # молча выпадал из плана (живой баг 2026-07-06, porg-lzjk6p5m). label — всегда
-                    # суффикс posName, матчим по вхождению.
-                    tp3_items = [pos for pos in tp3_items
-                                 if any((pos.get("label") or "") in s for s in sel3)]
-                if not tp3_items:
-                    continue
                 want_tp3 = True                            # используется ниже для feed_alert (нужен URL-фид)
-                label = "ТГ - Фид (товары)" + (f" - {oblast}" if oblast else "")
-                nm, renamed = _uniq(f"tp3_cpc_site — {label}")
-                plan.append({"type": "rsya_gallery", "variant": v, "pay": None, "feed_id": None,
-                             "feed_name": None, "name": nm, "renamed": renamed,
-                             "budget": rs.get("cpc_budget") or rs["budget"],
-                             "cpa": rs.get("cpc_cpa") or rs["cpa"], "tp": "tp3",
-                             "tp3_selected": [pos.get("label") for pos in tp3_items]})
+                # ЗАДАЧА 7: КАМПАНИЯ = item.camp_names (не 1 РК «ТГ - Фид (товары)»). При ОДНОМ фиде
+                # каждая camp_names-кампания = 1 РК с 1 фид-группой (fan-out не размножает). «все фиды»
+                # (детектор) → все разрешённые фиды ГРУППАМИ в ОДНОЙ РК.
+                from .create_set_structure import (structure_to_campaigns as _s2c3,
+                                                   campaign_protected_tags_bulk as _cptags3,
+                                                   detect_protected_tags as _detect3,
+                                                   ALL_FEEDS_TAG as _ALLF3)
+                camps3 = _s2c3(agent, site_type, "tp3")
+                if camps3:
+                    tags3 = _cptags3(agent, site_type, "tp3")
+                    for c in camps3:
+                        cname = c.get("name") or ""
+                        # tp3-выбор из UI: posName может нести префикс/суффикс имени → матч по вхождению
+                        if sel3 is not None and not any((cname in s) or (s in cname) for s in sel3):
+                            continue
+                        _af3 = _ALLF3 in _detect3(c, tags3.get(cname))
+                        nm, renamed = _uniq(f"tp3_cpc_site — {cname}" + (f" - {oblast}" if oblast else ""))
+                        plan.append({"type": "rsya_gallery", "variant": v, "pay": None, "feed_id": None,
+                                     "feed_name": None, "name": nm, "renamed": renamed,
+                                     "budget": rs.get("cpc_budget") or rs["budget"],
+                                     "cpa": rs.get("cpc_cpa") or rs["cpa"], "tp": "tp3",
+                                     "only_gks": list(c.get("gks") or []), "only_cts": list(c.get("cts") or []),
+                                     "tp3_all_feeds": _af3, "camp_key": cname})
+                else:
+                    # FALLBACK — прежний путь (нет camp_names): одна «ТГ - Фид (товары)» (fan-out по фидам)
+                    if sel3 is not None:
+                        tp3_items = [pos for pos in tp3_items
+                                     if any((pos.get("label") or "") in s for s in sel3)]
+                    if not tp3_items:
+                        continue
+                    label = "ТГ - Фид (товары)" + (f" - {oblast}" if oblast else "")
+                    nm, renamed = _uniq(f"tp3_cpc_site — {label}")
+                    plan.append({"type": "rsya_gallery", "variant": v, "pay": None, "feed_id": None,
+                                 "feed_name": None, "name": nm, "renamed": renamed,
+                                 "budget": rs.get("cpc_budget") or rs["budget"],
+                                 "cpa": rs.get("cpc_cpa") or rs["cpa"], "tp": "tp3",
+                                 "tp3_selected": [pos.get("label") for pos in tp3_items]})
                 continue
             # tp2 «Поиск» — сегментные ТЕКСТ-кампании (как боевые: Марки/Модели × {КС, Автотаргет},
             # бренды/модели — ГРУППЫ внутри). Режимы — по профилю слепка (гейт: ровно что есть, не лишнее).
@@ -709,13 +893,35 @@ def _set_plan_response():
                 if not tp2_items:
                     warnings.append("tp2 (Поиск): нет в структуре слепка — пропущен")
                     continue
+                sel2 = _sel_labels(2)
+                # ЗАДАЧА 7: КАМПАНИЯ = item.camp_names (не сегмент-коллапс). pays + profile-гейт целы.
+                from .create_set_structure import structure_to_campaigns as _s2c2
+                camps2 = _s2c2(agent, site_type, "tp2")
+                if camps2:
+                    for c in camps2:
+                        cname = c.get("name") or ""
+                        if sel2 is not None and cname not in sel2 and (c.get("segment") not in sel2):
+                            continue
+                        _at2 = _txt_autotarget(cname, c.get("targeting") or "")
+                        _og2 = list(c.get("gks") or [])
+                        _oc2 = list(c.get("cts") or [])
+                        for pay in pays:
+                            paycode = "cpc" if pay == "tcpa" else "cpa"
+                            label = cname + (f" - {oblast}" if oblast else "")
+                            nm, renamed = _uniq(f"tp2_{paycode}_site — {label}")
+                            plan.append({"type": "search_test", "variant": v, "pay": pay,
+                                         "feed_id": None, "feed_name": None, "name": nm, "renamed": renamed,
+                                         "budget": _bud(pay), "cpa": _cpa_for(pay), "tp": "tp2",
+                                         "tp4_segment": None, "autotarget": _at2,
+                                         "only_gks": _og2, "only_cts": _oc2, "camp_key": cname})
+                    continue
+                # FALLBACK — прежний сегмент-путь (нет camp_names)
                 segs2 = []
                 for pos in tp2_items:
                     seg = _ct_segment(pos.get("gc", ""))
                     if seg not in segs2:
                         segs2.append(seg)
                 segs2 = [s for s in ("Марки", "Модели", "Общее") if s in segs2] or ["Марки"]
-                sel2 = _sel_labels(2)
                 for seg in segs2:
                     if sel2 is not None and seg not in sel2:
                         continue
@@ -747,31 +953,58 @@ def _set_plan_response():
                     warnings.append("tp5 (Поиск+Динамика+ТГ): нет в структуре слепка — пропущен")
                     continue
                 want_tp5_gallery = True                    # tp5 в наборе → товарная галерея требует URL-фид (feed_alert)
-                segs5 = []
-                for pos in tp5_items:
-                    seg = _ct_segment(pos.get("gc", ""))
-                    if seg not in segs5:
-                        segs5.append(seg)
-                segs5 = [s for s in ("Марки", "Модели", "Общее") if s in segs5] or ["Марки"]
                 sel5 = _sel_labels(5)
-                for seg in segs5:
-                    if sel5 is not None and seg not in sel5:
-                        continue
-                    modes = _slepok_tp_modes(agent, site_type, "tp5", seg)
-                    if modes is None:
-                        modes = ["КС"]
-                    for mode in modes:
-                        at = mode == "Автотаргет"
-                        suffix = "Автотаргетинг" if at else "КС"
-                        _ov5 = _tp_seg_name_override(agent, site_type, "tp5", seg, mode)
-                        label = (_ov5 or f"Поиск + Динамика + ТГ - {seg} - {suffix}") + (f" - {oblast}" if oblast else "")
-                        nm, renamed = _uniq(f"tp5_cpc_site — {label}")
+                # ЗАДАЧА 7: КАМПАНИЯ = item.camp_names. «все фиды» — реестр/эвристика (детектор).
+                from .create_set_structure import (structure_to_campaigns as _s2c5,
+                                                   campaign_protected_tags_bulk as _cptags5,
+                                                   detect_protected_tags as _detect5,
+                                                   ALL_FEEDS_TAG as _ALLF5)
+                camps5 = _s2c5(agent, site_type, "tp5")
+                if camps5:
+                    tags5 = _cptags5(agent, site_type, "tp5")
+                    for c in camps5:
+                        cname = c.get("name") or ""
+                        if sel5 is not None and cname not in sel5 and (c.get("segment") not in sel5):
+                            continue
+                        _at5 = _txt_autotarget(cname, c.get("targeting") or "")
+                        _af5 = _ALLF5 in _detect5(c, tags5.get(cname))
+                        nm, renamed = _uniq(f"tp5_cpc_site — {cname}" + (f" - {oblast}" if oblast else ""))
                         plan.append({"type": "search_gallery", "variant": v, "pay": None, "feed_id": None,
                                      "feed_name": None, "name": nm, "renamed": renamed,
                                      "budget": rs["cpc_budget"], "cpa": rs["cpc_cpa"], "tp": "tp5",
-                                     "tp5_segment": seg, "autotarget": at})
+                                     "tp5_segment": None, "autotarget": _at5,
+                                     "only_gks": list(c.get("gks") or []), "only_cts": list(c.get("cts") or []),
+                                     "tp5_all_feeds": _af5, "camp_key": cname})
+                else:
+                    # FALLBACK — прежний сегмент-путь (нет camp_names)
+                    segs5 = []
+                    for pos in tp5_items:
+                        seg = _ct_segment(pos.get("gc", ""))
+                        if seg not in segs5:
+                            segs5.append(seg)
+                    segs5 = [s for s in ("Марки", "Модели", "Общее") if s in segs5] or ["Марки"]
+                    for seg in segs5:
+                        if sel5 is not None and seg not in sel5:
+                            continue
+                        modes = _slepok_tp_modes(agent, site_type, "tp5", seg)
+                        if modes is None:
+                            modes = ["КС"]
+                        for mode in modes:
+                            at = mode == "Автотаргет"
+                            suffix = "Автотаргетинг" if at else "КС"
+                            _ov5 = _tp_seg_name_override(agent, site_type, "tp5", seg, mode)
+                            label = (_ov5 or f"Поиск + Динамика + ТГ - {seg} - {suffix}") + (f" - {oblast}" if oblast else "")
+                            nm, renamed = _uniq(f"tp5_cpc_site — {label}")
+                            plan.append({"type": "search_gallery", "variant": v, "pay": None, "feed_id": None,
+                                         "feed_name": None, "name": nm, "renamed": renamed,
+                                         "budget": rs["cpc_budget"], "cpa": rs["cpc_cpa"], "tp": "tp5",
+                                         "tp5_segment": seg, "autotarget": at})
                 # tp5 Фиды — товарные БЕЗ ТГО + автотаргет (как боевые pavlov), если профиль ведёт.
-                if "Автотаргет" in (_slepok_tp_modes(agent, site_type, "tp5", "Фиды") or []) and (sel5 is None or "Фиды" in sel5):
+                # Пропускаем, если «Фиды» уже покрыты camp_names-кампанией (нет двойной эмиссии).
+                _tp5_cn_words = " ".join((c.get("name") or "") for c in (camps5 or [])).lower()
+                if ("фид" not in _tp5_cn_words
+                        and "Автотаргет" in (_slepok_tp_modes(agent, site_type, "tp5", "Фиды") or [])
+                        and (sel5 is None or "Фиды" in sel5)):
                     label = f"Поиск + Динамика + ТГ - Фиды - Автотаргетинг" + (f" - {oblast}" if oblast else "")
                     nm, renamed = _uniq(f"tp5_cpc_site — {label}")
                     plan.append({"type": "search_gallery", "variant": v, "pay": None, "feed_id": None,
@@ -805,6 +1038,23 @@ def _set_plan_response():
         if sel_pos is not None:
             groups = [g for g in groups
                       if (g.get("name") or "") in sel_pos or (g.get("group") or "") in sel_pos]
+        # Плейсхолдер города в именах позиций структуры (сейчас — avtolajt_bu tp7 «ТК · ГОРОД»):
+        # шаблон слепка город-агностичен, подставляем город аккаунта. СТРОГО ПОСЛЕ фильтра sel_pos —
+        # пользователь в UI выбирает позицию по шаблонному имени (с «ГОРОД»), фильтр обязан матчить его.
+        # Гард: пустой city → НЕ заменяем (иначе имя «ТК · » без города); плейсхолдер остаётся видимым
+        # маркером + предупреждение в план. Мультигородская строка («Краснодар, Ростов») → первый город
+        # (как ключ имени; область в имя всё равно кладёт _build_name через oblast).
+        _city_one = (city.split(",")[0].strip() if city else "")
+        if _city_one:
+            for g in groups:
+                for _k in ("name", "group", "label"):
+                    _v = g.get(_k)
+                    if isinstance(_v, str) and _CITY_PLACEHOLDER in _v:
+                        g[_k] = _v.replace(_CITY_PLACEHOLDER, _city_one)
+        elif any(_CITY_PLACEHOLDER in str(g.get(_k) or "")
+                 for g in groups for _k in ("name", "group", "label")):
+            warnings.append(f"{tp_code}: у аккаунта не определён город — плейсхолдер "
+                            f"«{_CITY_PLACEHOLDER}» в именах позиций НЕ подставлен")
         allowed = _sq_for("6" if is_master else "7")
         _fanout_logged = False                            # tp7 fan-out по всем фидам логируем ОДИН раз на _emit_struct
         for g in groups:
@@ -895,14 +1145,15 @@ def _set_plan_response():
     # без URL-фида товарная галерея tp5 молча пропадала → поп-ап feed_alert обязан всплыть и для tp5,
     # чтобы пользователь выбрал фолбэк-фид, а не потерял tp5 тихо (want_tp5_gallery добавлен 2026-07-13).
     _fal_needed = len(feeds) == 0 and (want_product or want_tp3 or want_tp5_gallery)
-    from .create_set_input import FALLBACK_SINGLE_FEED_KEY as _FB_KEY
-    return jsonify({"login": login, "site_type": site_type, "r_code": r_code, "oblast": oblast,
+    from .create_set_input import FALLBACK_SINGLE_FEED_KEY as _FB_KEY, PROFILE_FEED_KEYS as _PROFILE_KEYS
+    return jsonify({"login": login, "site_type": site_type, "struct_site_type": struct_site_type,
+                    "r_code": r_code, "oblast": oblast,
                     "feeds": len(feeds), "count": len(plan),
                     "resolved_cpa": cpa, "resolved_budget": budget,   # бюджет/CPA из правил (для read-only + создания)
                     "renamed": sum(1 for p in plan if p["renamed"]), "plan": plan, "warnings": warnings,
                     "feed_alert": {
                         "needed": _fal_needed,
-                        "missing": ["yandex.xml"] if _fal_needed else [],
+                        "missing": (list(_PROFILE_KEYS) if body.get("single_feed") else ["yandex.xml"]) if _fal_needed else [],
                         "will_skip_types": ((["product"] if want_product else []) + (["tp3"] if want_tp3 else []) + (["tp5"] if want_tp5_gallery else [])) if _fal_needed else [],
                         # найден фолбэк-фид → фронт показывает кнопку «Продолжить с другим фидом»
                         # (повторный set_plan с single_feed_fallback=true строит план на нём).

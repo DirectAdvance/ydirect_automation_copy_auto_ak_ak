@@ -94,6 +94,7 @@ def _create_text_via_cookie(
     titles: list | None, texts: list, pay: str = "cpa", city: str = "", autotarget: bool = False,
     segment: str | None = None,
     only_cts: list[str] | None = None,
+    only_gks: set | None = None,
     corr: dict | None = None, ret_map: dict | None = None,
     token: str = "", callout_texts: list | None = None,
     callout_ids: list | None = None,
@@ -329,6 +330,7 @@ def _create_text_via_token(
     titles: list | None, texts: list, pay: str = "cpa", city: str = "", autotarget: bool = False,
     segment: str | None = None,
     only_cts: list[str] | None = None,
+    only_gks: set | None = None,
     corr: dict | None = None, ret_map: dict | None = None,
     token: str = "", callout_texts: list | None = None,
     callout_ids: list | None = None,
@@ -377,7 +379,8 @@ def _create_text_via_token(
         build = _build_text_from_pack(token, login, cid, slepok, site_type, tp_code,
                                       region_ids, href, titles, texts, r_code=r_code,
                                       segment=segment, city=city, autotarget=bool(autotarget),
-                                      apply_group_minus=_apply_group_minus, only_cts=only_cts)
+                                      apply_group_minus=_apply_group_minus, only_cts=only_cts,
+                                      only_gks=only_gks)
     except Exception as e:  # noqa: BLE001
         build = {"error": str(e)[:240]}
     _errs = build.get("errors") or []
@@ -457,7 +460,7 @@ def _create_text_via_token(
     # ── 5. Глобальные минус-слова уровня кампании — ВСЕ режимы (v5 NegativeKeywords = _enabled_minus_words),
     #       аддитивно к shared_set (libraryMinusKeywordsIds). Эквивалент cookie-spec "minus_keywords". ──
     try:
-        _cd = _apply_campaign_direct_minus(token, login, cid, slepok, site_type, tp_code)
+        _cd = _apply_campaign_direct_minus(token, login, cid, slepok, site_type, tp_code, city=city)
         if isinstance(_fin, dict):
             _fin["minus_campaign_note"] = _cd or "campaign-direct OK"
     except Exception as _me:  # noqa: BLE001
@@ -703,7 +706,9 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
                        titles: list | None = None,
                        city: str = "", segment: str | None = None,
                        autotarget: bool = False, products_only: bool = False,
-                       grid_cookie: str | None = None) -> dict:
+                       grid_cookie: str | None = None,
+                       only_gks: set | None = None, only_cts: set | None = None,
+                       all_feeds_list: list | None = None) -> dict:
     """Одна боевая tp5 (поиск + товарная галерея, Семён 2026-07-07):
     TEXT_CAMPAIGN (поиск-only) + бренд-группы из пака M3 (ShoppingAd + ListingAd, БЕЗ TextAd).
 
@@ -744,7 +749,8 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
             feed_id=feed_id, with_shopping=bool(feed_id),
             feed_models=feed_models, city=city,
             segment=segment, autotarget=autotarget, products_only=products_only,
-            tp_code="tp5")
+            tp_code="tp5", only_gks=only_gks, only_cts=only_cts,
+            all_feeds_list=all_feeds_list)
     except Exception as e:  # noqa: BLE001
         tp5_build = {"error": str(e)[:240]}
 
@@ -855,7 +861,7 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
     _mm5 = _SLEPOK_MINUS_MODE.get(slepok, "group")  # оставляем для логирования
     if token:
         try:
-            _cd5 = _apply_campaign_direct_minus(token, login, cid, slepok, site_type, "tp5")
+            _cd5 = _apply_campaign_direct_minus(token, login, cid, slepok, site_type, "tp5", city=city)
             out["minus_campaign_note"] = f"campaign-direct: {_cd5}" if _cd5 else "campaign-direct OK"
         except Exception as _me5:  # noqa: BLE001 — best-effort, не валим кампанию
             out.setdefault("warnings", []).append(f"campaign-direct минусы tp5: {str(_me5)[:120]}")
@@ -863,25 +869,38 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
     return out
 
 def _resolve_single_feed_variants(data: dict, token: str, login: str, agency: str, job=None) -> None:
-    """single_feed для tp5/tp3: резолвим ЦЕЛЕВОЙ фид так же, как plan/tp7 (create_set_plan.py:350) —
-    через _first_url_feed(strict=True), а НЕ prefer_single_feed_variants(первый попавшийся allow-фид).
-    Причина: при отсутствии /yandex.xml prefer_single_feed_variants тихо брала variants[:1] (первый
-    разрешённый фид, напр. credit-page-01-a.xml) → tp5/tp3 создавались на ЧУЖОМ фиде, вразрез с
-    планом/превью. /yandex.xml нет → канонический фолбэк (yandex-catalog-model-design-custom-name.xml),
-    но ТОЛЬКО при подтверждённом single_feed_fallback (как plan). Не резолвится → фид не берём
+    """Профильные фиды для tp5/tp3 single_feed: находим ВСЕ профильные фиды аккаунта
+    (yandex.xml + yandex-used-auto.xml) через _first_url_feed(strict=True) — fan-out до 2.
+    Причина: prefer_single_feed_variants тихо брала variants[:1] (первый разрешённый фид,
+    напр. credit-page-01-a.xml) → tp5/tp3 создавались на ЧУЖОМ фиде, вразрез с планом/превью.
+    Ни одного профильного → канонический фолбэк (yandex-catalog-model-design-custom-name.xml),
+    но ТОЛЬКО при подтверждённом single_feed_fallback (как plan). Не резолвится → данные фид не берём
     (data['feeds']=[]): не создаём товарные галереи на произвольном фиде. Мутирует data['feeds']."""
-    from .create_set_input import FALLBACK_SINGLE_FEED_KEY
-    sf_id = _first_url_feed(token, login, agency, strict=True)
+    from .create_set_input import PROFILE_FEED_KEYS, FALLBACK_SINGLE_FEED_KEY
+    # Collect IDs for ALL present profile feeds (strict per-key lookup)
+    _profile_ids: list[int] = []
+    for _pk in PROFILE_FEED_KEYS:
+        _pid = _first_url_feed(token, login, agency, strict=True, url_key=_pk)
+        if _pid and _pid not in _profile_ids:
+            _profile_ids.append(_pid)
+    if _profile_ids:
+        # Filter data["feeds"] to profile feed entries (fan-out по профильным фидам)
+        sel = [f for f in data["feeds"] if int(f[0]) in _profile_ids]
+        # Если профильные не нашлись в data["feeds"] (кастомное именование / новый фид):
+        # добавляем их по ID с пустыми name/url — _create_tp5_single подхватит через fid
+        data["feeds"] = sel if sel else [(pid, "", "") for pid in _profile_ids]
+        return
+    # Ни одного профильного → fallback (как plan-гейт): только при подтверждённом фолбэке.
     # UI шлёт feed_confirmed (кнопка «Продолжить с другим фидом»), plan-гейт исторически читал
-    # single_feed_fallback → рассинхрон, фолбэк на каталог-фид не открывался. Принимаем ОБА ключа.
+    # single_feed_fallback → рассинхрон, фолбэк на каталог-фид не открывался. Принимаем ОБА.
     _fb_body = (job or {}).get("body", {})
-    if not sf_id and (_fb_body.get("single_feed_fallback") or _fb_body.get("feed_confirmed")):
+    if _fb_body.get("single_feed_fallback") or _fb_body.get("feed_confirmed"):
         sf_id = _first_url_feed(token, login, agency, strict=True, url_key=FALLBACK_SINGLE_FEED_KEY)
-    if sf_id:
-        sel = [f for f in data["feeds"] if int(f[0]) == int(sf_id)]
-        data["feeds"] = sel or [(int(sf_id), "", "")]
-    else:
-        data["feeds"] = []
+        if sf_id:
+            sel = [f for f in data["feeds"] if int(f[0]) == int(sf_id)]
+            data["feeds"] = sel or [(int(sf_id), "", "")]
+            return
+    data["feeds"] = []
 
 
 def _create_tp5_campaign(token: str, login: str, base_name: str, counter_id: int,
@@ -893,12 +912,17 @@ def _create_tp5_campaign(token: str, login: str, base_name: str, counter_id: int
                          segment: str | None = None, autotarget: bool = False,
                          products_only: bool = False, no_cpa: bool = False,
                          single_feed: bool = False,
-                         grid_cookie: str | None = None) -> dict:
+                         grid_cookie: str | None = None,
+                         only_gks: set | None = None, only_cts: set | None = None,
+                         all_feeds: bool = False) -> dict:
     """Боевая tp5 (комбинированная, эталон Щербаковой 2026-06-22): TEXT_CAMPAIGN поиск-only
     + бренд-группы из пака M3 (TextAd + ListingAd + ShoppingAd), кодер ct010_ag011.
     FAN-OUT: мультиплицируется по ВСЕМ URL-фидам аккаунта — каждый фид своя пара cpc+cpa.
     single_feed=True → только /yandex.xml (как plan: _first_url_feed strict; нет → канонический
     фолбэк лишь при подтверждённом single_feed_fallback, иначе tp5 пропускается — НЕ первый фид).
+    all_feeds=True (тег «все фиды»): вместо fan-out N кампаний — ОДНА пара cpc+cpa, внутри —
+    группа на каждый разрешённый фид (ShoppingAd + ListingAd). Конфликтует с single_feed (single_feed
+    имеет приоритет: схлопывает до /yandex.xml, all_feeds не расширяет обратно).
     agency — для _account_model_feeds (collectionId по модели из listings фида).
     base_name — канон cpc: 'tp5_cpc_site — Поиск + Динамика + Товарная галерея'."""
     data = _tp5_account_data(token, login, slepok, site_type, agency)
@@ -909,6 +933,38 @@ def _create_tp5_campaign(token: str, login: str, base_name: str, counter_id: int
         if not data["feeds"]:
             return {"ok": False, "name": base_name,
                     "error": "single_feed: целевой фид (/yandex.xml или подтверждённый фолбэк) не найден — tp5 пропущена"}
+    # «Все фиды» (тег): ONE кампания-пара, группа на каждый фид → all_feeds_list в _create_tp5_single.
+    # single_feed уже схлопнул data["feeds"] до одного — при all_feeds+single_feed = one feed one group.
+    if all_feeds and not single_feed:
+        _tp5_af_list = list(data["feeds"])   # [(feed_id, feed_name, feed_url), …]
+        results = []
+        nm_cpc_af = base_name
+        nm_cpa_af = nm_cpc_af.replace("tp5_cpc_site", "tp5_cpa_site", 1)
+        _pairs_af = [(nm_cpc_af, "tcpa")] if no_cpa else [(nm_cpc_af, "tcpa"), (nm_cpa_af, "cpa")]
+        for nm_af, pay_af in _pairs_af:
+            if job and job.get("cancel"):
+                break
+            try:
+                results.append(_create_tp5_single(
+                    data, token, login, nm_af, pay_af, goal_id, cpa_rub, budget_rub,
+                    counter_id, region_ids, href, 0, "",   # feed_id=0, feed_name="" (all-feeds)
+                    slepok, site_type, r_code, corr, ret_map,
+                    feed_models=None, titles=titles, city=city,
+                    segment=segment, autotarget=autotarget, products_only=products_only,
+                    grid_cookie=grid_cookie, only_gks=only_gks, only_cts=only_cts,
+                    all_feeds_list=_tp5_af_list))
+                _bump_job(job, True)
+            except Exception as e:  # noqa: BLE001
+                results.append({"ok": False, "name": nm_af, "error": str(e)[:240]})
+                _add_job_err(job, str(e)[:240])
+                _bump_job(job, False)
+            if job:
+                _job_db_progress(job)
+        ok = any(r.get("ok") for r in results)
+        first_id = next((r["campaign_id"] for r in results if r.get("ok")), None)
+        return {"ok": ok, "name": base_name, "campaign_id": first_id, "id": first_id,
+                "launched": False, "campaigns": results,
+                "url": next((r.get("url") for r in results if r.get("ok")), "")}
     # Модельные коллекции фидов (listings 'model_N') — для FeedFilterConditions по модели.
     mf_list = _account_model_feeds(login, agency) if agency else []
     results = []
@@ -934,7 +990,7 @@ def _create_tp5_campaign(token: str, login: str, base_name: str, counter_id: int
                     slepok, site_type, r_code, corr, ret_map,
                     feed_models=feed_models, titles=titles, city=city,
                     segment=segment, autotarget=autotarget, products_only=products_only,
-                    grid_cookie=grid_cookie))
+                    grid_cookie=grid_cookie, only_gks=only_gks, only_cts=only_cts))
                 _bump_job(job, True)                         # live: +1 кампания
             except Exception as e:  # noqa: BLE001
                 results.append({"ok": False, "name": nm, "error": str(e)[:240]})
@@ -951,12 +1007,16 @@ def _create_tp5_campaign(token: str, login: str, base_name: str, counter_id: int
 def _create_tp3_single(data: dict, token: str, login: str, name: str, mode: str,
                        pay_for_conv: bool, goal_id: int, cpa_rub: int, budget_rub: int,
                        counter_id: int, region_ids: list, href: str, feed_id: int,
-                       feed_name: str, group_name: str, corr: dict, ret_map: dict) -> dict:
+                       feed_name: str, group_name: str, corr: dict, ret_map: dict,
+                       all_feeds_list: list | None = None) -> dict:
     """Одна боевая tp3 «Товарная галерея» (ЕПК, канал Поиск, placementTypes=['ADV_GALLERY']).
     Отличие от tp5: места показа ТОЛЬКО галерея (без SEARCH_PAGE); стратегия
     search_cpa=AVERAGE_CPA / search_payconv=PAY_FOR_CONVERSION (Search=ON, Network=OFF);
     Search-докрутка (_finalize_search_via_grid, placement_types=['ADV_GALLERY']).
-    Группа — ShoppingAd+ListingAd по всему фиду (без ТГО, без модель-фильтра). UTM на группе."""
+    Группа — ShoppingAd+ListingAd по всему фиду (без ТГО, без модель-фильтра). UTM на группе.
+
+    all_feeds_list (тег «все фиды», задача 7): [(feed_id, feed_name), …] — ОДНА кампания, ГРУППА
+    на КАЖДЫЙ разрешённый фид (вместо per-feed fan-out кампаний). None → один фид (feed_id)."""
     cl = data["cl"]
     spec = cmc.UnifiedCampaignSpec(
         name=name, client_login=login, oauth_token=token, mode=mode,
@@ -964,21 +1024,32 @@ def _create_tp3_single(data: dict, token: str, login: str, name: str, mode: str,
         network_average_cpa=int(cpa_rub) * 1_000_000, search_cpa=int(cpa_rub) * 1_000_000,
         apply_invariants=True)
     cid = cl.create_unified_campaign(spec, launch=False)
-    # Защита от пустышек: группа/товарное объявление не создались → удаляем недоделанную кампанию.
-    try:
-        ag = cl.add_product_adgroup(cid, name=group_name, region_ids=region_ids)
-        shop = cl.add_shopping_ad(ag, feed_id=feed_id) if ag else None
-    except Exception as _e:  # noqa: BLE001
-        ag, shop = None, None
-    if not ag or not shop:
+    # Группы: по одной на КАЖДЫЙ фид (all_feeds) либо одна на переданный feed_id.
+    _feeds_for_groups = ([(int(_f[0]), _f[1]) for _f in all_feeds_list if _f and _f[0]]
+                         if all_feeds_list else [(feed_id, feed_name)])
+    _shops: list = []                                   # [(shop_id, feed_id)] для set_default_text
+    for _i, (_fid, _fnm) in enumerate(_feeds_for_groups):
+        # имя группы уникально в кампании (Яндекс требует) — при >1 фиде добавляем метку фида
+        _gn = group_name if len(_feeds_for_groups) == 1 else f"{group_name} · {(_fnm or _fid)}"[:255]
+        try:
+            ag = cl.add_product_adgroup(cid, name=_gn, region_ids=region_ids)
+            shop = cl.add_shopping_ad(ag, feed_id=_fid) if ag else None
+        except Exception:  # noqa: BLE001
+            ag, shop = None, None
+        if not ag or not shop:
+            continue
+        cl.add_listing_ad(ag, feed_id=_fid)
+        try:
+            cl._call("adgroups", "update", {"AdGroups": [{"Id": ag, "TrackingParams": cmc.UTM_TEMPLATE}]})
+        except Exception:  # noqa: BLE001
+            pass
+        _shops.append((shop, _fid))
+    # Защита от пустышек: ни одна группа/товарное не создались → удаляем недоделанную кампанию.
+    if not _shops:
         _delete_partial_campaign(token, login, cid)
         return {"ok": False, "name": name, "feed": feed_name, "campaign_id": cid, "partial_deleted": True,
                 "error": "tp3 не дозаполнена: группа/товарное объявление не созданы"}
-    cl.add_listing_ad(ag, feed_id=feed_id)
-    try:
-        cl._call("adgroups", "update", {"AdGroups": [{"Id": ag, "TrackingParams": cmc.UTM_TEMPLATE}]})
-    except Exception:  # noqa: BLE001
-        pass
+    shop = _shops[0][0]                                  # представитель (совместимость ниже)
     slset = None
     if data["sitelinks"]:
         base = href.rstrip("/")
@@ -1014,7 +1085,9 @@ def _create_tp3_single(data: dict, token: str, login: str, name: str, mode: str,
     except Exception:  # noqa: BLE001 — fail-safe если импорт недоступен
         _SDT3 = "Новые автомобили в наличии. Большой выбор. Скидки до 45% при покупке. Тест-драйв."
     try:
-        gf.get_grid_client(login).set_default_text([shop], feed_id, _SDT3)
+        _gcl3 = gf.get_grid_client(login)
+        for _sh, _sfid in _shops:                        # текст по умолчанию на КАЖДОМ товарном (все фиды)
+            _gcl3.set_default_text([_sh], _sfid, _SDT3)
     except Exception:  # noqa: BLE001
         pass
     # корректировки «Глобальных правил» — ПОСЛЕ Grid (он перезаписывает bidModifiers)
@@ -1035,11 +1108,18 @@ def _create_tp3_campaign(token: str, login: str, base_name: str, counter_id: int
                          goal_id: int, cpa_rub: int, budget_rub: int, region_ids: list,
                          href: str, slepok: str, site_type: str, r_code: str,
                          corr: dict, ret_map: dict, job=None, no_cpa: bool = False,
-                         single_feed: bool = False, agency: str = "") -> dict:
+                         single_feed: bool = False, agency: str = "",
+                         only_cts: set | None = None, only_gks: set | None = None,
+                         all_feeds: bool = False) -> dict:
     """Боевая tp3 «Товарная галерея» (ЕПК, Поиск, placementTypes=['ADV_GALLERY'], товарная по фиду) — ПАРА cpc+cpa.
     FAN-OUT (CODER.md): мультиплицируется по ВСЕМ URL-фидам аккаунта — каждый фид своя пара,
     имя несёт название фида. single_feed=True → только /yandex.xml (как plan: _first_url_feed strict;
-    фолбэк лишь при подтверждённом single_feed_fallback, иначе tp3 пропускается — НЕ первый фид). job — live-счётчик."""
+    фолбэк лишь при подтверждённом single_feed_fallback, иначе tp3 пропускается — НЕ первый фид). job — live-счётчик.
+
+    Задача 7: base_name = имя camp_names-кампании (1:1 со «Структурой»). При ОДНОМ фиде fan-out
+    даёт ровно 1 кампанию на camp_name. all_feeds (тег «все фиды») → ОДНА кампания, ГРУППА на фид
+    (без per-feed fan-out). only_cts/only_gks приняты для сигнатурной паритетности (tp3-товарка —
+    ct0000 автотаргет по фиду, не модель-роутинг; фактическая 1:1 — через имя camp_names + фид-группы)."""
     data = _tp5_account_data(token, login, slepok, site_type, agency)
     if not data["feeds"]:
         return {"ok": False, "name": base_name, "error": "нет URL-фидов на аккаунте для tp3"}
@@ -1051,6 +1131,32 @@ def _create_tp3_campaign(token: str, login: str, base_name: str, counter_id: int
     # ct009 = «Товарное/Фид» (CODER.md ag_part5): ShoppingAd+ListingAd по фиду.
     group_name = f"ct0000_aon_n000_{r_code}_ct009_ag001_g00 — Товарная галерея"
     results = []
+    # ── тег «все фиды»: ОДНА кампания (пара cpc+cpa), ГРУППА на каждый разрешённый фид ──
+    if all_feeds:
+        _af_list = [(fid, fnm) for fid, fnm, _fu in data["feeds"]]
+        _t3a = ([(base_name, "search_cpa", False)] if no_cpa
+                else [(base_name, "search_cpa", False),
+                      (base_name.replace("tp3_cpc_site", "tp3_cpa_site", 1), "search_payconv", True)])
+        for nm, mode, pay in _t3a:
+            if job and job.get("cancel"):
+                break
+            try:
+                results.append(_create_tp3_single(
+                    data, token, login, nm, mode, pay, goal_id, cpa_rub, budget_rub,
+                    counter_id, region_ids, href, _af_list[0][0], _af_list[0][1], group_name,
+                    corr, ret_map, all_feeds_list=_af_list))
+                _bump_job(job, True)
+            except Exception as e:  # noqa: BLE001
+                results.append({"ok": False, "name": nm, "error": str(e)[:240]})
+                _add_job_err(job, str(e)[:240])
+                _bump_job(job, False)
+            if job:
+                _job_db_progress(job)
+        ok = any(r.get("ok") for r in results)
+        first_id = next((r["campaign_id"] for r in results if r.get("ok")), None)
+        return {"ok": ok, "name": base_name, "campaign_id": first_id, "id": first_id,
+                "launched": False, "campaigns": results,
+                "url": next((r.get("url") for r in results if r.get("ok")), "")}
     for feed_id, feed_name, feed_url in data["feeds"]:        # FAN-OUT: каждый фид → своя пара
         if job and job.get("cancel"):                        # отмена: стоп ПЕРЕД следующим фидом
             break

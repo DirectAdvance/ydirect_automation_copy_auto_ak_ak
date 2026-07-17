@@ -31,7 +31,9 @@ _resolve_agency_hint = _victory_conn_rw = None
 _resolve_region = None   # город → (r_code, oblast); ремап r-сегмента кодера при копировании
 _grid_list_campaigns = _grid_feeds = _grid_feed_offer_prices = _group_ad_price = None
 _grid_set_ad_prices = _grid_update_adaptive_ads = _account_offer_prices = _account_ctx = None
-_geo_id = _enabled_minus_places = _filter_allowed_feed_rows = _feed_key = None
+_geo_id = _geo_name_by_id = _geo_type_by_id = _enabled_minus_places = _filter_allowed_feed_rows = _feed_key = None
+_enabled_global_minus_places = None   # copy = клон 1:1 без слепка → глобальная таблица минус-площадок (legacy)
+_enabled_baseline_minus_places = None   # copy = клон 1:1 без слепка → baseline анти-фрод список минус-площадок
 _create_set_live_verification = _attach_post_repair_verification = _repair_deps = None
 _CREATE_JOBS = _CREATE_JOBS_LOCK = _JOB_TERMINAL = None   # общие ОБЪЕКТЫ (mirror в create-карточку)
 _job_touch = _job_db_save = _CALLOUT_PER_CAMPAIGN_CAP = None
@@ -459,7 +461,7 @@ def _copy_v501_ad_image_hashes(login: str, campaign_ids: set[int], agency_hint: 
 
 def _copy_image_remapper(source_login: str, source_agency: str, target_login: str,
                          target_agency: str, all_source_hashes, maps: dict, workdir: Path,
-                         *, log=lambda m: None):
+                         *, log=lambda m: None, provided_hashes: list | None = None):
     """Build ``fn(src_hashes) -> [target-valid image hashes]`` для ЕПК-ветки копировщика (по кукам).
 
     Image-хэши в Яндекс.Директе привязаны к АККАУНТУ: source-хэш валиден в target только если такая
@@ -474,7 +476,23 @@ def _copy_image_remapper(source_login: str, source_agency: str, target_login: st
         web-api/image/upload, 0 баллов) → target-хэш, кэшируем в ``maps['images']`` (src→tgt);
       • картинку не удалось скачать/залить → ДРОПАЕМ этот хэш (лог), НЕ роняем ad-add
         (объявление без 1 картинки лучше, чем падение всей кампании).
+
+    mode="other" + provided_hashes: вместо ремапа из источника подставляем загруженные хэши
+    ПО КРУГУ (вызов i → hash[i % len(hashes)], детерминировано по порядку вызовов).
     """
+    # mode="other": предзагруженные хэши уже в target-аккаунте → round-robin по вызовам.
+    if provided_hashes:
+        _ph = [str(h).strip() for h in provided_hashes if str(h).strip()]
+        if _ph:
+            _counter = [0]
+
+            def _remap_provided(src_hashes):  # noqa: ARG001 — src_hashes игнорируется
+                idx = _counter[0]
+                _counter[0] += 1
+                return [_ph[idx % len(_ph)]]
+
+            return _remap_provided
+
     import requests as _rqs
     maps.setdefault("images", {})
     img_cache = maps["images"]  # src_hash -> tgt_hash (persist across all campaigns of the job)
@@ -689,7 +707,8 @@ def _copy_target_href(href: str | None, source_domain: str, target_domain: str) 
     return urlunsplit((scheme, target_host, parts.path, parts.query, parts.fragment))
 
 
-def _copy_snapshot_preflight(src_dir: Path, *, target_feed_url: str, target_city: str, target_region: str) -> dict:
+def _copy_snapshot_preflight(src_dir: Path, *, target_feed_url: str, target_city: str, target_region: str,
+                             geo_mode: str = "") -> dict:
     campaigns = _copy_read_json(src_dir / "campaigns.json")
     adgroups = _copy_read_json(src_dir / "adgroups.json")
     ads = _copy_read_json(src_dir / "ads.json")
@@ -726,7 +745,7 @@ def _copy_snapshot_preflight(src_dir: Path, *, target_feed_url: str, target_city
         critical.append("есть ShoppingAd без выбранных кампаний — snapshot неконсистентен")
 
     target_geo = " ".join(x for x in (target_city, target_region) if x).strip()
-    if not target_geo:
+    if not target_geo and geo_mode != "keep":
         critical.append("целевое гео пустое")
 
     return {
@@ -920,19 +939,73 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
     else:
         target_feed_id = _copy_target_feed_id(target_login, target_agency or "", workdir, target_domain)
 
-    target_region = _copy_canonical_region_name(target_region)
-    local_gid, local_geo_name = _copy_geo_id_for_target(target_city, target_region)
-    if not local_gid:
-        raise RuntimeError(f"не найден GeoRegionId для целевого гео: city={target_city!r}, region={target_region!r}")
-    region_ids = [int(local_gid)]
-    # Баги 1/4: r-код target-региона для ремапа кодера (один источник — имена кампаний И групп).
-    target_r_code = _copy_target_region_code(target_city, target_region)
-    if target_r_code:
-        _copy_job_log(job_id, f"кодер: r-сегмент региона → {target_r_code}")
-    source_ctx = _copy_ctx(source_login)
-    replacements = _copy_geo_replacements(
-        source_ctx, target_city, target_region, log=(lambda m: _copy_job_log(job_id, m))
-    )
+    mode = (body.get("mode") or "auto").strip()
+    geo_mode = (body.get("geo_mode") or "replace").strip()
+    provided_hashes = [str(h).strip() for h in (body.get("image_hashes") or []) if str(h).strip()]
+
+    if mode == "other" and geo_mode == "keep":
+        # Ветка (а): RegionIds — из групп источника как есть (узнаем после snap-чтения).
+        # Ветка (б): гео-морфология — пропускаем.
+        # Ветка (в): r-код кодера — не ремапим.
+        local_gid = None
+        local_geo_name = ""
+        region_ids = []         # будет заполнено из первой непустой группы источника
+        target_r_code = ""
+        replacements = []
+        source_ctx: dict = {}
+        _copy_job_log(job_id, "гео: режим 'keep' — гео-замена и ремап RegionIds пропущены")
+    elif mode == "other" and geo_mode == "change":
+        # Новый контракт: geo_region_ids — список (положительные = включения, отрицательные = исключения).
+        # Обратная совместимость: если список не задан, берём скалярный geo_region_id.
+        _geo_ids_raw = body.get("geo_region_ids") or []
+        if not _geo_ids_raw:
+            _scalar = int(body.get("geo_region_id") or 0)
+            _geo_ids_raw = [_scalar] if _scalar else []
+        geo_region_ids = [int(x) for x in _geo_ids_raw
+                          if str(x).lstrip("-").isdigit() and int(x) != 0]
+        if not geo_region_ids:
+            raise RuntimeError("mode='other', geo_mode='change': geo_region_ids не задан в запросе")
+        positive_ids = [x for x in geo_region_ids if x > 0]
+        negative_ids = [x for x in geo_region_ids if x < 0]
+        local_gid = positive_ids[0] if positive_ids else None
+        region_ids = geo_region_ids   # содержит и плюсы, и минусы
+        target_r_code = ""  # r-код не ремапим для «Прочие сферы»
+        source_ctx = _copy_ctx(source_login)
+        # Морфология текстов: ТОЛЬКО если ровно 1 плюс-регион, нет исключений, тип НЕ World/Country.
+        _morph_type = (_geo_type_by_id(positive_ids[0]) if _geo_type_by_id and positive_ids else None) or ""
+        _do_morph = (len(positive_ids) == 1 and len(negative_ids) == 0
+                     and _morph_type not in ("World", "Country"))
+        if _do_morph:
+            # Имя региона резолвим на сервере из справочника GeoRegions — не доверяем клиенту.
+            geo_region_name_str = (_geo_name_by_id(positive_ids[0]) if _geo_name_by_id else "") or ""
+            if not geo_region_name_str:
+                raise RuntimeError(
+                    f"geo_region_id={positive_ids[0]}: имя региона не найдено в справочнике GeoRegions"
+                )
+            replacements = _copy_geo_replacements(
+                source_ctx, "", geo_region_name_str, log=(lambda m: _copy_job_log(job_id, m))
+            )
+            _copy_job_log(job_id, f"гео: 1 регион, меняем тексты: region_id={positive_ids[0]} name={geo_region_name_str!r}")
+        else:
+            replacements = []
+            _copy_job_log(job_id,
+                          f"гео: {len(positive_ids)} регион(ов), {len(negative_ids)} исключений"
+                          f" → тексты не меняем (RegionIds ставим)")
+        _copy_job_log(job_id, f"гео: режим 'change', region_ids={geo_region_ids[:10]!r}")
+    else:
+        target_region = _copy_canonical_region_name(target_region)
+        local_gid, local_geo_name = _copy_geo_id_for_target(target_city, target_region)
+        if not local_gid:
+            raise RuntimeError(f"не найден GeoRegionId для целевого гео: city={target_city!r}, region={target_region!r}")
+        region_ids = [int(local_gid)]
+        # Баги 1/4: r-код target-региона для ремапа кодера (один источник — имена кампаний И групп).
+        target_r_code = _copy_target_region_code(target_city, target_region)
+        if target_r_code:
+            _copy_job_log(job_id, f"кодер: r-сегмент региона → {target_r_code}")
+        source_ctx = _copy_ctx(source_login)
+        replacements = _copy_geo_replacements(
+            source_ctx, target_city, target_region, log=(lambda m: _copy_job_log(job_id, m))
+        )
     src_domain = (source_ctx.get("domain") or "").strip()
 
     _copy_job_log(job_id, f"grid-cookie snapshot источника {source_login}: {len(selected_ids)} кампаний")
@@ -986,6 +1059,18 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
         elif typ == "GdListingAd":
             listing_groups.add(gid)
 
+    # geo_mode="keep": region_ids из первой непустой группы источника (best-effort для UAC-ветки).
+    if geo_mode == "keep" and not region_ids:
+        for _grp in (snap.get("groups") or []):
+            _gids = [int(x) for x in (_grp.get("region_ids") or []) if str(x).lstrip("-").isdigit()]
+            if _gids:
+                region_ids = _gids
+                _copy_job_log(job_id, f"гео keep: RegionIds из группы источника: {region_ids}")
+                break
+        if not region_ids:
+            region_ids = [225]   # Россия — последний резерв
+            _copy_job_log(job_id, "гео keep: RegionIds источника не найдены → [225] (Россия)")
+
     results = []
     maps = {"campaigns": {}, "adgroups": {}, "ads": {}, "feeds": {}, "callouts": {},
             "images": {}, "promotions": {}, "sitelinks": {}}
@@ -1005,7 +1090,10 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
     _remap_images = _copy_image_remapper(
         source_login, body.get("source_agency") or body.get("sourceAgency") or "",
         target_login, target_agency or "", _all_src_hashes, maps, workdir,
-        log=(lambda m: _copy_job_log(job_id, m)))
+        log=(lambda m: _copy_job_log(job_id, m)),
+        provided_hashes=(provided_hashes or None))
+    if provided_hashes:
+        _copy_job_log(job_id, f"картинки: mode='other', использую {len(provided_hashes)} загруженных хэшей round-robin")
     # Синтетический snapshot для copy_steps (в ЕПК-ветке НЕТ v5 phase_pull): campaigns.json (network
     # для step_disabled_places), adgroups.json/ads.json (бренд группы для step_prices).
     src_dir = workdir / "source"
@@ -1236,8 +1324,8 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
         "created": len(created_ids),
         "results": results,
         "errors": errors,
-        "target_region_id": int(local_gid),
-        "target_region_source": f"dict:{local_geo_name}",
+        "target_region_id": int(local_gid) if local_gid else None,
+        "target_region_source": f"dict:{local_geo_name}" if local_gid else "keep",
         "target_feed_id": target_feed_id,
         "context_rewrite": {"replacements": len(replacements), "files": 0, "residual_geo": []},
         "live_verification": verify,
@@ -1393,7 +1481,7 @@ def _copy_grid_unified_steps(job_id: str, body: dict, target_login: str, target_
         src_dir=src_dir, workdir=workdir, body=body, maps=maps,
         grid=grid, target_token=_tgt_token or "",
         log=(lambda m: _copy_job_log(job_id, m)),
-        v5_call=_v5_call, enabled_minus_places=_enabled_minus_places,
+        v5_call=_v5_call, enabled_minus_places=_enabled_baseline_minus_places,
         feed_offer_prices=_grid_feed_offer_prices, account_offer_prices=_account_offer_prices,
         group_ad_price=_group_ad_price, set_ad_prices=_grid_set_ad_prices,
     )
@@ -1549,7 +1637,31 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
 
     default_cpa = int(body.get("cpa") or 2000)
     default_budget = int(body.get("week_budget") or body.get("budget") or 5000)
-    for row in rows:
+
+    # image_mode=upload: картинки берём из ЦЕЛЕВОГО аккаунта (уже залиты copy_other._copy_images_upload).
+    # Иначе upload_content качает файл источника → одинаковый хэш и бренд-тема источника во всех копиях.
+    tgt_img_urls: list[str] = []
+    if str(body.get("image_mode") or "") == "upload":
+        hashes = [str(h).strip() for h in (body.get("image_hashes") or []) if str(h).strip()]
+        if hashes:
+            try:
+                _tt, _ = _token_for_login(
+                    target_login, target_agency or _resolve_agency_hint(target_login, ""), _direct_tokens())
+            except Exception:  # noqa: BLE001
+                _tt = None
+            for i in range(0, len(hashes), 100) if _tt else []:
+                try:
+                    data = _v501_svc("adimages", "get", _tt, target_login,
+                                     {"SelectionCriteria": {"AdImageHashes": hashes[i:i + 100]},
+                                      "FieldNames": ["AdImageHash", "OriginalUrl"]})
+                except Exception:  # noqa: BLE001
+                    continue
+                for im in ((data.get("result") or {}).get("AdImages") or []):
+                    u = str(im.get("OriginalUrl") or "").strip()
+                    if u and u not in tgt_img_urls:
+                        tgt_img_urls.append(u)
+
+    for cidx, row in enumerate(rows):
         try:
             src_id = int(row.get("id") or 0)
         except (TypeError, ValueError):
@@ -1590,6 +1702,37 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
             if feed_map and _sf and _sf in feed_map:
                 eff_target_feed = feed_map[_sf]
             feed_id = int(eff_target_feed or 0) if is_product else None
+            # Детерминированный round-robin: у каждой i-й МК свои 5 картинок из архива цели.
+            if tgt_img_urls:
+                _img = [tgt_img_urls[(cidx * 5 + k) % len(tgt_img_urls)] for k in range(5)]
+            else:
+                _img = _copy_uac_media_urls(d, want="image")
+            # socdem источника, иначе датакласс молча подставит дефолт age_18 вместо возраста источника.
+            _sd = _copy_uac_value(d, "socdem", default={}) or {}
+            if not isinstance(_sd, dict):
+                _sd = {}
+            # Таргетинг-поля источника: не передашь — датакласс молча подставит свой дефолт (как было с socdem).
+            _dev = _copy_uac_value(d, "device_types", default=[]) or []
+            _dev = [str(x).strip() for x in _dev if str(x).strip()] if isinstance(_dev, list) else []
+            _mreg_raw = _copy_uac_value(d, "minus_regions", "minus_region_ids", default=[]) or []
+            _mreg: list[int] = []
+            for _r in (_mreg_raw if isinstance(_mreg_raw, list) else []):
+                try:
+                    _mreg.append(int(_r))
+                except (TypeError, ValueError):
+                    continue
+            _rm = _copy_uac_value(d, "relevance_match", default={}) or {}
+            if not isinstance(_rm, dict):
+                _rm = {}
+            _rm_cats = [str(c).strip() for c in (_rm.get("categories") or []) if str(c).strip()]
+            _ttg = _copy_uac_value(d, "time_target", default={}) or {}
+            if not isinstance(_ttg, dict):
+                _ttg = {}
+            try:
+                _tz = int(_ttg.get("id_time_zone") or 130)
+            except (TypeError, ValueError):
+                _tz = 130
+            _extra = {"relevance_match_categories": _rm_cats} if _rm_cats else {}
             spec = cmc.MasterCampaignSpec(
                 href=target_href,
                 titles=titles[:5],
@@ -1609,14 +1752,23 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
                 keywords=keywords,
                 minus_keywords=minus_keywords or ["отзывы"],
                 sitelinks=sitelinks,
-                image_urls=_copy_uac_media_urls(d, want="image"),
+                image_urls=_img,
                 video_urls=_copy_uac_media_urls(d, want="video"),
                 audiences=audiences if isinstance(audiences, list) else [],
+                genders=_sd.get("genders") or ["female", "male"],
+                age_lower=str(_sd.get("age_lower") or "age_18"),
+                age_upper=str(_sd.get("age_upper") or "age_inf"),
                 limit_period=str(_copy_uac_value(d, "limit_period", "limitPeriod", default="week") or "week"),
+                device_types=_dev or ["all"],
+                minus_regions=_mreg,
+                id_time_zone=_tz,
+                # Наш стандарт tp6/tp7 (create_set_master_product.py:692, коды uac_verifier
+                # UAC_ALTERNATIVE_TEXTS_ENABLED / UAC_MAPS_ENABLED) — сильнее «копии 1:1».
                 alternative_texts_enabled=False,
                 ml_banners_enabled=False,
                 yandex_maps_enabled=False,
                 utm_template=cmc.UTM_TEMPLATE,
+                **_extra,
             )
             cid = target_client.create_master_campaign(spec, launch=False)
             res = {"ok": True, "id": int(cid), "campaign_id": int(cid), "name": name, "kind": "uac", "source_id": src_id}
@@ -1774,7 +1926,7 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
         src_dir=src_dir, workdir=workdir, body=body, maps=maps,
         grid=grid, target_token=_tgt_token or "",
         log=(lambda m: _copy_job_log(job_id, m)),
-        v5_call=_v5_call, enabled_minus_places=_enabled_minus_places,
+        v5_call=_v5_call, enabled_minus_places=_enabled_baseline_minus_places,
         # П.8: прайс-хелперы (create_set_feeds через blueprint-обёртки — configure() внутри).
         feed_offer_prices=_grid_feed_offer_prices, account_offer_prices=_account_offer_prices,
         group_ad_price=_group_ad_price, set_ad_prices=_grid_set_ad_prices,
@@ -1793,9 +1945,26 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
             _src_cli2 = cmc.build_client(_src_login, account=(_src_ag or None))
             cstep_ctx.source_grid = gf.GridClient(_src_login, cookie=(_src_cli2.sess.headers.get("Cookie") or ""))
             _src_ctx = _copy_ctx(_src_login)
-            cstep_ctx.geo_pairs = _copy_geo_replacements(
-                _src_ctx, body.get("target_city") or "", body.get("target_region") or "",
-                log=(lambda m: _copy_job_log(job_id, m)))
+            _geo_mode_pp = (body.get("geo_mode") or "replace").strip()
+            _mode_pp = (body.get("mode") or "auto").strip()
+            if _geo_mode_pp == "keep":
+                # geo_mode="keep": никакой гео-замены — источник остаётся как есть.
+                # target_city/region не переданы — _copy_geo_replacements с пустыми строками
+                # строил бы пары вида ("Краснодар", "") → стирал города из быстрых ссылок.
+                cstep_ctx.geo_pairs = []
+            elif _mode_pp == "other" and _geo_mode_pp == "change":
+                # mode="other" + geo_mode="change": имя резолвим по ID из справочника.
+                # target_city/region пусты — нельзя их использовать.
+                _pp_geo_rid = int(body.get("geo_region_id") or 0)
+                _pp_rname = (_geo_name_by_id(_pp_geo_rid) if _geo_name_by_id and _pp_geo_rid else "") or ""
+                cstep_ctx.geo_pairs = _copy_geo_replacements(
+                    _src_ctx, "", _pp_rname,
+                    log=(lambda m: _copy_job_log(job_id, m))) if _pp_rname else []
+            else:
+                # mode="auto": target_city/region пришли из body (валидированы роутом).
+                cstep_ctx.geo_pairs = _copy_geo_replacements(
+                    _src_ctx, body.get("target_city") or "", body.get("target_region") or "",
+                    log=(lambda m: _copy_job_log(job_id, m)))
             # ФАЗА 3c п.12: скачиваемый URL исходного видео найден Grid-интроспекцией —
             # GdVideoAdditionCreative.originalUrl = прямой mp4 (storage.mds.yandex.net, HTTP 200
             # video/mp4 без авторизации, проверено live 2026-07-03). Строим resolver: creative_id
@@ -1946,6 +2115,72 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
 
     _copy_write_json(maps_path, maps)
 
+    # П.15: восстановление стратегии PAY_FOR_CONVERSION_MULTIPLE_GOALS через Grid.
+    # Кампании с этой стратегией создавались с WB_MAXIMUM_CLICKS (v5 не принимает PFCMG).
+    # Здесь восстанавливаем реальную стратегию: payForConversion=True + goalId + sum (рубли).
+    try:
+        src_campaigns_all = _copy_read_json(src_dir / "campaigns.json")
+        _pfcmg_restored = 0
+        _pfcmg_errors = []
+        goal_id_body = int(body.get("goal_id") or 0)
+        for _sc in src_campaigns_all:
+            _src_id = str(_sc.get("Id") or "")
+            _tgt_id = maps.get("campaigns", {}).get(_src_id)
+            if not _tgt_id:
+                continue
+            # Ищем PAY_FOR_CONVERSION_MULTIPLE_GOALS в любом из struct_key.BiddingStrategy.Search/Network
+            _weekly_rub = None
+            for _struct_key in ("TextCampaign", "DynamicTextCampaign", "UnifiedAdCampaign"):
+                _td = _sc.get(_struct_key) or {}
+                _bs = _td.get("BiddingStrategy") or {}
+                for _side in ("Search", "Network"):
+                    _sb = _bs.get(_side) or {}
+                    if _sb.get("BiddingStrategyType") == "PAY_FOR_CONVERSION_MULTIPLE_GOALS":
+                        _blk = _sb.get("PayForConversionMultipleGoals") or {}
+                        _weekly_micro = int(_blk.get("WeeklySpendLimit") or 300_000_000_000)
+                        _weekly_rub = _weekly_micro / 1_000_000  # микро → рубли
+                        break
+                if _weekly_rub is not None:
+                    break
+            if _weekly_rub is None:
+                continue
+            _g_id = goal_id_body or 0
+            _copy_job_log(job_id, f"restore PFCMG стратегии: кампания {_src_id}→{_tgt_id} "
+                                  f"goal={_g_id} weekly_rub={int(_weekly_rub)}")
+            try:
+                _updated = grid.restore_pay_for_conversion_strategy(
+                    int(_tgt_id), _g_id, _weekly_rub)
+                if _updated:
+                    _pfcmg_restored += 1
+                    _copy_job_log(job_id, f"PFCMG стратегия восстановлена: {_tgt_id}")
+                else:
+                    _pfcmg_errors.append(f"кампания {_tgt_id}: Grid вернул пустой updatedCampaigns")
+            except Exception as _e:  # noqa: BLE001
+                _pfcmg_errors.append(f"кампания {_tgt_id}: {str(_e)[:220]}")
+        rep["strategy_restore"] = {"restored": _pfcmg_restored, "errors": _pfcmg_errors}
+        rep["errors"] += _pfcmg_errors
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"strategy restore: {str(e)[:200]}")
+
+    # Перенос Grid-only настроек (isOrganicSearchEnabled / placementTypes) 1:1 из источника.
+    # v5-путь создания не трогает эти поля → они остаются на дефолтах Директа. Добавлено 2026-07-17.
+    try:
+        rep["organic_placement"] = csteps.step_fix_organic_placement(cstep_ctx)
+        rep["errors"] += rep["organic_placement"].get("errors") or []
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"organic placement: {str(e)[:200]}")
+
+    # ФИНАЛ: сверка настроек источник ↔ копия ПО КУКАМ (report-only, 0 v5-баллов).
+    # Идёт ПОСЛЕДНЕЙ — после всех добивок (цены/видео/адаптивы/стратегия), иначе сравнивали бы
+    # промежуточное состояние. Ловит молчаливые потери, которых v5 не показывает (минус-слова
+    # кампаний, brandSafety, временной таргетинг, contextLimit и пр.). Расхождения — в отчёт джоба;
+    # автопочинка тут НЕ делается: чинит adjacent-шаг repair, а этот честно показывает факт.
+    try:
+        rep["settings_diff"] = csteps.step_settings_diff(cstep_ctx)
+        rep["errors"] += (rep["settings_diff"].get("errors") or [])
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"settings diff: {str(e)[:200]}")
+
     # П.14: стандартные возрастные корректировки −100% (<18, 18–24) через v5.
     try:
         rep["age_bidmods"] = csteps.step_age_bidmods(cstep_ctx)
@@ -2065,7 +2300,13 @@ def _copy_apply_metrika(login: str, token: str, src_dir: Path, workdir: Path,
         if type_data.get("AttributionModel"):
             body[struct_key]["AttributionModel"] = type_data["AttributionModel"]
         strategy = type_data.get("BiddingStrategy") or {}
-        if strategy:
+        # PAY_FOR_CONVERSION_MULTIPLE_GOALS: v5 не принимает без счётчика+целей (4000/8000).
+        # Стратегия будет восстановлена через Grid в _copy_cookie_postprocess — здесь пропускаем.
+        _has_pfcmg = any(
+            (strategy.get(side) or {}).get("BiddingStrategyType") == "PAY_FOR_CONVERSION_MULTIPLE_GOALS"
+            for side in ("Search", "Network")
+        )
+        if strategy and not _has_pfcmg:
             body[struct_key]["BiddingStrategy"] = _copy_rewrite_strategy_goal(strategy, goal_id)
         try:
             j = _v5_call("campaigns", "update", token, login, {"Campaigns": [body]})
@@ -2077,6 +2318,38 @@ def _copy_apply_metrika(login: str, token: str, src_dir: Path, workdir: Path,
         except Exception as e:  # noqa: BLE001
             warned += 1
             _copy_job_log(job_id, f"метрика update {c.get('Name') or src_id}: {str(e)[:220]}")
+            continue
+        # Цели переносим 1:1 только при ОБЩЕМ счётчике: GoalId привязан к счётчику источника,
+        # чужой счётчик → невалидные цели (4000/8000). Value — микро-единицы, как в источнике.
+        pg_items = (type_data.get("PriorityGoals") or {}).get("Items") or []
+        src_counters = [int(x) for x in ((type_data.get("CounterIds") or {}).get("Items") or [])
+                        if str(x).strip().isdigit()]
+        if not (pg_items and int(counter_id) in src_counters):
+            continue
+        goals = []
+        for g in pg_items:
+            gid = g.get("GoalId")
+            if gid in (None, ""):
+                continue
+            # Operation только SET: ADD отвергается API (3500).
+            item = {"GoalId": int(gid), "Operation": "SET"}
+            if g.get("Value") is not None:
+                item["Value"] = int(g["Value"])
+            if g.get("IsMetrikaSourceOfValue") is not None:
+                item["IsMetrikaSourceOfValue"] = g["IsMetrikaSourceOfValue"]
+            goals.append(item)
+        if not goals:
+            continue
+        # Отдельным update ПОСЛЕ основного: отказ по целям не должен утащить CounterIds/стратегию.
+        try:
+            j = _v5_call("campaigns", "update", token, login,
+                         {"Campaigns": [{"Id": int(tgt_id), struct_key: {"PriorityGoals": {"Items": goals}}}]})
+            if "error" in j:
+                warned += 1
+                _copy_job_log(job_id, f"цели update {c.get('Name') or src_id}: {_v5_err(j)[:220]}")
+        except Exception as e:  # noqa: BLE001
+            warned += 1
+            _copy_job_log(job_id, f"цели update {c.get('Name') or src_id}: {str(e)[:220]}")
     return {"updated": updated, "warned": warned}
 
 
@@ -2211,6 +2484,167 @@ def _copy_skip_unmapped_feed_campaigns(src_dir: Path, feed_map: dict, *, log=Non
     return list(skip_ids)
 
 
+def _copy_target_campaigns_info(login: str) -> dict:
+    """Read-only снимок кампаний целевого аккаунта для UI выбора очистки.
+
+    Возвращает {total, draft_count, non_draft_count, archivable_count, breakdown}.
+    DRAFT не могут быть заархивированы (v5 API error 8303) →
+    archivable_count = non_draft_count (не-черновики, не архивированные).
+    campaigns.get без фильтра по умолчанию не возвращает ARCHIVED-кампании.
+    """
+    try:
+        agency = _resolve_agency_hint(login, "")
+        token, _ = _token_for_login(login, agency, _direct_tokens())
+        if not token:
+            return {"error": "нет рабочего токена для этого логина"}
+        j = _v5_call("campaigns", "get", token, login, {
+            "FieldNames": ["Id", "State", "Status"],
+            "SelectionCriteria": {},
+        })
+        if "error" in j:
+            err_text = (_v5_err(j) if callable(_v5_err) else str(j.get("error")))
+            return {"error": (err_text or "API error")[:200]}
+        campaigns = (j.get("result") or {}).get("Campaigns", [])
+        draft_count = sum(1 for c in campaigns if c.get("Status") == "DRAFT")
+        non_draft_count = len(campaigns) - draft_count
+        breakdown: dict[str, int] = {}
+        for c in campaigns:
+            key = f"{c.get('State') or '?'}/{c.get('Status') or '?'}"
+            breakdown[key] = breakdown.get(key, 0) + 1
+        return {
+            "total": len(campaigns),
+            "draft_count": draft_count,
+            "non_draft_count": non_draft_count,
+            # DRAFT нельзя архивировать (v5 8303); archivable = только не-черновики
+            "archivable_count": non_draft_count,
+            "breakdown": breakdown,
+        }
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)[:200]}
+
+
+def _copy_cleanup_uac_drafts(job_id: str, login: str, errors: list[str]) -> int:
+    """Удалить UAC/МК-ЧЕРНОВИКИ целевого логина по кукам (v5 их не видит → дубли +3 за прогон).
+
+    Удаляем ТОЛЬКО status=DRAFT и не-archived: запущенные кампании не трогаем.
+    Сбой кук — не критичен (v5-ветка уже отработала): пишем в errors, копирование не рвём.
+    """
+    try:
+        rows = _grid_list_campaigns(login) or []
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"cleanup uac list: {str(e)[:120]}")
+        return 0
+    ids: list[int] = []
+    for row in rows:
+        if str(row.get("status") or "").upper() != "DRAFT" or row.get("archived"):
+            continue
+        if not _copy_is_uac_grid_row(row):
+            continue
+        try:
+            cid = int(row.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if cid > 0:
+            ids.append(cid)
+    if not ids:
+        return 0
+    _copy_job_log(job_id, f"cleanup delete_drafts: МК-черновиков по кукам {len(ids)} → удаляю")
+    try:
+        res = gc.GridCreateClient(login).delete_campaigns(ids)
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"cleanup uac delete: {str(e)[:120]}")
+        return 0
+    for err in (res.get("errors") or []):
+        errors.append(f"uac delete: {str(err)[:100]}")
+    return len(res.get("deleted") or [])
+
+
+def _copy_target_cleanup(job_id: str, login: str, agency: str, mode: str) -> dict:
+    """Очистить целевой аккаунт ДО копирования.
+
+    mode='delete_drafts': удаляет только кампании со Status=DRAFT (v5 campaigns.delete,
+        без archive-шага — DRAFT удаляются напрямую, подтверждено тестом 2026-07-17).
+    mode='archive':       архивирует все non-DRAFT кампании. ON-кампании сначала
+        suspend, потом archive. DRAFT пропускаются (v5 8303).
+
+    Возвращает {ok, deleted, archived, skipped_non_draft|skipped_draft, errors}.
+    Поднимает RuntimeError при критической ошибке API (не per-item) — _copy_run_job
+    тогда прерывает копирование, не льёт РК в неочищенный аккаунт.
+    """
+    if mode not in ("delete_drafts", "archive"):
+        return {"ok": True, "deleted": 0, "archived": 0, "skipped": 0, "errors": []}
+
+    ag = agency or _resolve_agency_hint(login, "")
+    token, _ = _token_for_login(login, ag, _direct_tokens())
+    if not token:
+        raise RuntimeError(f"cleanup: нет рабочего токена для {login!r}")
+
+    _copy_job_log(job_id, f"cleanup {mode}: получаю кампании {login}")
+    j = _v5_call("campaigns", "get", token, login, {
+        "FieldNames": ["Id", "Name", "State", "Status"],
+        "SelectionCriteria": {},
+    })
+    if "error" in j:
+        raise RuntimeError(f"cleanup campaigns.get: {(_v5_err(j) if callable(_v5_err) else str(j.get('error')))[:200]}")
+
+    campaigns = (j.get("result") or {}).get("Campaigns", [])
+    errors: list[str] = []
+
+    if mode == "delete_drafts":
+        drafts = [c["Id"] for c in campaigns if c.get("Status") == "DRAFT"]
+        non_draft_skip = len(campaigns) - len(drafts)
+        _copy_job_log(job_id, f"cleanup delete_drafts: к удалению {len(drafts)}, пропускаем не-черновики {non_draft_skip}")
+        deleted = 0
+        for i in range(0, len(drafts), 100):
+            chunk = drafts[i:i + 100]
+            jd = _v5_call("campaigns", "delete", token, login, {"SelectionCriteria": {"Ids": chunk}})
+            if "error" in jd:
+                raise RuntimeError(f"cleanup delete batch: {(_v5_err(jd) if callable(_v5_err) else str(jd.get('error')))[:200]}")
+            for rr in (jd.get("result") or {}).get("DeleteResults", []):
+                if rr.get("Id") and not rr.get("Errors"):
+                    deleted += 1
+                else:
+                    errors.append(f"delete {rr.get('Id')}: {str(rr.get('Errors') or 'unknown')[:100]}")
+        # МК/tp6 невидимы для v5 (campaigns.get их не отдаёт) → копятся дублями: чистим по кукам.
+        deleted += _copy_cleanup_uac_drafts(job_id, login, errors)
+        _copy_job_log(job_id, f"cleanup delete_drafts: удалено {deleted}, ошибок {len(errors)}, пропущено {non_draft_skip}")
+        return {"ok": True, "deleted": deleted, "archived": 0,
+                "skipped_non_draft": non_draft_skip, "errors": errors}
+
+    # mode == "archive"
+    non_draft = [c for c in campaigns if c.get("Status") != "DRAFT"]
+    draft_skip = len(campaigns) - len(non_draft)
+    on_ids = [c["Id"] for c in non_draft if c.get("State") == "ON"]
+    archive_ids = [c["Id"] for c in non_draft]
+    _copy_job_log(job_id, f"cleanup archive: к архивации {len(archive_ids)}, suspend ON {len(on_ids)}, пропускаем DRAFT {draft_skip}")
+
+    if on_ids:
+        for i in range(0, len(on_ids), 100):
+            chunk = on_ids[i:i + 100]
+            js = _v5_call("campaigns", "suspend", token, login, {"SelectionCriteria": {"Ids": chunk}})
+            if "error" in js:
+                raise RuntimeError(f"cleanup suspend: {(_v5_err(js) if callable(_v5_err) else str(js.get('error')))[:200]}")
+            for rr in (js.get("result") or {}).get("SuspendResults", []):
+                if rr.get("Errors"):
+                    errors.append(f"suspend {rr.get('Id')}: {str(rr['Errors'])[:80]}")
+
+    archived = 0
+    for i in range(0, len(archive_ids), 100):
+        chunk = archive_ids[i:i + 100]
+        ja = _v5_call("campaigns", "archive", token, login, {"SelectionCriteria": {"Ids": chunk}})
+        if "error" in ja:
+            raise RuntimeError(f"cleanup archive batch: {(_v5_err(ja) if callable(_v5_err) else str(ja.get('error')))[:200]}")
+        for rr in (ja.get("result") or {}).get("ArchiveResults", []):
+            if rr.get("Id") and not rr.get("Errors"):
+                archived += 1
+            else:
+                errors.append(f"archive {rr.get('Id')}: {str(rr.get('Errors') or 'unknown')[:100]}")
+
+    _copy_job_log(job_id, f"cleanup archive: заархивировано {archived}, пропущено DRAFT {draft_skip}, ошибок {len(errors)}")
+    return {"ok": True, "deleted": 0, "archived": archived,
+            "skipped_draft": draft_skip, "errors": errors}
+
+
 def _copy_run_job(job_id: str, body: dict) -> None:
     source_login = (body.get("source_login") or "").strip()
     target_login = (body.get("target_login") or "").strip()
@@ -2221,17 +2655,48 @@ def _copy_run_job(job_id: str, body: dict) -> None:
     target_city = (body.get("target_city") or "").strip()
     target_region = (body.get("target_region") or "").strip()
     target_feed_url = (body.get("target_feed_url") or _COPY_DEFAULT_FEED_PATH).strip()
+    mode = (body.get("mode") or "auto").strip()
+    geo_mode = (body.get("geo_mode") or "replace").strip()
+    provided_image_hashes = [str(h).strip() for h in (body.get("image_hashes") or []) if str(h).strip()]
     # Пофидовая замена (source_feed_id → target_feed_id, только существующие фиды target-аккаунта).
     # Пусто → поведение как раньше (единый target_feed_url / авто-пересоздание URL-фидов).
+    # mode="other": feed_map строится автоматически (auto-match по URL/имени файла); пользовательский feed_map игнорируется.
     feed_map_raw: dict[str, int] = {}
-    _fm = body.get("feed_map")
-    if not isinstance(_fm, dict):
-        _fm = {}
-    for _k, _v in _fm.items():
-        if str(_k).strip().isdigit() and str(_v).strip().isdigit() and int(_v) > 0:
-            feed_map_raw[str(int(_k))] = int(_v)
+    if mode == "other":
+        # Авто-подбор фидов — та же эвристика, что JS _feedMatchTarget (full path → filename match)
+        try:
+            feed_map_raw = _copy_auto_feed_map(source_login, target_login)
+        except Exception:  # noqa: BLE001 — best-effort
+            feed_map_raw = {}
+    else:
+        _fm = body.get("feed_map")
+        if not isinstance(_fm, dict):
+            _fm = {}
+        for _k, _v in _fm.items():
+            if str(_k).strip().isdigit() and str(_v).strip().isdigit() and int(_v) > 0:
+                feed_map_raw[str(int(_k))] = int(_v)
     use_feed_map = bool(feed_map_raw)
+    # target_cleanup: 'none' | 'delete_drafts' | 'archive' — очистка цели ДО копирования.
+    # Инициализируем вне try, чтобы cleanup_result не потерялся при ошибке.
+    target_cleanup = (body.get("target_cleanup") or "none").strip()
+    if target_cleanup not in ("none", "delete_drafts", "archive"):
+        target_cleanup = "none"
+    cleanup_result: dict | None = None
     try:
+        # === ШАГ 0: Очистка целевого аккаунта (ДО pull/upload) ===
+        if target_cleanup != "none":
+            _copy_job_upsert(job_id, status="running", progress=2)
+            _copy_job_log(job_id, f"cleanup: начало ({target_cleanup}) на {target_login}")
+            target_ag_cleanup = body.get("agency") or _resolve_agency_hint(target_login, "")
+            cleanup_result = _copy_target_cleanup(job_id, target_login, target_ag_cleanup, target_cleanup)
+            # Per-item errors — предупреждения, не останавливаем; критические ошибки уже вызвали RuntimeError
+            for err in (cleanup_result.get("errors") or [])[:5]:
+                _copy_job_log(job_id, f"cleanup предупреждение: {err}")
+            # Немедленно фиксируем факт очистки в статусе job — ДО pull/upload.
+            # Это гарантирует, что пользователь увидит удалённые/заархивированные кампании
+            # даже если последующие шаги (snapshot/pull/upload) упадут с ошибкой.
+            _copy_job_upsert(job_id, result={"cleanup": cleanup_result})
+
         tmp_root = Path(tempfile.gettempdir())
         tmp_root.mkdir(parents=True, exist_ok=True)
         workdir = Path(tempfile.mkdtemp(prefix=f"direct-copy-{job_id[:8]}-", dir=str(tmp_root)))
@@ -2303,6 +2768,7 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             target_feed_url=(target_feed_abs or ("__feed_map__" if use_feed_map else "")),
             target_city=target_city,
             target_region=target_region,
+            geo_mode=geo_mode,
         )
         _copy_job_upsert(job_id, preflight=audit)
         for msg in audit.get("warnings") or []:
@@ -2312,25 +2778,63 @@ def _copy_run_job(job_id: str, body: dict) -> None:
                 _copy_job_log(job_id, f"preflight error: {msg}")
             raise RuntimeError("preflight остановил копирование: " + "; ".join(audit["critical"][:3]))
 
-        source_ctx = _copy_ctx(source_login)
-        target_ctx = _copy_ctx(target_login)
-        target_ctx["city"] = target_city or target_ctx.get("city") or ""
-        target_ctx["region"] = target_region or target_ctx.get("region") or ""
-        rewrite_meta = _copy_rewrite_snapshot_context(
-            src_dir, source_ctx, target_ctx, log=(lambda m: _copy_job_log(job_id, m))
-        )
-        _copy_job_upsert(job_id, context_rewrite=rewrite_meta)
-        if rewrite_meta.get("m3_used"):
-            _copy_job_log(job_id, "гео-склонения: M3 парадигма падежей применена")
+        # ── Ветка (б): гео-морфология ─────────────────────────────────────────────────
+        if mode == "other" and geo_mode == "keep":
+            # Пропускаем гео-замену целиком: M3 не вызывается, snapshot не трогаем.
+            rewrite_meta = {"files": 0, "replacements": 0, "pairs": [], "m3_used": False, "residual_geo": []}
+            _copy_job_upsert(job_id, context_rewrite=rewrite_meta)
+            _copy_job_log(job_id, "гео: режим 'keep' — морфологическая замена пропущена")
         else:
-            _copy_job_log(job_id, "гео-склонения: M3 недоступен, замена только по границам слов (именительный)")
-        if rewrite_meta.get("m3_failed"):
-            _copy_job_log(job_id, f"гео-склонения: фолбэк для {', '.join(rewrite_meta['m3_failed'][:4])}")
-        if rewrite_meta.get("replacements"):
-            _copy_job_log(job_id, f"гео в snapshot заменено: {rewrite_meta['replacements']} в {rewrite_meta['files']} файлах")
-        if rewrite_meta.get("residual_geo"):
-            sample = ", ".join(rewrite_meta["residual_geo"][:5])
-            raise RuntimeError(f"после гео-замены в snapshot осталось старое гео: {sample}")
+            source_ctx = _copy_ctx(source_login)
+            if mode == "other" and geo_mode == "change":
+                # mode="other": гео-замена по выбранному региону (если правило морфологии выполнено).
+                # Морфология: только 1 плюс-регион, 0 минусов, тип НЕ World/Country.
+                _gids_raw_v5 = body.get("geo_region_ids") or []
+                if not _gids_raw_v5:
+                    _s = int(body.get("geo_region_id") or 0)
+                    _gids_raw_v5 = [_s] if _s else []
+                _pos_v5 = [int(x) for x in _gids_raw_v5 if str(x).lstrip("-").isdigit() and int(x) > 0]
+                _neg_v5 = [int(x) for x in _gids_raw_v5 if str(x).lstrip("-").isdigit() and int(x) < 0]
+                _mtype_v5 = (_geo_type_by_id(_pos_v5[0]) if _geo_type_by_id and _pos_v5 else None) or ""
+                _do_morph_v5 = (len(_pos_v5) == 1 and len(_neg_v5) == 0
+                                and _mtype_v5 not in ("World", "Country"))
+                if _do_morph_v5 and _pos_v5:
+                    geo_rname = (_geo_name_by_id(_pos_v5[0]) if _geo_name_by_id else "") or ""
+                    if not geo_rname:
+                        raise RuntimeError(
+                            f"geo_region_id={_pos_v5[0]}: имя региона не найдено в справочнике GeoRegions"
+                        )
+                    target_ctx = {"city": "", "region": geo_rname}
+                    _copy_job_log(job_id, f"гео: 1 регион, меняем тексты: region_id={_pos_v5[0]} name={geo_rname!r}")
+                else:
+                    # Несколько регионов / есть минусы / страна → тексты не трогаем
+                    rewrite_meta = {"files": 0, "replacements": 0, "pairs": [], "m3_used": False, "residual_geo": []}
+                    _copy_job_upsert(job_id, context_rewrite=rewrite_meta)
+                    _copy_job_log(job_id,
+                                  f"гео: {len(_pos_v5)} регион(ов), {len(_neg_v5)} исключений"
+                                  f" → тексты не меняем (RegionIds ставим)")
+                    target_ctx = None  # сигнал: морфологию пропустить
+            else:
+                target_ctx = _copy_ctx(target_login)
+                target_ctx["city"] = target_city or target_ctx.get("city") or ""
+                target_ctx["region"] = target_region or target_ctx.get("region") or ""
+            if target_ctx is not None:
+                rewrite_meta = _copy_rewrite_snapshot_context(
+                    src_dir, source_ctx, target_ctx, log=(lambda m: _copy_job_log(job_id, m))
+                )
+                _copy_job_upsert(job_id, context_rewrite=rewrite_meta)
+                if rewrite_meta.get("m3_used"):
+                    _copy_job_log(job_id, "гео-склонения: M3 парадигма падежей применена")
+                else:
+                    _copy_job_log(job_id, "гео-склонения: M3 недоступен, замена только по границам слов (именительный)")
+                if rewrite_meta.get("m3_failed"):
+                    _copy_job_log(job_id, f"гео-склонения: фолбэк для {', '.join(rewrite_meta['m3_failed'][:4])}")
+                if rewrite_meta.get("replacements"):
+                    _copy_job_log(job_id, f"гео в snapshot заменено: {rewrite_meta['replacements']} в {rewrite_meta['files']} файлах")
+                if mode != "other" and rewrite_meta.get("residual_geo"):
+                    # Для mode="other" residual-проверку пропускаем: источник может быть вне Краснодара/etc.
+                    sample = ", ".join(rewrite_meta["residual_geo"][:5])
+                    raise RuntimeError(f"после гео-замены в snapshot осталось старое гео: {sample}")
 
         target_token, target_token_agency = _token_for_login(
             target_login, _resolve_agency_hint(target_login, ""), _direct_tokens()
@@ -2342,17 +2846,34 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         src_domain = dc.infer_source_domain(src_dir)
         tgt_region_id = None
         geo_source = ""
-        target_region = _copy_canonical_region_name(target_region)
-        if target_city or target_region:
-            local_gid, local_geo_name = _copy_geo_id_for_target(target_city, target_region)
-            if local_gid:
-                tgt_region_id = int(local_gid)
-                geo_source = f"dict:{local_geo_name}"
-            else:
-                tgt_region_id = dc.lookup_geo_region_id(target_city, target_region, tgt_auth, target_login)
-                geo_source = "direct_copy"
-            if not tgt_region_id:
-                raise RuntimeError(f"не найден GeoRegionId для целевого гео: city={target_city!r}, region={target_region!r}")
+        # ── Ветка (а): RegionIds ──────────────────────────────────────────────────────
+        if mode == "other" and geo_mode == "keep":
+            # GeoRegionId копируется из снимка как есть (phase_upload c tgt_region_id=None).
+            _copy_job_log(job_id, "гео: режим 'keep' — RegionIds из источника без изменений")
+        elif mode == "other" and geo_mode == "change":
+            # tgt_region_id = список int (положительные + отрицательные); backward compat со скаляром.
+            _gids_v5_b = body.get("geo_region_ids") or []
+            if not _gids_v5_b:
+                _s_b = int(body.get("geo_region_id") or 0)
+                _gids_v5_b = [_s_b] if _s_b else []
+            _gids_v5 = [int(x) for x in _gids_v5_b if str(x).lstrip("-").isdigit() and int(x) != 0]
+            if not _gids_v5:
+                raise RuntimeError("mode='other', geo_mode='change': geo_region_ids не задан в запросе")
+            tgt_region_id = _gids_v5   # phase_upload получает список
+            geo_source = f"other:region_ids={_gids_v5[:5]!r}"
+            _copy_job_log(job_id, f"гео: режим 'change', region_ids={_gids_v5[:10]!r}")
+        else:
+            target_region = _copy_canonical_region_name(target_region)
+            if target_city or target_region:
+                local_gid, local_geo_name = _copy_geo_id_for_target(target_city, target_region)
+                if local_gid:
+                    tgt_region_id = int(local_gid)
+                    geo_source = f"dict:{local_geo_name}"
+                else:
+                    tgt_region_id = dc.lookup_geo_region_id(target_city, target_region, tgt_auth, target_login)
+                    geo_source = "direct_copy"
+                if not tgt_region_id:
+                    raise RuntimeError(f"не найден GeoRegionId для целевого гео: city={target_city!r}, region={target_region!r}")
         body["_copy_source_domain"] = src_domain
         # Пофидовая замена: валидируем целевые фиды по аккаунту (только СВОИ фиды) и предзаписываем
         # id_maps.json — phase_upload загрузит его и подставит целевые фиды вместо единого forced-фида.
@@ -2389,6 +2910,11 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             force_feed_url=("" if use_feed_map else target_feed_abs),
             force_feed_name=(None if use_feed_map else (target_feed_abs.rsplit("/", 1)[-1] if target_feed_abs else None)),
             skip_keywords=True,   # ФАЗА 3c п.2: ключи — Grid-first в постпроцессе (0 v5-баллов)
+            # mode="other": картинки сайта, загруженные пользователем в целевой аккаунт. Без этого
+            # v5-ветка перезаливала картинку ИСТОЧНИКА (тот же контент → тот же хэш) и на объявлениях
+            # оставался чужой сайт, а загруженные не использовались (прогон 2026-07-17).
+            image_hashes=([str(h).strip() for h in (body.get("image_hashes") or []) if str(h).strip()]
+                          or None),
         )
         _copy_job_upsert(job_id, progress=82)
         token, _ag = target_token, target_token_agency
@@ -2400,7 +2926,11 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         uac_copy = {"created": 0, "results": [], "errors": [], "uses_direct_units": False}
         if selected_uac_rows:
             target_feed_id = _copy_target_feed_id(target_login, target_agency or "", workdir, target_domain)
-            region_id_list = [int(tgt_region_id)] if tgt_region_id else [225]
+            # tgt_region_id теперь может быть списком (geo_region_ids), скаляром или None
+            if isinstance(tgt_region_id, list):
+                region_id_list = tgt_region_id if tgt_region_id else [225]
+            else:
+                region_id_list = [int(tgt_region_id)] if tgt_region_id else [225]
             target_href = _copy_target_href(None, "", target_domain)
             _copy_job_log(job_id, f"uac copy: {len(selected_uac_rows)} → {target_login} (feed={target_feed_id or '—'})")
             uac_copy = _copy_uac_campaigns(
@@ -2421,6 +2951,7 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         live_status = ((cookie_post.get("live_verification") or {}).get("status") or "")
         if live_status:
             _copy_job_log(job_id, f"live verification: {live_status}")
+        skipped_camps = _copy_read_json(src_dir / "campaigns_skipped.json")
         _copy_job_upsert(
             job_id, status="done", progress=100,
             result={
@@ -2432,6 +2963,7 @@ def _copy_run_job(job_id: str, body: dict) -> None:
                 "uac_copy": uac_copy,
                 "cookie_postprocess": cookie_post,
                 "results": cookie_post.get("results") or _copy_build_results(src_dir, workdir),
+                "skipped_campaigns": skipped_camps,
                 "live_verification": cookie_post.get("live_verification"),
                 "repair_gate": cookie_post.get("repair_gate"),
                 "auto_repair": cookie_post.get("auto_repair"),
@@ -2439,9 +2971,15 @@ def _copy_run_job(job_id: str, body: dict) -> None:
                 "context_rewrite": rewrite_meta,
                 "target_feed_url": target_feed_abs,
                 "workdir": str(workdir),
+                "cleanup": cleanup_result,
             })
     except BaseException as e:  # noqa: BLE001
-        _copy_job_upsert(job_id, status="error", error=str(e)[:500], progress=100)
+        # cleanup_result инициализирован вне try → всегда доступен здесь.
+        # Если очистка отработала до падения job — явно включаем её в result,
+        # чтобы пользователь видел факт удаления/архивации в карточке статуса.
+        _err_result = {"cleanup": cleanup_result} if cleanup_result is not None else None
+        _copy_job_upsert(job_id, status="error", error=str(e)[:500], progress=100,
+                         **({} if _err_result is None else {"result": _err_result}))
         _copy_job_log(job_id, f"ошибка: {str(e)[:300]}")
     finally:
         # Артефакты оставляем во временной папке до ручной очистки — полезно для отладки id_maps/upload_log.
@@ -2467,4 +3005,13 @@ def _copy_jobs_recover() -> None:
         pass
 
 
-
+# ── copy_other: ре-экспорт функций вкладки «Прочие сферы» ───────────────────
+# copy_other не импортирует copy_engine на уровне модуля → цикла нет.
+# DI (_grid_feeds, _resolve_agency_hint, _copy_feeds_preview) берётся из
+# copy_engine._xxx в рантайме (ленивый import внутри тел функций copy_other).
+from .copy_other import (                                    # noqa: E402
+    _ARCHIVE_MAX_FILES, _ARCHIVE_MAX_BYTES, _IMAGE_EXTS,
+    _feed_url_path, _feed_url_file, _feed_auto_match_one,
+    _copy_auto_feed_map, _copy_feeds_check,
+    _extract_archive_images, _copy_images_upload,
+)

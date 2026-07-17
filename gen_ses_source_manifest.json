@@ -1,0 +1,3514 @@
+{
+  "schema": 1,
+  "slepok": "gen_ses",
+  "site_type": "С пробегом",
+  "source": "Архив 4",
+  "notes": [
+    "XLSX and screenshots describe six separate campaigns.",
+    "Interest and retargeting condition IDs are absent; source_ready=false until read from Grid/API.",
+    "Legacy personalization/site-monitoring values are recorded but project invariants win."
+  ],
+  "campaigns": [
+    {
+      "slug": "rsya_interests",
+      "tp": "tp1",
+      "engine_type": "tp1_rsy",
+      "placement": "network",
+      "weekly_budget": 35000,
+      "status": "stopped",
+      "source_ready": false,
+      "missing": [
+        "interest_ids_by_group"
+      ],
+      "bid_modifiers": [
+        "age_0_17=-100",
+        "age_55_plus=-100",
+        "tablet=-100",
+        "connected_tv=-100",
+        "audience:Местоположение=-100"
+      ],
+      "source_name": "Интересы",
+      "source_file": "Интересы 710461331 (остановлена).xlsx",
+      "source_sha256": "6748809f931da075ab7bc32e2649dcc85f4facd96146c0eae332a4ef526ecda4",
+      "source_campaign_id": 710461331,
+      "strategy": "maximum_conversions",
+      "pay": "clicks",
+      "counter_id": 109285853,
+      "goals": [
+        {
+          "id": 560841913,
+          "name": "Ecommerce: добавление в корзину",
+          "value": 10
+        },
+        {
+          "id": 560955349,
+          "name": "Все формы",
+          "value": 2000
+        }
+      ],
+      "source_personalization": true,
+      "source_site_monitoring": false,
+      "project_personalization": false,
+      "project_site_monitoring": true,
+      "groups": [
+        {
+          "name": "Audi",
+          "canonical_name": "Audi",
+          "ct": "ct0312",
+          "gc": "ct0312_aon_n023_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "BMW",
+          "canonical_name": "BMW",
+          "ct": "ct0309",
+          "gc": "ct0309_aon_n024_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Ford",
+          "canonical_name": "Ford",
+          "ct": "ct0259",
+          "gc": "ct0259_aon_n032_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Chery",
+          "canonical_name": "Chery",
+          "ct": "ct0044",
+          "gc": "ct0044_aon_n029_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Kia",
+          "canonical_name": "KIA",
+          "ct": "ct0164",
+          "gc": "ct0164_aon_n027_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Hyundai",
+          "canonical_name": "Hyundai",
+          "ct": "ct0121",
+          "gc": "ct0121_aon_n026_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Geely",
+          "canonical_name": "Geely",
+          "ct": "ct0097",
+          "gc": "ct0097_aon_n033_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Haval",
+          "canonical_name": "Haval",
+          "ct": "ct0111",
+          "gc": "ct0111_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Changan",
+          "canonical_name": "Changan",
+          "ct": "ct0029",
+          "gc": "ct0029_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Chevrolet",
+          "canonical_name": "Chevrolet",
+          "ct": "ct0059",
+          "gc": "ct0059_aon_n030_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Nissan",
+          "canonical_name": "Nissan",
+          "ct": "ct0199",
+          "gc": "ct0199_aon_n042_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Volkswagen",
+          "canonical_name": "Volkswagen",
+          "ct": "ct0238",
+          "gc": "ct0238_aon_n049_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Cadillac",
+          "canonical_name": "Cadillac",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Mercedes",
+          "canonical_name": "Mercedes",
+          "ct": "ct0313",
+          "gc": "ct0313_aon_n028_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Skoda",
+          "canonical_name": "Skoda",
+          "ct": "ct0215",
+          "gc": "ct0215_aon_n051_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Toyota",
+          "canonical_name": "Toyota",
+          "ct": "ct0271",
+          "gc": "ct0271_aon_n047_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Renault",
+          "canonical_name": "Renault",
+          "ct": "ct0209",
+          "gc": "ct0209_aon_n044_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "SWM",
+          "canonical_name": "SWM",
+          "ct": "ct0229",
+          "gc": "ct0229_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Opel",
+          "canonical_name": "Opel",
+          "ct": "ct0282",
+          "gc": "ct0282_aon_n035_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jetour",
+          "canonical_name": "Jetour",
+          "ct": "ct0143",
+          "gc": "ct0143_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "JAC",
+          "canonical_name": "JAC",
+          "ct": "ct0130",
+          "gc": "ct0130_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "EXEED",
+          "canonical_name": "EXEED",
+          "ct": "ct0076",
+          "gc": "ct0076_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Land Rover",
+          "canonical_name": "Land Rover",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Lada",
+          "canonical_name": "Lada",
+          "ct": "ct0181",
+          "gc": "ct0181_aon_n025_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Honda",
+          "canonical_name": "Honda",
+          "ct": "ct0285",
+          "gc": "ct0285_aon_n048_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "FAW",
+          "canonical_name": "FAW",
+          "ct": "ct0081",
+          "gc": "ct0081_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "OMODA",
+          "canonical_name": "OMODA",
+          "ct": "ct0204",
+          "gc": "ct0204_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Citroen",
+          "canonical_name": "Citroen",
+          "ct": "ct0308",
+          "gc": "ct0308_aon_n031_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "BAIC",
+          "canonical_name": "BAIC",
+          "ct": "ct0019",
+          "gc": "ct0019_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Infiniti",
+          "canonical_name": "Infiniti",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "SsangYong",
+          "canonical_name": "SsangYong",
+          "ct": "ct0279",
+          "gc": "ct0279_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Zotye",
+          "canonical_name": "Zotye",
+          "ct": "ct0249",
+          "gc": "ct0249_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Mitsubishi",
+          "canonical_name": "Mitsubishi",
+          "ct": "ct0264",
+          "gc": "ct0264_aon_n041_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Great Wall",
+          "canonical_name": "Great Wall",
+          "ct": "ct0108",
+          "gc": "ct0108_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jetta",
+          "canonical_name": "Jetta",
+          "ct": "ct0150",
+          "gc": "ct0150_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Dongfeng",
+          "canonical_name": "Dongfeng",
+          "ct": "ct0067",
+          "gc": "ct0067_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Mazda",
+          "canonical_name": "Mazda",
+          "ct": "ct0283",
+          "gc": "ct0283_aon_n039_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Subaru",
+          "canonical_name": "Subaru",
+          "ct": "ct0278",
+          "gc": "ct0278_aon_n045_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Suzuki",
+          "canonical_name": "Suzuki",
+          "ct": "ct0277",
+          "gc": "ct0277_aon_n046_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Volvo",
+          "canonical_name": "Volvo",
+          "ct": "ct0276",
+          "gc": "ct0276_aon_n050_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "KAIYI",
+          "canonical_name": "KAIYI",
+          "ct": "ct0154",
+          "gc": "ct0154_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Lifan",
+          "canonical_name": "Lifan",
+          "ct": "ct0284",
+          "gc": "ct0284_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Genesis",
+          "canonical_name": "Genesis",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Acura",
+          "canonical_name": "Acura",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "MG",
+          "canonical_name": "MG",
+          "ct": "ct0195",
+          "gc": "ct0195_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jaecoo",
+          "canonical_name": "Jaecoo",
+          "ct": "ct0140",
+          "gc": "ct0140_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Lexus",
+          "canonical_name": "Lexus",
+          "ct": "ct0314",
+          "gc": "ct0314_aon_n038_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Livan",
+          "canonical_name": "LIVAN",
+          "ct": "ct0191",
+          "gc": "ct0191_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Peugeot",
+          "canonical_name": "Peugeot",
+          "ct": "ct0281",
+          "gc": "ct0281_aon_n043_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Tank",
+          "canonical_name": "Tank",
+          "ct": "ct0233",
+          "gc": "ct0233_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "GAC",
+          "canonical_name": "GAC",
+          "ct": "ct0089",
+          "gc": "ct0089_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Venucia",
+          "canonical_name": "Venucia",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Forthing",
+          "canonical_name": "Forthing",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jeep",
+          "canonical_name": "Jeep",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Москвич",
+          "canonical_name": "Moskvich",
+          "ct": "ct0252",
+          "gc": "ct0252_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        }
+      ],
+      "source_totals": {
+        "groups": 55,
+        "autotarget_groups": 55,
+        "keywords": 0,
+        "unique_keywords": 0,
+        "ads": 0
+      }
+    },
+    {
+      "slug": "rsya_retargeting",
+      "tp": "tp1",
+      "engine_type": "tp1_rsy",
+      "placement": "network",
+      "weekly_budget": 210000,
+      "status": "active",
+      "source_ready": false,
+      "missing": [
+        "retargeting_condition_ids_by_group"
+      ],
+      "bid_modifiers": [
+        "age_0_17=-100",
+        "tablet=-100",
+        "connected_tv=-100",
+        "audience:Отказы=-100",
+        "audience:Местоположение=-100"
+      ],
+      "source_name": "Ретаргетинг+",
+      "source_file": "Ретаргетинг+ 710035126.xlsx",
+      "source_sha256": "ca72493d3f2478751efff63491f887b6c761d4f22bc76a552fa107b2d15caef2",
+      "source_campaign_id": 710035126,
+      "strategy": "maximum_conversions",
+      "pay": "clicks",
+      "counter_id": 109285853,
+      "goals": [
+        {
+          "id": 560841913,
+          "name": "Ecommerce: добавление в корзину",
+          "value": 10
+        },
+        {
+          "id": 560955349,
+          "name": "Все формы",
+          "value": 2000
+        }
+      ],
+      "source_personalization": true,
+      "source_site_monitoring": false,
+      "project_personalization": false,
+      "project_site_monitoring": true,
+      "groups": [
+        {
+          "name": "Audi",
+          "canonical_name": "Audi",
+          "ct": "ct0312",
+          "gc": "ct0312_aon_n023_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "BMW",
+          "canonical_name": "BMW",
+          "ct": "ct0309",
+          "gc": "ct0309_aon_n024_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Ford",
+          "canonical_name": "Ford",
+          "ct": "ct0259",
+          "gc": "ct0259_aon_n032_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Chery",
+          "canonical_name": "Chery",
+          "ct": "ct0044",
+          "gc": "ct0044_aon_n029_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Kia",
+          "canonical_name": "KIA",
+          "ct": "ct0164",
+          "gc": "ct0164_aon_n027_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Hyundai",
+          "canonical_name": "Hyundai",
+          "ct": "ct0121",
+          "gc": "ct0121_aon_n026_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Geely",
+          "canonical_name": "Geely",
+          "ct": "ct0097",
+          "gc": "ct0097_aon_n033_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Haval",
+          "canonical_name": "Haval",
+          "ct": "ct0111",
+          "gc": "ct0111_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Changan",
+          "canonical_name": "Changan",
+          "ct": "ct0029",
+          "gc": "ct0029_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Chevrolet",
+          "canonical_name": "Chevrolet",
+          "ct": "ct0059",
+          "gc": "ct0059_aon_n030_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Nissan",
+          "canonical_name": "Nissan",
+          "ct": "ct0199",
+          "gc": "ct0199_aon_n042_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Volkswagen",
+          "canonical_name": "Volkswagen",
+          "ct": "ct0238",
+          "gc": "ct0238_aon_n049_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Cadillac",
+          "canonical_name": "Cadillac",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Mercedes",
+          "canonical_name": "Mercedes",
+          "ct": "ct0313",
+          "gc": "ct0313_aon_n028_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Skoda",
+          "canonical_name": "Skoda",
+          "ct": "ct0215",
+          "gc": "ct0215_aon_n051_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Toyota",
+          "canonical_name": "Toyota",
+          "ct": "ct0271",
+          "gc": "ct0271_aon_n047_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Renault",
+          "canonical_name": "Renault",
+          "ct": "ct0209",
+          "gc": "ct0209_aon_n044_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "SWM",
+          "canonical_name": "SWM",
+          "ct": "ct0229",
+          "gc": "ct0229_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Opel",
+          "canonical_name": "Opel",
+          "ct": "ct0282",
+          "gc": "ct0282_aon_n035_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jetour",
+          "canonical_name": "Jetour",
+          "ct": "ct0143",
+          "gc": "ct0143_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "JAC",
+          "canonical_name": "JAC",
+          "ct": "ct0130",
+          "gc": "ct0130_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "EXEED",
+          "canonical_name": "EXEED",
+          "ct": "ct0076",
+          "gc": "ct0076_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Land Rover",
+          "canonical_name": "Land Rover",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Lada",
+          "canonical_name": "Lada",
+          "ct": "ct0181",
+          "gc": "ct0181_aon_n025_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Honda",
+          "canonical_name": "Honda",
+          "ct": "ct0285",
+          "gc": "ct0285_aon_n048_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "FAW",
+          "canonical_name": "FAW",
+          "ct": "ct0081",
+          "gc": "ct0081_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "OMODA",
+          "canonical_name": "OMODA",
+          "ct": "ct0204",
+          "gc": "ct0204_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Citroen",
+          "canonical_name": "Citroen",
+          "ct": "ct0308",
+          "gc": "ct0308_aon_n031_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "BAIC",
+          "canonical_name": "BAIC",
+          "ct": "ct0019",
+          "gc": "ct0019_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Infiniti",
+          "canonical_name": "Infiniti",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "SsangYong",
+          "canonical_name": "SsangYong",
+          "ct": "ct0279",
+          "gc": "ct0279_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Zotye",
+          "canonical_name": "Zotye",
+          "ct": "ct0249",
+          "gc": "ct0249_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Mitsubishi",
+          "canonical_name": "Mitsubishi",
+          "ct": "ct0264",
+          "gc": "ct0264_aon_n041_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Great Wall",
+          "canonical_name": "Great Wall",
+          "ct": "ct0108",
+          "gc": "ct0108_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jetta",
+          "canonical_name": "Jetta",
+          "ct": "ct0150",
+          "gc": "ct0150_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Dongfeng",
+          "canonical_name": "Dongfeng",
+          "ct": "ct0067",
+          "gc": "ct0067_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Mazda",
+          "canonical_name": "Mazda",
+          "ct": "ct0283",
+          "gc": "ct0283_aon_n039_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Subaru",
+          "canonical_name": "Subaru",
+          "ct": "ct0278",
+          "gc": "ct0278_aon_n045_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Suzuki",
+          "canonical_name": "Suzuki",
+          "ct": "ct0277",
+          "gc": "ct0277_aon_n046_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Volvo",
+          "canonical_name": "Volvo",
+          "ct": "ct0276",
+          "gc": "ct0276_aon_n050_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "KAIYI",
+          "canonical_name": "KAIYI",
+          "ct": "ct0154",
+          "gc": "ct0154_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Lifan",
+          "canonical_name": "Lifan",
+          "ct": "ct0284",
+          "gc": "ct0284_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Genesis",
+          "canonical_name": "Genesis",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Acura",
+          "canonical_name": "Acura",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "MG",
+          "canonical_name": "MG",
+          "ct": "ct0195",
+          "gc": "ct0195_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jaecoo",
+          "canonical_name": "Jaecoo",
+          "ct": "ct0140",
+          "gc": "ct0140_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Lexus",
+          "canonical_name": "Lexus",
+          "ct": "ct0314",
+          "gc": "ct0314_aon_n038_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Livan",
+          "canonical_name": "LIVAN",
+          "ct": "ct0191",
+          "gc": "ct0191_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Peugeot",
+          "canonical_name": "Peugeot",
+          "ct": "ct0281",
+          "gc": "ct0281_aon_n043_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Tank",
+          "canonical_name": "Tank",
+          "ct": "ct0233",
+          "gc": "ct0233_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "GAC",
+          "canonical_name": "GAC",
+          "ct": "ct0089",
+          "gc": "ct0089_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Venucia",
+          "canonical_name": "Venucia",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Forthing",
+          "canonical_name": "Forthing",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jeep",
+          "canonical_name": "Jeep",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Москвич",
+          "canonical_name": "Moskvich",
+          "ct": "ct0252",
+          "gc": "ct0252_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        }
+      ],
+      "source_totals": {
+        "groups": 55,
+        "autotarget_groups": 55,
+        "keywords": 0,
+        "unique_keywords": 0,
+        "ads": 0
+      }
+    },
+    {
+      "slug": "rsya_autotarget",
+      "tp": "tp1",
+      "engine_type": "tp1_rsy",
+      "placement": "network",
+      "weekly_budget": 35000,
+      "status": "stopped",
+      "source_ready": true,
+      "missing": [],
+      "bid_modifiers": [
+        "age_0_17=-100",
+        "age_55_plus=-100",
+        "tablet=-100",
+        "connected_tv=-100",
+        "audience:Местоположение=-100"
+      ],
+      "source_name": "Автотаргет",
+      "source_file": "Автотаргет 710447368 (остановлена).xlsx",
+      "source_sha256": "22e61973355c872bf73b0cfb7c357fc9ac808a8241cc6a85673eb29031b58d32",
+      "source_campaign_id": 710447368,
+      "strategy": "maximum_conversions",
+      "pay": "clicks",
+      "counter_id": 109285853,
+      "goals": [
+        {
+          "id": 560841913,
+          "name": "Ecommerce: добавление в корзину",
+          "value": 10
+        },
+        {
+          "id": 560955349,
+          "name": "Все формы",
+          "value": 2000
+        }
+      ],
+      "source_personalization": true,
+      "source_site_monitoring": false,
+      "project_personalization": false,
+      "project_site_monitoring": true,
+      "groups": [
+        {
+          "name": "Audi",
+          "canonical_name": "Audi",
+          "ct": "ct0312",
+          "gc": "ct0312_aon_n023_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "audi",
+            "ауди"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "BMW",
+          "canonical_name": "BMW",
+          "ct": "ct0309",
+          "gc": "ct0309_aon_n024_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "bmw",
+            "бмв"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Ford",
+          "canonical_name": "Ford",
+          "ct": "ct0259",
+          "gc": "ct0259_aon_n032_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "форд",
+            "ford"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Chery",
+          "canonical_name": "Chery",
+          "ct": "ct0044",
+          "gc": "ct0044_aon_n029_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "chery",
+            "чери"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Kia",
+          "canonical_name": "KIA",
+          "ct": "ct0164",
+          "gc": "ct0164_aon_n027_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "kia",
+            "киа"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Hyundai",
+          "canonical_name": "Hyundai",
+          "ct": "ct0121",
+          "gc": "ct0121_aon_n026_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "hyundai",
+            "хендай"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Geely",
+          "canonical_name": "Geely",
+          "ct": "ct0097",
+          "gc": "ct0097_aon_n033_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "джили",
+            "geely"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Haval",
+          "canonical_name": "Haval",
+          "ct": "ct0111",
+          "gc": "ct0111_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "haval",
+            "хавал",
+            "хавали",
+            "хавэйл"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Changan",
+          "canonical_name": "Changan",
+          "ct": "ct0029",
+          "gc": "ct0029_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "чанган",
+            "changan"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Chevrolet",
+          "canonical_name": "Chevrolet",
+          "ct": "ct0059",
+          "gc": "ct0059_aon_n030_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "chevrolet",
+            "шевроле"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Nissan",
+          "canonical_name": "Nissan",
+          "ct": "ct0199",
+          "gc": "ct0199_aon_n042_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "ниссан",
+            "nissan"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Volkswagen",
+          "canonical_name": "Volkswagen",
+          "ct": "ct0238",
+          "gc": "ct0238_aon_n049_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "volkswagen",
+            "фольксваген"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Cadillac",
+          "canonical_name": "Cadillac",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "кадиллак",
+            "cadillac"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Mercedes",
+          "canonical_name": "Mercedes",
+          "ct": "ct0313",
+          "gc": "ct0313_aon_n028_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "mercedes",
+            "мерседес"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Skoda",
+          "canonical_name": "Skoda",
+          "ct": "ct0215",
+          "gc": "ct0215_aon_n051_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "шкода",
+            "skoda"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Toyota",
+          "canonical_name": "Toyota",
+          "ct": "ct0271",
+          "gc": "ct0271_aon_n047_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "toyota",
+            "тойота"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Renault",
+          "canonical_name": "Renault",
+          "ct": "ct0209",
+          "gc": "ct0209_aon_n044_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "renault",
+            "рено"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "SWM",
+          "canonical_name": "SWM",
+          "ct": "ct0229",
+          "gc": "ct0229_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "swm",
+            "свм"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Opel",
+          "canonical_name": "Opel",
+          "ct": "ct0282",
+          "gc": "ct0282_aon_n035_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "опель",
+            "opel"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jetour",
+          "canonical_name": "Jetour",
+          "ct": "ct0143",
+          "gc": "ct0143_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "jetour",
+            "джетур"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "JAC",
+          "canonical_name": "JAC",
+          "ct": "ct0130",
+          "gc": "ct0130_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "джак",
+            "jac"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "EXEED",
+          "canonical_name": "EXEED",
+          "ct": "ct0076",
+          "gc": "ct0076_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "exeed",
+            "эксид"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Land Rover",
+          "canonical_name": "Land Rover",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "land rover",
+            "ленд ровер"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Lada",
+          "canonical_name": "Lada",
+          "ct": "ct0181",
+          "gc": "ct0181_aon_n025_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "лада",
+            "lada"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Honda",
+          "canonical_name": "Honda",
+          "ct": "ct0285",
+          "gc": "ct0285_aon_n048_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "honda",
+            "хонда"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "FAW",
+          "canonical_name": "FAW",
+          "ct": "ct0081",
+          "gc": "ct0081_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "фав",
+            "faw"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "OMODA",
+          "canonical_name": "OMODA",
+          "ct": "ct0204",
+          "gc": "ct0204_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "omoda",
+            "омода"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Citroen",
+          "canonical_name": "Citroen",
+          "ct": "ct0308",
+          "gc": "ct0308_aon_n031_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "citroen",
+            "ситроен"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "BAIC",
+          "canonical_name": "BAIC",
+          "ct": "ct0019",
+          "gc": "ct0019_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "baic",
+            "баик"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Infiniti",
+          "canonical_name": "Infiniti",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "infiniti",
+            "инфинити"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "SsangYong",
+          "canonical_name": "SsangYong",
+          "ct": "ct0279",
+          "gc": "ct0279_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "ssangyong",
+            "ссанг енг",
+            "ссангенг"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Zotye",
+          "canonical_name": "Zotye",
+          "ct": "ct0249",
+          "gc": "ct0249_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "zotye",
+            "зоти"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Mitsubishi",
+          "canonical_name": "Mitsubishi",
+          "ct": "ct0264",
+          "gc": "ct0264_aon_n041_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "mitsubishi",
+            "митсубиси"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Great Wall",
+          "canonical_name": "Great Wall",
+          "ct": "ct0108",
+          "gc": "ct0108_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "great wall",
+            "грейт вол"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jetta",
+          "canonical_name": "Jetta",
+          "ct": "ct0150",
+          "gc": "ct0150_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "jetta",
+            "джета",
+            "джетта"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Dongfeng",
+          "canonical_name": "Dongfeng",
+          "ct": "ct0067",
+          "gc": "ct0067_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "dongfeng",
+            "донгфенг",
+            "донг фенг"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Mazda",
+          "canonical_name": "Mazda",
+          "ct": "ct0283",
+          "gc": "ct0283_aon_n039_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "mazda",
+            "мазда"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Subaru",
+          "canonical_name": "Subaru",
+          "ct": "ct0278",
+          "gc": "ct0278_aon_n045_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "subaru",
+            "субару"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Suzuki",
+          "canonical_name": "Suzuki",
+          "ct": "ct0277",
+          "gc": "ct0277_aon_n046_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "suzuki",
+            "сузуки",
+            "судзуки"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Volvo",
+          "canonical_name": "Volvo",
+          "ct": "ct0276",
+          "gc": "ct0276_aon_n050_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "volvo",
+            "вольво"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "KAIYI",
+          "canonical_name": "KAIYI",
+          "ct": "ct0154",
+          "gc": "ct0154_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "kaiyi",
+            "каи"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Lifan",
+          "canonical_name": "Lifan",
+          "ct": "ct0284",
+          "gc": "ct0284_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "lifan",
+            "лифан"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Genesis",
+          "canonical_name": "Genesis",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "genesis",
+            "генезис",
+            "дженезис"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Acura",
+          "canonical_name": "Acura",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "acura",
+            "акура"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "MG",
+          "canonical_name": "MG",
+          "ct": "ct0195",
+          "gc": "ct0195_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "mg",
+            "эмджи"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jaecoo",
+          "canonical_name": "Jaecoo",
+          "ct": "ct0140",
+          "gc": "ct0140_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "jaecoo",
+            "джейку"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Lexus",
+          "canonical_name": "Lexus",
+          "ct": "ct0314",
+          "gc": "ct0314_aon_n038_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "lexus",
+            "лексус"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Livan",
+          "canonical_name": "LIVAN",
+          "ct": "ct0191",
+          "gc": "ct0191_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "livan авто",
+            "ливан авто"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Peugeot",
+          "canonical_name": "Peugeot",
+          "ct": "ct0281",
+          "gc": "ct0281_aon_n043_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "peugeot",
+            "пежо"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Tank",
+          "canonical_name": "Tank",
+          "ct": "ct0233",
+          "gc": "ct0233_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "танк",
+            "tank"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "GAC",
+          "canonical_name": "GAC",
+          "ct": "ct0089",
+          "gc": "ct0089_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "gac",
+            "гак"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Venucia",
+          "canonical_name": "Venucia",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "venucia",
+            "Венусия",
+            "Венуция"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Forthing",
+          "canonical_name": "Forthing",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "forthing",
+            "Фортинг"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jeep",
+          "canonical_name": "Jeep",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "jeep",
+            "джип"
+          ],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Москвич",
+          "canonical_name": "Moskvich",
+          "ct": "ct0252",
+          "gc": "ct0252_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "moscvich авто",
+            "москвич авто"
+          ],
+          "minus": [],
+          "ads": []
+        }
+      ],
+      "source_totals": {
+        "groups": 55,
+        "autotarget_groups": 55,
+        "keywords": 118,
+        "unique_keywords": 118,
+        "ads": 0
+      }
+    },
+    {
+      "slug": "search_autotarget",
+      "tp": "tp2",
+      "engine_type": "search_test",
+      "placement": "search+dynamic",
+      "weekly_budget": 70000,
+      "status": "active",
+      "source_ready": true,
+      "missing": [],
+      "bid_modifiers": [
+        "age_0_17=-100",
+        "tablet=-100",
+        "connected_tv=-100",
+        "audience:Местоположение=-100",
+        "network=+25",
+        "exclusive=+25"
+      ],
+      "source_name": "Поиск",
+      "source_file": "Поиск 710035444.xlsx",
+      "source_sha256": "5dfb17cbad82fef3c933f18305d232ea7e872b9797d3e4448f33c84cb94fa4dc",
+      "source_campaign_id": 710035444,
+      "strategy": "maximum_conversions",
+      "pay": "clicks",
+      "counter_id": 109285853,
+      "goals": [
+        {
+          "id": 560841913,
+          "name": "Ecommerce: добавление в корзину",
+          "value": 10
+        },
+        {
+          "id": 560955349,
+          "name": "Все формы",
+          "value": 2000
+        }
+      ],
+      "source_personalization": true,
+      "source_site_monitoring": false,
+      "project_personalization": false,
+      "project_site_monitoring": true,
+      "groups": [
+        {
+          "name": "Audi",
+          "canonical_name": "Audi",
+          "ct": "ct0312",
+          "gc": "ct0312_aon_n023_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "BMW",
+          "canonical_name": "BMW",
+          "ct": "ct0309",
+          "gc": "ct0309_aon_n024_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Ford",
+          "canonical_name": "Ford",
+          "ct": "ct0259",
+          "gc": "ct0259_aon_n032_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Chery",
+          "canonical_name": "Chery",
+          "ct": "ct0044",
+          "gc": "ct0044_aon_n029_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Kia",
+          "canonical_name": "KIA",
+          "ct": "ct0164",
+          "gc": "ct0164_aon_n027_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Hyundai",
+          "canonical_name": "Hyundai",
+          "ct": "ct0121",
+          "gc": "ct0121_aon_n026_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Geely",
+          "canonical_name": "Geely",
+          "ct": "ct0097",
+          "gc": "ct0097_aon_n033_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Haval",
+          "canonical_name": "Haval",
+          "ct": "ct0111",
+          "gc": "ct0111_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Changan",
+          "canonical_name": "Changan",
+          "ct": "ct0029",
+          "gc": "ct0029_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Chevrolet",
+          "canonical_name": "Chevrolet",
+          "ct": "ct0059",
+          "gc": "ct0059_aon_n030_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Nissan",
+          "canonical_name": "Nissan",
+          "ct": "ct0199",
+          "gc": "ct0199_aon_n042_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Volkswagen",
+          "canonical_name": "Volkswagen",
+          "ct": "ct0238",
+          "gc": "ct0238_aon_n049_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Cadillac",
+          "canonical_name": "Cadillac",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Mercedes",
+          "canonical_name": "Mercedes",
+          "ct": "ct0313",
+          "gc": "ct0313_aon_n028_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Skoda",
+          "canonical_name": "Skoda",
+          "ct": "ct0215",
+          "gc": "ct0215_aon_n051_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Toyota",
+          "canonical_name": "Toyota",
+          "ct": "ct0271",
+          "gc": "ct0271_aon_n047_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Renault",
+          "canonical_name": "Renault",
+          "ct": "ct0209",
+          "gc": "ct0209_aon_n044_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "SWM",
+          "canonical_name": "SWM",
+          "ct": "ct0229",
+          "gc": "ct0229_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Opel",
+          "canonical_name": "Opel",
+          "ct": "ct0282",
+          "gc": "ct0282_aon_n035_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jetour",
+          "canonical_name": "Jetour",
+          "ct": "ct0143",
+          "gc": "ct0143_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "JAC",
+          "canonical_name": "JAC",
+          "ct": "ct0130",
+          "gc": "ct0130_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "EXEED",
+          "canonical_name": "EXEED",
+          "ct": "ct0076",
+          "gc": "ct0076_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Land Rover",
+          "canonical_name": "Land Rover",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Lada",
+          "canonical_name": "Lada",
+          "ct": "ct0181",
+          "gc": "ct0181_aon_n025_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Honda",
+          "canonical_name": "Honda",
+          "ct": "ct0285",
+          "gc": "ct0285_aon_n048_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "FAW",
+          "canonical_name": "FAW",
+          "ct": "ct0081",
+          "gc": "ct0081_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "OMODA",
+          "canonical_name": "OMODA",
+          "ct": "ct0204",
+          "gc": "ct0204_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Citroen",
+          "canonical_name": "Citroen",
+          "ct": "ct0308",
+          "gc": "ct0308_aon_n031_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "BAIC",
+          "canonical_name": "BAIC",
+          "ct": "ct0019",
+          "gc": "ct0019_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Infiniti",
+          "canonical_name": "Infiniti",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "SsangYong",
+          "canonical_name": "SsangYong",
+          "ct": "ct0279",
+          "gc": "ct0279_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Zotye",
+          "canonical_name": "Zotye",
+          "ct": "ct0249",
+          "gc": "ct0249_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Mitsubishi",
+          "canonical_name": "Mitsubishi",
+          "ct": "ct0264",
+          "gc": "ct0264_aon_n041_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Great Wall",
+          "canonical_name": "Great Wall",
+          "ct": "ct0108",
+          "gc": "ct0108_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jetta",
+          "canonical_name": "Jetta",
+          "ct": "ct0150",
+          "gc": "ct0150_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Dongfeng",
+          "canonical_name": "Dongfeng",
+          "ct": "ct0067",
+          "gc": "ct0067_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Mazda",
+          "canonical_name": "Mazda",
+          "ct": "ct0283",
+          "gc": "ct0283_aon_n039_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Subaru",
+          "canonical_name": "Subaru",
+          "ct": "ct0278",
+          "gc": "ct0278_aon_n045_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Suzuki",
+          "canonical_name": "Suzuki",
+          "ct": "ct0277",
+          "gc": "ct0277_aon_n046_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Volvo",
+          "canonical_name": "Volvo",
+          "ct": "ct0276",
+          "gc": "ct0276_aon_n050_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "KAIYI",
+          "canonical_name": "KAIYI",
+          "ct": "ct0154",
+          "gc": "ct0154_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Lifan",
+          "canonical_name": "Lifan",
+          "ct": "ct0284",
+          "gc": "ct0284_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Genesis",
+          "canonical_name": "Genesis",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Acura",
+          "canonical_name": "Acura",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "MG",
+          "canonical_name": "MG",
+          "ct": "ct0195",
+          "gc": "ct0195_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jaecoo",
+          "canonical_name": "Jaecoo",
+          "ct": "ct0140",
+          "gc": "ct0140_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Lexus",
+          "canonical_name": "Lexus",
+          "ct": "ct0314",
+          "gc": "ct0314_aon_n038_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Livan",
+          "canonical_name": "LIVAN",
+          "ct": "ct0191",
+          "gc": "ct0191_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Peugeot",
+          "canonical_name": "Peugeot",
+          "ct": "ct0281",
+          "gc": "ct0281_aon_n043_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Tank",
+          "canonical_name": "Tank",
+          "ct": "ct0233",
+          "gc": "ct0233_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "GAC",
+          "canonical_name": "GAC",
+          "ct": "ct0089",
+          "gc": "ct0089_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Venucia",
+          "canonical_name": "Venucia",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Forthing",
+          "canonical_name": "Forthing",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jeep",
+          "canonical_name": "Jeep",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Москвич",
+          "canonical_name": "Moskvich",
+          "ct": "ct0252",
+          "gc": "ct0252_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        }
+      ],
+      "source_totals": {
+        "groups": 55,
+        "autotarget_groups": 55,
+        "keywords": 0,
+        "unique_keywords": 0,
+        "ads": 0
+      }
+    },
+    {
+      "slug": "search_keywords",
+      "tp": "tp2",
+      "engine_type": "search_test",
+      "placement": "search+dynamic",
+      "weekly_budget": 70000,
+      "status": "active",
+      "source_ready": true,
+      "missing": [],
+      "bid_modifiers": [
+        "age_0_17=-100",
+        "tablet=-100",
+        "connected_tv=-100",
+        "audience:Местоположение=-100",
+        "network=+25",
+        "exclusive=+25"
+      ],
+      "source_name": "Поиск ключи",
+      "source_file": "Поиск ключи 710446676.xlsx",
+      "source_sha256": "ef2fe7b42035771b102d43a4375d21ad8c88c5c9956701103735acbddef9a6fe",
+      "source_campaign_id": 710446676,
+      "strategy": "maximum_conversions",
+      "pay": "clicks",
+      "counter_id": 109285853,
+      "goals": [
+        {
+          "id": 560841913,
+          "name": "Ecommerce: добавление в корзину",
+          "value": 10
+        },
+        {
+          "id": 560955349,
+          "name": "Все формы",
+          "value": 2000
+        }
+      ],
+      "source_personalization": true,
+      "source_site_monitoring": false,
+      "project_personalization": false,
+      "project_site_monitoring": true,
+      "groups": [
+        {
+          "name": "Купить авто",
+          "canonical_name": "Купить авто",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "[купить авто]",
+            "[купить авто с пробегом краснодарский край]",
+            "[купить авто в крае на авито]",
+            "[купить авто в краснодарском крае на авито]",
+            "[купить авто в краснодарском крае б у]",
+            "[купить авто бу в крае]",
+            "[купить бу авто в краснодарском крае]",
+            "[купить авто краснодар край]",
+            "[купить авто крае]",
+            "[купить авто в краснодарском]",
+            "[купить авто в краснодарском крае]",
+            "[купить авто с пробегом]",
+            "[купить авто в краснодаре]",
+            "[купить автомобиль краснодарском]",
+            "[купить автомобиль в краснодаре]",
+            "[купить автомобиль с пробегом краснодарский]",
+            "[авито купить автомобиль с пробегом]",
+            "[купить автомобиль с пробегом]",
+            "[купить легковой автомобиль]",
+            "[купить автомобиль в краснодарском крае с пробегом]",
+            "[купить автомобиль в краснодарском крае]",
+            "[купить автомобиль]",
+            "[купить машину в краснодаре]",
+            "[какую машину купить]",
+            "[авито купить машину]",
+            "[купить машину бу]",
+            "[куплю машину краснодарском]",
+            "[купить машину]"
+          ],
+          "minus": [
+            "-посудомоечная -стиральная"
+          ],
+          "ads": [
+            {
+              "id": 17736592723,
+              "title": "Купить авто с пробегом в Краснодаре!",
+              "title2": "Автосалон авто с пробегом",
+              "text": "Купить автомобиль с пробегом по выгодной цене! Большой выбор автомобилей. Трейд-ин.",
+              "href": "https://cars-start.ru/cars",
+              "sitelink_titles": [
+                "Внедорожники",
+                "Седаны",
+                "Хэтчбеки",
+                "Универсалы",
+                "Минивены"
+              ],
+              "sitelink_hrefs": [
+                "https://cars-start.ru/cars/body-allroad",
+                "https://cars-start.ru/cars/body-sedan",
+                "https://cars-start.ru/cars/body-hatchback",
+                "https://cars-start.ru/cars/body-universal",
+                "https://cars-start.ru/cars/body-minivan"
+              ],
+              "callouts": [
+                "Подбор авто",
+                "Гибкие условия",
+                "Проверенные авто",
+                "Доступные цены"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Бу авто",
+          "canonical_name": "Бу авто",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "[авто бу]",
+            "[купить авто бу]",
+            "[авто бу краснодарского]",
+            "[продажа бу авто]",
+            "[бу авто краснодар]",
+            "[авито бу авто]",
+            "[авто бу в крае]",
+            "[бу авто в краснодарском крае]",
+            "[купить авто бу краснодарский]",
+            "[авто бу с пробегом]",
+            "[б у авто]",
+            "[купить б у авто]",
+            "[б у авто краснодарский]",
+            "[б у авто краснодарский край]",
+            "[авто б у купить краснодарский]",
+            "[б у авто краснодар]",
+            "[продажа б у авто]",
+            "[б у авто на авито]",
+            "[купить легковой автомобиль бу]",
+            "[автомобиль бу]",
+            "[купить бу автомобиль]",
+            "[автомобиль бу краснодарский край]",
+            "[авито бу автомобили]",
+            "[бу автомобили краснодар]",
+            "[легковая автомобиль бу]",
+            "[автомобили пробегом бу]",
+            "[купить автомобиль бу в краснодарском крае]",
+            "[купить бу автомобиль в краснодарском]",
+            "[купить автомобиль б у]",
+            "[автомобиль б у краснодарский край]",
+            "[легковых автомобилей б у]",
+            "[автомобили б у краснодар]",
+            "[автомобиль б у]"
+          ],
+          "minus": [],
+          "ads": [
+            {
+              "id": 17736592731,
+              "title": "Бу авто в Краснодаре!",
+              "title2": "Автосалон бу автомобилей",
+              "text": "Купить автомобиль с пробегом по выгодной цене! Большой выбор автомобилей. Трейд-ин.",
+              "href": "https://cars-start.ru/cars",
+              "sitelink_titles": [
+                "Внедорожники",
+                "Седаны",
+                "Хэтчбеки",
+                "Универсалы",
+                "Минивены"
+              ],
+              "sitelink_hrefs": [
+                "https://cars-start.ru/cars/body-allroad",
+                "https://cars-start.ru/cars/body-sedan",
+                "https://cars-start.ru/cars/body-hatchback",
+                "https://cars-start.ru/cars/body-universal",
+                "https://cars-start.ru/cars/body-minivan"
+              ],
+              "callouts": [
+                "Подбор авто",
+                "Гибкие условия",
+                "Проверенные авто",
+                "Доступные цены"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Авто с пробегом",
+          "canonical_name": "Авто с пробегом",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "[авто с пробегом в краснодарском крае купить]",
+            "[авито авто с пробегом в краснодарском крае]",
+            "[продажа авто с пробегом в краснодарском крае]",
+            "[авто с пробегом в краснодарском крае]",
+            "[авито купить авто краснодарский край с пробегом]",
+            "[авито краснодарский край авто с пробегом частные]",
+            "[авито продажа авто с пробегом край]",
+            "[авито краснодар край авто с пробегом]",
+            "[авито авто с пробегом край]",
+            "[авито купить авто с пробегом краснодарский]",
+            "[авито краснодарский авто с пробегом частные]",
+            "[авито продажа авто с пробегом краснодарский]",
+            "[авито краснодар авто с пробегом краснодарский]",
+            "[авито авто с пробегом краснодар краснодарский край]",
+            "[авто авито краснодарский край автомобили с пробегом]",
+            "[авито авто с пробегом краснодарский]",
+            "[купить авто с пробегом краснодарский]",
+            "[авто с пробегом]",
+            "[авито купить авто с пробегом]",
+            "[купить авто с пробегом в краснодаре]",
+            "[купить авто с пробегом от хозяев]",
+            "[куплю авто с пробегом частные]",
+            "[объявление купить авто с пробегом]",
+            "[авто с пробегом краснодарский]",
+            "[авто ру с пробегом краснодарский край]",
+            "[краснодарский край авто с пробегом частные]",
+            "[край авто с пробегом]",
+            "[авито авто с пробегом]"
+          ],
+          "minus": [],
+          "ads": [
+            {
+              "id": 17736593083,
+              "title": "Авто с пробегом в Краснодаре!",
+              "title2": "Автосалон бу автомобилей",
+              "text": "Купить автомобиль с пробегом по выгодной цене! Большой выбор автомобилей. Трейд-ин.",
+              "href": "https://cars-start.ru/cars",
+              "sitelink_titles": [
+                "Внедорожники",
+                "Седаны",
+                "Хэтчбеки",
+                "Универсалы",
+                "Минивены"
+              ],
+              "sitelink_hrefs": [
+                "https://cars-start.ru/cars/body-allroad",
+                "https://cars-start.ru/cars/body-sedan",
+                "https://cars-start.ru/cars/body-hatchback",
+                "https://cars-start.ru/cars/body-universal",
+                "https://cars-start.ru/cars/body-minivan"
+              ],
+              "callouts": [
+                "Подбор авто",
+                "Гибкие условия",
+                "Проверенные авто",
+                "Доступные цены"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Автосалон",
+          "canonical_name": "Автосалон",
+          "ct": "ct0013",
+          "gc": "ct0013_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [
+            "[автосалон краснодар с пробегом]",
+            "[кар краснодар автосалон]",
+            "[официальные автосалоны краснодара]",
+            "[автосалон краснодар]",
+            "[автосалон краснодар авто с пробегом]",
+            "[автосалон авто]",
+            "[автосалоны краснодар отзывы]",
+            "[краснодар автосалоны авто]",
+            "[автосалон лада]",
+            "[автосалоны с пробегом]",
+            "[автосалон краснодар автомобили]",
+            "[купить автомобиль в автосалоне]",
+            "[автомобиль цены в автосалонах]",
+            "[автосалон автомобилей]",
+            "[автосалон]",
+            "[автомобильный салон]",
+            "[официальный дилер в краснодаре]",
+            "[купить у официального дилера]",
+            "[официальный дилер лада]",
+            "[хавай официальный дилер]",
+            "[хавал официальный дилер]",
+            "[официальный дилер цены]",
+            "[купить в краснодаре у официального дилера]",
+            "[официальный дилер]",
+            "[дилерский центр]",
+            "[автосалон автомобилей с пробегом]",
+            "[автосалон бу автомобилей]",
+            "[автосалон авто с пробегом]",
+            "[лучший автосалон]",
+            "[надежный автосалон]"
+          ],
+          "minus": [
+            "-посудомоечная -стиральная"
+          ],
+          "ads": [
+            {
+              "id": 17736599079,
+              "title": "Автосалон Краснодар!",
+              "title2": "Автосалон авто с пробегом",
+              "text": "Купить автомобиль с пробегом по выгодной цене! Большой выбор автомобилей. Трейд-ин.",
+              "href": "https://cars-start.ru/cars",
+              "sitelink_titles": [
+                "Внедорожники",
+                "Седаны",
+                "Хэтчбеки",
+                "Универсалы",
+                "Минивены"
+              ],
+              "sitelink_hrefs": [
+                "https://cars-start.ru/cars/body-allroad",
+                "https://cars-start.ru/cars/body-sedan",
+                "https://cars-start.ru/cars/body-hatchback",
+                "https://cars-start.ru/cars/body-universal",
+                "https://cars-start.ru/cars/body-minivan"
+              ],
+              "callouts": [
+                "Подбор авто",
+                "Гибкие условия",
+                "Проверенные авто",
+                "Доступные цены"
+              ]
+            }
+          ]
+        }
+      ],
+      "source_totals": {
+        "groups": 4,
+        "autotarget_groups": 4,
+        "keywords": 119,
+        "unique_keywords": 119,
+        "ads": 4
+      }
+    },
+    {
+      "slug": "product_gallery",
+      "tp": "tp3",
+      "engine_type": "rsya_gallery",
+      "placement": "product_gallery",
+      "weekly_budget": 350000,
+      "status": "active",
+      "source_ready": true,
+      "missing": [],
+      "bid_modifiers": [
+        "age_0_17=-100",
+        "tablet=-100",
+        "connected_tv=-100",
+        "audience:Местоположение=-100"
+      ],
+      "source_name": "Товарная",
+      "source_file": "Товарная 710034291.xlsx",
+      "source_sha256": "6d2cde7ec5e9b67274b53bf7b0b9b72e611bbfa393719b2e434821280b974459",
+      "source_campaign_id": 710034291,
+      "strategy": "maximum_conversions",
+      "pay": "clicks",
+      "counter_id": 109285853,
+      "goals": [
+        {
+          "id": 560841913,
+          "name": "Ecommerce: добавление в корзину",
+          "value": 10
+        },
+        {
+          "id": 560955349,
+          "name": "Все формы",
+          "value": 2000
+        }
+      ],
+      "source_personalization": true,
+      "source_site_monitoring": false,
+      "project_personalization": false,
+      "project_site_monitoring": true,
+      "groups": [
+        {
+          "name": "Audi",
+          "canonical_name": "Audi",
+          "ct": "ct0312",
+          "gc": "ct0312_aon_n023_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "BMW",
+          "canonical_name": "BMW",
+          "ct": "ct0309",
+          "gc": "ct0309_aon_n024_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Ford",
+          "canonical_name": "Ford",
+          "ct": "ct0259",
+          "gc": "ct0259_aon_n032_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Chery",
+          "canonical_name": "Chery",
+          "ct": "ct0044",
+          "gc": "ct0044_aon_n029_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Kia",
+          "canonical_name": "KIA",
+          "ct": "ct0164",
+          "gc": "ct0164_aon_n027_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Hyundai",
+          "canonical_name": "Hyundai",
+          "ct": "ct0121",
+          "gc": "ct0121_aon_n026_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Geely",
+          "canonical_name": "Geely",
+          "ct": "ct0097",
+          "gc": "ct0097_aon_n033_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Haval",
+          "canonical_name": "Haval",
+          "ct": "ct0111",
+          "gc": "ct0111_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Changan",
+          "canonical_name": "Changan",
+          "ct": "ct0029",
+          "gc": "ct0029_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Chevrolet",
+          "canonical_name": "Chevrolet",
+          "ct": "ct0059",
+          "gc": "ct0059_aon_n030_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Nissan",
+          "canonical_name": "Nissan",
+          "ct": "ct0199",
+          "gc": "ct0199_aon_n042_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Volkswagen",
+          "canonical_name": "Volkswagen",
+          "ct": "ct0238",
+          "gc": "ct0238_aon_n049_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Cadillac",
+          "canonical_name": "Cadillac",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Mercedes",
+          "canonical_name": "Mercedes",
+          "ct": "ct0313",
+          "gc": "ct0313_aon_n028_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Skoda",
+          "canonical_name": "Skoda",
+          "ct": "ct0215",
+          "gc": "ct0215_aon_n051_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Toyota",
+          "canonical_name": "Toyota",
+          "ct": "ct0271",
+          "gc": "ct0271_aon_n047_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Renault",
+          "canonical_name": "Renault",
+          "ct": "ct0209",
+          "gc": "ct0209_aon_n044_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "SWM",
+          "canonical_name": "SWM",
+          "ct": "ct0229",
+          "gc": "ct0229_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Opel",
+          "canonical_name": "Opel",
+          "ct": "ct0282",
+          "gc": "ct0282_aon_n035_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jetour",
+          "canonical_name": "Jetour",
+          "ct": "ct0143",
+          "gc": "ct0143_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "JAC",
+          "canonical_name": "JAC",
+          "ct": "ct0130",
+          "gc": "ct0130_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "EXEED",
+          "canonical_name": "EXEED",
+          "ct": "ct0076",
+          "gc": "ct0076_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Land Rover",
+          "canonical_name": "Land Rover",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Lada",
+          "canonical_name": "Lada",
+          "ct": "ct0181",
+          "gc": "ct0181_aon_n025_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Honda",
+          "canonical_name": "Honda",
+          "ct": "ct0285",
+          "gc": "ct0285_aon_n048_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "FAW",
+          "canonical_name": "FAW",
+          "ct": "ct0081",
+          "gc": "ct0081_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "OMODA",
+          "canonical_name": "OMODA",
+          "ct": "ct0204",
+          "gc": "ct0204_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Citroen",
+          "canonical_name": "Citroen",
+          "ct": "ct0308",
+          "gc": "ct0308_aon_n031_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "BAIC",
+          "canonical_name": "BAIC",
+          "ct": "ct0019",
+          "gc": "ct0019_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Infiniti",
+          "canonical_name": "Infiniti",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "SsangYong",
+          "canonical_name": "SsangYong",
+          "ct": "ct0279",
+          "gc": "ct0279_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Zotye",
+          "canonical_name": "Zotye",
+          "ct": "ct0249",
+          "gc": "ct0249_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Mitsubishi",
+          "canonical_name": "Mitsubishi",
+          "ct": "ct0264",
+          "gc": "ct0264_aon_n041_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Great Wall",
+          "canonical_name": "Great Wall",
+          "ct": "ct0108",
+          "gc": "ct0108_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jetta",
+          "canonical_name": "Jetta",
+          "ct": "ct0150",
+          "gc": "ct0150_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Dongfeng",
+          "canonical_name": "Dongfeng",
+          "ct": "ct0067",
+          "gc": "ct0067_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Mazda",
+          "canonical_name": "Mazda",
+          "ct": "ct0283",
+          "gc": "ct0283_aon_n039_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Subaru",
+          "canonical_name": "Subaru",
+          "ct": "ct0278",
+          "gc": "ct0278_aon_n045_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Suzuki",
+          "canonical_name": "Suzuki",
+          "ct": "ct0277",
+          "gc": "ct0277_aon_n046_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Volvo",
+          "canonical_name": "Volvo",
+          "ct": "ct0276",
+          "gc": "ct0276_aon_n050_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "KAIYI",
+          "canonical_name": "KAIYI",
+          "ct": "ct0154",
+          "gc": "ct0154_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Lifan",
+          "canonical_name": "Lifan",
+          "ct": "ct0284",
+          "gc": "ct0284_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Genesis",
+          "canonical_name": "Genesis",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Acura",
+          "canonical_name": "Acura",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "MG",
+          "canonical_name": "MG",
+          "ct": "ct0195",
+          "gc": "ct0195_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jaecoo",
+          "canonical_name": "Jaecoo",
+          "ct": "ct0140",
+          "gc": "ct0140_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Lexus",
+          "canonical_name": "Lexus",
+          "ct": "ct0314",
+          "gc": "ct0314_aon_n038_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Livan",
+          "canonical_name": "LIVAN",
+          "ct": "ct0191",
+          "gc": "ct0191_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Peugeot",
+          "canonical_name": "Peugeot",
+          "ct": "ct0281",
+          "gc": "ct0281_aon_n043_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Tank",
+          "canonical_name": "Tank",
+          "ct": "ct0233",
+          "gc": "ct0233_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "GAC",
+          "canonical_name": "GAC",
+          "ct": "ct0089",
+          "gc": "ct0089_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Venucia",
+          "canonical_name": "Venucia",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Forthing",
+          "canonical_name": "Forthing",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Jeep",
+          "canonical_name": "Jeep",
+          "ct": "ct0000",
+          "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        },
+        {
+          "name": "Москвич",
+          "canonical_name": "Moskvich",
+          "ct": "ct0252",
+          "gc": "ct0252_aon_n000_r0000_ct001_ag011_g00",
+          "autotarget": true,
+          "keywords": [],
+          "minus": [],
+          "ads": []
+        }
+      ],
+      "source_totals": {
+        "groups": 55,
+        "autotarget_groups": 55,
+        "keywords": 0,
+        "unique_keywords": 0,
+        "ads": 0
+      }
+    }
+  ]
+}

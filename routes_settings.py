@@ -16,6 +16,8 @@ def register_settings_routes(
     feed_rules_ensure: Callable,
     global_minus_places: Callable[[], list[dict]],
     minus_places_ensure: Callable,
+    slepok_minus_places: Callable[[str], list[dict]],
+    slepok_minus_places_ensure: Callable,
     place_host: Callable[[str], str],
     minus_words_slice: Callable,
     minus_words_ensure: Callable,
@@ -269,14 +271,22 @@ def register_settings_routes(
     @bp.route("/api/minus-places")
     @access
     def api_minus_places_get():
-        """Список минус-площадок РСЯ (#21). → {places:[{url,enabled,sort}]}."""
-        return jsonify({"places": global_minus_places()})
+        """Список минус-площадок по слепку (#21, per-слепок). ?slepok= обязателен.
+        → {places:[{url,enabled,sort}], slepok}."""
+        slepok = (request.args.get("slepok") or "").strip()
+        if not slepok:
+            return jsonify({"error": "параметр slepok обязателен"}), 400
+        return jsonify({"places": slepok_minus_places(slepok), "slepok": slepok})
 
     @bp.route("/api/minus-places", methods=["POST"])
     @access
     def api_minus_places_post():
-        """Сохранить минус-площадки (replace-all из textarea)."""
+        """Сохранить минус-площадки per-слепок (replace-all в рамках slepok).
+        Body: {slepok, places:[str|{url,enabled}], confirm_clear?}."""
         body = request.json or {}
+        slepok = (body.get("slepok") or "").strip()
+        if not slepok:
+            return jsonify({"ok": False, "error": "параметр slepok обязателен"}), 400
         if "places" not in body:
             return jsonify({"ok": False, "error": "нет ключа 'places' — replace-all не выполняется"}), 400
         raw = body.get("places")
@@ -284,14 +294,17 @@ def register_settings_routes(
             return jsonify({"ok": False, "error": "places должен быть массивом"}), 400
         if not raw and not bool(body.get("confirm_clear")):
             try:
-                cur_cnt = len(global_minus_places())
+                cur_cnt = len(slepok_minus_places(slepok))
             except Exception:  # noqa: BLE001
                 cur_cnt = 0
             if cur_cnt:
                 return jsonify({
                     "ok": False,
                     "needs_confirm": True,
-                    "error": f"список пуст — для полной очистки {cur_cnt} площадок передай confirm_clear=true",
+                    "error": (
+                        f"список пуст — для полной очистки {cur_cnt} площадок слепка {slepok!r} "
+                        "передай confirm_clear=true"
+                    ),
                 }), 409
 
         seen: set[str] = set()
@@ -308,14 +321,14 @@ def register_settings_routes(
         conn = victory_conn_rw()
         try:
             cur = conn.cursor()
-            minus_places_ensure(cur)
-            cur.execute("DELETE FROM public.direct_global_minus_places")
+            slepok_minus_places_ensure(cur)
+            cur.execute("DELETE FROM public.direct_slepok_minus_places WHERE slepok=%s", (slepok,))
             for i, (url, enabled) in enumerate(items, 1):
                 cur.execute(
-                    "INSERT INTO public.direct_global_minus_places(url, enabled, sort, updated_at) "
-                    "VALUES(%s, %s, %s, now()) ON CONFLICT(url) DO UPDATE SET enabled=EXCLUDED.enabled, "
-                    "sort=EXCLUDED.sort, updated_at=now()",
-                    (url, enabled, i),
+                    "INSERT INTO public.direct_slepok_minus_places(slepok, url, enabled, sort, updated_at) "
+                    "VALUES(%s, %s, %s, %s, now()) ON CONFLICT(slepok, url) DO UPDATE SET "
+                    "enabled=EXCLUDED.enabled, sort=EXCLUDED.sort, updated_at=now()",
+                    (slepok, url, enabled, i),
                 )
             conn.commit()
         except Exception:  # noqa: BLE001
@@ -323,7 +336,7 @@ def register_settings_routes(
             raise
         finally:
             conn.close()
-        return jsonify({"ok": True, "saved": len(items)})
+        return jsonify({"ok": True, "saved": len(items), "slepok": slepok})
 
     @bp.route("/api/minus-words")
     @access

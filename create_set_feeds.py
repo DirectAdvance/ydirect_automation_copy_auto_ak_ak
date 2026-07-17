@@ -755,6 +755,9 @@ def _grid_update_adaptive_ads(login: str, items: list[dict],
         # _norm_read_ad_price: raw bannerPrice из adaptive_ads_for_update имеет decimal-строки
         # ("2040546.00") — Grid молча сбрасывает цену если передать их обратно в UpdateAdaptiveTextAds.
         ad_price = it.get("adPrice") or _norm_read_ad_price(cur.get("adPrice"))
+        # Отображаемая ссылка: full-replace без displayHref стирает её (v5 ставит верно, Grid-постпроцесс
+        # обнулял) → проносим свою или прочитанную RMW-ом. Пустую не шлём: нечего сохранять.
+        display_href = it.get("display_href") or cur.get("displayHref") or ""
 
         item = {
             "href": href,
@@ -765,6 +768,8 @@ def _grid_update_adaptive_ads(login: str, items: list[dict],
             "creativeIds": creative_ids,
             "id": str(it["id"]),
         }
+        if display_href:
+            item["displayHref"] = display_href
         if ad_price:
             item["adPrice"] = ad_price
         # Ревью 03.07 #17: СУЩЕСТВУЮЩУЮ кнопку проносим в основной payload (full-replace её стирал,
@@ -810,7 +815,9 @@ def _apply_combo_button(gc, upd_items: list) -> int:
         b = _combo_button(it.get("href") or "")
         if not b:
             continue
-        bi = {k: it[k] for k in ("href", "hrefParams", "titles", "bodies",
+        # displayHref обязан быть в списке: этот второй full-replace стёр бы отображаемую ссылку,
+        # только что пронесённую основным апдейтом.
+        bi = {k: it[k] for k in ("href", "hrefParams", "titles", "bodies", "displayHref",
                                  "imageHashes", "creativeIds", "adPrice", "id") if k in it}
         bi["button"] = b
         btn_items.append(bi)

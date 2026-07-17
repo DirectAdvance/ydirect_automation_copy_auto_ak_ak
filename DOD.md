@@ -34,6 +34,27 @@
 | 1.9 | Нет `adGroupId not defined` (listing) | — (лог воркера) | `journalctl direct-worker` | shoppingAdId→lid (сделано) | ✅ |
 | 1.10 | **URL объявления → ПРАВИЛЬНАЯ модель группы** (не чужая модель марки, не неточная формульная). Ссылка группы «Модели» (напр. ct0042 «Changan UNI-T») должна вести на url ЭТОЙ модели из фида (`/auto/changan/uni-t/i/suv-5d`), НЕ на первый оффер бренда (cs55) и НЕ на формульную без хвоста. Товарный сниппет (модель/город) — следствие правильности url. | `MODEL_URL_BRAND_FALLBACK_WRONG_MODEL` (авто-детектора пока НЕТ — визуально в кабинете / сверка href vs mark+folder группы) | Ссылка объявления в кабинете vs `mark_id`+`folder_id` оффера фида | **Root-cause:** `_grid_feed_offer_urls` (FeedOffersPreview = sample, не все офферы) → модель вне выборки не находит точный ключ → brand-fallback на чужую модель. **Вариант A (задеплоен 2026-07-13):** `no_brand_fallback` для сегмента «Модели» в `_feed_url_for_model` (`create_set_feeds.py:335`) → нет точного ключа → формульный `_model_page_href` (верная модель, БЕЗ хвоста `/i/suv-5d`). **Вариант B (raw XML, `_auto_feed_urls` доливка в `_account_offer_urls`, ЗАДЕПЛОЕН 2026-07-13):** точный url модели из ПОЛНОГО raw XML фида (`home/yandex.xml`) по ключу `mark_id`+`folder_id`, доливается в `_account_offer_urls` через `setdefault` (уже покрытые из sample-preview НЕ трогаются) → `/auto/changan/uni-t/i/suv-5d?fid=yandex`. Причина нужности B: `FeedOffersPreview` = **sample**, не все офферы → модель вне выборки (Changan UNI-T) точным ключом не находилась. A = страховка (формульный без хвоста), B = точный. Подробно — ERRORS_JOURNAL `MODEL_URL_BRAND_FALLBACK_WRONG_MODEL`. | 🟡 (A+B задеплоены; авто-детектор — ⬜ нет, live не проверено) |
 
+### 1.c DoD «Структура слепков → Создание РК 1:1» (задача 7, согласовано 2026-07-15)
+
+> Спека и load-bearing риски — `CREATION_PROTECTED_RULES.md`. Контракт = `create_set_plan.py:_set_plan_response`.
+
+| # | Критерий | Как проверить | Статус |
+|---|---|---|---|
+| 7.1 | «Создание РК» = «Структура слепков» 1:1 по ВСЕМ tp1–tp7 (превью==дерево==создано) | сверка `_set_plan_response` `plan[]` vs `_build_export_rows` по слепку/tp | 🟡 (контракт `create_set_structure.structure_to_campaigns` — MATCH=True vs `_build_export_rows` на terehov/scherbakova/kuderko/pavlov tp1/tp2/tp4/tp5; **tp1/tp2/tp4/tp5 подключены**; tp3 — builder-blocked; tp6/tp7 уже 1:1) |
+| 7.2 | Кампании строятся по `item.camp_names` (не сегмент-коллапс Марки/Модели/Общее) для tp1–tp5 | tp1-tp5 больше не коллапсят в сегменты | 🟡 (**tp1/tp2/tp4/tp5 done**: ветки `tp1_rsy`/`search_test`/`search_dynamic`/`search_gallery` → `structure_to_campaigns`, per-group `only_gks/only_cts` → билдеры `_build_tp1_from_pack`/`_build_text_from_pack`/`_create_tp5_single`/`_tp1_pack_groups`; dmp-split tp2 сохранён; **tp3 — remaining**, builder-blocked) |
+| 7.3 | tp3 — по фидовым кампаниям из структуры (не 1 РК «ТГ - Фид (товары)») | дерево tp3 == созданные РК | 🟡 (**camp_names done**: ветка `rsya_gallery` → `structure_to_campaigns`, base_name=camp_name; terehov С пробегом 13 РК / karavaev 3 / scherbakova 1 = 1:1. **При ОДНОМ фиде** (тест) fan-out даёт ровно 1 РК на camp_name → число РК = число camp_names-кампаний. Many-feeds: fan-out ×feeds на camp_name — для точного feed↔camp маппинга нужна доп-инфа в структуре, см. отчёт; fallback на старую 1-РК при пустых camp_names) |
+| 7.4 | Тег «х3» (tp1) → 3 РК: КС / автотаргет / КС+автотаргет, **каждой полный бюджет**; триггер — ТЕГ из `campaign_tags`, не `seg_modes` | tp1 с «х3» → 3 РК | 🟡 (**детектор `detect_protected_tags`: реестр OVERRIDE → UI-эвристика**; х3→`X3_VARIANTS` 3 РК, каждой полный `rs["cpc_budget"]`; live не проверено) |
+| 7.5 | Тег «все фиды» → все разрешённые фиды ГРУППАМИ в ОДНОЙ РК; **tp3/tp5/tp1-РСЯ** (tp7 — НЕ входит) | наличие групп-фидов в РК | 🟡 (**tp3 done**: `all_feeds` → `_create_tp3_campaign`/`_create_tp3_single` строят ОДНУ РК, ГРУППА на каждый разрешённый фид; при 1 фиде = 1 группа. **tp1-РСЯ/tp5 — deferred**: модель-групповые combined-кампании, «группа на фид» требует мульти-фид shopping в билдере; при ОДНОМ фиде (тест) — уже 1 РК/1 фид, флаг инертен, регрессии нет) |
+| 7.6 | Только «х3»/«все фиды» управляют созданием; прочие теги — отображение | grep tag-чтения в create-пути | ✅ (в create-пути читаются ТОЛЬКО `X3_TAG`/`ALL_FEEDS_TAG` через `detect_protected_tags`; прочие метки не влияют) |
+| 7.7 | Наборы минус слов: ОДИН общий shared-набор (2+ в структуре → слить в 1); минусы набора только tp2–tp5 | привязка `NegativeKeywordSharedSetIds` | ⬜ |
+| 7.8 | Глобальные минусы (Глоб. правила, «отзывы») — ко ВСЕМ РК (все tp), кампания-уровень | `minusKeywords` кампании | 🟡 (сейчас tp2/4/5) |
+| 7.9 | pack-минусы — отдельно (группы), не смешиваются с наборами/глобальными | `_collect_pack_minus` на группах | ✅ |
+| 7.10 | Регион шаблонный `r0000` в структуре → реальный город на создании | `_resolve_region` по городу аккаунта | ✅ |
+| 7.11 | Сохранён весь текущий функционал (черновики State=OFF, две стратегии cpc+cpa, докрутка 152, feed_alert, profile-гейтинг, процедурные добавки) | регресс-проверка после правок | ⬜ |
+| 7.13 | **tp2–tp5 — БЕЗ картинок и видео** (текстовые/поисковые кампании). Картинки/видео — только tp1 РСЯ (видео-марки, DoD 1.7) и tp6/tp7 (UAC/товарка). Для tp2/tp3/tp4/tp5 объявления текстовые, image/video НЕ добавляются. Следствие: `VIDEO_NO_POOL`/`CT_SLEPOK_IMAGES_EMPTY` на tp2-tp5 — НЕ дефект (там их и не должно быть) | read-back: tp2-5 объявления без image/video | ⬜ (подтвердить в коде + подавить ложный аудит-флаг на tp2-5) |
+| 7.12 | **КОНТЕНТ по тон-оф-войсу выбранного слепка** — заголовки/тексты/уточнения/быстрые ссылки генерятся по seeded-стилю ЭТОГО слепка (`create_set_slepok_content.apply_slepok_campaign_content` / `seed_slepok_content` / `ai_content` seed_slepok, `content_source`=слепок). На тесте: контент созданных РК соответствует стилю слепка (напр. «жёсткая складская выгода 53-57%, автокредит, взнос 0₽»), НЕ дефолт и НЕ чужой слепок | сверка текстов кампании vs seed слепка в кабинете | ⬜ |
+| 7.14 | **ИМЯ создаваемой кампании = СОГЛАСОВАННОЕ имя из «Структуры слепков»** (`item.camp_names[0]` / `item.t`) + регион. В имени НЕ должно быть метаданных фида/аккаунта: имени фида, даты фида (`… от DD.MM.YY`), домена аккаунта, listing/collection фида (`yandex-catalog-model-design-custom-name`), URL фида (`yandex.xml`, `yandex-used-auto`). Семён 2026-07-16 (porg-asfbs7qe): часть camp_names в структуре захаршены с метаданными фида (33 шт: terehov 30 / scherbakova 2 / avto_sk 1) → чистятся через унификацию имён (Google-таблица старое→новое). ⚠️ Приклейка `— {feed_name}` в `create_set_feed_builders.py:518` / `create_set_master_product.py:622` — КОРРЕКТНА (это отдельный legit-суффикс фида), НЕ трогать; чинить ТОЛЬКО базовый `name` (camp_name из структуры) | grep camp_names на `от \d\d\.\d\d`/`\.ru`/`yandex[.-]`/`catalog-model` → 0; имя созданной РК == согласованное имя структуры + регион | ⬜ (чистится унификацией #56) |
+
 ### 1.b ПОЛНЫЙ каталог кодов (100% — все 90 уникальных `issue.code`)
 
 > Сведено с нуля по коду (grep `"code":"…"` по всем `*.py`, 2026-07-09). Разбито по модулю-источнику.
@@ -812,120 +833,15 @@ brand_hint прокинут (иначе «Марки»-ct давал пусто�
 - Промо = **text-only** (`amount/unit/prefix=null`), создать в кабинете заранее (`PromoClient.add`) → кампании привяжутся.
 - ct-нумерация = **ct0800–ct0833** (+799 от старой); пак-папки на M3 в этой нумерации, иначе десинк.
 
-### 5.b Техническая реализация не-авто / dmp — file:line карта
 
-> Сверено по коду 2026-07-12. Источник правды — `slepki_structure.json` + код сервиса.
+### 5.b Техническая реализация не-авто / dmp — file:line карта → [DOD_ARCHIVE.md](DOD_ARCHIVE.md)
 
-**Признак не-авто и контент-роутинг**
+(перенесено 2026-07-16: таблица признака не-авто, контент-роутинг по файлам, ct-пространство dmp, 3 режима МК)
 
-| Что | Где | Механика |
-|---|---|---|
-| Признак не-авто | `blueprint_targeting.py:120` (`_slepok_is_auto`) | Читает `"auto": false` у директолога в `slepki_structure.json`; при отсутствии поля — авто. Вспомогательные: `_non_auto_slepki():133`, `_non_auto_site_types():142` |
-| Флаг в master_product | `create_set_master_product.py:85` | `_is_non_auto = not _slepok_is_auto(agent)` — управляет выбором базы заголовков/текстов и number-gate |
-| База заголовков МК/Товарки | `create_set_master_product.py:143–163` | Не-авто: `_slepok_campaign_content` (B2B-корпус слепка); авто: `_GENERIC_AT_TITLES` |
-| Number-gate (требует цифры) | `create_set_master_product.py:198, 260` | Для не-авто отключён (`not _is_non_auto`) — B2B-строки часто без цифр |
-| Тексты РСЯ tp2 | `text_gen.py:644` (`_rsya_texts`) | `if site_type == "dmp"` → B2B-корпус из `AGENT_ADS["dmp"]["texts"]` + встроенные fillers; авто-пул (`_RSYA_TEXT_POOL`) не подмешивается |
-| Фильтр ключей | `text_gen.py:387` (`_filter_group_keywords`) | Для `site_type in _NON_AUTO_SITE_TYPES` авто-фильтр «убрать марку+модель» пропускается |
+### 5.d Реконструкция и аудит структуры tp6/tp7 — каноны → [DOD_ARCHIVE.md](DOD_ARCHIVE.md)
 
-**ct-пространство dmp** (сверено с `slepki_structure.json`)
-
-- **tp2 — 34 ct-темы:** ct0800–ct0833 (leadgen-темы: Идентификация, СОЦ сети, Номер/телефон, … до ct0833). Каждая → отдельная поисковая кампания.
-- **tp6 МК:** ct0000 для «МК Авто» и «МК Ключи»; ct0834 для «МК Конкуренты» (выделенный leadgen-номер вне авто-пространства).
-- ⚠️ **ct0032 / ct0084 — ЗАПРЕЩЕНЫ** для dmp: совпадают с авто-пространством (ct0032 = Changan CS55, ct0084 = FAW) → `_ag_part1_map()` (`campaign_naming.py:46–51`) резолвит их в авто-имя → в кампании попадает авто-бренд вместо B2B-имени.
-
-**3 режима МК dmp (tp6)** (сверено с `slepki_structure.json` + `create_set_context.py:101`)
-
-| Позиция в структуре | gc | targeting_mode | Источник ключей |
-|---|---|---|---|
-| МК Авто | ct0000 | autotarget («авто» не матчит ни ключев-/аудитория-паттерны → default) | — |
-| МК Ключи | ct0000 | keywords (имя матчит «ключи» → `_tp67_targeting_mode:106`) | M3-пак `dmp/tp6/ct0000` (≈25 фраз, per ERRORS_JOURNAL 2026-07-12, verified LXC101); fallback — `tp67_real_keywords.json` |
-| МК Конкуренты | ct0834 | keywords (**явный** `targeting_mode` в `slepki_structure.json`) | `tp67_real_keywords.json`, ct=ct0834: 69 ключей (calltouch и конкуренты) — сверено 2026-07-12 |
-
-Источник ключей — `create_set_context.py:288` (`_tp67_keywords_for`): M3-пак → fallback-библиотека (`_tp67_keywords_from_real_library:243`). Пустой decoy-item (keywords=[]) пропускается (`create_set_context.py:261–262`).
-
-**Имя группы не-авто (#3, фикс 2026-07-12)**
-
-- Имя группы для не-авто = **описание кодера (`leadgen_ct_naming`) → тема из структуры (выгрузка) → ct**; авто-фид `feeds_ct_model` (давал «— Авто» всем) НЕ используется. Механика: `create_set_tp1_builders.py::_struct_ct_names` (читает `slepki_structure.json`, только для `"auto": false`) + `raw_brand = ct_name.get(ct) or _struct_names.get(ct) or ct` в `_tp1_pack_groups` и `_build_tp1_from_pack`.
-- ✅ **РЕШЕНО:** `leadgen_ct_naming` (БД Victory) выровнен по выгрузке — все ct0800–ct0833 = имена тем (Идентификация, СОЦ сети, Определение, … Маркетинговые СМИ), 1:1 со `slepki_structure.json` `t`. Расхождение структура↔coder устранено; ct0822–ct0833 больше не «без имён».
-- ct0834 («МК Конкуренты») — в `slepki_structure.json` + `tp67_real_keywords.json`; в `leadgen_ct_naming` пока не внесён (не критично: не-авто fallback берёт имя из структуры).
-
-**Тип оплаты cpc/cpa — галочка «под стиль сайта» (#4, фикс 2026-07-12)**
-
-- ЕДИНЫЙ механизм для ВСЕХ слепков (авто и dmp), НЕ из `split.pay`: `create_set_plan.py:pays = ["tcpa"] if no_cpa else ["tcpa","cpa"]` (`no_cpa = body["n"]`). Влияет на tp2/tp4/МК (все, кто эмитит per-pay); tp1/tp5 гейтят `n` на создании (пар-движки).
-- **Галочка активна** (`n=False`) → cpc + cpa. **Снята** (`n=True`) → только cpc. Совпадает с подписью «снять — без CPA-кампаний».
-- dmp: активна → 16 РК (10 tp2 + 6 МК), снята → 8 РК (5 tp2 + 3 МК).
-
-### 5.d Реконструкция и аудит структуры tp6/tp7 — каноны 2026-07-13
-
-> Все правила подтверждены Семёном 2026-07-13. Применяются при онбординге нового слепка,
-> аудите существующих и разработке reconciler'а. Архитектурный эквивалент —
-> раздел «Позиция слепка — идентичность и реконструкция» в `ARCHITECTURE.md`.
-
-**Идентичность позиции слепка = только таргетинг.** Две реальные кампании считаются
-*одной позицией слепка*, если совпадает:
-
-| Компонент | Что сравнивается |
-|---|---|
-| `targeting_mode` | `keywords` / `autotargeting` / `audience` / `hybrid` |
-| keyword-corpus | нормализованный набор фраз (keyword-corpus identity) |
-| audience ids | набор id аудиторий |
-| feed | `feed_id` + `feed_role` + `feed_filters` |
-
-Если таргетинг одинаков, а различаются только цели (`goal_bundle`/`goal_id`), pricing
-(`cpc`/`cpa`/`crm`), медиа/изображения, тексты/заголовки/сайтлинки, `display_name`,
-лейблы (`fresh`/`new`/`old`/`bez55`/`max_conv`), даты — это **варианты**, а не разные
-позиции. Хранить как списки: `goal_variants:[{pricing, goal_id, cpa_value}]`,
-`media_variants`, `title_variants`. **Не размножать позиции по цели или картинке.**
-
-Пример: tp6 «MK AT CPC» + «MK AT CPA» + «MK AT CRM» с одинаковым автотаргетингом =
-**одна позиция** «MK AT» (`targeting_mode=autotargeting`) с `goal_variants:[cpc, cpa, crm]`.
-
-**targeting_mode читается из живого payload, НЕ из имени и НЕ из ct-кода.** `ct`/имя не
-равно режиму таргетинга. Реальные расхождения: кампания с «RA» в имени в payload имеет
-`keywords+retargeting=hybrid`; «NA» — `autotargeting`; «MK AT» = autotargeting независимо
-от бейджей рядом. При чтении UAC payload **обязательно разворачивать обёртку**
-`{"result":{...},"success":true}` — без этого всё ошибочно читается как autotargeting.
-Grid endpoint = `https://direct.yandex.ru/web-api/grid/api` (НЕ `/json/v5/grid`).
-
-**Метка таргетинга в имени кампании — выводить из ФАКТА**, не из строки reconciler-артефакта.
-Правило: есть ключи + аудитории → `КС+аудитории`; только аудитории → `аудитории`; только ключи → `КС`; ни того ни другого → `автотаргетинг`.
-⚠️ Инцидент: в staging reconciler ставил `«hybrid»` на любую аудиторную кампанию вне зависимости от реального корпуса → метка в имени не соответствовала режиму. Проверять реальный корпус ключей/аудиторий по payload, не по строке.
-
-**Квиз и «Неопределено» — НЕ учитываем при сборе слепка.** Эти `site_type` вне зоны реконструкции; позиции с `site_type=Квиз` или `site_type=Неопределено` не включаются в `slepki_structure.json`.
-
-**Источник истины для tp6/tp7 — живой UAC/Grid payload, а не `Dim_Campaign`.**
-`Dim_Campaign` недосчитывает UAC (примеры: Dim=3 / live=9; Dim=0 / live=5). Ориентироваться
-на неё при аудите tp6/tp7 нельзя. Для tp1–tp5 `Dim_Campaign` по фильтру
-`CampaignName ~ '^tp[1-5]_'` достаточен как дешёвый аудит — недосчёт касается только UAC.
-
-**Выборка аккаунтов для аудита/реконструкции** — не фильтровать по статусу в
-`public.local_gsheet_sites`; брать все статусы, 5–10 кампаний на каждый `site_type`.
-Остановленные/архивные — учитывать как исторический материал.
-
-**Аудит корректности структуры.** Для каждой пары (директолог, site_type) сравнивать
-два списка:
-- `real − structure` — tp-типы, которые есть в живых кабинетах, но отсутствуют в слепке
-  (пример: потерянный tp5 у Павлова);
-- `structure − real` — tp-типы в слепке, которых нет в кабинетах (лишние).
-
-Главное правило: добавлять tp **только если он подтверждён** для конкретной пары
-(директолог + site_type) в реальном корпусе/v5 — **не «по большинству директологов»**
-(структуры реально разные: у Павлова нет tp3/tp4, есть tp5).
-
-**feed_alert покрывает tp5** (`search_gallery` / товарная галерея), а не только tp7/tp3.
-При отсутствии `/yandex.xml` с включённой галочкой `single_feed` нельзя ни молча брать
-первый фид, ни молча пропускать tp5 — показывать поп-ап с выбором фолбэк-фида
-(`FALLBACK_SINGLE_FEED_KEY = yandex-catalog-model-design-custom-name.xml`).
-
-**Механизм реконструкции — reconciler.** Правки структуры слепка проводятся через
-отдельный слой, **не вручную по именам/предположениям** (конкретные ошибки: чужемодельные
-ключи у `scherbakova`, over-split целей у `kuderko`):
-
-1. Читаем живые UAC/Grid payload'ы аккаунтов.
-2. Нормализуем позиции по правилу дедупа выше (таргетинг-идентичность).
-3. Сохраняем staging-артефакты в `reconciler_staging/`.
-4. Ревью Семёна.
-5. Вносим правки в `slepki_structure.json` / `targeting_profile.json`.
+(перенесено 2026-07-16: идентичность позиции слепка, targeting_mode из payload а не имени,
+метка в имени из факта, квиз/неопределено вне скоупа, reconciler-процедура 5 шагов)
 
 ---
 

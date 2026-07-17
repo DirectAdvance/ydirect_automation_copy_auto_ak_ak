@@ -95,16 +95,28 @@ def _counter_foreign_owner(counter_id: int, login: str):
 
 # ── Гео-справочник Директа (GeoRegions) ───────────────────────────────────────────
 _GEO_LOCK = threading.Lock()
-_GEO_BY_NAME: dict = {}                       # lower(имя региона) → GeoRegionId (словарь Директа, кэш)
+_GEO_BY_NAME: dict = {}     # lower(имя) → GeoRegionId; также флаг готовности кэша — устанавливается ПОСЛЕДНИМ
+_GEO_BY_ID: dict = {}       # GeoRegionId → имя (оригинальный регистр); для резолва id→name в движке
+_GEO_REGIONS_LIST: list = []  # [{id, name}] отсортированный, для select-виджета (legacy)
+_GEO_TYPE_BY_ID: dict = {}  # GeoRegionId → GeoRegionType (строка); для проверки типа в правиле морфологии
+_GEO_TREE_LIST: list = []   # [{id,name,type,parent_id}] — отфильтрованное дерево для виджета «Прочие сферы»
+
+# Типы, показываемые в дереве виджета выбора гео. Остальные (Federal subject district,
+# Rural settlement, Village) скрываются; их дети переподвешиваются к ближайшему показанному предку.
+_GEO_SHOW_TYPES = frozenset({"Country", "Federal district", "Region",
+                              "Federation subject", "City", "City district"})
 
 
 def _geo_load() -> dict:
-    """Словарь GeoRegions Директа (имя→id), грузится один раз на процесс."""
-    global _GEO_BY_NAME
+    """Словарь GeoRegions Директа (имя→id), грузится один раз на процесс.
+    Безопасен для параллельных вызовов: _GEO_BY_NAME назначается ПОСЛЕДНЕЙ —
+    это флаг полной готовности кэша. Поток, увидевший непустой _GEO_BY_NAME, гарантированно
+    читает уже заполненные _GEO_REGIONS_LIST, _GEO_BY_ID, _GEO_TYPE_BY_ID, _GEO_TREE_LIST."""
+    global _GEO_BY_NAME, _GEO_BY_ID, _GEO_REGIONS_LIST, _GEO_TYPE_BY_ID, _GEO_TREE_LIST
     if _GEO_BY_NAME:
         return _GEO_BY_NAME
     with _GEO_LOCK:
-        if _GEO_BY_NAME:
+        if _GEO_BY_NAME:          # double-check: мог успеть другой поток пока ждали блокировку
             return _GEO_BY_NAME
         import requests as _rqs
         tok = next(iter(_direct_tokens().values()), None)
@@ -119,12 +131,113 @@ def _geo_load() -> dict:
         except Exception:  # noqa: BLE001
             return {}
         d: dict = {}
-        for g in geos:                        # города идут раньше областей — приоритет точному совпадению
-            nm = (g.get("GeoRegionName") or "").strip().lower()
+        raw: list = []
+        by_id: dict = {}
+        # raw_all: все узлы включая скрытые (Federal subject district / Rural settlement / Village)
+        raw_all: list = []
+        for g in geos:   # города идут раньше областей — приоритет точному совпадению
+            nm_orig = (g.get("GeoRegionName") or "").strip()
+            nm = nm_orig.lower()
+            gid = g.get("GeoRegionId")
+            gtype = (g.get("GeoRegionType") or "").strip()
+            gpid = int(g.get("ParentId") or 0)
+            if nm_orig and gid:
+                raw_all.append({"id": gid, "name": nm_orig, "type": gtype, "parent_id": gpid})
+                raw.append({"id": gid, "name": nm_orig})
+                if gid not in by_id:           # первое встреченное имя (города раньше областей)
+                    by_id[gid] = nm_orig
             if nm and nm not in d:
-                d[nm] = g.get("GeoRegionId")
-        _GEO_BY_NAME = d
+                d[nm] = gid
+
+        # ── Строим дерево для виджета: фильтр типов + переподвешивание сирот ──────────
+        all_by_id = {r["id"]: r for r in raw_all}
+        type_by_id = {r["id"]: r["type"] for r in raw_all}
+        kept_ids = {r["id"] for r in raw_all if r["type"] in _GEO_SHOW_TYPES}
+
+        def _kept_parent(node_id: int) -> int:
+            """Ближайший показанный предок (0 = корень дерева / предок не найден)."""
+            rec = all_by_id.get(node_id)
+            if not rec:
+                return 0
+            pid = int(rec.get("parent_id") or 0)
+            while pid and pid not in kept_ids:
+                prec = all_by_id.get(pid)
+                if not prec:
+                    return 0   # цепочка оборвалась — считаем корнем
+                pid = int(prec.get("parent_id") or 0)
+            return pid
+
+        tree: list = []
+        for r in raw_all:
+            if r["id"] not in kept_ids:
+                continue
+            new_pid = _kept_parent(r["id"]) if r["parent_id"] else 0
+            tree.append({"id": r["id"], "name": r["name"],
+                         "type": r["type"], "parent_id": new_pid})
+
+        # Порядок назначения критичен: _GEO_BY_NAME — последний (он же флаг ready).
+        _GEO_REGIONS_LIST = sorted(raw, key=lambda x: x["name"])
+        _GEO_BY_ID = by_id
+        _GEO_TYPE_BY_ID = type_by_id
+        _GEO_TREE_LIST = tree
+        _GEO_BY_NAME = d          # ← ПОСЛЕДНИМ: флаг «кэш полностью заполнен»
         return d
+
+
+def _geo_name_by_id(region_id) -> str | None:
+    """Имя региона по GeoRegionId из справочника Директа (server-side резолв).
+    Инъектируется в copy_engine для подстановки имени вместо числового ID в гео-заменах."""
+    _geo_load()
+    try:
+        return _GEO_BY_ID.get(int(region_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def _geo_type_by_id(region_id) -> str | None:
+    """Тип региона (GeoRegionType) по GeoRegionId. Используется в правиле морфологии:
+    морфология текстов выполняется только если тип НЕ 'World' и НЕ 'Country'."""
+    _geo_load()
+    try:
+        return _GEO_TYPE_BY_ID.get(int(region_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def _geo_is_valid_id(region_id) -> bool:
+    """Проверяет наличие abs(region_id) в справочнике GeoRegions.
+    Используется в routes_copy для валидации geo_region_ids от клиента."""
+    _geo_load()
+    try:
+        return int(abs(int(region_id))) in _GEO_BY_ID
+    except (TypeError, ValueError):
+        return False
+
+
+def _geo_regions_list() -> list:
+    """Полный список GeoRegions [{id, name}], отсортированный по name.
+    Переиспользует кэш _geo_load() — дополнительных запросов к API нет.
+    Бросает RuntimeError если справочник недоступен (нет токена / сетевая ошибка),
+    чтобы роут мог вернуть 502 вместо молчаливого 200 {"regions": []}."""
+    _geo_load()
+    if not _GEO_REGIONS_LIST:
+        raise RuntimeError(
+            "Справочник GeoRegions Директа недоступен — нет токена или сетевая ошибка при загрузке")
+    return list(_GEO_REGIONS_LIST)
+
+
+def _geo_regions_tree() -> list:
+    """Дерево GeoRegions для виджета «Прочие сферы» (плоский список с parent_id).
+    Типы: Country, Federal district, Region, Federation subject, City, City district.
+    Скрытые типы (Federal subject district / Rural settlement / Village) отфильтрованы;
+    их дети переподвешены к ближайшему сохранённому предку.
+    Формат: [{id:int, name:str, type:str, parent_id:int}, ...].
+    Бросает RuntimeError если справочник недоступен."""
+    _geo_load()
+    if not _GEO_TREE_LIST:
+        raise RuntimeError(
+            "Справочник GeoRegions Директа недоступен — нет токена или сетевая ошибка")
+    return list(_GEO_TREE_LIST)
 
 
 def _geo_id(city: str | None, region: str | None):

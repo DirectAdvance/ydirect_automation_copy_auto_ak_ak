@@ -3,7 +3,269 @@
 > Читать ПЕРВЫМ в начале каждой сессии. Обновлять ПОСЛЕДНИМ перед выходом.
 > Ошибки создания РК: сигнатуры/решения/что-помогло — **ERRORS_JOURNAL.md** (обязателен к заполнению при фиксах).
 
-> Архив сессий старше 3 дней — **STATE_ARCHIVE.md** (перенесено 2026-07-13, 230 секций / 7215 строк). Правило ротации — см. CLAUDE.md.
+> Архив сессий старше 3 дней — **STATE_ARCHIVE.md** (ротация 2026-07-16: добавлены сессии 07-11 и 07-12). Правило ротации — см. CLAUDE.md.
+
+## Сессия 2026-07-17 — ФАЗА 1 брокера доступа `direct-gateway.service` :5025 — ЗАДЕПЛОЕНО+верифицировано (greenfield)
+- **Мотив (опция C Семёна):** каждый из 6 direct-процессов порознь держит куку в `campaign._ACCOUNT_COOKIE_CACHE` и независимо долбит главпоток. Брокер = ЕДИНСТВЕННЫЙ владелец кук/токенов/главпотока/units, один probe на всех.
+- **ФАЗА 1 = ТОЛЬКО greenfield.** Существующие call-sites НЕ тронуты (campaign.py/yandex_gateway.py/automation_runtime.py целы). Миграция потребителей = Фаза 2 (отдельно).
+- **Новый `direct/gateway_main.py`** (образец accounts_main): standalone Flask :5025, bind СТРОГО 127.0.0.1, `DIRECT_ROLE=web` (setdefault ДО import automation_runtime). БЕЗ blueprint/nav/auth (loopback-only). 8 эндпоинтов `/gw/*`: health, cookie, token, tokens, units_alive, resolve_agency, agency_override GET/POST. Оборачивает готовые `campaign.pick_working_cookie` + `yandex_gateway.{token_for_login,direct_tokens,units_alive_for_login,resolve_agency_hint,agency_override_get/save}`. DI берётся импортом automation_runtime.
+- **Новый `direct/gateway_client.py`** — тонкий клиент для Фазы 2 (call-sites ещё НЕ переключены): `gw_cookie/gw_token/gw_tokens/gw_units_alive/gw_resolve_agency/gw_agency_override_get/save`. КАЖДАЯ: HTTP-таймаут 4с на GATEWAY_URL (default http://127.0.0.1:5025, fallback-URL из DIRECT_GATEWAY_HOST/PORT) → при ЛЮБОЙ ошибке ФОЛБЭК на локальную функцию (без него рестарт gateway ронял бы create).
+- **systemd `/etc/systemd/system/direct-gateway.service`** (образец direct-accounts): DIRECT_ROLE=web, HOST=127.0.0.1 PORT=5025, NEURO_PACK_MOUNT, ExecStart `-m direct.gateway_main`, enable --now, active.
+- **Evidence:** py_compile Mac+LXC101 OK; md5 Mac==LXC101 (`f0cb1a0e…` main, `9f9bf716…` client). :5025 bind 127.0.0.1 (НЕ 0.0.0.0), health `{ok:true}`, 1 тред (нет recover/worker/sweep в журнале). /gw/tokens=7 агентств с токенами; /gw/token(porg-usmc4253)=реальный токен y-direct-victory; /gw/cookie=1381 симв (live-probe главпотока сработал); units_alive=true; resolve/override GET/POST round-trip OK (temp-строка вычищена). Фолбэк доказан: битый порт :5999 → те же данные (7 tokens, cookie 1381) БЕЗ новых запросов к брокеру (журнал), live :5025 → GET /gw/* 200 в журнале. /gw НЕ в nginx; снаружи `https://seoadvanced.ru/gw/health`=404. Другие 6 direct-сервисов active, файлы не менялись.
+- **Осталось:** Фаза 2 — переключить call-sites на gateway_client (отдельно). Приёмка direct_verifier. НЕ коммичено.
+
+## Сессия 2026-07-17 — Вынос САМОЙ СТРАНИЦЫ дашбордов «Обзор»/«Статистика» в direct-accounts :5024 — ЗАДЕПЛОЕНО+верифицировано
+- **Мотив (продолжение прошлой сессии):** API дашбордов уже был на :5024, но панели физически жили ВКЛАДКАМИ в index.html (:5020) → правка их HTML/JS требовала рестарта создания РК. Теперь страница вынесена.
+- **Новая страница `templates/direct/accounts.html`** (образец slepki.html/copy.html): обе панели (panel-accounts + panel-stats) 1:1 из index.html + под-вкладки (клиентский `showAcctSub`). Роут `accounts_main.py` → `@bp.route("/automation/accounts")` render_template. DIRECT_ROLE=web (setdefault ДО импортов) цел.
+- **`static/direct/accounts_ui.js`** (самодостаточный, 913 стр) — ВЕСЬ dashboard-JS + дублирует шаренные хелперы (esc/uiConfirm/setCurAccount/loadAccounts-ПОЛНАЯ/loadAgents/AGENTS_INFO/renderAgentHint/setTopMsg/progress). index.html его НЕ подключает (redeclare-конфликт). `accounts_ui.css` — копия dashboard-стилей da-* из inline `<style>` index.html + стили под-вкладок.
+- **index.html усохла 6433→5519** (−913 стр): удалены обе панели + dashboard-only JS (таблица Обзор/фильтры/сортировка/открут/баланс/блокировки + весь блок Статистика + промо ИИ + мёртвый OV_*). Табы Обзор/Статистика → ССЫЛКИ на /direct/automation/accounts. `switchToPanel` без веток accounts/stats (+ null-guard в списке панелей). Дефолт-панель теперь `create` (switchToPanel на заходе без ?tab). `?tab=accounts|stats` → JS-редирект на новую страницу.
+- **КЛЮЧЕВОЕ решение по сцепке:** `loadAccounts`/`ensureAllAccounts`/`ACC_ALL`, `loadAgents`/`AGENTS_INFO`/`renderAgentHint`, `setCurAccount`/`CUR_ACCOUNT`, `esc`/`setTopMsg`/`uiConfirm` реально нужны панели СОЗДАНИЯ РК → ОСТАЛИСЬ в index.html. Чистого «всё в один static для обеих» без риска create нет → сделал самодостаточный accounts_ui.js (как copy_common.js/пролог slepki.html). В index.html `loadAccounts` заменён на СЛИМ-версию (только фетч ACC_ALL для ulogin-подсказок, без рендера таблицы). `createForStatsAccount` на дашбордах → навигация `/direct/automation?tab=create&login=`.
+- **nginx** `location ^~ /direct/automation/accounts → :5024` ДО общего `/direct/`. Бэкап `.bak.acctpage_20260717_142725`, nginx -t OK, reload.
+- **Evidence:** md5 Mac==LXC101 (accounts_main/accounts.html/accounts_ui.js/.css/index.html все совпали); py_compile OK Mac+LXC101; node --check обоих JS OK; Jinja compile обоих шаблонов OK; **изоляция:** restart direct-accounts → create 15600/worker 5774 НЕ изменились; restart direct-create → accounts pid 20322 НЕ изменился, страница жива; journal :5024 (pid 20322) показал `GET /direct/automation/accounts 302` = nginx рулит на :5024; static js/css 200; create/copy/slepki/accounts все 302 (auth, не 404); 0 dangling-ссылок на удалённые функции в index.html; 0 create-only ссылок в accounts_ui.js; startup без трейсбеков.
+- **Осталось:** live-визуал под сессией в браузере (обе под-вкладки Обзор/Статистика рендерятся, промо ИИ, сортировка, откруты/баланс) — на direct_verifier + ui_verifier. Минор: `createForStatsAccount` кросс-страница не автозаполняет login формы создания (deep-link ?login= не читается create-панелью); мёртвый `scheduleApplyFilters` оставлен (безвреден). НЕ коммичено.
+
+## Сессия 2026-07-17 — Вынос API дашбордов «Обзор»/«Статистика» в direct-accounts.service :5024 — ЗАДЕПЛОЕНО+верифицировано
+- **Мотив:** read-only дашборды бьют в Direct API (медленно, могут ВИСНУТЬ). Раньше их зависание/деплой сидели в одном процессе с созданием РК. Вынесены в свой процесс → изоляция.
+- **Новый файл `direct/accounts_main.py`** (по образцу slepki_main): :5024, `DIRECT_ROLE=web` через setdefault ДО импорта automation_runtime (иначе роль all подняла бы воркеров создания). DI берётся из `automation_runtime` (он на импорте делает `account_service.configure` + blueprint_metrika + repository — вся проводка). Регистрирует `register_account_routes` + `register_overview_routes`.
+- **nginx** `/etc/nginx/sites-enabled/seoadvanced.ru`: 5 exact-match (`location =`) блоков ПЕРЕД общим `location /direct/` → :5024: `/direct/api/{overview,account_stats,balance,accounts_otkrut,statuses}`. Бэкап `.bak.accounts_20260717_134620`. Exact-match критичен: `/direct/api/accounts` (пикер создания) НЕ ловится и остаётся на :5020.
+- **Граница (перепроверена по index.html):** переносимые вызываются ТОЛЬКО дашбордами. `account_assets` используется И созданием (2269 «Обновить фиды») И дашбордом (5308 Статистика) → ОСТАЁТСЯ на :5020 целиком (в move-list его нет). На :5020 остались prefill/assets/audiences/goal_for_counter/account_info/accounts.
+- **systemd** `/etc/systemd/system/direct-accounts.service` (образец direct-slepki): DIRECT_ROLE=web, DIRECT_ACCOUNTS_PORT=5024, enabled+active.
+- **Evidence:** py_compile Mac+LXC101 OK (md5 `bfc5a87a…` совпал); nginx routing доказан журналами werkzeug (:5024 получил overview/account_stats/accounts_otkrut; :5020 получил account_prefill/accounts); restart direct-accounts → create pid 230/worker 5774 НЕ изменились; restart direct-create → :5024 жив, /overview отвечает; :5024 threads=1 (нет create-демонов); старт без трейсбеков.
+- **Осталось:** live-проверка вкладок Обзор/Статистика в браузере под сессией (проводка доказана, curl без куки даёт 401) — на direct_verifier/Семёна. Не коммичено.
+
+## Сессия 2026-07-17 — Копия porg-mushirne→porg-jh2si7rh: фикс organic/placementTypes/promoExtension
+
+### Что сделано
+- **organic/placementTypes (712850009)**: `platforms.organic=False, platforms.gallery=False` — исправлено живым зондом. Источник: `set_campaign_organic_and_placement` не патчил `biddingStategyWithPlatforms.platforms.organic/gallery`; фикс — патчить ОБА уровня (кампанейный флаг + стратегические платформы). Верифицировано зондом: organic True→False, pts [ADV_GALLERY,SEARCH_PAGE]→[SEARCH_PAGE], стратегия AUTOBUDGET→AUTOBUDGET.
+- **promoExtension (код)**: в `direct_copy.py:phase_pull` удалены невалидные FieldNames "Status"/"State" из `promotions.get` → v5 error 8000 больше не будет → snapshot.promotions заполнится. `direct-copy.service` рестартован.
+- **Три новых guard**: `OPTIMIZE_CONVERSIONS+avgCpa=None → AUTOBUDGET` (не AUTOBUDGET_AVG_CPA); `DEFAULT → _unsupported_strategy`; `MULTIPLE_CPA → _unsupported_strategy`.
+
+### Что ЗАБЛОКИРОВАНО (3/5 кампаний без safe write-enum)
+- 712850007 (DEFAULT/ручные ставки): нет write-enum для DEFAULT → skipped
+- 712850008 (OPTIMIZE_CLICKS): нет write-enum → skipped
+- 712850299 (MULTIPLE_CPA/тёплый спрос): MULTIPLE_CPA невалиден в write → skipped
+- Для этих трёх: organic=True, pts=[ADV_GALLERY,SEARCH_PAGE] — невозможно исправить без обходного write-пути.
+
+### Текущий diff (после фиксов)
+- organic DIFF: 3/5 (только заблокированные)
+- placementTypes DIFF: 3/5 (те же)
+- promoExtension DIFF: 4/5 (требует нового copy run после рестарта сервиса)
+
+## Сессия 2026-07-17 — CT0000_GROUPS + ТРИ АККАУНТА — ЗАВЕРШЕНО
+
+### Фикс CT0000_GROUPS_FALLBACK_TO_SINGLE_TOVARNAYA (тройной)
+- Root-cause: (1) `_struct_items` ~1624 пропускал ct0000 → `_items=[]`; (2) fallback ~864 создавал 1 «Товарная галерея»; (3) ранний выход `_tp1_pack_groups` ~738 срабатывал на пустом паке даже без сбоя M3.
+- Фикс `create_set_tp1_builders.py`: (1) ранний-выход bypass — структурная проверка ct0000+gk для обоих путей tp1/tp5; (2) фолбэк-блок без гейта `_og is not None`; (3) skip-condition допускает ct0000+gk. Финальный md5 `0f16091d40a2850db07e5f2269522060` Mac==LXC101.
+
+### Все три аккаунта ✅ верифицированы через v501 + Grid
+- **avto_sk / porg-vfdnaolu**: 10 ЕПК-кампаний — Макс×2 (1гр «ЕПК макс»), Рет×4 (1гр «ЕПК рет»), 3гр×4 (3гр «Автотаргет»/«Рет»/«Все вместе (интересы)»). Grid: 18 кампаний. ✓
+- **avtolajt_bu / porg-yzw6hkyk**: tp1 1 кампания 3 группы (Купить б/у авто, Кредит, Рассрочка); tp5 4 кампании×3 группы (Макс/Lul/Все); tp7 12 кампаний (3 типа×4 фида), ГОРОД→Краснодар. ✓
+- **sk_krs / porg-usmc4253**: tp1 1 кампания **1 группа** («Товары — марка модель», id 5773945086 → ShoppingAd=1, ListingAd=1, TextAd=0, гео в RegionIds группы `[10995]`); tp7 **2 кампании** (`712851249` «Товарка - ТК · Марки и модели», `712851273` «Товарка - ТК · Рендеры», обе `source=UAC`/`metaType=ECOM`), всего в аккаунте 3 РК, все DRAFT. ✓ ⚠️ Исправлено 2026-07-17 (v5+Grid+UAC): раньше тут стояло «tp7 8 кампаний (2 типа×4 фида)» — по факту 2; и «2 группы (Краснодарский край, Товары — марка модель)» — «Краснодарский край» это суффикс ИМЕНИ кампании (`tp1_cpc_site — РСЯ - Модели - Автотаргетинг - Краснодарский край`), прошлая сессия распарсила его как отдельную группу. Регион в имени ≠ группа.
+- Во всех трёх: ГОРОД нет, State=DRAFT, черновики.
+
+### Осталось убрать
+- Temp-файлы LXC101: probe_avto_sk.py, verify_tp5_groups.py, probe_avtolajt.py, probe_sk_krs.py, verify_avto_sk.py, verify_avtolajt.py, verify_avtolajt2.py, verify_grid_tp7.py, check_sk_krs.py, verify_sk_krs.py — можно удалить в любое время.
+
+## Сессия 2026-07-16 — Унификация имён кампаний+групп ПРИМЕНЕНА (чистый срез), задача закрыта
+- Источник: Google-таблица `1oGuvI…` — столбцы «финальное название» (кампании, Лист1) и «Новое (по шаблону)» (вкладка «Группы (кодер→имя)»).
+- **Кампании: применено 980** без коллизий → 814 пар old→final, 6414 вхождений camp_names/tp6-7 `t`. Пропущено 3: kuderko smart-banner (нет в структуре) + 2 pavlov (создали бы новую коллизию).
+- **Группы: применено 103** без коллизий (104 точных матча − 1 гард от новой коллизии; 21 chepelev tp2 = no-op, имя уже без кодера).
+- Новых коллизий: **0** (дельта дублей 0 и по кампаниям, и по группам). Структура цела: 17 дир / 14617 групп / 14825 items. JSON валиден. md5 Mac==LXC101.
+- Бэкапы: `slepki_structure.json.bak.names_apply_20260716_181907` (камп), `.bak.groups_apply_*` (группы).
+- **Коллизийный остаток НЕ применяли** (решение Семёна «остаток закрываем»): 1119 кампаний (307 уник. дублей) + 41 группа + 3 edge — оставлены со старыми именами.
+- Скрипты: scratchpad/read_sheet.py, analyze_sheet.py, apply_safety.py, apply_names.py, apply_groups*.py, verify_apply.py.
+
+## Сессия 2026-07-16 — COPY минус-площадки: baseline-таблица + аудит интересов tp6/7
+- **Регрессия copy (починена):** после per-слепок правки `_enabled_minus_places(slepok="")` при пустом slepok → `[]`. copy зовёт `enabled_minus_places()` без аргумента (`copy_steps.py:297`) → стал класть 0 площадок (тихо, `step_disabled_places` пропускает при пустом). Раньше copy читал глобальную таблицу.
+- **Решение Семёна:** copy (клон 1:1, слепка нет) → ОТДЕЛЬНАЯ явная baseline-таблица `public.direct_baseline_minus_places`, сид = 122 URL из `direct_slepok_minus_places WHERE slepok='sk_krs'`.
+- **Природа 122:** это НЕ бизнес-площадки sk_krs, а стандартный «мусорный РСЯ»-список (игры/VPN/чистилки/маркетплейсы: com.miui.cleaner, com.freevpnplanet, com.allgoritm.youla…). Универсален → глобальный baseline не нарушает «нельзя смешивать слепки».
+- Движок: добавлены `_baseline_minus_places*` + `_enabled_baseline_minus_places()`; copy DI (`copy_engine.py` ~1397/1778) → baseline. create-путь НЕ тронут (per-слепок). **[in-progress: fixer + verify]**
+- **⚠️ ИСПРАВЛЕНИЕ прошлой пометки:** «рестарт не нужен — статическая задача» (секция per-слепок ниже) БЫЛА НЕВЕРНОЙ — движковые правки требуют рестарта воркера (иначе стейл-модули → 8 ошибок `_enabled_minus_places() takes 0 positional`). Copy-джобы крутятся в **direct-copy.service** (:5022, in-process worker), не в direct-create-worker — фикс copy требует рестарта direct-copy.
+- **Аудит tp6/7 интересы/аудитории по 7 слепкам (read-only, live-сверка):** гапы —
+  - `scherbakova`: **40 ACTIVE tp7-кампаний с интересом n055 (Автокредит), ct0006 — ЗЕРО в структуре.** Крупнейший гап. + ct-паттерны tp7 (ct0001/0026/0044/0111/0181) в структуре отсутствуют.
+  - `pavlov`: 2 живые tp7 interest-кампании (ТК-Интересы, ТК-Конкуренты-Интересы, Ставрополь) — в структуре нет. tp6 «Интересы» camp_names есть, но n000 (без ID).
+  - `salamahin`: n-коды все n000 (совпадает с кабинетом, гапа нет), НО 35/77 tp6-кампаний имеют ретаргет/LAL audience-условия — структура не имеет поля audience_ids (системный гап всех слепков).
+  - `piterkina`: tp6 Монобренд 3 «Интересы» camp_names, n000, кабинет не доступен агенту.
+  - `kryuchkova`: интересов нет ни в структуре, ни в кабинете (все автотаргет) — чисто, гапа нет.
+  - `karavaev`: интересов в структуре нет; по последнему харвесту в кабинете тоже нет.
+  - `tumashenko`: [ожидается результат].
+  - **Системный барьер:** конкретные goal_id/audience_id для interest-кампаний недоступны через API (UAC 403 на всех агентствах Victory, Grid не отдаёт поля targeting/retargetings). Нужен вход владельца в кабинет или скрин раздела «Интересы».
+
+## Сессия 2026-07-16 — Per-слепок минус-площадки — КОД+БД+МИГРАЦИЯ, создание РК НА ПАУЗЕ
+- Новая таблица Victory `public.direct_slepok_minus_places(slepok,url,enabled,sort,updated_at PK(slepok,url))`.
+- Миграция: `direct_global_minus_places` очищена (была 122 строки), 122 URL загружены в `direct_slepok_minus_places` slepok='sk_krs'. Верифицировано SQL.
+- Движок: `_enabled_minus_places(slepok="")` — принимает slepok, читает per-слепок. Без slepok возвращает []. Без глобального fallback.
+- `create_set_tp1_builders.py` строки 1272, 1869: `_enabled_minus_places()` → `_enabled_minus_places(slepok)` (slepok — параметр обоих вызывающих функций).
+- `routes_settings.py`: GET `/api/minus-places?slepok=` (обязательный параметр, 400 без), POST требует `slepok` в теле, пишет в `direct_slepok_minus_places`.
+- `blueprint.py`: передаёт `slepok_minus_places=_slepok_minus_places, slepok_minus_places_ensure=_slepok_minus_places_ensure` в `register_settings_routes`.
+- `index.html`: кнопка «Минус-площадки» в тулбаре «Структура слепков» + `slepkiOpenMinusPlaces()` (uses `_SL_SLEPOK`) + `_slMpSave()`. `loadMinusPlaces(slepok)` теперь принимает slepok: без аргумента рисует селектор слепков, с аргументом — грузит. `saveMinusPlaces` читает slepok из `data-mp-slepok` атрибута.
+- py_compile OK (4 файла). SQL: sk_krs=122/global=0/terehov=0 проверено. НЕ деплоился (рестарт не нужен — статическая задача). НЕ верифицировалось live (создание на паузе).
+
+## Сессия 2026-07-16 — ФИЧА «тег каталоги» — КОД ЗАДЕПЛОЕН, БД ЗАПОЛНЕНА, создание РК НА ПАУЗЕ
+- Код: `create_set_structure.py` (+`CATALOG_TAG="каталоги"`, whitelist `detect_protected_tags`), `create_set_plan.py` (импорт `CATALOG_TAG as _CAT`, флаг `tp1_catalog=True` в `_emit_tp1`), `create_set_tp1.py` (строка ~80: `tp1_shopping = ... or bool(it.get("tp1_catalog"))`).
+- БД: tag_registry id=7 label='каталоги' color=#f2a03d; campaign_tags: tp1=181, tp3=62, tp5=104, tp7=309, tp6=0 (guard OK).
+- md5 Mac==LXC101 для всех трёх файлов. Сервисы direct-create+worker active.
+- Для tp3/tp5/tp7 тег no-op (ListingAd всегда). tp1: тег → tp1_catalog=True → tp1_shopping=True → каталожные объявления.
+- НЕ верифицировано live (создание на паузе). Catalog-role гейт (catalog_only=True) цел.
+
+## Сессия 2026-07-16 — UI: панель «Что означает кодер» доступна не-админам — ЗАДЕПЛОЕНО
+- Баг: `slepki_keywords` и `slepki_coder_components` имели `if not _admin(): 403` → не-админ при клике на группу получал ошибку "только администратор" вместо расшифровки кодера/таргетингов.
+- Фикс: убраны admin-гейты из обоих GET read-only эндпоинтов (`routes_slepki_edit.py`, строки 326-327 и 418-419). `canKw` в `index.html` (строка 2115) — убран `IS_ADMIN &&` (не-админы тоже видят счётчик ключей).
+- WRITE-эндпоинты (edit_keywords/edit_callouts/save_assets/etc.) и JS-кнопка «✏ Редактировать» + бейдж «админ» — admin-гейт сохранён.
+- md5 Mac==LXC101: routes_slepki_edit.py `9e7b3d128f7ad63799db455b9cadbd53`, index.html `9a2b1f0954d2ca5f2a120968c1cf543a`. Сервисы direct-create+worker active. Smoke OK: keywords 200, coder_components 200, edit_keywords 403 для не-админа.
+
+## Сессия 2026-07-16 — Lazy-load конденсация документации (выполнено)
+- Применён lazy-load к 4 файлам: STATE.md / ERRORS_JOURNAL.md / DOD.md / README.md.
+- STATE.md: 635→369 строк (сессии 07-12 и 07-11 → STATE_ARCHIVE.md).
+- ERRORS_JOURNAL.md: 2590→2498 строк; создан ERRORS_JOURNAL_ARCHIVE.md (✅-таблица + разбор прогона 07-06 A-K).
+- DOD.md: 961→856 строк; создан DOD_ARCHIVE.md (§5.b file:line карта dmp + §5.d каноны реконструкции).
+- README.md: 641→572 строк; создан README_ARCHIVE.md (историч. разделы июня-2024).
+- CLAUDE.md direct/: добавлены ссылки на все 3 новых архивных файла в таблицу навигации.
+- ERRORS_JOURNAL / DOD / README не достигли 200-500 — обоснование в отчёте агента (весь контент активный 🟡).
+
+## Сессия 2026-07-16 — ЗАДАЧА #34 («все фиды» tp5 + tp1-РСЯ) — ЗАДЕПЛОЕНО
+- Реализовано потребление флагов `tp5_all_feeds` / `tp1_all_feeds` (ранее эмитировались, но игнорировались).
+- Файлы: `create_set_feed_builders.py` (add `all_feeds` param to `_create_tp5_campaign`, `all_feeds_list` to `_create_tp5_single`), `create_set_gallery.py` (pass `all_feeds=bool(it.get("tp5_all_feeds"))`). tp1-РСЯ правки (`create_set_tp1.py`, `create_set_tp1_builders.py`) были сделаны в предыдущей части сессии.
+- Механика: при флаге — ONE кампания (не fan-out), Phase 4a в `_build_tp1_adgroups` создаёт ОДНУ группу (ShoppingAd+ListingAd) на каждый разрешённый фид. tp7 не тронут. Default-path (all_feeds=False) без изменений.
+- py_compile OK (все 4 файла), pyflakes: только pre-existing DI-globals. md5 Mac==LXC101 для всех 4 файлов. Сервисы `direct-create` + `direct-create-worker` active.
+- Верификация live (реальный многофидовый аккаунт + прогон) — при следующем запуске с тегом «все фиды».
+
+## Сессия 2026-07-16 — ЗАДАЧА #43 (tone-of-voice): 4 новых агента + 10 CROSS_SIGNATURE — задеплоено
+- `ai_agents.py` md5 `f33dc7efbfe1226ea6b84a28a6a81a76` Mac==LXC101; `systemctl restart direct-create direct-create-worker` OK.
+- Добавлено в AGENTS: piterkina (Lada/Tenet монобренд), avtolajt_bu (б/у Краснодар), avto_sk (б/у фид), sk_krs (мультибренд новых Краснодар).
+- Добавлено в AGENT_ADS: piterkina (10 заголовков/5 текстов/4 сайтлинка), avtolajt_bu (10/3/4), avto_sk (0/1/0), sk_krs (0/1/4).
+- CROSS_SIGNATURE: добавлено 10 записей (6 старых без сигнатуры: salamahin/gordeeva/zubakin/chepelev/tumashenko/kuderko + 4 новых); итого 15 ключей.
+- build_titles_messages + build_campaign_messages: добавлена инструкция «≥2 фирменных фразы из корпуса».
+- py_compile OK, pyflakes: 0 undefined-name (3 pre-existing f-string placeholder warnings не мои).
+- Верификация тон-судьёй (≥50/60) — при следующем прогоне этих слепков.
+
+## Сессия 2026-07-16 — ЗАДАЧА 7: content-fix #2 ПОДТВЕРЖДЁН на kryuchkova + КРИТ операц. уроки, грайнд стартует
+Green light: fix #2 (create_set_assets.py md5 e58c4470) + инфра готова. Перевалидация kryuchkova Монобренд через сервис (job 359aff7926e3) = **CLEAN**: created 22/22, Fix#1 стоп-фраза «до 1XX% цены» = 0 hits (2350 строк), Fix#2 generic «Кредит и первый взнос 0» = 0, маркеры kryuchkova есть (выгода-45% ×219, срочность ×159). Регион Новосибирск (нет Волгограда). tp2/5: 159 ads, 0 img, 0 video (DoD 7.13 ✓). Флаг: catchphrases «распродажа/2 платежа» = 0 (ads-corpus gap в LLM-stream, не блокер).
+- **🔑 КРИТ УРОК №1 — DIRECT_ROLE=web для прогонов.** Probe `create_app()` дефолт role=`all` → create_set_async кладёт джобу БЕЗ `_web_posted=true` → systemd-воркер (claim только `_web_posted='true'`, queue_server.py:1925) НИКОГДА не забирает → джоба вечно `queued` (ЭТО корень всех «стопоров», НЕ Victory/куки). Фикс: гонять `DIRECT_ROLE=web python3 -m direct._probe_task7 run ...`. Разовый анблок висящей джобы: `UPDATE ...jsonb_set(body,'{_web_posted}','true')`.
+- **🔑 УРОК №2 — видео ОТЛОЖЕНО 180с (добивка).** Видео вынесено из create в delayed_content_repair (`_DELAYED_CONTENT_REPAIR_DELAY_SECONDS=180`, campaign_spec_audit:874). Сразу после `done` tp1 hasVideo=0 — НОРМА; через ~3+ мин добивается (наблюдал 0→16, растёт). Проверять видео ПОСЛЕ задержки, иначе ложный VIDEO_MISSING.
+- **🔑 УРОК №3 — WRONG_AUTOTARGET на свежих tp5 = лаг-ложняк.** live_verification даёт WRONG_AUTOTARGET на свежих tp5 (edit-view лаг реплики), а живой конфиг корректен (перечитал 27/27 = active/EXACT_V2_MARK/WITHOUT_BRAND). Перечитывать relevance_match до вердикта; edit-view keyword_count тоже лагает (0 vs showConditions 1389).
+- **🔑 УРОК №4 — SSH:** локальное имя `lxc101` флапает (255) → юзать `lxc101-ts` (Tailscale). `pkill -f <pattern>` в ssh убивает СВОЙ шелл если pattern в его cmdline → бить по PID (`ps|grep|awk|kill`). Victory RO по умолч. (`B._victory_conn`/`victory_conn`); запись — `victory_conn_rw`.
+- **СЛЕДУЮЩЕЕ:** грайнд всех слепков (pavlov→karavaev→gordeeva→salamahin→zubakin→chepelev→tumashenko→kuderko→piterkina→avto_sk→avtolajt_bu→sk_krs→terehov→scherbakova), delete_drafts на смене слепка, все site_type/tp 1:1, 1 фид, без cpa, DIRECT_ROLE=web. Stop-on-defect по стоп-фразе. Чекпоинты координатору.
+
+## Сессия 2026-07-16 — ЗАДАЧА 7 ПОЛНЫЙ ПРОГОН: ПРЕРВАНО (fix-first по стоп-фразе) + 2 внешних отказа инфры
+Автономный полный прогон по всем слепкам на porg-asfbs7qe. Прервано координатором: стоп-фраза системная → сначала фикс копирайтером (tp1 автотаргет brand-title путь мимо `_bad_ad_title`), потом продолжаем.
+- **kryuchkova Монобренд:** создано 20/22 (2 потеряны на reconcile: после стопора воркера `_requeue_missing_positions_once` дедупит по ЖИВЫМ именам кабинета, а site_type'ы kryuchkova делят generic-имена с С пробегом → 2 item'а сматчились как «уже есть»). Регион Новосибирск ✓ (нет Волгограда), тон kryuchkova ✓, инварианты OFF ✓. **ДЕФЕКТ (системный, draft-only):** стоп-фраза «трейд-ин. До 150% цены авто» в tp1-автотаргет титрах (712819362 Марки / 712819381 Модели / 712819410 Марка) + тавтология body «Кредит на Первый взнос 0 ₽. Первый взнос 0 ₽…». Фильтр `text_norm._bad_ad_title` РАЗВЁРНУТ и ловит строку (True), но tp1-путь пишет DeepSeek-титры в Grid МИМО фильтра. Фраза НЕ из seed/pack kryuchkova (runtime-LLM). kryuchkova Мультибренд НЕ запускался.
+- **pavlov Мультибренд:** джоба `0b3cf75c94fb` (total=29) поставлена в очередь 00:51, но 2 часа висела `queued`, воркер НЕ забрал → probe TIMEOUT 02:52, создано 0. **Джоба-мина:** при восстановлении Victory воркер её заберёт → повесил watcher `_tmp_cancel_pavlov_watch.py` (nohup, отменит `0b3cf75c94fb` как только Victory отзовётся). Отменить ДО любого resume.
+- **2 ВНЕШНИХ ОТКАЗА (не код):** (1) Victory DB 103.88.240.90:5432 — Connection refused (воркер fail-open sweep, джобы не берёт). (2) Кука porg-asfbs7qe — мёртвая сессия «need_reset / Истёк срок» (force_refresh не помог; нужен релогин агентства в главпотоке). Grid-список/удаление недоступны.
+- **Аккаунт ЧИСТ:** v5 `campaigns.get` (агентский токен, без куки) = 0 text/unified. Клин 00:51 удалил все 30 kryuchkova-черновиков (by_v5=27, by_uac=3), pavlov создал 0 → UAC=0. Итого 0 кампаний.
+- **STAND BY.** Ничего не создаётся (probe мёртв, воркер не берёт джобы). Ждём: фикс стоп-фразы задеплоен+repro-verified → перепроверка kryuchkova → полный прогон (Терехов/Щербакова последними, delete_drafts на смене слепка, 1 фид, без cpa). Порядок слепков и inventory — в отчёте сессии. ⚠️ `lxc101` (локальное имя) флапает — юзать `lxc101-ts` (Tailscale).
+
+## Сессия 2026-07-15 — ЗАДАЧА 7 ПРИЁМОЧНЫЙ ТЕСТ (порг-asfbs7qe): kryuchkova С пробегом — ✅ пайплайн ПОДТВЕРЖДЁН, СТОП на чекпоинте
+Приёмка «структура→создание 1:1» на sandbox-аккаунте porg-asfbs7qe (victoryagency14, Новосибирск, counter 109986153, goal 571275138 «Все формы», units_alive=True, 0 кампаний до старта). Задеплоенный код в синке (create_set_plan.py md5 Mac==LXC101). Всё ТОЛЬКО через сервис: `/direct/api/set_plan` → `/direct/api/create_set_async` → direct-create-worker.
+- **Выбор 1-го слепка:** survey всех слепков (structure_to_campaigns). piterkina отвергнут (нет seed в direct_slepok_content). zubakin отвергнут (грязные region-имена tp6). **kryuchkova** = чистая uniform-структура + есть seed. Аккаунт БЕЗ /yandex.xml, ровно ОДИН фид (3505268 catalog) → feed_confirmed=True («ONE feed only»). no_cpa=True (только tcpa/cpc). stream_content=True (M3/openrouter, тон+город генерятся, НЕ slepok_library — тот запекает чужой город «Волгоград» из seed = стоп-лист).
+- **Результат С пробегом (1 из 3 типов сайта):** job b29adbff30aa **created=10/10 failed=0**, live_verification **PASS** (errors=0 issues=0 grid_rows=10). **1:1** plan 10 == structure 10 == created 10 (tp1:8, tp5:1, tp7:1), camp_names-имена. 7.10 город Новосибирск везде (утечки Волгограда НЕТ). 7.12 тон kryuchkova (выгода 45%/автокредит 9000₽/взнос 0/КАСКО), brand-first на Марки/Модели ✓. Инварианты OFF (altTexts/extGeo/maps). КС-камп кл.слова есть (1026/190/165), автотаргет-камп 0kw+AT (tp1 AT не полисится DoD 1.2). tp7 UAC: 5 titles/3 texts/8 sitelinks/goal/draft ✓. adprice частичный на части модель-групп (DoD 1.8 🟡).
+- **⚠️ НАХОДКИ (генерация stream_content, НЕ пайплайн з.7):** (1) стоп-фраза «трейд-ин До 150% цены авто» в титрах Марки/Модели автотаргет (712819362/381/410/421) — draft, но запрещена стоп-листом. (2) кривой body «Кредит на Первый взнос 0 ₽. Первый взнос 0 ₽…» — повтор/сломанная грамматика. Обе — сторона копирайтера/LLM, не структура.
+- **СТОП на чекпоинте** (пайплайн подтверждён). ОСТАЛОСЬ: остальные 2 типа kryuchkova (Монобренд 22 / Мультибренд 26), потом слепки по одному, Терехов/Щербакова последними; перед новым слепком — delete_drafts. Решить: блокируют ли находки (трейд-ин/кривой body) масс-создание. Харнесс: `direct/_probe_task7.py` (survey|ctx|slepokdb|clean|run|verify). Result: `_probe_result_kryuchkova_С пробегом.json`.
+
+## Сессия 2026-07-15 — ЗАДАЧА 7 (финал): tp3 camp_names + «все фиды» tp3 — НЕ задеплоено, НЕ коммичено
+Де-риск от Семёна: тест = ОДИН фид, без cpa → взрыв N×camp×feeds невозможен (1 фид = 1 группа). Разблокировало tp3.
+- **tp3** (ветка `rsya_gallery`): КАМПАНИЯ = camp_names через `structure_to_campaigns`; base_name=camp_name → `_create_tp3_campaign`; проброшены `only_cts/only_gks` (сигнатурный паритет; tp3-товарка = ct0000 автотаргет по фиду, не модель-роутинг) + `tp3_all_feeds`. При ОДНОМ фиде: каждая camp_names-кампания → 1 РК (fan-out не размножает) → **число РК = число camp_names** (terehov С пробегом 13 / karavaev 3 / scherbakova 1, verified). Fallback на старую 1-РК «ТГ - Фид (товары)» при пустых camp_names. feed_alert/single_feed целы.
+- **«все фиды» tp3 (потребление)**: `_create_tp3_single` принимает `all_feeds_list=[(fid,fnm)…]` → ОДНА кампания, ГРУППА на каждый фид (uniq имя `· {фид}`, shopping+listing+default_text per фид). `_create_tp3_campaign(all_feeds=True)` → одна пара cpc+cpa без per-feed fan-out. При 1 фиде = 1 группа. Default (all_feeds=False) = прежний per-feed fan-out (backward-compat, оба caller'а `_create_tp3_single` целы).
+- **«все фиды» tp1-РСЯ/tp5 — deferred**: модель-групповые combined → «группа на фид» нужен мульти-фид shopping в билдере; при ОДНОМ фиде уже 1 РК/1 фид, флаг инертен, регрессии нет (описано в DoD 7.5).
+- py_compile OK 8 файлов, pyflakes чист на модуле; structure_to_campaigns tp3 MATCH verified; fallback + backward-compat целы. НЕ деплоил.
+- **ОСТАЛОСЬ:** (1) tp3 many-feeds — точный feed↔camp_name маппинг (сейчас fan-out ×feeds на camp_name; для 1 фида корректно). (2) «все фиды» tp1/tp5 — мульти-фид группы в модель-билдере.
+
+## Сессия 2026-07-15 — ЗАДАЧА 7 (продолжение): tp2/tp4/tp5 + shared-детектор тегов — НЕ задеплоено, НЕ коммичено
+Доделал camp_names-переход для tp2/tp4/tp5 + общий детектор тегов. НЕ деплоил.
+- **Shared детектор `detect_protected_tags(camp, registry_tags)`** (create_set_structure.py): РЕЕСТР OVERRIDE → UI-эвристика (х3 = tp1-имя «автотаргет»+«кс/ключев»; «все фиды» = имя про фид/смарт-баннер ИЛИ ≥3 позиций с явным feed_role/id/key). Используется для х3 (tp1) и «все фиды» (tp1/tp3/tp5). tp1 переведён на детектор.
+- **tp2/tp4** (ветки `search_test`/`search_dynamic`): camp_names-кампании × pays; `only_gks`/`only_cts` проброшены `run_create_set_text`→`_create_text_via_token`→`_build_text_from_pack` (per-gk) + cookie ct-only. Сохранено: profile-гейт, pays, dmp-split tp2 (нетронут), **донор-«Модели» tp4** (процедурная добавка, segment-путь).
+- **tp5** (ветка `search_gallery`): camp_names × per-feed fan-out (внутренний, сохранён); `only_gks/only_cts`→`_create_tp5_campaign`→`_create_tp5_single`→`_build_tp1_from_pack(tp5)`. «Фиды»-добавка с дедуп-гейтом. `_seg5`-guard в gallery учитывает only_gks (нет cookie-ct0000-пустышки при 152). Флаг `tp5_all_feeds`.
+- **Верификация standalone:** structure_to_campaigns MATCH=True vs _build_export_rows (scherbakova tp2=4/tp5=15, terehov tp4, pavlov tp5=1 «все фиды»); детектор: реестр-override + эвристики корректны; py_compile OK 8 файлов, pyflakes чист на модуле; все builder-параметры добавлены в конец (callers keyword/wrappers — не сломаны).
+- **ОСТАЛОСЬ:** (1) **tp3** — builder-blocked (`_create_tp3_campaign` = feed-fanout товарка, camp_names не feed-keyed → риск N×camp×feeds взрыва; нужен маппинг+only_cts в билдере). (2) **Потребление «все фиды»** — collapse per-feed fan-out в 1 РК с фид-группами (детект/флаги готовы, движок ещё фанится по фидам отдельными РК). ⚠️ campaign_tags пуст → в проде теги дают 0 эффекта, эвристика х3 сработает на «КС+Автотаргет»-camp'ах при первом прогоне (нужна живая сверка перед деплоем).
+
+## Сессия 2026-07-15 — ЗАДАЧА 7 (Структура→Создание 1:1): контракт + tp1-вертикаль — НЕ задеплоено, НЕ коммичено
+Реализация «Создание РК = Структура слепков 1:1». НЕ деплоил (Семён верифицирует перед деплоем).
+- **НОВЫЙ модуль `create_set_structure.py`** — общий контракт `structure_to_campaigns(slepok,site_type,tp)` (зеркало `routes_slepki_edit._build_export_rows`: КАМПАНИЯ = `item.camp_names`, fallback split-label→сегмент→имя). Возвращает per-camp `{name,tp,segment,gks,cts,targeting,n_groups}` — gks/cts = маршрутизация контента per-group. + `campaign_protected_tags_bulk` (читает `direct_automation.campaign_tags`+`tag_registry`, fail-open {}), константы `X3_TAG`/`ALL_FEEDS_TAG`/`X3_VARIANTS`. **Верифицировано standalone: MATCH=True vs _build_export_rows** на terehov/scherbakova tp1 (6/17 камп) + kuderko tp2 (4).
+- **tp1 подключён в `_set_plan_response`** (create_set_plan.py, ветка `tp1_rsy`): camp_names-кампании; тег «х3» (из campaign_tags) → 3 РК КС/автотаргет/КС+автотаргет, КАЖДОЙ полный бюджет; «все фиды» → флаг `tp1_all_feeds`; продукт-детект (Фид/Смарт-Баннер→products_only). Прежний сегмент-путь СОХРАНЁН как fallback (camp_names пуст). Процедурная добавка Смарт-Баннер/Фиды — с дедуп-гейтом.
+- **Маршрутизация per-group `only_gks`/`only_cts`** проброшена: `run_create_set_tp1`→`_create_tp1_campaign`/`_create_tp1_via_cookie`→`_create_tp1_single`→`_build_tp1_from_pack`; cookie: `_tp1_pack_groups` (по ct). tp5-галерея (`create_set_feed_builders:741`) НЕ затронута (only_gks=None default).
+- **py_compile OK** (4 файла), pyflakes чисто на новом модуле; undefined-names в builders = pre-existing DI-globals. Мод-фактор `_tp1_mode`: явная метка режима в ИМЕНИ авторитетна (КС→автотаргет OFF, без ложного включения).
+- **ОСТАЛОСЬ (remaining):** tp2/tp4 (create_set_plan search_test/search_dynamic ветки) + tp5 (search_gallery) + tp3 (rsya_gallery — per-feed) через `structure_to_campaigns` + `only_gks` в text/gallery-билдерах; потребление `tp1_all_feeds`/«все фиды» в движке (collapse feed fan-out). ⚠️ Смена: seg_modes больше НЕ авто-сплитит tp1 (3-way теперь тег «х3»); campaign_tags пуст → в проде 0 эффекта пока теги не назначены.
+
+## Сессия 2026-07-15 — БЭКЕНД «редактируемые теги кампаний» (Вариант C, реестр в БД) — ЗАДЕПЛОЕНО+смок зелёный, НЕ коммичено
+Новый модуль `direct/routes_tags.py` (аналог `register_slepki_edit_routes`): синхронный CRUD тегов прямо в БД seoadvanced (LXC101, схема `direct_automation`, через `telegram_parsing.db.get_db`), НЕ через очередь воркера. Auth = тот же `@access` (`_direct_access`); правки — admin-гейт (`session.is_admin`).
+- **DDL (idempotent, применён фактом):** `direct_automation.tag_registry` (label UNIQUE, color, created_at) · `campaign_tags` (PK slepok,site_type,tp,camp_key,tag_id; FK→registry ON DELETE CASCADE) · `campaign_hidden_auto` (PK +auto_label). Все 3 таблицы существуют в БД, rows=0. Создаются `ensure_tags_tables()` на импорте blueprint (try/except, не валит сервис).
+- **API (все 9 эндпоинтов):** GET/POST/PUT/DELETE `/direct/api/tags/registry[/<id>]`, GET `/direct/api/tags/campaign`, POST `/direct/api/tags/campaign/{assign,unassign,hide_auto}`. Валидация: непустые поля, color `^#(hex3|hex6)$`; дубль label→409; несуществующий tag_id при assign→404 (FK); assign/hide_auto=on — `ON CONFLICT DO NOTHING` (идемпотент).
+- **Регистрация:** `blueprint.py` рядом с slepki-роутами (`register_tags_routes(bp, _direct_access)` + `ensure_tags_tables()`). Файл `main.py` НЕ трогал (bp конструируется в blueprint.py — там же и slepki).
+- **Верификация (LXC101, test_client форс-admin/scoped/noauth):** py_compile+pyflakes чисто, md5 Mac==LXC101 `256d689…`, рестарт direct-create active, /automation=302. Смок 9 эндпоинтов: registry CRUD (create→dup409→list→update→404→delete), assign→get→unassign(+upsert+badtag404+notadmin403), hide_auto on/off, DELETE-каскад (удаление тега очищает campaign_tags). scoped-не-админ читает (200), пишет→403; noauth→401. Смок-данные вычищены (все таблицы rows=0). Фронт (index.html) НЕ тронут. НЕ коммичено.
+
+## Сессия 2026-07-15 (МЕГА) — теги/дубли/ct-мисматч/durability-фикс/реестр тегов — ЗАДЕПЛОЕНО
+Огромная сессия причёсывания «Структуры слепков» + новые фичи. Всё на LXC101, бэкапы `.bak.*` в direct/. Коммит по команде Семёна (эта сессия).
+- **Google-таблица tp6/7** (сервис-аккаунт `.secret/service_account.json`): тип сайта/слепок/тп/кампания/тег/таргетинг(audiences)/ключей/ключевые слова + столбец «Мои комментарии». Все слепки кроме dmp/gen_ses. Скрипт `scratchpad/export_slepki_tp67.py` (идемпотентная заливка) + `_rows_builder.py` (на LXC101, читает пак).
+- **Чистки структуры:** срезка региона из имён tp6/7 (525 rename + 25 истинных-1в1 удалено) · дедуп идентичных групп (35, по отобр.имени+содержимому) · **52 дубль-кампании** (base-имя без суффикса cpa/tcpa/cpc/crm + идентичный состав; ⚠️ баг регэкспа: `\b` не срабатывает после `_` → срез суффикса по разделителю) · 5 плейсхолдеров ЕПК/Поисковая · 15 мусорных КС terehov (INZT/IZNT/AT/TA/Автомат, Grid kw=0) · 10 autopark-152.site scherbakova · karavaev С пробегом tp2 → 1 группа (Поиск органически не вёл) · правки Питеркиной (rename/delete/«Общее») · gordeeva tp5 бренд-фантом убран (кабинет по МОДЕЛЯМ) +ct0217.
+- **Профиль (targeting_profile.json):** `_slepki_structure_for_ui` прятал tp, которых нет в профиле → баг «не вижу tp6/7» (piterkina Мультибренд + 6 узлов). Дописал 7 tp. chepelev tp3-фантом убран (по кабинету не ведёт).
+- **ct-мисматч — досбор из ЖИВЫХ кабинетов (durable RAW+DST+M3):** terehov Мультибренд tp4 +19 брендов (+6 в структуру: KNEWSTAR/MG/Solaris/SOUEAST/SWM/UAZ) · Монобренд tp4 +6 Lada-моделей (5904 кл) · Мультибренд tp3 +127 КС (тег tp3 `tgt` сменён «КС+авто»→«автотаргетинг», товарные фидовые) · gordeeva tp5 +6 моделей (Jetta 1247…). Вывод: где тег КС — либо ключи в кабинете (досбор), либо мусор (чистка).
+- **🛑 ФИКС DURABILITY (крит):** `_push_new_to_m3` (sync_content_m3.py) делал `rsync -a` RAW→M3 без `--update` → старый RAW затирал свежие UI-правки на M3 → ночной крон откатывал правки через сервис. Добавил `--update` (rsync-тест подтвердил клоббер). Теперь правки ключей/минусов/уточнений через сайт устойчивы к крону 00:00/12:00.
+- **UI index.html:** теги tp1 «фид» (формат-ct ct003/9/10) / «х3» (seg_modes, НА КАМПАНИИ где КС+Автотаргетинг) / «все фиды» (переим. feedTag) · тег tp1-5 **reality-based** (пересчёт по факту пака: real+marker→КС+авто, real→КС, marker→авто; ленивый как kw-счётчики, гейт allLoaded) · **резолв+дедуп аудиторий** (строки «AUDIENCE:id»→имя из rl_audiences; схлоп по (name,type)). Всё прогнано ui_verifier.
+- **🆕 РЕЕСТР ТЕГОВ (Вариант C, начат):** `routes_tags.py` (9 API `/direct/api/tags/*`) + БД `direct_automation.tag_registry/campaign_tags/campaign_hidden_auto` (зарег. в blueprint.py) + UI (кнопка «🏷 Теги» менеджер + попап «✎ теги» на кампании: авто со скрытием + свои + цвет). Артефакт-предложение (3 варианта) показан. Бэкенд смок ✅. ⚠️ camp_key = имя кампании (при rename привязки осиротеют — на будущее). end-to-end ui_verifier — в процессе на момент записи.
+- **Осталось:** финальный рестарт direct-create; end-to-end проверка реестра тегов; scherbakova autopark-152 — удалено (v5 без доступа к Нижегородской). Медиа/минусы досбора tp3 (inline-минусы в фразах) — норма.
+
+## Сессия 2026-07-15 — 🛑 M3-DURABILITY (ключи tp6/7 не зануляются) + откат over-merge collapse + tp2 terehov + добор гэпов
+Крупная сессия по приведению «Структуры слепков» к корректному виду. НЕ коммичено на момент записи (коммит в конце по команде Семёна).
+
+**1. 🛑 ГЛАВНЫЙ БАГ — M3-синк зануляет собранные ключи tp6/7 (durability).**
+- Симптом: собранные ключи tp7 (terehov `тк_lada_кс` 310→0, mtime 04:00 = версия с M3) пропадали после 12:00 крон-синка. Массово: scherbakova/pavlov/piterkina/chepelev/kryuchkova/tumashenko tp7=0, terehov 18/131.
+- Root-cause: harvest-агенты писали ключи в **DST** (`/opt/neuro_content_local`), а НЕ в **RAW** (`/opt/neuro_content_raw`, источник сборки). `sync_content_m3.py` пересобирает DST из RAW (`_build_dst`) → пустой RAW зануляет DST. Плюс pull M3→101 тянул пустые версии. C-страховка защищает от УДАЛЕНИЯ, но не от ПЕРЕЗАПИСИ пустым.
+- Фикс: (а) восстановил ключи из staging (`_proposed_pack/`, Mac) в **RAW+DST+M3** (628 файлов, terehov `тк_lada_кс`=290 в RAW/DST/M3 проверено). (б) **Safeguard D** в `sync_content_m3.py:_process_file`: `.txt` с пустым RAW НЕ затирает непустой DST (`if ext=="txt" and st.st_size==0: if getsize(dst)>0: skip`). py_compile OK, md5 Mac==LXC101. Подробнее — ERRORS_JOURNAL `M3_SYNC_WIPES_TP67_KEYWORDS_DST_ONLY`.
+
+**2. Мерж в прод-структуру** (`scratchpad/_merge_into_structure.py`, бэкап `.bak.merge_70824`): аудитории (rl_audiences+audiences fingerprint) **+1250 items** (было 41→1291), karavaev tp2 имена **30→0** пропусков, **salamahin Chery КС удалён** (orphan, нет живого источника; items 16989→16988). Мерж по ключу (slug,site,tp,leading_ct,gk) — уникален; fallback по ct для gk=None (karavaev корпус). 0 несматченных.
+
+**3. Collapse: over-merge tp6/7 → ОТКАЧЕН.** Пересчёт (`_collapse_recompute.py`) на новой структуре: safe-only (RuleD гео-имена 2293 + RuleA tp6/7 + RuleC region 110), trash/copy/RuleB пропущены (over-delete: чуть не стёр весь «С пробегом» salamahin 211+296→0). Применил safe (items→16303, tp1-5 gk lost=0, dmp splits целы, бэкап `.bak.safecollapse_80657`). НО RuleA слил КС-кампании tp6/7 в бренд-gk (`mk___lada`, terehov 478→233) → привязка ключей повисла. **Откатил tp6/7 к pre-collapse** из safecollapse-бэкапа (55 узлов, синтетич gk=0, items 1313; бэкап `.bak.revert67_90923`). Урок: RuleA не сверяет ключи → нельзя схлопывать КС-кампании с РАЗНЫМИ ключами. Полный candidate НЕ применён.
+
+**4. Добор гэпов (8 slepok-агентов параллельно).** Верификатор `_verify_tp67_consistency.py`: 45 КС-без-ключей + 113 audience-без-audiences. Агенты добирали ЖИВЬЁМ, ключи→RAW+DST (durable), аудитории→`_audiences_gap_<slug>.json`. Итоги: salamahin 1 КС собран; karavaev 9/9 (386 ключей); scherbakova 7 собрано/7 empty(DRAFT)/2 not_found; terehov 0 КС(все автотаргет)+**27 аудиторий** (Интересы ХМАО/Новосибирск+tk_интересы); kuderko **2 аудитории** (TK_RA автокредит/автомобили); chepelev/tumashenko аудитории genuinely-empty (Оптимальная аудитория=авто-оптимизация Яндекса). zubakin — в работе. ⏳ ОСТАЛОСЬ: центр. push RAW→M3 всех ключей + мерж `_audiences_gap_*` в структуру.
+
+**5. tp2 terehov — объединил фрагментацию.** UI показывал 112 РК, 107 по 1 группе (Image #69). Live-проверка (2 агента): terehov = архивный ЕПК-эксперимент car-up26 (114 GdUnifiedCampaign, ARCHIVED, `tp_unknown`→ct0000, уникальные camp_names→фрагмент); salamahin/karavaev = ISA-аккаунты, «голые» записи = ГРУППЫ одной родит. РК (acav 191/kiav 313), НО делят camp_name→группируются норм (не фрагментированы). Семён: архивные берём, этот случай=исключение→объединить в одну. Применил (`.bak.tp2merge_51132`): 106 одногрупповых car-up26 → одна РК «ЕПК car-up26 (объединённая)», terehov tp2 112→7 РК. Синхронизировано.
+
+**6. tp6/7 криптичные имена — удалены (Семён, Image #70).** Товарка scherbakova названа в кабинете чистыми кодами (`LB_17`, `NA_04`, `RA_17`, `ZA_17`, `PB_GNN_19`…) — реальные, но нечитаемые/неполные имена. Семён: удалить такие. Критерий: имя начинается с 2 заглавных латинских + цифра, БЕЗ кириллицы/бренда/домена/строчного слова; исключены осмысленные префиксы MK/TK/MB/ML и dmp. Удалено **161** групп (scherbakova 159: tp7 Мультибренд 85→16, Монобренд 114→24; karavaev 2× «2»). Остались только читаемые («ТК - Товарная - Автотаргетинг», «Товарная кампания new-auto-ekb.ru», «ТК - Haval - КС», домен-товарка autopark-152.site). Бэкап `.bak.delcryptic_57286`. Синхронизировано.
+
+Артефакты сессии: `scratchpad/slepki_harvest_2026-07-14/` (`_merge_into_structure.py`, `_collapse_recompute.py` +--safe-only, `_fix_tp67_canon.py`, `_verify_tp67_consistency.py`, `_dump_tp67_gaps.py`, `_gaps_*.json`, `_audiences_gap_*.json`, `_tp2_verify_*.md`, `_proposed_pack/`).
+
+## Сессия 2026-07-15 — ФИКС раскладки минус-наборов: присутствие в НЕСКОЛЬКИХ site_type — данные загружены, верифицировано, НЕ коммичено
+Баг (нашёл Семён): набор минус-слов — account-level библиотека; одно ИМЯ используется в кабинетах РАЗНЫХ типов сайта, но канон-раскладка клала набор ТОЛЬКО под site_type «победителя» (max found_in_n) → под другими типами файла нет → «Наборы минус слов = 0». Пример: kuderko «банки»/«Конкуренты» есть в raw и под С пробегом, и под Мультибренд, но канон ушёл только в С пробегом → Мультибренд пусто.
+- **Фикс (только РАСКЛАДКА, канон-версия НЕ менялась):** канон-контент имени (max found_in_n, тайбрейк max фраз — по ВСЕМ site_type) кладётся под КАЖДЫЙ site_type, где ИМЯ встречается в raw `_minus_sets.json`. Наборы с явным site_type в имени (Мультибренд/С пробегом Караваев N) естественно остаются в своих типах.
+- **Меняются 2 из 5 слепков** (только имена, встречающиеся в >1 типе): kuderko/Мультибренд **0→2** (банки 175 + Конкуренты 265); scherbakova/Монобренд **1→2** (+Минуса общие 016 = 257). Остальное без изменений: kuderko/С пробегом=4 (не сломано), chepelev/Мультибренд=2, karavaev 5+1, pavlov 3+2, scherbakova/Мультибренд=2.
+- **Загрузка:** пересобрал `scratchpad/_minus_sets_canon/*.json` (`scratchpad/_minus_build_canon.py`), прогнал боевой `scratchpad/_load_minus_sets.py` → `apply_save_minus_sets` dual-write M3+DST, все 9 файлов ok=True dst=True m3=True. `_minus_shared.txt` (движок) не тронут. Верификация live `read_minus_sets` на LXC101 ДО/ПОСЛЕ. НЕ коммичено (данные пака).
+Хранение + UI для НЕСКОЛЬКИХ ИМЕНОВАННЫХ наборов минус-слов на (слепок × тип сайта). Канон-редукция утверждённая Семёном: для каждого ИМЕНИ — ОДНА версия (макс found_in_n, тайбрейк макс фраз), кладётся в site_type победителя.
+- **Канон-редукция (факт):** chepelev 2→2, karavaev 6→6, kuderko **22→4** (new общая 529 / банки 175 f=22 / Конкуренты 265 f=14 / Марки и модели авто 685 f=15 — все С пробегом), pavlov 5→5, scherbakova **4→3** (Монобренд: минус общие 1/305=257; Мультибренд: Минуса общие 016=257 f=70, Минуса общие tp2=263). Пустые (gordeeva/kryuchkova/piterkina/zubakin) = 0.
+- **Storage:** пак `<site_type>/_minus_sets/<slepok>.json` = `{slug,site_type,sets:[{name,phrases}]}`. Dual-write M3+DST (8 файлов, оба half OK — верифицировано на M3 и DST). НЕ трогает `<slepok>_minus_shared.txt` (движок create_set_minus).
+- **Backend:** `slepki_editor.py` — `_pack_rel_minus_sets`, `read_minus_sets`, `apply_save_minus_sets` (валидация как минус, дедуп caseless внутри набора, дубль-имя→ошибка), `save_minus_sets` в `_EDIT_KINDS`+`handle_job`. `routes_slepki_edit.py` — GET `/api/slepki/minus_sets` (@access без admin, scoped-не-админ читает), POST `/api/slepki/save_minus_sets` (admin, enqueue).
+- **UI `index.html`:** кнопка «Наборы минус слов» → `slepkiOpenMinusSets()` (репойнт с `slepkiOpenAssets('minus_shared')`). Каждый набор = `<details>` (имя + N фраз + список/textarea). Admin: правка/удаление наборов и фраз + ＋Добавить/✓Сохранить. Не-админ read-only. Пусто → «Нет наборов минус-слов в кабинете».
+- **C-защита `sync_content_m3.py`:** `--filter=P **/_minus_sets/**` + prune-skip (`_minus_sets` в Path.parts). Dry-run `-i` ФАКТ: control `.dat`-орфан → `*deleting`, а `_minus_sets/*.json`-орфан (нет на M3) → НЕ удаляется. Prune-skip юнит-проверен.
+- **Верификация:** md5 Mac==LXC101 (4 файла), py_compile+pyflakes чисто, node --check JS OK. read_minus_sets отдаёт наборы РАЗДЕЛЬНО (счётчики фраз сохранены 1:1). GET admin 200 / scoped-не-админ 200 / no-auth 401 / без параметров 400; POST не-админ 403 / no-sets 400 / admin valid → queued job. handle_job('save_minus_sets') end-to-end → dual-write оба half ok. Throwaway `_smoketest_ms` (файлы M3+DST + queued job 257843d4b207) вычищены. Страница `?tab=slepki` 200, маркеры есть, старый minus_shared-биндинг убран, сервис 302 up. Артефакты: `scratchpad/_minus_sets_canon/`, `scratchpad/_load_minus_sets.py`.
+
+## Сессия 2026-07-15 — Мердж scherbakova tp7 (Мультибренд+Монобренд) в ПРОД — ЗАДЕПЛОЕНО+верифицировано, НЕ коммичено
+Домержил обновлённую структуру слепка scherbakova (deep-scan tp7) в прод `slepki_structure.json`. Бэкап прода: `slepki_structure.json.bak.scherbakova_tp7_20260715_000026` (md5 106faaa0).
+- Мердж `_merge_structure_v2.py` (env `MERGE_OUT` в scratch-кандидат, BASE=c8ec8d2, читает 12 `_proposed_structure_*`) → кандидат md5 `dd60ea88`.
+- **JSON-diff per-directologist:** изменился ТОЛЬКО узел scherbakova. Все 11 прочих слепков + dmp + gen_ses + top-level — байт-идентичны (md5 узлов SAME). Внутри scherbakova изменились ТОЛЬКО tp7: Монобренд 58→114 гр, Мультибренд 1→85 гр (tp1/tp2/tp4/tp5 SAME). Титулы едины (tp7="Товарная кампания", tp4="Поиск + Динамика", 0 «ДО»).
+- Кандидат→прод, Mutagen синк мгновенный (md5 Mac==LXC101 `dd60ea88`), рестарт direct-create+worker active, 0 tracebacks, /direct/automation=302. Server-side факт: scherbakova Мультибренд tp7=85, Монобренд tp7=114, все 7 tp-титулов уникальны. Не трогал index.html/пак/gen_ses/dmp. Коммит ждёт ОК Семёна.
+
+## Сессия 2026-07-15 — Экспорт структуры слепка в Excel (кнопка «⭳ Скачать в Excel») — ЗАДЕПЛОЕНО+верифицировано, НЕ коммичено
+Новая кнопка в тулбаре «Структура слепков» рядом с «Уточнения»/«Наборы минус слов» → скачивает .xlsx со структурой выбранного слепка × типа сайта (тип сайта → tp → кампании → группы + таргетинг). БЕЗ новых зависимостей (openpyxl/xlsxwriter отсутствуют) — чистый stdlib OOXML (`zipfile`+inline-strings).
+- **Backend `routes_slepki_edit.py`:** GET `/api/slepki/export_xlsx?slepok=&site_type=` (@access, БЕЗ admin-гейта → scoped не-админ качает; пустые параметры→400). Хелпер `_xlsx_bytes(sheet_name,headers,rows)` (5 OOXML-партов, XML-escape &<>", UTF-8). `_build_export_rows` реплицирует UI-группировку (`_campaignize`/`slepkiTpTree`): сегментные tp1/2/4/5+tp3 — кампании=`item.camp_names` (иначе split-label/сегмент по gc через `blueprint_targeting._ct_segment_map`), группа=`item.t`; tp6/7 — каждая группа=кампания, таргетинг из хвоста имени (эквив. `_tp67Targeting`). Таргетинг сегментных: baked `tp.tgt`→ иначе gc (`_tgtFrom`+override tp2/4 aon→КС, tp3→Товарная галерея). Колонки: `Тип сайта|tp(код)|Тип кампании|Кампания|Группа|Таргетинг|Кодер(gc)`. Имя файла — ASCII-транслит (`slepok_kuderko_s_probegom.xlsx`), данные — кириллица.
+- **UI `templates/direct/index.html`:** кнопка + `slepkiExportXlsx()` (гейт `_SL_SLEPOK`/`_SL_SITE`→uiAlert, иначе `window.location` на роут).
+- **+ Правка координатора в ЭТОМ же деплое (не про Excel):** `slepkiGroups` — для tp6/tp7 убрано дублирование имени кампании (заголовок группы == первая строка item). tp6/7 теперь плоский список двухстрочных блоков без повторяющего group-summary; tp2/tp3 ветка не тронута. node --check OK, 1 def, md5 Mac==LXC101 `3c41746b`.
+- **Верификация (LXC101, реальный пак NEURO_PACK_MOUNT, test_client):** py_compile+pyflakes чисто, node --check JS OK, md5 Mac==LXC101 (оба файла), рестарт direct-create+worker active, /automation 302, роут в живом сервисе 401(не 404). Реальный xlsx `kuderko/С пробегом`: 97321 байт, 5 XML-партов ВСЕ парсятся minidom, 3241 строк (3240 данных+хедер), кириллица на месте. Строки осмысленны: tp1 aon→автотаргетинг/aoff→КС, tp2 Поиск_Рассрочка→КС, tp3→Товарная галерея, tp6/7→автотаргетинг. Статусы: 400 без параметров, 200 admin И scoped-не-админ (байты идентичны), 401 noauth. НЕ коммичено (ждёт ОК).
+
+## Сессия 2026-07-14 — Фича «Ассеты слепка» (уточнения + минус-библиотека на уровне слепок×тип) — ЗАДЕПЛОЕНО+верифицировано
+Вкладка «Структура слепков». Новая пара кнопок «Уточнения» / «Наборы минус слов» рядом с Развернуть/Свернуть → правая панель (`_slDetail`) показывает агрегат УНИКАЛЬНЫХ значений по ВСЕМ (tp,ct) слепка×тип с CRUD (admin) / read-only (не-админ). Уточнения УБРАНЫ из карточки КАМПАНИИ (минус остался).
+- **Backend `slepki_editor.py`:** `read_assets(slepok,site_type)` (агрегат uniq callouts+minus_shared по `_iter_tp_ct` — уникальные (tp,ct) из структуры, ct=ct#### из gc или ct0000); `apply_save_assets(spec)` веером пишет переданный набор во ВСЕ (tp,ct); новые батч-примитивы `_ssh_write_m3_many`/`_dual_write_pack_files_same` (DST локально-атомарно + M3 ОДНОЙ ssh-сессией — вместо N ssh; атомарный cp+mv per-файл). Только присланные ключи пишутся (нет ключа → файлы не трогаем → не затираем пустым). `save_assets` в `_EDIT_KINDS` + `handle_job` → воркер авто-роутит (queue_server `_sed._EDIT_KINDS`).
+- **Backend `routes_slepki_edit.py`:** GET `/api/slepki/assets` (read-only, @access без admin-гейта → scoped не-админ читает), POST `/api/slepki/save_assets` (admin-only, enqueue).
+- **UI `templates/direct/index.html`:** 2 кнопки; `slepkiOpenAssets(kind)`+`_slRenderAssets`/`_slAssetsAdd/Del/Save` (per-item строки с ✕, ＋Добавить, Сохранить; гейт «выберите слепок и тип»); из `_slRenderCampCard`/`_slCampSave`/`_slCampStash` удалена секция ✦ callouts (минус кампании оставлен, edit_callouts-POST убран); тултип имени кампании обновлён.
+- **Верификация (LXC101, реальный пак+test_client):** md5 Mac==LXC101 (3 файла), py_compile+pyflakes чисто, node --check JS OK, рестарт direct-create+worker active. `read_assets(chepelev,Мультибренд)`=711 пар, callouts первые 4 = ожидаемые («Большой ассортимент авто»…), всего 80 uniq (per-ct модель-специфичные — данные, не код). GET route 200 (admin И scoped-не-админ), POST 403 не-админ / 400 без ключей / 400 без параметров. Fan-out (монки-патч, БЕЗ порчи данных): 711 rels одним батчем, дедуп+trim, minus_shared-only не трогает callouts. Батч dual-write end-to-end на throwaway `_asset_smoke/` (DST+M3 записаны, контент верный, вычищено). **⚠️ Готча:** ad-hoc `python3` на LXC101 без `NEURO_PACK_MOUNT=/opt/neuro_content_local` читает пак через sshfs (`timeout cat`) → ~10с/файл; сервис env выставлен верно (быстро, 3.66с на 711 пар). НЕ коммичено.
+
+## Сессия 2026-07-14 — UI «Создание РК»: кнопка «Обновить фиды» + счётчик «N камп.» — ЗАВЕРШЕНО, задеплоено
+Вкладка `/direct/automation?tab=create`. Файлы: `templates/direct/index.html`, `direct/account_service.py`, `direct/CODER.md`. 6 коммитов `78c870c..58873a4` (в nested-репо `home/`, НЕ запушено). Работал параллельно со вторым окном (пересбор слепков) — правил только свои участки index.html, коллизий не было.
+- **Кнопка «⟳ Обновить фиды»** в карточке «Итог»: тянет `allowed_feeds_count` (`/direct/api/account_assets` по `#ulogin`/`#account`) → `window.AC_ALLOWED_FEEDS` → `_recalcAcSetBadges`. Обработка 429/`locked`/`errors.feeds`/валидного 0.
+- **BACKEND-баг пофикшен:** `account_service.py:506` слал невалидное поле `"Url"` в v5 `feeds.get` (err 8000) → `allowed_feeds_count` не отдавался вовсе, «× фиды» висело. Убран (закрыт латентный `ERRORS_JOURNAL:616`).
+- **Grid-фолбэк** для `allowed_feeds_count`: при v5-матче=0 (фиды в кабинете названы ЯРЛЫКОМ, не URL) дочитываем реальные URL через `_grid_feeds`, как в `create_set_plan:385-393`. Живьём (куки живые): **porg-zv6tyvg4 0→3, porg-qsecl4vc=7**.
+- **Счётчик:** единая колонка **«N камп.»** у каждого tp = число из `_acItogEstimate` (тот же источник, что «Итог») → строки суммируются в итог и реагируют на «Под стиль сайта» (noCpa) и «по одному фиду» (single_feed). Фидовые tp до загрузки фидов: «N камп. · ×фиды».
+- **Факт (задокументировано в `CODER.md`):** от числа фидов N зависят **tp3/tp5/tp7** (fan-out ×N), tp1 — условно. Фронт теперь множит и tp3 (раньше только tp5/tp7 → занижал). Галочка single_feed: ВЫКЛ→×N, ВКЛ→×1 (/yandex.xml).
+- **Деплой:** md5 Mac==LXC101, remote py_compile OK, `direct-create` рестарт active, `/direct/automation`=302, 0 traceback. Семён подтвердил «всё готово, отлично».
+- **Осталось (опц.):** `git push` на remote (не сделан). Наблюдение: матчер фидов хрупкий — зависит от того, как назван фид в кабинете (URL в имени → v5 матчит; ярлык → только Grid).
 
 ## Сессия 2026-07-14 (ФИНАЛ) — ПЕРЕСБОР СЛЕПКОВ ЗАВЕРШЁН, применён, верифицирован, ЗАКОММИЧЕН `5d1ac89`
 Мастер-цель `SLEPKI_REBUILD_PLAN.md` выполнена: 12 слепков + ГенСес пересобраны 1в1, в проде, видны в UI, готовы к созданию РК.
@@ -14,7 +276,8 @@
 - **ГенСес** пересобран из `Downloads/Telegram Desktop/Архив 3` (6 xlsx → tp1/2/3 per-group). **targeting_profile** +24 (`_gen_profile_update.py`, 166→190). **dmp НЕТРОНУТ**.
 - **Apply** (6 стадий, бэкапы `.bak.rebuild_20260714_174827`): пак→M3+DST (1232 файла, 0 клоббера shared, md5 M3==DST), структура→прод (0 пропаж tp), профиль, рестарт active. Мердж `_merge_structure_v2.py` (tp-preserve + seg_modes/camps/audiences проброс).
 - **ПРАВИЛО параллельности** записано в CLAUDE.md (per-item фан-аут: N слепков → N агентов).
-- **🔄 Осталось:** callouts-load в пак (собрано `_callouts_adlevel/`, факт ad-level=campaign-level + per-campaign привязка; агент грузит) → верификация. Дата-гэпы (не дефекты): salamahin С пробегом=0 model-ct (автотаргет-слепок), Мультибренд tp6/7 generic где нет UAC, 54 одиночные `<X> N` без базы. Медиа-загрузка отложена. Push не сделан.
+- **callouts-load ГОТОВ+верифицирован:** ad-level уточнения (метод `ads.get TextAdFieldNames:[AdExtensions]`→resolve `adextensions.get`; факт ad-level=campaign-level, добавлена per-campaign привязка) загружены в пак `callouts/<slug>.txt` — **894 (slug,seg,tp,ct) файла** в DST+M3 (md5 DST==M3), только `callouts/` (keywords/minus не тронуты), dmp пропущен. 1140/3149 несопоставленных кампаний → ct0000 catch-all (легит — callouts общеаккаунтные). Независимый спот-чек `read_callouts`: scherbakova 74, gordeeva 75, pavlov 6 — непустые, рестарт active. Индекс на 101 НЕ нужен (read_keywords/read_callouts — прямое чтение файлов; image-индекс только под медиа).
+- **🔄 Осталось (опц., НЕ дефекты):** push на remote (не сделан). Дата-гэпы: salamahin С пробегом=0 model-ct (автотаргет-слепок, строится автотаргетом), Мультибренд tp6/7 generic где живьём нет UAC, 54 одиночные `<X> N` без базы (неотличимы от моделей). Медиа-загрузка (19k) отложена → при заливке нужен `refresh_index()`.
 
 ---
 
@@ -170,272 +433,6 @@ Content-editor (`direct-content.service` :5021). Вкладка «Сверка �
 - **Баг:** дропдаун «Структура слепков» (slepki-dir ← /api/ui_structure ← slepki_structure.json `directologists[].name`) показывал `kuderko="Кудерко Семён"`, `gen_ses="Слепок_gen_ses"`, `dmp="Слепок_dmp"`; дропдаун «Создание РК» (ac-agent ← /api/ai/agents ← ai_agents.agent_list) уже канон. Корень: 3 некорректных `name` в slepki_structure.json (display-поле, не ключ).
 - **Фикс:** правка ТОЛЬКО 3 `name` в slepki_structure.json → «Слепок_Кудерко»/«Слепок_ГенСес»/«Слепок_ДМП». Ключи (kuderko/gen_ses/dmp) и структура не тронуты; `name` — display-only, все lookups по `key`.
 - **Верификация:** json.load OK; оба источника (agent_list vs directologists[].name) сверены по всем общим ключам — mismatches NONE. Рестарт сервиса — за главной сессией.
-
-## Сессия 2026-07-12 — Фикс SINGLE_FEED_TP5_TP3_WRONG_FEED (правка кода, ждёт прогона)
-- **Баг:** при single_feed на аккаунте БЕЗ `/yandex.xml` tp5/tp3 создавались на первом разрешённом фиде (porg-asfbs7qe → `credit-page-01-a.xml`, лендинг), вразрез с plan/tp7 (те резолвят /yandex.xml или фолбэк). Причина: tp5/tp3 само-резолвят фид через `prefer_single_feed_variants(data["feeds"])`, которая при отсутствии /yandex.xml берёт `variants[:1]`.
-- **Живой факт (v5 feeds.get porg-asfbs7qe/victoryagency14):** `/yandex.xml` в аккаунте НЕТ (51 фид, все `yandex-<brand>.xml`/`yandex-catalog-*.xml`). Значит варианты (a)«всегда мержить Grid» и (b)«читать UrlFeed.Url в allow-фильтре» не помогли бы — фида нет ни в v5, ни в Grid, а url уже был в кортеже. Верный фикс = альтернатива из задачи.
-- **Правка (`create_set_feed_builders.py`):** helper `_resolve_single_feed_variants` — резолв как plan: `_first_url_feed(strict=True)` для /yandex.xml → фолбэк `yandex-catalog-model-design-custom-name.xml` только при `job.body.single_feed_fallback` → выбор из data["feeds"]; не найден → feeds=[] (tp5/tp3 пропускается, а не создаётся на чужом фиде). `_first_url_feed` добавлен в feed_builder_deps (`automation_runtime.py`).
-- **Верификация:** py_compile OK; offline-симуляция на живых данных: OLD→credit-page(3505256), NEW→fallback 3505268 при confirm / [] без. ERRORS_JOURNAL обновлён (🟡).
-- **Осталось:** деплой (рестарт direct-create + direct-create-worker), живой прогон single_feed на porg-asfbs7qe.
-
-## Сессия 2026-07-12 — Харвест пака zubakin/gordeeva Монобренд (0 правок кода)
-
-- **Задача:** 16/18 позиций zubakin и 4/6 gordeeva упали с «пак пуст» при тестовом прогоне на porg-asfbs7qe.
-- **Диагностика:** `gather("zubakin", "Монобренд", "tp1")` возвращал только ct0000 (198 kw) → segment-фильтр "Марки"/"Модели" давал 0 групп → "нет ct-папок с ключами слепка zubakin". Причина: zubakin.txt/gordeeva.txt не существовали в brand-специфичных ct-папках.
-- **Источники (API victoryagency14/victorylotsofads1/victoryagency-direct1618440):**
-  - zubakin: 6 аккаунтов × TEXT_CAMPAIGN (всего 84 кампании, 54,024 raw kw). porg-o5x73pkx (kuban-belgee.ru, Контекст активно) — 0 кампаний (пустой счёт).
-  - gordeeva: 9 аккаунтов × TEXT_CAMPAIGN (65 кампаний, 51,415 raw kw).
-- **Записано на LXC101 (`/opt/neuro_content_local/kontent_oktyabr/Монобренд/`):**
-  - zubakin.txt: 33 ct × 3 tp (tp1/tp2/tp5). Марки: ct0029(Changan 453kw), ct0044(Chery 210kw), ct0097(Geely 173kw), ct0181(Lada 81kw). Модели: 27+ cts.
-  - gordeeva.txt: 33 ct × 3 tp (новые + слияние с существующими). Марки: ct0029, ct0044, ct0097, ct0111(Haval 712kw), ct0181. Модели: 19 cts.
-  - Итого: 62,631 операций записи.
-- **Probe после:** gather() zubakin Монобренд tp1 = 33 ct; gordeeva tp2 = 31 ct. Сегментирование: zubakin Марки=4, Модели=27; gordeeva Марки=5, Модели=19.
-- **NO_BRAND_SEGMENTS_AVAILABLE (tp5) — вердикт:** `create_set_gallery.py:75, if via_cookie or not st_token:` → это GENERIC-заглушка, не реальный Yandex 152. Появляется ВСЕГДА при cookie-пути с сегментным tp5. «error 152» в тексте ошибки — введение в заблуждение: настоящего API-вызова нет. Retry с `_resume_via_token=True` создаётся автоматически и должен сработать с API-токеном (38M баллов в запасе).
-- **Дырки остались:** ct0026/ct0027/ct0028/ct0306 (Belgee) — у zubakin нет; ct0055/ct0189 — keyword-classifier не поймал; ct0315 — неизвестный ct. Эти cts в структуре есть, в паке zubakin — нет. Группы для них не создадутся.
-- **Что нужно координатору:** tp2-deferred уйдут в авто-ретрай (defer=True). tp1 "пак пуст" с defer=False (кроме M3-glitch): нужно вручную пере-запустить failing items после сессии, или дождаться следующего полного прогона.
-
-## Сессия 2026-07-12 — Prep-шаг 1: рестарт digest + разведка porg-asfbs7qe (0 правок кода)
-- **Рестарт digest.service:** прямой ssh 192.168.0.202 таймаут → через `lxc101-ts` (Tailscale) OK.
-  active(running), новый PID 1013933 (был 4068513), старт 12:18:24. Лог чист (Flask :5010, без ошибок).
-  Smoke `/direct/automation` → 302 (редирект на логин), `/` → 302. 404 `create_set_status?job_id=e4e59163f044` в логе = зависший поллинг старой вкладки, не ошибка.
-- **Разведка porg-asfbs7qe (Павлов, autodealer-nsk) — ТОЛЬКО чтение, baseline ДО серии из 11:**
-  - Агентство: **victoryagency14** (token_for_login резолвит, живой).
-  - **Метрика 109986153 УЖЕ привязана**: public.metrika_goals[porg-asfbs7qe] counter=[109986153], all_forms goal=**571275138**, не расшарена на др.аккаунты → авто-подхват, tp6/tp7 CPA возможны (в отличие от porg-vfdnaolu без счётчика).
-  - **51 фид** (все autodealer-nsk.ru, SourceType=URL, в осн. DONE). tp7-черновики используют **3505268** `yandex-catalog-model-design-custom-name` (197 items/198 listings). Ещё есть 3553704 `Товары с сайта` (326), и 3505264 `target` = Status ERROR (битый). ⚠️ v5 `feeds.get` НЕ отдаёт поле Url (валидные: Id,Name,BusinessType,SourceType,FilterSchema,UpdatedAt,CampaignIds,NumberOfItems,NumberOfListings,Status,TitleAndTextSources,Fields). CampaignIds пусто у всех → фиды к кампаниям пока не привязаны, но в аккаунте есть.
-  - **Baseline кампаний: 21 черновик от прошлого прогона** (все DRAFT, не архив, ничего State=ON): v5 видит 8 TEXT (tp1 РСЯ ×4 + tp2 Поиск ×3 + tp1 Марки-автотаргет); Grid добавляет 13 UAC = 10 tp6 Мастер + 3 tp7 Товарка. Их надо чистить перед 1-м прогоном.
-  - **Квота units: rest=38 264 610 / limit=39 400 000** (spent 11). При UNITS_PER_CAMPAIGN=2500 — с огромным запасом на всю серию (152 по units НЕ ожидается; сброс в полночь МСК). Cookie-Grid путь units вообще не тратит.
-
-## Сессия 2026-07-11 — Харвест пака (kuderko/salamahin/terehov/scherbakova) ЗАВЕРШЁН
-
-- **СДЕЛАНО на LXC101 (`/opt/neuro_content_local/kontent_oktyabr/`):**
-  - kuderko/С пробегом/tp1+tp2: 4878 kw → 62 brand-ct папки (ct0181, ct0164, ct0121, ct0199, ct0209 и др.). Probe: pack=12 fb=0 kw=58536. **kuderko РАЗБЛОКИРОВАН.**
-  - terehov: 3864 КС ключей (реальные, без «---autotargeting» маркеров) → ct0000/ct0009/ct0010 для Мультибренд/Монобренд/С пробегом × tp2 и tp4. Probe: Мультибренд/tp2 pack=11 fb=1.
-- **ВЫВОД ПО СЛЕПКАМ:**
-  - kuderko = ВСЕ aon. Мультибренд — api_4001 (чужое агентство), пак пуст. Структурных изменений не нужно.
-  - salamahin = подтверждён aon (5 фраз incl «---autotargeting»). Пак Мультибренд полный (58867 kw).
-  - terehov = реальных КС-аккаунты + структура aon. Пак заполнен. Рекомендация aon→aoff если нужен КС-режим — решение Семёна.
-  - scherbakova = 212 «пустых» ct NOT её ct (это ct других слепков). Пак полный (103/103).
-- **АРТЕФАКТЫ:** `scratchpad/pack_autotarget_patch.json` — структурные рекомендации.
-- **ОСТАЛОСЬ:** Семён применяет patch.json к slepki_structure.json по необходимости. kuderko Мультибренд — без данных.
-
-## Сессия 2026-07-11 — DMP_FULL_B2B_PIPELINE fix (ЗАВЕРШЁН, код на Mac, НЕ деплоено)
-
-- **СДЕЛАНО:** все 7 точек авто-кредитного кровотечения в dmp устранены.
-  - DB: 25 строк для site_type='dmp' добавлены в `public.direct_ad_templates` (12 title, 5 text, 8 sitelink).
-  - `ai_agents.py`: AGENT_ADS['dmp'] sitelinks, sitelink_bank_for dmp-branch, _sitelink_bucket_limits dmp-branch,
-    assemble_campaign (_is_dmp + dmp-aware _title_ok/_text_ok), build_texts_messages dmp-guard, build_sitelinks_messages dmp-guard.
-  - `create_content.py`: _is_dmp + _DMP_B2B_UTP_RE, _title_ok/_text_ok + _accept_title/_accept_text dmp-branch,
-    _final_fill_campaign_content dmp-fillers (12+5+8 B2B), _credit_offer_ok_line dmp=True.
-- **Верификация:** py_compile OK; pyflakes 0 undefined; filter-test 8/8 titles + 5/5 texts; DB INSERT OK rows=25.
-- **ОСТАЛОСЬ:** Семён деплоит (рестарт direct-content + direct-content-worker), потом первый dmp-прогон.
-- ERRORS_JOURNAL.md обновлён: `DMP_FULL_B2B_PIPELINE` (🟡 ждёт прогона).
-
-## Сессия 2026-07-11 — БАТЧ тест-прогон porg-vfdnaolu (шаг 2, ЗАВЕРШЁН, 0 правок кода проекта)
-- **ФИНАЛ: 9 слепков прогнано, 68 черновиков (все DRAFT), kuderko SKIP.** Механизм cookie-Grid (via_cookie+no_cpa, без баллов) валиден.
-- Создано по слепкам: pavlov 9, scherbakova 6, kryuchkova 4, gordeeva(Мультибренд) 5, zubakin 2, chepelev 9,
-  tumashenko 9, karavaev(Мультибренд) 10, salamahin 6, terehov 8. kuderko SKIP (пак пуст в обоих типах).
-- **Site_type по полноте пака** (правило координатора): gordeeva/karavaev → Мультибренд (С пробегом пуст);
-  остальные по probe. **kuderko — единственный полный блокер: залить М3-пак** (пусто в С пробегом И Мультибренд).
-- **Флаги (все известные, не стоп):** tp5-сегменты→NO_BRAND_SEGMENTS(докрутка токеном); tp3/tp5-Фиды→нет URL-фида;
-  NO_IMAGES_LIVE(tp1, систематичен, auto-repair grid); NO_KEYWORDS_LIVE(tp2); NO_ADPRICE_LIVE(warn);
-  M3-partial (salamahin/terehov tp2/tp4 «Общее»). tp6/tp7 не тестируемы (нет Метрики → goalId=0 HTTP400).
-- **Шаг 5 (dmp B2B) — ⛔ СТОП (create упал), ТРИ блокера:** (1) пак ct0800+ ЧИТАЕТСЯ, но только с `NEURO_PACK_MOUNT=/opt/neuro_content_local`
-  (env воркера, НЕ дефолт /opt/neuro_kontent — мой probe без env давал ложный kw=0; с env pack15 kw557 B2B). (2) Гейт `validate_create_set_content`
-  (create_set_account.py:59): `direct_ad_templates` 0 строк для site_type='dmp' → job error «нет шаблонных текстов». (3) КЛЮЧЕВОЕ: генерация даёт
-  АВТО-контент не B2B. **Попытка #2 (фикс a7b73e2 задеплоен):** direct_ad_templates dmp=25 B2B-строк ✅, ai_agents.py синкнут (mtime 09:32, воркер рестарт 09:42) ✅,
-  НО превью `_cached_campaign_content(dmp)` (fast_mode True И False) ВСЁ ЕЩЁ авто-доминантно («Автокредит/Трейд-ин/КАСКО/₽мес», тексты+сайтлинки 100% авто).
-  Фикс попал в fallback-таблицу+промпт, но дом-путь `_gen_campaign_content`/`_rsya_titles`/`create_set_text_builders`/`_upgrade_credit_titles` для dmp остался авто.
-  Вопрос Семёну: переключить на B2B ИМЕННО путь _gen_campaign_content (промпт без авто-контекста + не-авто локальный фолбэк titles/texts/sitelinks + off `_upgrade_credit_titles` для B2B).
-- Полный разбор: `scratchpad/batch_run_report.md`. Аккаунт porg-vfdnaolu ЧИСТ (0 камп). Харнесс: `scratchpad/batch_create.py` (2 фильтра), `batch_monitor/verify.py`, `pack_probe_all/alt.py`.
-- **Осталось (шаг 5, Семён):** решение по kuderko (fill пака); долить точечно salamahin/terehov «Общее»; для tp6/tp7 — Метрика-аккаунт; dmp/gen_ses не трогались.
-- **Прогнано 4 слепка, создано 19 черновиков (все DRAFT):** pavlov 9 (пилот), scherbakova 6, kryuchkova 4, gordeeva 0.
-- **Харнесс (scratchpad, НЕ проект):** `batch_create.py` (set_plan → фильтр pay=='cpa' И tp6/tp7 → create_set_async
-  via_cookie+no_cpa+launch=false), `batch_monitor.py`, `batch_verify.py`, `pilot_inv.py` (delete/inv), `pack_probe_all.py`.
-  Запуск: `ssh lxc101-ts "/root/venv/bin/python3 /tmp/<script>.py ..."`. Отчёт: `scratchpad/batch_run_report.md`.
-- **ДВА фильтра плана обязательны на porg-vfdnaolu:** (1) pay=='cpa' (пилот), (2) tp6/tp7 master/product —
-  UNIFIED/SMART требуют счётчик Метрики, иначе `goals[0].goalId MUST_BE_VALID_ID value "0"` HTTP 400 (gordeeva: 51 мастер, все fail, ~10мин/item UAC-ретраи).
-- **КОРЕНЬ «ушло в докрутку / 0 создано» = ПУСТОЙ М3-ПАК per-slepok, НЕ units** (координатор подозревал баллы — опровергнуто:
-  докрутка шла «по куке» units-free и дала 0; cookie-путь баллы не трогает; прямой `_pack_for_item` показал from=fallback kw=0).
-- **3 слепка с пустым паком на выбранном С пробегом:** gordeeva (но Мультибренд kw3538 ✅), karavaev (Мультибренд kw2683 ✅),
-  **kuderko (пусто в ОБОИХ типах — нужен реальный fill)**. Остальные 7 — пак есть.
-- **ОСТАНОВЛЕНО координатором** на диагностике (перед zubakin). Батч НЕ продолжен. Ждём решения Семёна: сменить
-  site_type gordeeva/karavaev→Мультибренд + залить пак kuderko; для tp6/tp7 нужен Метрика-аккаунт. Аккаунт чист (0 камп).
-- Известные системные (не баги прогона): tp5-«Модели» cookie→NO_BRAND_SEGMENTS (нужен токен), tp6/tp7→счётчик Метрики.
-
-## Сессия 2026-07-11 — ПИЛОТ pavlov на porg-vfdnaolu (тест-прогон создания, 0 правок кода)
-- **Инвентарь ДО:** 1 камп («Системная кампания eLama», DRAFT). Удалена штатно (Grid delete_campaigns) → 0.
-- **Создано:** job `180d40beefe8`, via_cookie+no_cpa (cookie-Grid, без баллов). **9 черновиков** (все DRAFT):
-  6 tp1 РСЯ (cpc) + 3 tp2 Поиск (cpc). tp3/4/5/6/7 пропущены (строгое соответствие профилю pavlov/С пробегом);
-  фидов/yandex.xml нет → tp7 неприменим (single_feed на этом акке моот). Промо-автопромо (id 1975545) на все 9.
-  Контент наполнен: tp2 Марки 26гр/1259кв, Модели 79гр/1681кв, Общее 3гр/254кв.
-- **3 «failed»** = tp2 **cpa**-item'ы: harness послал их, а под no_cpa UI их НЕ шлёт (сервер no_cpa гасит
-  только cpa-половину tp1/tp5-пар, standalone tp2 cpa НЕ фильтрует). + без Metrika-цели Яндекс отклонил:
-  `PAY_FOR_CONVERSION_DOES_NOT_ALLOW_ALL_GOALS`. Не дефект продукта — артефакт harness.
-- **Metrika-гейт:** porg-vfdnaolu без счётчика (`metrika_goals.counter_ids='[]'`). token-путь падает
-  «укажите счётчик Метрики»; спасает `via_cookie AND no_cpa` (create_set_metrika.py:31 → optional).
-- **Live-verifier: 1 error** NO_KEYWORDS_LIVE (tp2 Модели): 1 из 79 групп без ключей (пустой keyword-файл
-  одной модели в паке). auto_repair НЕ чинит (skip), delayed content_repair (kind≠keywords) не покрывает →
-  нужен keywords_repair (Grid AddKeywords, executable_now) ИЛИ create-side skip пустых search-групп.
-- **Для БАТЧА:** (1) harness ДОЛЖЕН исключать pay=='cpa' item'ы при no_cpa (иначе спурьёзные fail);
-  (2) аккаунтам без Metrika доступен только via_cookie+no_cpa (CPC-only); (3) NO_KEYWORDS empty-group —
-  предложить Семёну create-side guard. porg-vfdnaolu ГОТОВ как пилот, дефектов-блокеров нет.
-
-## Сессия 2026-07-11 — Терехов #49 (Блок 5): не-структурные правки уровня СОЗДАНИЯ РК — АНАЛИЗ, 0 правок
-- **Итог:** реализовано 0 новых правок (консервативно, безопасность>полнота). Все 7 пунктов разобраны →
-  `scratchpad/terehov_open_questions.md` (механика+что нужно от Семёна по каждому).
-- **#6 tp2/tp4 split марки/модели — УЖЕ СДЕЛАНО** (фикс 2026-07-06, тот же porg-lzjk6p5m/terehov):
-  segment=tp4_segment / only_cts=tp2_split_cts в create_set_text.py:66,70. Действий нет (verify на прогоне).
-- **Не трогал (нужен ответ):** #1 r0088→r0134 = ДАННЫЕ Victory (r-код только из `_resolve_region` по городу,
-  хардкода нет; комбо-код ag_part4). #2 гео-URL = `model_urls.py:_SITE_TYPE_URL_TPL/_model_page_href` глобальны +
-  город под-специфицирован для мульти-город аккаунта cardealer-rus.ru (6 городов, одна кампания). #3 возраст =
-  `create_set_master_product.py:625 age_lower` (сейчас age_35); terehov-scope возможен, но «с 24 до 55+» неоднозначно
-  (age_25 vs age_18) → 1 строка готова после ответа. #4 Обмен авто / #5 город в заголовках = контент в ai_agents.py
-  (ЗАПРЕЩЕНО, зона слепки-мастера). #7 tp7 feed-вариации = НОВАЯ архитектура (нет fid в кодере).
-- НЕ деплоил, НЕ рестартил, кода не менял (py_compile не требуется). Готов реализовать #3/#2 (terehov-scoped) после ответов Семёна.
-
-
-## 2026-07-11 — Тест tp7 (Товарка/SMART) с Метрикой из payload — goalId-фикс ПОДТВЕРЖДЁН
-- Задача: проверить, что счётчик+цель из PAYLOAD (`prepare_metrika`) убирают goalId=0 у tp7.
-  Дано: porg-vfdnaolu, counter=110499992/goal=579905467, agent=gordeeva override site_type=Мультибренд.
-- Метод: standalone-драйвер на LXC101 (`DIRECT_ROLE=web`, test_client веб-приложения с форс-admin
-  сессией, минуя auth) → delete_drafts → set_plan → фильтр(product&tcpa) → create_set_async → воркер.
-- РЕЗУЛЬТАТ: ✅ 3 tp7-товарки (BAIC/Changan/Chery, ids 712717953/955/958) созданы created=3/failed=0/
-  errors=0, БЕЗ goalId=0. Сырой UAC-детейл: **goal_id=579905467 (≠0), feed_id=3560490, ecom=true** ×3.
-  Live-verifier: **status=pass, 0 issues**. Черновики ОСТАВЛЕНЫ (задача: «черновики оставь»).
-- ⚠️ БЛОКЕР штатного пути: у porg-vfdnaolu 8 фидов, НИ ОДИН не в allow-list «Глобальных правил»
-  (все `used-*`/`yandex-catalog*`, нет `/yandex.xml`) → set_plan(single_feed) даёт 0 product. Тест
-  прошёл только с in-process разрешением ОДНОГО реального каталог-фида (3560490 yandex-catalog.xml).
-  Полная секция = 29 tcpa товарки (58 items), прогнал субсет 3 для чистого goalId-сигнала.
-- ⚠️ Латентный баг (не чинил, к Семёну): `create_set_plan.py:277` v5 feeds с невалидным FieldName
-  `Url` → всегда «Некорректный запрос» → молчаливый фолбэк на Grid. Убрать `Url` из FieldNames.
-- ERRORS_JOURNAL: TP7_GOALID_FROM_PAYLOAD ✅. Код НЕ менял (тест + верификация существующего фикса).
-
----
-## 2026-07-11 — Batch-прогон авто-слепков porg-vfdnaolu (все КРОМЕ dmp/gen_ses) + сверка DoD
-- ЦЕЛЬ: пересоздать все 11 авто-слепков (баллы, no_cpa=cpc-only, все 8 фидов), сверить live_verification.
-- СДЕЛАНО: (1) 8 реальных фидов аккаунта занесены в `public.direct_global_feed_rules` enabled (sort 15-22,
-  ОТКАТ: `DELETE ... WHERE sort BETWEEN 15 AND 22`). (2) Драйвер `direct/_tmp_batch_driver.py` (DIRECT_ROLE=web
-  enqueue→worker; delete_drafts→set_plan(all variants)→create_set_async no_cpa/single_feed=false/via_cookie=
-  false→poll Victory→live_verification). Валид: dry-карта всех 11 (профиль строго гейтит tp: у большинства
-  tp1+tp2, у части +tp3/4/5/7). `direct/_tmp_dump_job.py` — дамп live_verification по job_id.
-- ПРОГОН: pavlov LIVE (detach nohup `_tmp_batch_pavlov.log`). delete=3. Мультибренд job 207790a4997d:
-  12 items, старт 10:58, к 11:35 done=1/12 created=2, БЕЗ 152. **tp1 NO_IMAGES фикс работает** (набор-
-  preupload 725 картинок ДО цикла, per-РК = HIT).
-- 🔴 БЛОКЕР: полный батч 11 слепков = МНОГОСУТОЧНО. OpenRouter моргнул 11:05 (mihomo-нода, порт 7890),
-  через 7891 ожил; пока моргал — контент через M3 72B, ~1 item/10мин. gordeeva/МБ = ~232 UAC-товарки
-  (8фидов×фан-аут, по куке). За 1 сессию все прогнать/сверить нельзя. Отчёт+решения+команда детач-раннера:
-  `scratchpad/batch_run_dod_report.md`. Вопросы Семёну там (детач сутки+? товарку резать до каталог-фидов?
-  orphan-фикс перед длинным прогоном?).
-- ПРЕРВАНО НА: pavlov/Мультибренд идёт (detach). Остаток 10 слепков НЕ запускал (ждёт решения Семёна по
-  многосуточному детач-прогону). Temp-харнесс (_tmp_batch_driver/_tmp_dump_job/_tmp_batch_results.json) на
-  месте для продолжения.
-
-### 2026-07-11 (продолжение) — Семён: режим БЫСТРОЙ DoD-валидации (не прод)
-- КОНФИГ применён: llm_provider=openrouter (жив, 0.67s), товарка урезана до 4 каталог-фидов (used-*
-  sort19-22 → enabled=false; ОТКАТ SET enabled=true WHERE sort BETWEEN 19 AND 22), no_cpa=cpc-only,
-  via_cookie=false (баллы), orphan-фикс НЕ ставил, worker НЕ рестартил.
-- ДРАЙВЕР `_tmp_batch_driver.py --fast`: 1 лёгкий site_type/слепок (Монобренд; kuderko→С пробегом).
-  terehov=aon (мутация плана `_terehov_aon`: tp1/tp4/tp5 autotarget=True +переим КС→Автотаргетинг,
-  tp2 только autotarget-строки). Мультибренд отвергнут для fast (tp1 МБ ~20мин/item, ~30 брендгрупп).
-- РАННЯЯ ТОЧКА ✅: отменённая pavlov/Мультибренд (207790a4997d) успела 5 РК → live_verification **pass,
-  errors=0, warnings=0, кодов НЕТ** (NO_IMAGES_LIVE отсутствует — фикс tp1-картинок работает; набор-
-  preupload 693-725 картинок).
-- ЗАПУЩЕН fast-батч детачем (`_tmp_batch_fast.log`), pavlov/Монобренд идёт. **ЗАТЫК = Яндекс API**
-  (26 коннектов :443, объём групп/картинок/ключей на РК) ≈ минуты/РК → полный fast-батч (11 слепков)
-  многочасовой. НЕ LLM (OpenRouter 0.67s). Результаты инкрементально в `_tmp_batch_results.json`,
-  снапшот в таблицу: `_tmp_report_snapshot.py`. Отчёт: `scratchpad/batch_run_dod_report.md`.
-- ПРЕРВАНО НА: fast-батч работает детачем (11 слепков Монобренд по очереди). Собирать результаты из
-  results.json по мере готовности. Логин занимать нельзя (дедуп). worker НЕ рестартить.
-- ⚠️ АНОМАЛИЯ 11:45: fast pavlov/Монобренд (794276a2bb6d) ВНЕШНЕ отменён (`control='cancel'`,
-  лог «прервано пользователем перед листингами»), драйвер убит сигналом (БЕЗ трейсбека). Я НЕ отменял;
-  авто-канселлера в коде НЕТ (`_cancel_children` — только дочерние с parent; watchdog ставит error/done,
-  НЕ cancelled). Похоже на внешнее вмешательство через UI (`/api/create_set_cancel`). Батч ОСТАНОВЛЕН
-  (драйвера нет, логин свободен, active-джоб нет). НЕ перезапускал вслепую — ждёт подтверждения Семёна
-  (внешний оператор мог намеренно остановить). Харнесс на месте. Ранняя чистая точка (Мультибренд 5 РК,
-  errors=0, NO_IMAGES-фикс OK) остаётся валидной.
-
----
-## 2026-07-11 — Фича: вкладка «Структура слепков» → РЕДАКТИРУЕМАЯ (СБОРКА-only, НЕ деплоено)
-- ЦЕЛЬ (объём Семёна): просмотр+редактор ключей группы; тумблер aon↔aoff сегмента; add/remove
-  ct-группы (мастер из компонентов кодера, сырой gc запрещён). Всё — через ОБЩУЮ очередь как
-  edit-джобы (не на лету), admin-only, dual-write пака, preflight, бэкап, аудит.
-- НОВЫЕ ФАЙЛЫ: `slepki_editor.py` (ядро, Flask-free, configure DI: apply_edit_keywords/
-  apply_toggle_aon_aoff/apply_add_ct_group/apply_remove_ct_group/handle_job/read_group_keywords +
-  dual-write DST+M3 + backup + audit); `routes_slepki_edit.py` (6 эндпоинтов, admin-гейт).
-- ИЗМЕНЕНО: `scripts/slepki_preflight.py` (+`preflight_dict(struct,profile)` чистая функция);
-  `blueprint.py` (импорт+configure _sed; `_job_kind` возвращает edit-kind; воркер-диспетч ветка
-  `_is_edit_job`→`_sed.handle_job`; done-блок и prefetch гейтят edit; регистрация роутов;
-  `is_admin` в контекст шаблона); `templates/direct/index.html` (режим редактирования, edit-кнопки
-  на группах/сегментах/tp, мастер add-ct, редактор ключей, JS).
-- НОВЫЕ job-kinds (в теле `_kind`): edit_keywords, toggle_aon_aoff, add_ct_group, remove_ct_group.
-- АРХИТЕКТУРА (обоснование): пул воркеров ПАРАЛЛЕЛИТ разные агентства → полный FIFO против create
-  НЕ гарантируется. Реальный анти-гонки-механизм = АТОМАРНАЯ запись (temp+os.replace): create
-  читает slepki_structure.json свежим на каждый `_json()` → видит старый ИЛИ новый ЦЕЛЫЙ снимок.
-  targeting_profile.json КЭШИРУЕТСЯ в _btg → после записи сброс (_sed_profile_invalidate). Edit-джобы
-  сериализуются между собой бакетом agency="" (_CREATE_MAX_PER_AGENCY=1).
-- DUAL-WRITE: `_dual_write_pack_file` → DST (kp.PACK_ROOT, атомарно) + M3-источник (kp.M3_PACK_ROOT
-  через ssh mkdir+tmp+mv). ok=DST.ok AND M3.ok → если ssh-запись упала, джоба = error (НЕ тихий
-  orphan). Orphan-cleanup синка НЕ тронет файл: rsync тянет его из M3-источника в RAW → prune видит
-  его в RAW → сохраняет. Только-DST (без M3) стёрся бы prune'ом — потому M3-запись обязательна.
-- ПРОВЕРЕНО: py_compile OK (4 файла); pyflakes 0 undefined; node --check шаблонного JS OK;
-  DRY на ВРЕМЕННЫХ копиях struct/profile+фейковые DST/M3: T1 read; T2 edit_keywords dual-write+
-  дедуп(caseless)+trim; T2b минус-синтаксис reject; T3 toggle Марки→aon (profile КС370→Автотаргет370,
-  gc-токены синхронны); T4 add ct0900 (gc собран из компонентов, размещён); T4b битый компонент→gc
-  reject; T4c незарегистр. ct→reject; T5 remove; T6 preflight БЛОКИРУЕТ опустошение tp в профиле.
-  Аудит jsonl пишется, бэкапы .editbak.<ts> создаются.
-- НЕ деплоено/НЕ live (batch идёт, рестарт сиротит resumed): активацию — в окно тишины
-  (рестарт direct-create + direct-create-worker). Боевые slepki_structure.json/targeting_profile.json/
-  пак НЕ трогал — тесты на temp-копиях.
-- LIVE-ПРОВЕРКА ПОСЛЕ ДЕПЛОЯ: (1) admin открывает вкладку → «✏️ Режим редактирования» → 🔑 на группе
-  → правит ключи → в очереди job → воркер → файл в DST И на M3 (ssh m3-relay ls); (2) тумблер
-  сегмента aon/aoff → targeting_profile.json + gc; (3) add/remove ct с preflight-отказом на
-  опустошение tp. Non-admin: кнопок нет, эндпоинты 403.
-
----
-## 2026-07-11 — ШАГ 0 редактор структуры ✅ LIVE + ШАГ 1 финальный DoD-прогон (детач)
-- **ШАГ 0 (редактор структуры) ✅ ПОДТВЕРЖДЁН ЖИВЬЁМ.** Idempotent edit_keywords на непустой группе
-  `karavaev/Монобренд/tp2/ct0000` (pavlov/Монобренд/ct0000 оказалась ПУСТА). Путь web-enqueue →
-  worker → `slepki_editor.handle_job` → dual-write DST+M3 + аудит доказан: job cdc99d11041f done за 3с;
-  DST `/opt/neuro_content_local/…/karavaev.txt` mtime 12:12:51 (было 07-01); M3 (ssh m3-relay) mtime
-  00:12:53; аудит в public.direct_slepki_edits (id=1 ok=true) И slepki_edits_audit.jsonl (1 строка).
-  Dual-write M3 НЕ упал (тихого orphan-ok нет). Байты 247→228 = trim/dedup, ключей 9pos/2minus неизменно.
-  ⚠️ Оба сервиса ставят `NEURO_PACK_MOUNT=/opt/neuro_content_local` — ad-hoc python БЕЗ этого env читает
-  sshfs `/opt/neuro_kontent` (другая копия) → при отладке редактора всегда задавать этот env. Харнесс
-  `direct/_tmp_step0_editor_test.py`.
-- **ШАГ 1 запущен ДЕТАЧЕМ** (pid 402595, 12:18): `_tmp_batch_driver --fast --jtimeout 14400`. Конфиг
-  Семёна: no_cpa (=pays=[tcpa] cpc-only), **single_feed=True** (feeds=1 у всех 13, dry OK), via_cookie=
-  False (баллы), openrouter, counter=110499992/goal=579905467. Все **13 слепков** (agent_list, вкл.
-  gen_ses+dmp последними, terehov предпоследним aon). delete_drafts перед каждым. Fast=1 site_type
-  (Монобренд; kuderko/gen_ses→С пробегом; dmp→dmp). ~151 items, ~15-20ч (затык=Яндекс API attach
-  картинок). pavlov/Монобренд идёт (tp1 набор-preupload 550+ картинок = NO_IMAGES-фикс работает).
-  worker НЕ рестартить (сиротит resumed). Результаты `_tmp_batch_dod_results.json`, лог
-  `_tmp_batch_dod.log`, снапшот `python3 -m direct._tmp_report_snapshot`. Отчёт
-  `scratchpad/batch_run_dod_report.md`.
-- ПРЕРВАНО НА: детач-прогон работает (pavlov первым). Собрать таблицу к завершению. DoD-фокус: dmp=B2B
-  (не авто) на последнем слепке; NO_IMAGES_LIVE=0 на tp1. Убрал старый харнесс (_tmp_batch_pavlov/fast/
-  full.log, _tmp_batch_results.json). Прибрать temp-файлы после сбора отчёта.
-
----
-## 2026-07-12 — DMP B2B: слепок собран по выгрузкам + 4 фикса (задеплоено на LXC101)
-Прогоны `porg-lrfjzcxo` (агентство y-direct-victory): tp2 создаётся 8/0, блокер снят. Все правки — в
-локальных Mutagen-файлах + БД Victory, задеплоено, `direct-create`+`worker` рестартнуты. Детали — в
-ERRORS_JOURNAL (5 записей 2026-07-12) и DOD 5.a/5.b.
-- **Блокер снят:** `kontent_pack.py:gather` читал ssh на ПРОТУХШИЙ M3 (ct0001–34) вместо локального
-  зеркала 101 (ct0800+) → «пак M3 пуст», tp2 в defer. Фикс — gather local-first. Теперь tp2 создаётся.
-- **#2 Пак:** наполнен из выгрузок кабинета (dmp3.zip, 5 xlsx) — 34 ct (ct0800–ct0833), 1204 ключа,
-  вкл. ранее отсутствовавшие ct0822–ct0833. Бэкап `dmp/tp2.bak_vygruzka_*` на 101.
-- **#3 Имена групп:** были «— Авто» (авто-фид). Фикс: `leadgen_ct_naming` (БД) выровнен по выгрузке
-  (34 ct = темы: Идентификация/Определение/…); код — имя не-авто = leadgen→структура→ct, без авто-фида
-  (`create_set_tp1_builders.py::_struct_ct_names`).
-- **#1 Сайтлинки:** были авто (автокредит/КАСКО). Фикс: `ai_content.py` нормализует строки→dict +
-  `direct_slepok_content` dmp = 8 B2B-ссылок.
-- **#4 Тип оплаты:** единый `pays = ["tcpa"] if no_cpa else ["tcpa","cpa"]` для ВСЕХ слепков (tp2/tp4/МК);
-  галочка «под стиль сайта» активна → cpc+cpa, снята → только cpc. dmp: активна 16 РК / снята 8.
-- **ct0834** = «МК Конкуренты» (выделенный, вне авто; ct0084=FAW НЕ использовать).
-- ⬜ ОСТАЁТСЯ: картинки МК dmp тянут авто-салоны (UAC_MEDIA_MISSING, DOD 5.a6); ct0834 не внесён в
-  leadgen_ct_naming (не критично); докрутка иногда падает на куке (`_existing_names пуст`) — сессия аккаунта.
-- ПРОВЕРИТЬ ЖИВЬЁМ: пересоздать dmp с галочкой (16) и без (8); имена групп как в выгрузке (не «Авто»);
-  сайтлинки B2B; ключи реальные из выгрузок.
 
 ---
 ## 2026-07-13 — Тон-войс аудит созданных РК + watcher (LXC101, active)

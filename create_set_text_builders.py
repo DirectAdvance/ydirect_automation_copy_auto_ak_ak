@@ -349,7 +349,8 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
                           ai_title2: str = "",
                           apply_group_minus: bool = True,
                           city: str = "", autotarget: bool = False,
-                          only_cts: list[str] | None = None) -> dict:
+                          only_cts: list[str] | None = None,
+                          only_gks: set | None = None) -> dict:
     """Наполнить текстовую кампанию (tp1/tp2/tp5): структура→модель-ct→ключи/минус/уточнения
     из пака M3 (по tp_code)→группы+объявления+callouts. Тексты — из titles/texts. Всё черновиком.
 
@@ -403,9 +404,16 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
     # ct-коллизия) И это НЕ split/dmp (only_cts / _struct_names) — строим по СТРУКТУРНЫМ items
     # (не по дедуп-ct), беря per-group пак-данные pack[ct]["_groups"][gk] с фолбэком на общий
     # pack[ct]. Иначе — прежний per-ct цикл (обратная совместимость: 1 группа на ct).
-    _items = ([] if (only_cts or _struct_names)
-              else [it for it in _struct_items(slepok, site_type, tp_code)
-                    if it.get("ct") in set(cts)])
+    # camp_names-маршрутизация (задача 7): only_gks задан → строим per-adgroup по gk кампании
+    # (пересечение со cts кампании), приоритетнее ветки only_cts/_struct_names (per-ct).
+    _og = {g for g in (only_gks or ()) if g} or None
+    if _og is not None:
+        _items = [it for it in _struct_items(slepok, site_type, tp_code)
+                  if it.get("ct") in set(cts) and (it.get("gk") or "") in _og]
+    else:
+        _items = ([] if (only_cts or _struct_names)
+                  else [it for it in _struct_items(slepok, site_type, tp_code)
+                        if it.get("ct") in set(cts)])
     _multi = bool(_items) and any(v > 1 for v in Counter(it["ct"] for it in _items).values())
     if _multi:
         _units = [(it["ct"], it.get("gk") or "", it.get("name") or "") for it in _items]

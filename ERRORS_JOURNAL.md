@@ -24,6 +24,208 @@
 
 ## Активные / недавние ошибки
 
+### UAC_FULL_PATCH_WIPES_CONTENTS — PATCH любого поля МК обнулял картинки (2026-07-17)
+- Симптом: PATCH поля `socdem` у Мастер-кампании обнулил её картинки в 0 (живые МК porg-r7ro6tei,
+  пришлось перезаливать 45 картинок).
+- Где: `routes_content_editor._uac_campaign_patch_payload` (:601) + whitelist `_UAC_PATCH_FULL_KEYS` (:587).
+- Root-cause: тот же класс, что `GRID_RMW_DISPLAY_HREF_WIPED` — full PATCH = REPLACE всего тела; ключа
+  креативов не было в whitelist → уходил из запроса → UAC трактовал как пустое. **Асимметрия имён:**
+  detail отдаёт креативы как `contents` (list[dict] id/type/direct_image_hash), а save ждёт
+  `content_ids` (list[str]) — добавить `"content_ids"` в whitelist БЕСПОЛЕЗНО (строка 603 фильтрует
+  `if k in detail`, а такого ключа в detail НЕТ). Партиал-PATCH `socdem` даёт HTTP 500 → full-путь всегда.
+- Решение: `routes_content_editor.py:603-610` — деривация `payload["content_ids"] = [c["id"] for c in
+  detail["contents"]]` перед `payload[field_key] = values` (патч самого `content_ids` не затирается —
+  values ставятся после).
+- Статус: ✅ подтверждено live 17.07.2026 (porg-r7ro6tei, МК 712850047, черновик): partial socdem = HTTP 500
+  (доказано, что идёт full-путь); full PATCH через патченый билдер → картинок 5→5, хеши идентичны;
+  реальная запись применяется (age_18→age_25→age_18, картинки целы, socdem возвращён 1:1). НЕ задеплоено.
+- НЕ помогло ранее: — (первая правка). Гипотеза «добавить `content_ids` в `_UAC_PATCH_FULL_KEYS`» —
+  ОПРОВЕРГНУТА зондом (ключа нет в detail → no-op); не повторять.
+
+### GRID_RMW_DISPLAY_HREF_WIPED — отображаемая ссылка стиралась Grid full-replace (2026-07-17)
+- Симптом: 229 из 244 объявлений копии с `DisplayUrlPath=None` (в источнике `лиды-для-бизнеса`).
+- Где: cookie/Grid, `create_set_feeds._grid_update_adaptive_ads` (UpdateAdaptiveTextAds = полная замена),
+  RMW-чтение `grid_finalize.GridClient.adaptive_ads_for_update`.
+- Root-cause: RMW-чтение не запрашивало отображаемую ссылку → её не было в item → full-replace обнулял.
+  Асимметрия имён полей: читается как `linkTail` (GdAdaptiveTextAd), пишется как `displayHref`
+  (GdUpdateAdaptiveTextAdInput). Значение — ХВОСТ пути, НЕ полный URL (live 17.07.2026).
+- Решение: `grid_finalize.py:2217` — `linkTail` в селекцию, `:2256` — в dict как `displayHref`;
+  `create_set_feeds.py:757-772` — гард `it['display_href'] or cur['displayHref']` по образцу adPrice;
+  `_apply_combo_button` (`:818`) — `displayHref` в список проносимых ключей (второй full-replace стирал бы).
+- Статус: ✅ подтверждено live 17.07.2026 (porg-r7ro6tei, РСЯ 712850045, черновики): обе ветки —
+  preserve из RMW и явный `display_href` — updated:1, перечитывание даёт `linkTail='лиды-для-бизнеса'`,
+  5 картинок целы. Прогоном полного копирования НЕ проверено.
+- НЕ помогло ранее: — (первая правка). Гипотеза «обрезка по байтам в direct_copy.py:1330» — ОПРОВЕРГНУТА
+  (там len() кодпойнтов, гард не срабатывает); не повторять.
+
+### COPY_TRAILING_PUNCT_STRIPPED — хвостовой «!» съедался у нетронутых строк (2026-07-17)
+- Симптом: 75 объявлений копии: `...прямо сейчас!` → `...прямо сейчас`.
+- Где: `copy_steps.py:step_adaptive_creatives` (1054/1059) → `text_norm._trim_clean` →
+  `_strip_dangling_word_tail` (`text_norm.py:108`, безусловный `rstrip(" .,;:!?-")`).
+- Root-cause: `_trim_clean` звался БЕЗУСЛОВНО, даже когда строка короче лимита → чистка «оборванного
+  хвоста» применялась к строке, которую никто не обрезал.
+- Решение: обрезать только при превышении лимита (`out if len(out)<=56 else _trim_clean(out,56)`).
+  `text_norm.py` НЕ трогали — он общий с create-set, там срез у LLM-текстов осмыслен. Тот же инвариант,
+  что уже принят для числового хвоста (ревью 06.07: чистить только то, что обрезали мы).
+- Статус: 🟡 ждёт прогона копирования.
+- НЕ помогло ранее: —
+
+### COPY_ADAPTIVE_ONE_IMAGE_INSTEAD_OF_FIVE — у комбинированных объявлений копии 1 картинка вместо 5 (2026-07-17)
+- Симптом: источник — 5 картинок на adaptive РСЯ-объявлении, копии — по 1.
+- Где: `copy_steps.step_adaptive_creatives`; v5 переносит только одно поле `AdImageHash`, остальные 4
+  живут лишь в Grid → доливки не было.
+- Решение: при `image_mode=upload` доливаем хэши ЦЕЛЕВОГО аккаунта из `body["image_hashes"]`
+  round-robin до 5 (`copy_steps.py:1069-1082`). Пул пуст → не трогаем.
+- Статус: 🟡 ждёт прогона копирования.
+- НЕ помогло ранее: —
+
+### COPY_ORGANIC_PLACEMENT_NOT_APPLIED — isOrganicSearchEnabled/placementTypes не переносились при копировании (2026-07-17)
+- Симптом: после копирования через v5-путь (`porg-mushirne` → `porg-jh2si7rh`) `step_settings_diff` показывал 4/5 кампаний с расхождением по `isOrganicSearchEnabled` (src=false, tgt=true) и `placementTypes` (src=[SEARCH_PAGE], tgt=[ADV_GALLERY,SEARCH_PAGE]).
+- Где: `grid_finalize.py:set_campaign_organic_and_placement`, `copy_steps.py:step_fix_organic_placement`.
+- Root-cause (двойной):
+  1. `isOrganicSearchEnabled` = `biddingStategyWithPlatforms.platforms.organic`, `ADV_GALLERY в placementTypes` = `platforms.gallery`. Оба поля — производные стратегии. Функция `set_campaign_organic_and_placement` ставила только кампанейные флаги (`base["isOrganicSearchEnabled"]`, `base["placementTypes"]`), но НЕ патчила `platforms.organic/gallery` в стратегии — мутация эховала целевые значения (organic=True, gallery=True) → ничего не менялось. Grid возвращал `updated:[id]` без ошибок, что маскировало проблему.
+  2. Для OPTIMIZE_CONVERSIONS + avgCpa=None (кампании типа `WB_MAXIMUM_CONVERSION_RATE`) — `_strategy_update_payload` неправильно выставлял `AUTOBUDGET_AVG_CPA` (требует avgCpa) вместо `AUTOBUDGET` → мутация падала с `CANNOT_BE_NULL:avgCpa` → кампания попадала в unsupported. Исправлено: avgCpa=0/None → `AUTOBUDGET` (round-trip «Максимум конверсий»).
+- Решение (`grid_finalize.py`, 2026-07-17):
+  1. В `set_campaign_organic_and_placement` (строки 2028-2033): после установки кампанейных флагов патчим `biddingStategyWithPlatforms.platforms.organic = is_organic` и `.gallery = "ADV_GALLERY" in pts_str`.
+  2. В `_strategy_update_payload` (~480): `OPTIMIZE_CONVERSIONS + avgCpa=None` → `AUTOBUDGET` (не `AUTOBUDGET_AVG_CPA`).
+  3. В `_unified_campaign_update_from_edit_row` (~678): `MULTIPLE_CPA` → `_unsupported_strategy` (write-enum 'MULTIPLE_CPA' недействителен в Grid).
+- Результат: 712850009 (AUTOBUDGET) исправлена — organic False, pts [SEARCH_PAGE], стратегия AUTOBUDGET→AUTOBUDGET ✓. 712850007/712850008/712850299 — пропущены (DEFAULT/OPTIMIZE_CLICKS/MULTIPLE_CPA — нет безопасных write-enum).
+- Статус: ✅ подтверждено живым зондом porg-jh2si7rh 712850009 (2026-07-17). Интегрировано в `step_fix_organic_placement` (copy_engine.py вызывает до step_settings_diff).
+- НЕ помогло ранее: установка только `base["isOrganicSearchEnabled"]=False` и `base["placementTypes"]=["SEARCH_PAGE"]` без патча platforms — Grid принимал мутацию (updated:[id], 0 errors) но значения не менял.
+
+### COPY_SETTINGS_DEFAULTS_ON_EXISTING_COPIES — 3 галочки Settings остаются на дефолтах Директа (2026-07-17)
+- Симптом: у копий `hasAddMetrikaTagToUrl`/`hasExtendedGeoTargeting`/`isAlternativeTextsEnabled` = true, в источнике false (5/5 кампаний porg-mushirne → porg-jh2si7rh). Факт 2026-07-17: в porg-r7ro6tei 712850040 все три ДО СИХ ПОР true.
+- Где: `copy_steps.py:step_settings_diff` (был report-only) + `_fix_v5_settings` (новый, `copy_steps.py:1310`).
+- Root-cause: на создании закрыт белым списком `_COPY_SETTINGS_WHITELIST` (`direct_copy.py:90`), но у УЖЕ созданных копий (и при фолбэк-пересоздании кампании без Settings) чинить было нечем — постпроцесс копирования `set_campaign_invariants` не зовёт (и не может: падает на enum 'DEFAULT').
+- Решение: автопочинка в `step_settings_diff` ДО сверки — v5 `campaigns.update` `TextCampaign.Settings` значением ИСТОЧНИКА 1:1, затем перечитывание цели. Только TEXT_CAMPAIGN; Grid не отдал поле → не трогаем.
+- ⛔ Путь записи — v5, НЕ Grid: v5 update проходит на стратегии DEFAULT (ручные ставки), которую Grid-апдейт пропускает как `_unsupported_strategy`.
+- Статус: ✅ подтверждено живым зондом porg-r7ro6tei 712850040 (2026-07-17): true/true/true → false/false/false одним update, повтор = no-op (идемпотентно), SMART_CAMPAIGN → skip; кабинет возвращён в исходное состояние.
+- Проверено фактом (НЕ по созвучию имён): v5 `ADD_METRICA_TAG` YES→NO ⇒ Grid `hasAddMetrikaTagToUrl` true→false. Update с одной опцией — ЧАСТИЧНЫЙ: прочие 13 опций Settings не поехали (сверка всего массива до/после).
+- НЕ помогло ранее: `set_campaign_invariants` (Grid) на копиях — падает на enum 'DEFAULT' (см. STATE_COPY_OTHER).
+
+### V5_PROMOTIONS_INVALID_FIELDNAMES — promotions.get возвращал пустой список (2026-07-17)
+- Симптом: `snapshot.promotions=0` на копировании — промоакции источника не попадали в снэпшот и не переносились на копию. `step_settings_diff` показывал `promoExtension DIFF: 4/5` даже на аккаунтах с живыми промо.
+- Где: `work/slepki_direktologov/scripts/direct_copy.py:phase_pull` (функция pull промоакций через v5 API).
+- Root-cause: `promotions.get` вызывался с `FieldNames=["Id","Type","Name",...,"Status","State"]`. v5 Яндекс.Директа возвращал `error 8000` на полях "Status" и "State" (не существуют в enum FieldNames promotions.get) → API возвращал пустой список → domain gate получал пустой input → `snapshot.promotions=0`.
+- Решение (`direct_copy.py`, 2026-07-17): удалить "Status" и "State" из `FieldNames` в `phase_pull`. Оставить: `["Id","Type","Name","Description","Amount","AmountPrefix","AmountUnit","Promocode","Href","StartDate","EndDate"]`.
+- Статус: 🟡 код задеплоен + `direct-copy.service` рестартован (2026-07-17). Верификация — при следующем полном запуске copy job (должно показать promotions > 0 в снэпшоте).
+- НЕ помогло ранее: — (первое обнаружение).
+
+### CT0000_GROUPS_FALLBACK_TO_SINGLE_TOVARNAYA — ЕПК/аудиторные группы слепка сворачивались в 1 «Товарная галерея» (2026-07-17)
+- Симптом: tp5-кампании слепка `avto_sk` (и `avtolajt_bu`/`sk_krs`) в любом аккаунте получали ровно 1 группу «Товарная галерея» вместо правильной структуры архива. Также tp1 автотаргет-слепков «пропускалась» — возвращалась «пак недоступен (мост M3?)» даже при живом M3, потому что у них нет ключей в паке.
+- Где: `create_set_tp1_builders.py:_struct_items` (~1624) + `_tp1_pack_groups` (~738) + фолбэк-блок (~821).
+- Root-cause (тройной):
+  1. `_struct_items` строка 1624: `if not ct or ct == "ct0000": continue` — пропускала ВСЕ позиции ct0000-слепков → `_items=[]`.
+  2. При `_units=[]` и пустом M3-паке (нет ключей у автотаргет-дилера) → `groups=[]` → fallback ~864-877 создавал одну «Товарную галерею».
+  3. Ранний выход `_tp1_pack_groups` (~738): `not pack and not (with_shopping)` → `{"skipped":"пак недоступен"}` — срабатывал ДО фолбэка даже когда M3 жив (пак=пустой, не сломан).
+- Решение (`create_set_tp1_builders.py`, 2026-07-17, финальный md5 `0f16091d40a2850db07e5f2269522060`):
+  1. **Ранний-выход bypass** (~738): перед `return {"skipped":...}` читает `_pack_read_glitch()`; если не сбой — проверяет структуру на ct0000+семантичный-gk. Для tp5-пути (`only_gks` задан) — bypass всегда. Для tp1-пути (`only_gks=None`) — bypass если в структуре слепка для tp_code есть хоть одна позиция с явным gk (!= aon_n000).
+  2. **Фолбэк-блок** (~821): при `_units=[]` (снят гейт `_og is not None`) — читает ct0000+явный-gk позиции из `_load_struct`. Фильтр `aon_n000` отклоняет шумовые gk. `(_og is None or _igk in _og)` корректно фильтрует при обоих путях. Ставит `_multi=True`.
+  3. **Skip-condition** (~848): `if not data.get("positive") and not (ct == "ct0000" and _gk): continue` — пропускает только реально пустые; ct0000+gk без ключей (норма для ЕПК) — допускает.
+- Верификация:
+  - avto_sk (porg-vfdnaolu): 10 ЕПК-кампаний, PASS — «Макс»→1гр «ЕПК макс», «Рет»→1гр «ЕПК рет», «3 гр»→3гр. v501 + Grid.
+  - avtolajt_bu (porg-yzw6hkyk): tp1 1 кампания 3 группы (Купить б/у авто/Кредит/Рассрочка); tp5 4 кампании по фидам 3 группы каждая (Макс/Lul/Все); tp7 12 кампаний, ГОРОД→Краснодар. v501 + Grid подтверждено.
+  - sk_krs (porg-usmc4253): tp1 ожидаем 2 группы (Краснодарский край, Товары — марка модель) + 8 tp7 — прогон 2026-07-17.
+- Статус: ✅ подтверждено avto_sk + avtolajt_bu + sk_krs (2026-07-17).
+- НЕ помогло ранее: только bypass для `only_gks` (первая попытка) — не помогал для tp1 (only_gks=None → `not None=True` → всё равно return "пак недоступен").
+
+### HARDCODED_CITY_IN_SLEPOK_NAMES — город аккаунта-донора запечён в именах позиций слепка (2026-07-16)
+- Симптом: слепок `avtolajt_bu` tp7 нёс позицию «ТК · Краснодар» → при создании РК на аккаунте ЛЮБОГО другого города имя кампании всё равно содержало «Краснодар» (город донора, с которого снят слепок).
+- Где: tp7, `slepki_structure.json` (avtolajt_bu / «С пробегом» / tp7) + `create_set_plan.py:_emit_struct`. Имя tp6/7 строится `_build_name(cat=g["name"])`, где `g["name"]` = `f"{gname} - {label}"` из `_slepok_struct_groups` (`create_set_context.py:223-226`). `camp_names` на создание tp6/7 НЕ влияет (`structure_to_campaigns` — только tp1–tp5).
+- Root-cause: структура слепка — шаблон, но имена позиций хранили конкретный город донора; параметризации города не было.
+- Решение (2026-07-16, direct_fixer): (1) структура → токен `ГОРОД` (`group.name` «ТК · ГОРОД», `item.t` «ТК - Общая - Автотаргетинг - ГОРОД», `camp_names[0]` «ТК | ГОРОД [tk_kras_zqf]»; `item.camps` = исторический архив, НЕ тронут). (2) `create_set_plan.py`: константа `_CITY_PLACEHOLDER = "ГОРОД"` + подстановка города аккаунта в `name/group/label` в `_emit_struct` — СТРОГО ПОСЛЕ фильтра `sel_pos` (пользователь выбирает позицию по шаблонному имени). Гарды: пустой `city` → НЕ заменять (иначе «ТК · » без города) + warning в план; мультигород («Краснодар, Ростов») → `city.split(",")[0].strip()`. Токен `ГОРОД` уникален — в структуре 0 других вхождений → правка де-факто scoped на avtolajt_bu.
+- Статус: 🟡 ждёт прогона (py_compile OK; офлайн-симуляция `_slepok_struct_groups`: city=Краснодар → имя байт-в-байт как до правки, другой город → его город, «ТК · Бренд»/«ТК · Регионы» не тронуты). Live-создание НЕ гонялось.
+- НЕ помогло ранее: — (первая параметризация города в именах позиций).
+- Известный эффект: UI «Структура слепков»/экспорт для tp6/7 берёт `item.t` как есть (`routes_slepki_edit.py:250`) → в превью видно шаблонное «ГОРОД» (в план/создание уходит реальный город). Подстановку в UI-превью решаем отдельно.
+
+### TONE_OF_VOICE_MISSING_AGENTS — 4 слепка без agent-профиля → generic-контент (2026-07-16)
+- Симптом: `get_agent('piterkina')`, `get_agent('avto_sk')`, `get_agent('avtolajt_bu')`, `get_agent('sk_krs')` возвращали None → генерация падала на generic-промпт без фирменного голоса → тон-судья давал <50.
+- Где: `ai_agents.py` — AGENTS не содержал этих 4 ключей. CROSS_SIGNATURE также отсутствовал для 6 стартовых слепков (salamahin/gordeeva/zubakin/chepelev/tumashenko/kuderko).
+- Root-cause: слепки добавлены в структуру (slepki_master) позже первичного разворота AGENTS.
+- Решение (2026-07-16, direct_copywriter, task #43):
+  1. Добавлены 4 AGENTS: piterkina/avtolajt_bu/avto_sk/sk_krs (name/tagline/site_fit/promo/system).
+  2. Добавлены 4 AGENT_ADS: piterkina (10/5/4), avtolajt_bu (10/3/4), avto_sk (0/1/0 — фид), sk_krs (0/1/4 — фид).
+  3. Добавлены 10 CROSS_SIGNATURE: 6 старых без сигнатуры + 4 новых. Итого 15 ключей.
+  4. `build_titles_messages` + `build_campaign_messages`: добавлена инструкция «≥2 фирменных фразы».
+- Чинит ли уже созданные РК: НЕТ. Только будущие прогоны.
+- Статус: 🟡 задеплоено 2026-07-16 (md5 f33dc7efbfe1226ea6b84a28a6a81a76 Mac==LXC101). Верификация тон-судьёй (≥50/60) — при следующем прогоне этих слепков.
+
+### OFFLINE_TONE_SCORING_PATH — добавлен оффлайн-путь тон-скоринга без живых кампаний (2026-07-16)
+- Симптом: `check_tone_of_voice.py` умел оценивать голос только по живым кампаниям (читал Grid по campaign_ids). Нельзя было проверить сгенерированный контент до создания РК.
+- Где: `tools/check_tone_of_voice.py:score_offline()` (новая функция), `tools/tone_baseline.py` (новый файл-харнесс).
+- Решение (2026-07-16, direct_copywriter):
+  1. `check_tone_of_voice.py` — добавлена `score_offline(slepok, site_type, titles, texts)`: вызывает `build_voice_reference()` + `judge_voice()` напрямую, без чтения кабинета. Возвращает тот же формат `{voice_score, verdict, ...}`.
+  2. CLI extended: `--offline --agent X --site-type Y --content-file file.json` — работает без `job_id`.
+  3. `tools/tone_baseline.py` — новый файл: SLEPOK_SITE_TYPES (20 пар), corpus-mode (AGENT_ADS as sample), generate-mode (OpenRouter gen), per-slepok baseline table. CLI `--mode corpus/generate --slepok X --site-type Y`.
+- Чинит ли уже созданные РК: НЕТ. Инструмент превентивный — для проверки до создания.
+- Статус: 🟡 задеплоено 2026-07-16 (md5 check_tone_of_voice `984007acd73b3a3c7b58aa05674ebfd8` Mac==LXC101; tone_baseline `cd0cb39daeaff093c4deea205f67d3d4`). Baseline scored: все 12 directologist-слепков ≥85/100 corpus-mode. Живой прогон РК — не запускался (creation паузировано).
+
+### SK_KRS_AGENT_ADS_GENERIC_TEXTS — sk_krs 1 generic текст → score 20/100 (2026-07-16)
+- Симптом: `tone_baseline corpus sk_krs/Мультибренд` → voice_score=20. Единственный текст «Продажа новых автомобилей в Краснодаре — купите автомобиль на выгодных условиях!» не содержал ни одной фирменной фразы.
+- Где: `ai_agents.py` `AGENT_ADS["sk_krs"]["texts"]` — 1 текст, добавленный в task #43 как placeholder.
+- Root-cause: при добавлении sk_krs (task #43) в AGENT_ADS texts вставлен generic без фирменных УТП; фид-слепок не генерирует тексты через LLM, тон-судья видит только корпус.
+- Решение v1 (2026-07-16, direct_copywriter, task #43): промо-тексты из CROSS_SIGNATURE (Trade-In/Одобрение/СК Авто). score 20→100 corpus. DATA GAP — нет реального кабинета.
+- Решение v2 (2026-07-16, direct_copywriter): заменены РЕАЛЬНЫМИ текстами из кабинета ТК №115016900
+  (скрин ТК 6). Правки перед заливкой:
+  1. `AGENT_ADS["sk_krs"]["titles"]`: [] → 5 реальных заголовков ТК. «в Краснодаре» → «в СК Авто» (3 из 5).
+  2. `AGENT_ADS["sk_krs"]["texts"]`: «Гарантия качества» → «Заводское качество»; «Гарантия и выгодные цены» → «Выгодные условия и цены» (FORBIDDEN_CLAIM_RE). «Государственная программа» — FORBIDDEN_CONTENT_RE не триггерит, оставлена.
+  3. DATA GAP закрыт: корпус = прямые объявления кабинета.
+- Чинит ли уже созданные РК: НЕТ. Фид-тексты генерируются LLM и подтягивают corpus только через few-shot в промпте.
+- Статус: ✅ задеплоено 2026-07-16 (md5 `664768cf6f7df01d0c38d9cc9da24f01` Mac==LXC101). score 100/100 corpus-mode (5 заголовков + 3 текста). FORBIDDEN: 0/8. Гео-нейтральность: OK.
+- НЕ помогло ранее: — (v2 = финальный фикс).
+
+### STOP_PHRASE_150PCT_TRADEIN_IN_TITLES — «трейд-ин До 150% цены авто» в заголовках Марки/Модели (2026-07-15)
+- Симптом: фраза «трейд-ин До 150% цены авто» появилась в заголовках autotarget-кампаний Марки/Модели (porg-asfbs7qe, slepok kryuchkova, кампании 712819362/381/410/421). Inflated-claim на stop-листе, но просочился в live.
+- Где: `create_set_assets.py:_upgrade_credit_titles` → шаблон поз.6 (brand_real=True): `f"{brand} трейд-ин. До 150% цены авто"`. Цикл НЕ вызывал `_bad_ad_title`. Существующий стоп-регэксп `text_norm.py:355` использовал `[^.]{0,24}` — точка между «трейд-ин» и «150%» рвала совпадение.
+- Root-cause: двойная дыра: (а) hardcoded template содержал inflated-claim; (б) стоп-регэксп не ловил cross-sentence вариант с точкой перед «До 150%».
+- Решение (2026-07-15, `direct_copywriter`):
+  1. `create_set_assets.py:332` — шаблон `f"{brand} трейд-ин. До 150% цены авто"` → `f"{brand} трейд-ин. Оценка онлайн"`.
+  2. `create_set_assets.py:308` — `"Трейд-ин до 150% цены авто. Оценка онлайн"` → `"Трейд-ин выше рынка. Оценка онлайн"`.
+  3. `text_norm.py:_bad_ad_title` — добавлен паттерн `r"(?i)\bдо\s*(?:1[0-9]{2}|[2-9][0-9]{2})\s*%\s*(?:цены|стоимости)\s+авт"` (ловит cross-sentence и LLM-вывод).
+  4. `text_norm.py:_bad_ad_text` — тот же паттерн для текстов.
+  5. `create_set_assets.py:_upgrade_credit_titles` loop — добавлен `_text_norm_bad_title(line)` safety-net на каждый кандидат (шаблон и seq).
+- Чинит ли уже созданные РК: НЕТ. Фикс только для будущих прогонов.
+- Статус: ✅ задеплоено 2026-07-16 (Mutagen + `systemctl restart direct-create direct-create-worker`). Найден доп. bypass (2026-07-16): early-return в `_upgrade_credit_titles:296` возвращал `seq[:cap]` БЕЗ `_text_norm_bad_title` — если AI сгенерировал разнообразный набор (5+ credit-buckets, varied first words, all with digits), `_needs_credit_title_upgrade` → False → skip checks → bad title проходил. Фикс: early-return теперь `[t for t in seq if not _text_norm_bad_title(t)][:cap]`. Также исправлен GENERIC_TITLE_OVERRIDE ниже.
+- НЕ помогло ранее: BRAND_ISOLATED_NOT_INTEGRATED (2026-07-10) изменил форму шаблона (убрал «{brand}.» изолят), но сохранил сам inflated-claim «150% цены авто».
+
+### GENERIC_TITLE_OVERRIDE_BRAND_FIRST — `_needs_credit_title_upgrade` заменяет кастомный голос слепка шаблонами («Слепок Крючкова»/score 0/100) (2026-07-16)
+- Симптом: live-заголовки кампаний kryuchkova Монобренд — «BAIC U5 Plus в Новосибирске. Кредит и первый взнос 0 ₽» (template f"{anchor}. Кредит и первый взнос 0 ₽") вместо kryuchkova-голоса («распродаём склад», «выгода до 45%», «2 платежа за наш счёт»). UTP-судья: score 0/100 (generic).
+- Где: `create_set_assets.py:_needs_credit_title_upgrade:288` — `same_prefix = max(first_words.count(w) …)`. Для brand-first кампаний все 7 заголовков начинаются с марки («BAIC», «Chery» …) → same_prefix ≥ 5 → функция возвращает True → `_upgrade_credit_titles` ЗАМЕНЯЕТ весь AI-контент generic-шаблонами.
+- Root-cause: ТРИ ветки `_needs_credit_title_upgrade` ложно срабатывали: (а) `same_prefix >= 4` — для brand-first ожидаемо; (б) `missing_numbers > 0` — kryuchkova органично пишет без цифр («Распродаём склад», «Срочно!»); (в) `len(buckets - {"other"}) < 5` — urgency/склад-фразы маппятся в "other" (это ГОЛОС, а не generic-признак).
+- Решение v2 (2026-07-16, `direct_copywriter`): при обнаружении `_brand_fw` (бренд-слово 4+ позиций, не generic-авт/кредит-слово) — вся ветка `if _brand_fw` возвращает только `same_prefix_nb >= 4` (НЕ-бренд первые слова); numeric/bucket-проверки полностью пропускаются (они валидны только для не-brand-first контента). Не-brand-first путь = оригинальные три условия (regression guard). md5 = `e58c4470b51e402a5589cc6b5072e336`.
+- Чинит ли уже созданные РК: НЕТ (только будущие прогоны).
+- DATA GAP (не код, нужна slepki_master): `kryuchkova.ads.titles` пуст в AGENTS → few-shot = «(адаптируй свой тон)». Дозаполнить `AGENTS["kryuchkova"]["ads"]["titles"]` — зона `direct_slepki_master`.
+- Статус: ✅ py_compile OK; repro v2 все OK: kryuchkova brand-first → `False`/голос сохранён; regression guard non-brand generic → `True`; stop-phrase → закрыт; legit до45%/до90% → passes. Задеплоено 2026-07-16 08:43 (+05). md5 Mac==LXC101.
+- Остаточный edge + фикс v3 (2026-07-16, `direct_fixer`, задача #42): brand-first путь возвращал только `same_prefix_nb>=4` над НЕ-бренд первыми словами → если LLM выдавал N≥7 ИДЕНТИЧНЫХ brand-first заголовков («BAIC. Кредит. Условия»×7), `non_brand_fw` пуст → `same_prefix_nb=0` → вырожденный набор проскакивал как «голос» (не чинился). Фикс: dedup-guard ВНУТРИ brand-first ветки — `distinct_titles = len({t.strip().lower() for t in seq}); if distinct_titles < 3: return True`. Порог <3 безопасен: brand-first требует слово 4+ раз → seq ≥4 заголовков, разнообразный distinct-голос (≥3) остаётся False. bucket/numeric ветки НЕ возвращены (интенционально убраны). md5 Mac==LXC101 `ea3515a8ba0a117d98be27d03a206745`. Задеплоено (restart direct-create+worker, оба active).
+- НЕ помогло ранее: — (первая правка остаточного edge; v2-решение выше корректно, но оставляло дыру для полностью идентичного brand-first вывода).
+- Repro (задача #42, факт): CASE1 7×«BAIC. Кредит. Условия» → `True` (было `False`) ✓; CASE2 7 distinct BAIC-голос → `False`/сохранён ✓; CASE3 generic non-brand dup → `True` ✓; stop-phrase gate на distinct brand-first: needs=`False`, но early-return дропает «До 150% цены авто» (6 из 7 kept) ✓.
+
+### UTP_AS_BRAND_BROKEN_TEXT_BODY — тавтологичный текст «Кредит на Первый взнос 0 ₽. Первый взнос 0 ₽. КАСКО…» (2026-07-15)
+- Симптом: в теле объявления появился сломанный текст: «Кредит на Первый взнос 0 ₽. Первый взнос 0 ₽. КАСКО на 1 год…» — первое предложение неграмматично + тавтология.
+- Где: `create_set_assets.py:_upgrade_credit_texts` (строки 363-401) + `_credit_title_anchor` (строка 190). Если первый текст в `seq` начинается с УТП-фразы (напр. «Первый взнос 0 ₽. …»), то `_credit_title_anchor` извлекает «Первый взнос 0 ₽» как `brand`. Тогда шаблон `f"Кредит на {brand}. Первый взнос 0 ₽. КАСКО…"` → «Кредит на Первый взнос 0 ₽. Первый взнос 0 ₽. КАСКО…».
+- Root-cause: `_credit_title_anchor` берёт первое предложение первого элемента seq и трактует его как «brand/anchor». Проверка `brand_low.startswith("авто")` не покрывает УТП-фразы с цифрами и словами «взнос»/«платёж».
+- Решение (2026-07-15, `direct_copywriter`):
+  1. `create_set_assets.py` — добавлен `_UTP_ANCHOR_RE = re.compile(r"(?i)\d|взнос|платёж|платеж|одобрени|выгода|каско|скидк")`. В `_upgrade_credit_texts`: если `brand` соответствует паттерну → `brand_is_utp=True` → force non-brand ветку шаблонов.
+  2. Добавлен `_has_dup_clause(text)` — helper, проверяет повторяющиеся предложения (split по `. !/? + пробел`). В обоих циклах `_upgrade_credit_texts` добавлен `if _has_dup_clause(line): continue`.
+  3. Текстовый шаблон поз.3 (brand) «Трейд-ин до 150% цены авто» → «Трейд-ин выше рынка» (заодно).
+- Чинит ли уже созданные РК: НЕТ.
+- Статус: ✅ задеплоено 2026-07-16 (Mutagen + restart). md5 Mac==LXC101.
+
+### M3_SYNC_WIPES_TP67_KEYWORDS_DST_ONLY — собранные ключи tp6/7 зануляются ночным синком (2026-07-15)
+- Симптом: собранные ключи tp7/tp6 пропадают из пака после крон-синка `sync_content_m3.py` (00:00/12:00). Пример: terehov `тк_lada_кс` 310 строк → 0, mtime файла = 04:00 (версия с M3). Массово: у 6+ слепков tp7-ключи обнулились. В UI «Структура слепков» кампании КС показываются как «автотаргетинг, ключей нет».
+- Где: `home/seoadvanced/scripts/sync_content_m3.py` — `_build_dst()` (RAW→DST) + `_rsync_raw()` (pull M3→101). Пак: RAW=`/opt/neuro_content_raw`, DST=`/opt/neuro_content_local` (=NEURO_PACK_MOUNT, читается сервисом).
+- Root-cause: харвест/добор-агенты писали ключи ТОЛЬКО в **DST**, а сборка DST идёт из **RAW** (`_build_dst` копирует RAW→DST по mtime; `_rsync_raw` тянет M3→RAW с --delete). RAW-канон пустой → build перезаписывает непустой DST пустым. C-страховка (`--filter=P *.txt`) защищает от УДАЛЕНИЯ при pull, но НЕ от ПЕРЕЗАПИСИ пустой версией.
+- Решение (2026-07-15): (1) Процедурно — контент tp6/7 писать в **RAW+DST** (и push RAW→M3), не в DST-only. Восстановил из staging `_proposed_pack/` в RAW+DST+M3 (628 файлов; verify terehov `тк_lada_кс`=290 в RAW/DST/M3). (2) Код — **Safeguard D** в `_process_file`: `if ext=="txt" and src_size==0 and dst_size>0: skip` (не затирать непустой текст слепка пустым RAW). Push RAW→M3 даёт `utimensat Permission denied` на КАТАЛОГАХ (mtime папок M3) — не фатально, контент файлов едет (проверено wc -l на M3).
+- Статус: ✅ подтверждено — RAW+DST+M3 непустые, py_compile OK, md5 Mac==LXC101. Safeguard D задеплоен.
+- НЕ помогло ранее: C-страховка (защита *.txt от --delete) НЕ покрывает перезапись пустым — это другой класс.
+
+### TP7_KEYWORDS_ZEROED_BY_COLLAPSE_OVERMERGE — схлопывание tp6/7 рвёт привязку ключей (2026-07-15)
+- Симптом: после collapse tp6/7 КС-кампании показываются как автотаргет (ключей нет), хотя ключи в паке есть.
+- Где: `scratchpad/slepki_harvest_2026-07-14/_collapse_recompute.py` — `apply_rule_A_tp67` / `_tp67_targeting_fingerprint`.
+- Root-cause: RuleA схлопывает tp6/7 по fingerprint (camp_names, autotarget_cats, audiences, targeting_mode) — БЕЗ сверки ключевых слов. Две КС-кампании с РАЗНЫМИ ключами (Lada Granta vs Lada Vesta) дают одинаковый fingerprint → сливаются в синтетич бренд-gk (`mk___lada`), который НЕ совпадает с пак-файлами моделей → ключи повисают. terehov tp6 478→233, 262 синтетич gk.
+- Решение (2026-07-15): откатил tp6/7 к pre-collapse из `.bak.safecollapse_*`. RuleA нельзя применять к КС-кампаниям без включения keyword-fp в fingerprint. Схлопывать безопасно только чистый автотаргет (нет ключей/аудиторий).
+- Статус: ✅ откачено, привязка ключей восстановлена (gk = tp6/7 оригинальные, совпадают с пак-файлами).
+
 ### TP7_CATALOG_MARK_FILTER_ZEROED_NONBRAND — небрендовая товарка получала mark-фильтр → 0 страниц (2026-07-14)
 - Симптом: tp7-товарка «Общие запросы» (ct0014, без марки) на каталог-фиде получала `listings_feed_filters` = collectionId CONTAINS[mark_*] → 0 страниц каталога.
 - Где: `create_set_master_product.py` ветка `elif is_product and it_feed:` (~646). Небрендовая группа (нет c_brand) не попадала в модельную ветку (первый `if` требует `c_brand`), шла в elif → `else` → `_tp7_listings_minus_filters` (allow-list mark_*), а её страницы в mark_*-коллекции не входят → пусто.
@@ -2414,113 +2616,21 @@ Root-cause: `_rsya_texts()` не имела dmp-ветки совсем. Выз�
 
 ---
 
-## Решённые ранее (кратко, для поиска по сигнатуре)
-
-| Сигнатура | Root-cause | Решение | Статус |
-|---|---|---|---|
-| `DUPLICATE_SITELINK_DESCS` | одинаковые descriptions сайтлинков | `campaign.py::_norm_sitelinks` | ✅ |
-| `IMAGE_NOT_FOUND` | битые/отсутствующие картинки M3 | фикс 2026-07-03 + live добивание | ✅ |
-| `FEED_NOT_EXIST` | фид не привязан/удалён | `_first_url_feed` + пофидовый feed_map | ✅ |
-| UAC 400 на sitelinks | длины/формат ссылок | `_norm_sitelinks` | ✅ |
-| Ложный `UAC_PRODUCT_MODEL_FILTER_MISSING` | требовали модельный фильтр для ct-«Общее» | фильтр только для сегмента «Модели» | ✅ |
-| Ложный `SITELINK_MISSING` на non-unified | пустой payload у non-unified кампаний | не флагать non-unified | ✅ |
-| Пустые черновики копились | partial-создания | `_sweep_empty_drafts` | ✅ |
-| Дубли джобов при двойном сабмите | TOCTOU в эндпоинте | атомарный дедуп в `_job_new` | ✅ |
-| Дубли tp6/tp7 при доставке остатка | UAC переименовывает live-имена, RESUME-SKIP не матчил | доставка только реально отсутствующих позиций (сверка по кабинету) | ✅ |
-| NULL href сайтлинков от LLM | Grid отбрасывал ссылки без href | backfill href + уникальный #якорь | ✅ |
 
 ---
 
-## Ошибки последнего прогона (2026-07-06, 11:49–12:59 UTC, 5 аккаунтов) — разбор
+## Решённые ранее и история прогонов → [ERRORS_JOURNAL_ARCHIVE.md](ERRORS_JOURNAL_ARCHIVE.md)
 
-Прогон: porg-7bqj56f4 (10/14), porg-ozge4ntu (18/21), porg-asfbs7qe (cancelled 1/21),
-porg-psm5h7q6 (8/14), porg-lzjk6p5m (cancelled 8/211). Добивки df7f70e7605f (0/3) и
-d342e768ae87 (0/1) провалились полностью; f64fc17a3ae5 (7 tp5) зависла в `claimed`.
+Компактная таблица ✅-закрытых сигнатур (`DUPLICATE_SITELINK_DESCS`, `IMAGE_NOT_FOUND`,
+`FEED_NOT_EXIST`, `UAC_400_sitelinks`, ложный `UAC_PRODUCT_MODEL_FILTER_MISSING`,
+ложный `SITELINK_MISSING`, пустые черновики, дубли джобов/tp6-tp7) — там же.
 
-### A. MUST_NOT_CONTAIN_DUPLICATED_ELEMENTS — tp7 товарка не создавалась (×7, 3 акк.)
-- Симптом: `[create] HTTP 400 … feedFilters[0].conditions … MUST_NOT_CONTAIN_DUPLICATED_ELEMENTS`.
-- Root-cause: регрессия фичи «минус-модели» (2026-07-06): `_minus_marks_uac_conditions` генерил ПО УСЛОВИЮ НА ЗНАЧЕНИЕ → 8 марок + 78 моделей = 86 однотипных условий; UAC счёл дублями (в т.ч. J7 у jac и jaecoo — значения сравниваются case-insensitive).
-- Решение (2026-07-06): ОДНО условие на поле со всеми значениями массивом + case-insensitive дедуп значений (`_minus_values_ci`), `create_set_feeds.py::_minus_marks_uac_conditions`. Семантика подтверждена докой (yard.yandex.ru filtry-v-fidah: значения внутри условия = ИЛИ; до 22 условий через И).
-- Статус: ✅ подтверждено прогонами 2026-07-06/07 — товарки создаются (psm 712236037/712236040 и далее).
+Разбор прогона **2026-07-06** (A–K sub-записи):
+`A:✅ MUST_NOT_CONTAIN_DUPLICATED_ELEMENTS` · `B:✅ INVALID_COLLECTION_SIZE` · `C:✅ tp5 без ShoppingAd` ·
+`D:✅ AddUnifiedAdGroups CAMPAIGN_NOT_FOUND` · `E:🟡 NO_BRAND_SEGMENTS_AVAILABLE` ·
+`F:✅ job stuck in claimed` (НЕ помогло: первый watchdog-вариант) ·
+`G:🟡 приоритет доделки` · `H:бэклог updateListingAds UNAVAILABLE_FIELD` ·
+`I:✅ ложный GENERIC_FALLBACK_GROUP` (НЕ помогло: single-source groups_for_edit) ·
+`J:✅ Grid finalize startDate КАРУСЕЛЬ` (НЕ помогло: fix только read-builders; **HAR-шаблоны с датами = бомба** — вынесено в AGENTS.md) ·
+`K:🟡 INTERRUPTED_JOB_POSITIONS_LOST`
 
-### B. INVALID_COLLECTION_SIZE maxSize:30 — листинг tp1/tp5 без минус-фильтра (warnings)
-- Симптом: `updateListingAds(feed-filter): INVALID_COLLECTION_SIZE {maxSize:30}` → фильтр отброшен ЦЕЛИКОМ → показы по нежелательным маркам (кампания создавалась, но без минусов).
-- Root-cause: тот же — 86 условий > лимита 30 у Grid.
-- Решение: то же схлопывание, `_minus_marks_grid_conditions` → ≤2 условия. ⚠️ Прежний комментарий-канон «одно условие на марку, иначе другая семантика» (ревью 03.07) — ОШИБКА, исправлен в campaign_spec_audit.py.
-- Статус: ✅ подтверждено 2026-07-07 — минус-условия схлопнуты, ошибок лимита в прогонах нет.
-
-### C. «tp5 не дозаполнена: без ShoppingAd» → кампания удалена (×8, 3 акк.)
-- Root-cause: `_build_tp1_from_pack` не вернул shopping_ad_ids (гипотеза: пустой M3-пак/сбой) → гейт `create_set_feed_builders.py:546` удаляет partial-кампанию.
-- Статус: ✅ root-cause = Grid replication lag; ретраи почанково + defer вместо потери; главный источник (startDate шаблона) устранён — см. запись J.
-
-### D. AddUnifiedAdGroups: CAMPAIGN_NOT_FOUND (×4)
-- Root-cause: Grid не видит кампанию (replication lag после создания токеном ИЛИ уже удалена гейтом C). `grid_create.py:180`.
-- Статус: ✅ ретрай ×3 при полном отказе батча (без дублей) — в прогонах 07.07 ошибка не появлялась.
-
-### E. NO_BRAND_SEGMENTS_AVAILABLE в добивках + деферред НЕ создавался (×4)
-- Симптом: guardrail корректно отказал по куке, но обещанная «докрутка токеном» НЕ планировалась — `direct_deferred_creates` пуст, tp5-сегменты терялись МОЛЧА.
-- Root-cause: условие `if st_token and …` — в добивочном контексте st_token пуст; плюс `_deferred_save` глотал исключения (`except: return None` без лога).
-- Решение (2026-07-06): убрано требование st_token (resume-демон сам резолвит токен через `_token_for_login`), `_def_body.pop("via_cookie")` чтобы резюм не форсил куку опять, явные маркеры «⚠️ деферред НЕ создан (причина)» в error, лог в `_deferred_save`. `create_set_gallery.py` + `blueprint.py`.
-- Статус: 🟡 ждёт рестарта + прогона.
-
-### F. Джоба зависла в `claimed` навсегда (f64fc17a3ae5, добивка Щербаковой 7 tp5)
-- Root-cause (ИСТИННЫЙ, найден живой репродукцией после первого рестарта): стартовый загрузчик
-  истории (blueprint.py ~716) поднимает из БД ВСЕ незавершённые джобы в `_CREATE_JOBS` как
-  записи-карточки БЕЗ очереди → гейт адопта `if jid in _CREATE_JOBS: return` молча пропускал
-  постановку → джоба вечно `claimed`. Воспроизводилось при КАЖДОМ рестарте воркера с queued
-  web-джобой в БД.
-- Решение (2026-07-06): гейт адопта проверяет РЕАЛЬНОЕ участие (`jid in _CREATE_QUEUE` или
-  `status=='running'`), стале-запись перезаписывается и ставится в очередь; watchdog
-  `_worker_reclaim_stuck_claimed()` (раз в 60с: claimed >5 мин и не в работе → назад в queued);
-  лог ошибок адопта вместо `except: pass`.
-- Статус: ✅ подтверждено живьём 2026-07-06 18:5x: до фикса джоба дважды зависла в claimed
-  (в т.ч. после первого рестарта), после фикса — ушла в running.
-- НЕ помогло ранее: первый вариант watchdog'а с проверкой «нет в _CREATE_JOBS» — не срабатывал,
-  т.к. загрузчик истории кладёт джобу в _CREATE_JOBS (та же слепая зона, что у гейта адопта).
-
-### G. Приоритет добивки — дыры (задача Семёна «добивка сразу, не в конец»)
-- Было: приоритет только у деферред-резюма in-memory; `_queue_recreate_repair_job` (пересоздание) и `_requeue_missing_positions_once` (доставка остатка, идёт через БД) вставали В КОНЕЦ.
-- Решение (2026-07-06): `priority=True` в recreate; сквозной флаг `body['_priority']` через БД-путь (`_job_new_web`), клейм воркера `ORDER BY _priority DESC, created_at`, адопт — в начало in-memory очереди. `blueprint.py`, `create_set_repairing.py`.
-- Статус: 🟡 ждёт рестарта.
-
-### I. Ложный GENERIC_FALLBACK_GROUP → авто-ремонт УДАЛЯЛ полноценные tp5 (e2e 2026-07-06 вечер)
-- Симптом: чистый прогон 14/14 без ошибок, но 5 живых tp5 (35 групп/3609 ключей каждая!) исчезли — их снёс новый fix_generic_fallback_group и переочередил токеном.
-- Root-cause: аудит читает группы через `groups_for_edit` — **edit-view с лагом** (тот же корень, что ложный NO_KEYWORDS_LIVE из журнала): сразу после создания видна 1 (генерик) группа → детектор бьёт ложно.
-- Решение (2026-07-06): жёсткий guard в фиксере — перед удалением проверять ЖИВЫЕ ключи через `_show_condition_kw_counts` (showConditions, не edit-view); ключи есть → НЕ пустышка, skip. `campaign_spec_audit.py` (блок 2b).
-- Статус: ✅ подтверждено пересозданием 5 tp5 после фикса (см. STATE). Удалённые tp5 вернулись деферредами.
-- НЕ помогло ранее: детект по одному источнику groups_for_edit — любой детектор «пустоты» обязан перепроверяться по showConditions.
-
-### J. Grid finalize: `DateDefectIds.MUST_BE_GREATER_THAN_OR_EQUAL_TO_MIN` (startDate) — КАРУСЕЛЬ tp5
-- Симптом: `grid_warn: Grid finalize… campaignUpdateItems[0].startDate` — места показа/автотаргет/ассеты tp5 НЕ выставлялись → верификатор ставил `WRONG_AUTOTARGET`+`GRID_FINALIZE_WARN` → авто-recreate СНОСИЛ свежесозданные tp5 → пересоздание по куке → NO_BRAND_SEGMENTS → деферред на ночь. Карусель «создали→снесли→ночью заново».
-- Root-cause (ИСТИННЫЙ, 3-я попытка): в `grid_uc_template.json` ЗАХАРДКОЖЕН `startDate: 2026-06-21` (дата съёма HAR-шаблона). До 21.06 значение было ≥ сегодня и валидация проходила; с 22.06 — каждый full-finalize отклонялся. Первые две гипотезы (лаг реплики → пустой startDate в `_narrow_campaign_base` и `_unified_campaign_update_from_edit_row`) — реальные, но ВТОРИЧНЫЕ точки; главный путь — `finalize()` из шаблона.
-- Решение (2026-07-06): `finalize()` всегда ставит `uc["startDate"] = сегодня по МСК`; в двух builder-ах — фолбэк на сегодня (у unified — только для DRAFT, прошлая дата запущенной кампании легитимна).
-- Статус: ✅ подтверждено контролями 2026-07-07: финализация проходит, WRONG_AUTOTARGET-карусель остановлена (58d0/e1027: 0 ошибок).
-- НЕ помогло ранее: чинить только read-builder'ы — шаблонная константа оставалась главным источником. Урок: HAR-шаблоны с датами = бомба замедленного действия; даты выставлять в рантайме.
-
-### K. INTERRUPTED_JOB_POSITIONS_LOST — позиции теряются при рестарте между delete и create_job (2026-07-08)
-- Симптом: после рестарта direct.service между `delete_uac`/`delete_search_draft` и `create_job` в `queue_recreate_repair_job` — удалённые tp5/tp7 не попадали в пересоздание. Примеры: tp5×10+tp7×4 и tp7×2 у двух аккаунтов.
-- Где: `blueprint.py:_jobs_db_recover` → `_bg_sweep` (reconciler не вызывался для interrupted-джоб).
-- Root-cause: `_requeue_missing_positions_once` вызывался ТОЛЬКО в `_run_delayed_content_repair` (строка 1921). При рестарте interrupted-джобы проходили через `_bg_sweep` (только `_sweep_empty_drafts`), reconciler никогда не вызывался.
-- Решение (2026-07-08): `blueprint.py:_jobs_db_recover` — в `_bg_sweep` добавлен вызов `_requeue_missing_positions_once` для каждой прерванной джобы (строки 757-797). После сноса пустышек (sweep) + 5с пауза → reconciler сверяет план vs. живой кабинет и ставит доставку только реально пропавших позиций. Три гейта внутри reconciler: (1) `_requeue_of` — без внучек, (2) `auto_requeue_missing` — без дублей на повторных рестартах, (3) `_job_db_active_by_login` — не конкурирует с активной джобой.
-- Статус: 🟡 фикс задеплоен через Mutagen, ждёт живого прогона (рестарт сервиса НЕ выполнен, идёт живое восстановление).
-- НЕ помогло ранее: —
-
-### H. `updateListingAds(name-filter): UNAVAILABLE_FIELD` (warnings, низкий приоритет)
-- Root-cause: name-фильтр листинга обращается к полю, недоступному у фида. Кампания создаётся.
-- Статус: 📋 бэклог (не блокирует).
-
-### SLEPOK_SYNTHETIC_STRUCTURE_COLLISION — «все слепки дают одинаковую структуру»
-- Симптом: какой слепок ни выбери — итоговая структура/группы практически одинаковые.
-- Где: `slepki_structure.json` (данные, НЕ код).
-- Root-cause: файл стал СУПЕРСЕТОМ с байт-идентичными секциями `items` у РАЗНЫХ слепков (новые слепки
-  заводили синтетически, копируя общий набор). `_slepok_struct_groups` честно читает `directologists[<slepok>]`,
-  но там одна и та же ветка данных → одинаковая структура. Фолбэка на чужой слепок в коде НЕТ — данные реально дублировались.
-- **DoD-ПРАВИЛО (2026-07-10):** слепок собирается ТОЛЬКО из реального корпуса директолога (харвест его живых
-  аккаунтов вкл. выключенные/удалённые, Grid-перебор кук; для tp6/tp7 UAC — только Grid, v5 не видит).
-  Синтетические заглушки ЗАПРЕЩЕНЫ. Новый слепок — только из реальных выгрузок/аккаунтов, не копипаст суперсета.
-- **Preflight перед деплоем:** `python3 scripts/slepki_preflight.py` — падает (exit 1), если есть
-  cross-slepok коллизии / пустые группы / пустые tp, открытые в targeting_profile.json. Гонять ПЕРЕД мерджем в боевой.
-- Решение (2026-07-10): пересборка 13 слепков из реального корпуса (генератор `scripts/build_slepok_structure.py`),
-  cross-коллизии 6→0, 81 пустая группа удалена. Голос AGENT_ADS 13/13. Коммиты dcf212b + 63229c7.
-- Статус: 🟡 задеплоено, ждёт живого прогона (контент-тест #51 подтвердил различие тона 5/9 чётко).
-- НЕ помогло ранее: —

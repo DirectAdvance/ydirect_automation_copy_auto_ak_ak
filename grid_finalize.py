@@ -477,7 +477,13 @@ class GridClient:
         budget = strategy.get("budget") or {}
         strategy_type = str(strategy.get("strategyType") or "")
         if strategy_type == "OPTIMIZE_CONVERSIONS":
-            strategy_name = "AUTOBUDGET_AVG_CPA"
+            if int(strategy.get("avgCpa") or 0) > 0:
+                strategy_name = "AUTOBUDGET_AVG_CPA"
+            else:
+                # avgCpa=None/0 → стратегия «Максимум конверсий» (WB_MAXIMUM_CONVERSION_RATE в v5).
+                # Grid write-enum для неё — AUTOBUDGET (AUTOBUDGET_AVG_CPA требует ненулевой avgCpa
+                # → CANNOT_BE_NULL). Это round-trip, не смена стратегии. 2026-07-17 porg-jh2si7rh.
+                strategy_name = "AUTOBUDGET"
         elif strategy_type == "OPTIMIZE_CLICKS":
             # ⚠️ Во write-enum Грида НЕТ имени для «Максимум кликов» с недельным бюджетом:
             # AUTOBUDGET означает «Максимум конверсий» и МЕНЯЕТ стратегию кампании
@@ -658,6 +664,19 @@ class GridClient:
             # «Максимум кликов + недельный бюджет»: валидного write-имени нет,
             # полный апдейт сменил бы стратегию — узкие апдейты обязаны пропустить кампанию.
             payload["_unsupported_strategy"] = "Максимум кликов (недельный бюджет)"
+        # «Ручные ставки / Конкуренты» (HIGHEST_POSITION): Grid read возвращает strategyType='DEFAULT',
+        # но write-enum 'DEFAULT' не принимает («No value found for name 'DEFAULT'»).
+        # Узкие апдейты обязаны пропустить — иначе мутация упадёт с enum-ошибкой.
+        # Добавлено 2026-07-17 (проверено зондом porg-mushirne/porg-jh2si7rh).
+        bs_write = payload.get("biddingStategyWithPlatforms") or {}
+        if str(bs_write.get("strategyName") or "") == "DEFAULT":
+            payload["_unsupported_strategy"] = "Ручные ставки (DEFAULT — нет write-enum в Grid)"
+        # «Тёплый спрос» PAY_FOR_CONVERSION_MULTIPLE_GOALS: Grid read возвращает strategyName=
+        # 'MULTIPLE_CPA', но write-enum 'MULTIPLE_CPA' недействителен в Grid
+        # («No value found for name 'MULTIPLE_CPA'» — проверено зондом 712850299, 2026-07-17).
+        # restore_pay_for_conversion_strategy намеренно обходит этот guard (удаляет _unsupported_strategy).
+        if str(bs_write.get("strategyName") or "") == "MULTIPLE_CPA":
+            payload["_unsupported_strategy"] = "Тёплый спрос (MULTIPLE_CPA — нет write-enum в Grid)"
         return payload
 
     @staticmethod
@@ -875,6 +894,42 @@ class GridClient:
                     data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
         return res.get("updatedCampaigns") or []
 
+    def campaigns_edit_rows(self, campaign_ids: list[int]) -> dict[int, dict]:
+        """Сырые строки CampaignsEditData ПО КУКЕ (0 v5-баллов) → ``{cid: row}``.
+
+        Нужен для сверки «настройки источника vs настройки копии» (step_settings_diff): отдаёт
+        кампанию так, как её видит редактор Директа — стратегия, корректировки, временной таргетинг,
+        brandSafety, contextLimit, уведомления и т.д. Многого из этого v5 не показывает вовсе."""
+        ids = []
+        for c in (campaign_ids or []):
+            try:
+                cid = int(c)
+            except (TypeError, ValueError):
+                continue
+            if cid > 0 and cid not in ids:
+                ids.append(cid)
+        if not ids:
+            return {}
+        self._bootstrap_csrf()
+        out: dict[int, dict] = {}
+        for chunk in [ids[i:i + 50] for i in range(0, len(ids), 50)]:
+            inp = {
+                "filter": {"campaignIdIn": [str(cid) for cid in chunk]},
+                "orderBy": [{"field": "ID", "order": "ASC"}],
+                "statRequirements": {"preset": "TODAY"},
+                "limitOffset": {"offset": 0, "limit": len(chunk)},
+            }
+            r = self._post("CampaignsEditData", _CAMPAIGNS_EDIT_DATA_Q,
+                           {"login": self.login, "campaignInput": inp})
+            rows = (((r.json().get("data") or {}).get("client") or {})
+                    .get("campaigns") or {}).get("rowset") or []
+            for row in rows:
+                try:
+                    out[int(row.get("id"))] = row
+                except (TypeError, ValueError):
+                    continue
+        return out
+
     def read_campaign_invariants(self, campaign_ids: list[int]) -> dict[int, dict]:
         """Read campaign-level invariant галочки (blacklist toggles) via CampaignsEditData.
 
@@ -946,6 +1001,78 @@ class GridClient:
                     "library_minus_ids": [str(x) for x in (row.get("libraryMinusKeywordsIds") or [])],
                 }
         return out
+
+    def restore_pay_for_conversion_strategy(self, campaign_id: int, goal_id: int,
+                                              weekly_rub: float,
+                                              avg_cpa_rub: float = 0) -> list:
+        """Восстановить стратегию PAY_FOR_CONVERSION_MULTIPLE_GOALS через Grid updateCampaigns.
+
+        Применяется как постпроцесс копирования: кампания была создана с WB_MAXIMUM_CLICKS (v5
+        не принимает PAY_FOR_CONVERSION_MULTIPLE_GOALS без счётчика+целей), а затем здесь
+        восстанавливается реальная стратегия.
+
+        weekly_rub  — недельный бюджет В РУБЛЯХ (Grid strategyData.sum — рубли, не микро).
+        goal_id     — целевой GoalId Метрики (для payForConversion).
+        avg_cpa_rub — средняя цена конверсии В РУБЛЯХ; обязательна для AUTOBUDGET_AVG_CPA
+                      (Grid возвращает CANNOT_BE_NULL если не передать или передать 0).
+                      Берётся из PriorityGoals.Items[0].Value / 1_000_000 источника.
+
+        ВАЖНО: целенаправленно ОБХОДИТ _narrow_bases — та помечает WB_MAXIMUM_CLICKS как
+        _unsupported_strategy (нет writeable write-имени для «Максимум кликов»). Здесь мы
+        ХОТИМ сменить стратегию → _unsupported_strategy игнорируем. Все прочие ключи удаляем."""
+        payloads = self._read_unified_campaign_update_payloads([campaign_id])
+        base = payloads.get(campaign_id)
+        if not base:
+            raise GridFinalizeError(
+                f"Grid restore-strategy: кампания {campaign_id} не найдена в edit-view")
+        # Убираем internal _-маркеры (в т.ч. _unsupported_strategy) — мы намеренно меняем стратегию
+        base = {k: v for k, v in base.items() if not k.startswith("_")}
+        # Патчим стратегию: MULTIPLE_CPA — Grid-имя для PAY_FOR_CONVERSION_MULTIPLE_GOALS.
+        # Важно: для MULTIPLE_CPA payForConversion=false (оплата за конверсию — свойство
+        # самой стратегии MULTIPLE_CPA, не флаг внутри strategyData).
+        # goalId="0" — цели задаются через meaningfulGoals, не через goalId.
+        # avgCpa для MULTIPLE_CPA не нужен (AUTOBUDGET_AVG_CPA-специфичное поле).
+        bs = base.get("biddingStategyWithPlatforms") or {}
+        if not isinstance(bs, dict):
+            bs = {}
+        sd = bs.get("strategyData") if isinstance(bs.get("strategyData"), dict) else {}
+        sd["payForConversion"] = False
+        sd["goalId"] = "0"
+        sd["sum"] = str(int(weekly_rub))
+        sd["budgetType"] = "WEEKLY"
+        sd.pop("avgCpa", None)           # не нужен для MULTIPLE_CPA
+        sd.setdefault("payForShows", False)
+        sd.setdefault("autoApplyRecommendationOptions", {"budgetIncreasePercent": None})
+        sd.setdefault("isExplorationBudgetValueCustom", None)
+        bs["strategyData"] = sd
+        bs["strategyName"] = "MULTIPLE_CPA"
+        base["biddingStategyWithPlatforms"] = bs
+        # Задаём цели: цель goal_id с CPA = avg_cpa_rub; вторую цель (прочие,
+        # если avg_cpa_rub > 0) добавляем тоже чтобы дать MULTIPLE_CPA > 1 цели.
+        mg = []
+        if goal_id and int(goal_id) > 0:
+            goal_item = {"goalId": str(int(goal_id)), "conversionStrategy": "AVERAGE_CPA",
+                         "isMetrikaSourceOfValue": False}
+            if avg_cpa_rub and avg_cpa_rub > 0:
+                goal_item["value"] = str(int(avg_cpa_rub))
+            mg.append(goal_item)
+        base["meaningfulGoals"] = mg
+        q = ("mutation UpdateCampaigns($input:GdUpdateCampaignsInput!$login:String!){"
+             "updateCampaigns(input:$input){updatedCampaigns{id}"
+             "validationResult{errors{code params path}warnings{code params path}}}"
+             "getClientMutationId(input:{login:$login}){mutationId}}")
+        r = self._post("UpdateCampaigns", q, {
+            "login": self.login,
+            "input": {"campaignUpdateItems": [{"unifiedCampaign": base}]},
+        })
+        data = r.json()
+        res = (data.get("data") or {}).get("updateCampaigns") or {}
+        vr = res.get("validationResult") or {}
+        if data.get("errors") or vr.get("errors"):
+            raise GridFinalizeError(
+                "Grid restore-strategy: " + json.dumps(
+                    data.get("errors") or vr.get("errors"), ensure_ascii=False)[:500])
+        return res.get("updatedCampaigns") or []
 
     def set_campaign_invariants(self, campaign_ids: list[int]) -> list:
         """Идемпотентно переставить кампанийные инварианты-галочки tp1–tp5 (in-place, БЕЗ баллов).
@@ -1853,6 +1980,75 @@ class GridClient:
                     data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
         return res.get("updatedCampaigns") or []
 
+    def set_campaign_organic_and_placement(self, campaign_values: dict) -> dict:
+        """Узкий UpdateCampaigns: только isOrganicSearchEnabled + placementTypes (1:1 из источника).
+
+        Предназначен для копировщика: переносит Grid-only настройки из источника на копию без
+        изменения стратегии и прочих полей. campaign_values = {tgt_cid: {"isOrganicSearchEnabled":
+        bool, "placementTypes": list|None}} — значения берутся 1:1 из источника.
+
+        Кампании с _unsupported_strategy (DEFAULT / OPTIMIZE_CLICKS без лимита) пропускаются —
+        им нет безопасного write-enum → отдаются в skipped. Добавлено 2026-07-17.
+        """
+        ids = []
+        for raw in (campaign_values or {}):
+            try:
+                cid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if cid > 0 and cid not in ids:
+                ids.append(cid)
+        if not ids:
+            return {"updated": [], "skipped": {}, "errors": []}
+        try:
+            payloads = self._read_unified_campaign_update_payloads(ids)
+        except GridFinalizeError as e:
+            return {"updated": [], "skipped": {}, "errors": [str(e)[:300]]}
+        q = ("mutation UpdateCampaigns($input:GdUpdateCampaignsInput!$login:String!){"
+             "updateCampaigns(input:$input){updatedCampaigns{id}"
+             "validationResult{errors{code params path}warnings{code params path}}}"
+             "getClientMutationId(input:{login:$login}){mutationId}}")
+        bases, skipped = self._narrow_bases(payloads, ids, "Grid set-organic-placement")
+        for _cid, _why in skipped.items():
+            print(f"[grid] set-organic-placement: кампания {_cid} пропущена — «{_why}»", flush=True)
+        items = []
+        for cid, base in bases.items():
+            vals = campaign_values.get(cid) or campaign_values.get(str(cid)) or {}
+            is_organic = bool(vals.get("isOrganicSearchEnabled"))
+            pts = vals.get("placementTypes") or []
+            pts_str = [str(p) for p in pts if p]
+            # Кампанейный флаг
+            base["isOrganicSearchEnabled"] = is_organic
+            base["placementTypes"] = pts_str or None
+            # РЕАЛЬНЫЙ контрол — biddingStategyWithPlatforms.platforms.
+            # isOrganicSearchEnabled == platforms.organic,
+            # ADV_GALLERY в placementTypes == platforms.gallery.
+            # Без патча этих платформ мутация эхует целевые значения и ничего не меняет.
+            # Добавлено 2026-07-17 (диагностика: source gallery=F/organic=F, copy gallery=T/organic=T).
+            bs = base.get("biddingStategyWithPlatforms") or {}
+            plats = dict(bs.get("platforms") or {})
+            plats["organic"] = is_organic
+            plats["gallery"] = "ADV_GALLERY" in pts_str
+            bs["platforms"] = plats
+            base["biddingStategyWithPlatforms"] = bs
+            items.append({"unifiedCampaign": base})
+        if not items:
+            return {"updated": [], "skipped": {str(k): v for k, v in skipped.items()}, "errors": []}
+        data = self._post_json_retry("UpdateCampaigns", q, {
+            "login": self.login,
+            "input": {"campaignUpdateItems": items},
+        })
+        res = (data.get("data") or {}).get("updateCampaigns") or {}
+        vr = res.get("validationResult") or {}
+        errors: list[str] = []
+        if data.get("errors") or vr.get("errors"):
+            errors.append("Grid set-organic-placement: " + json.dumps(
+                data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
+        updated_ids = [int(c["id"]) for c in (res.get("updatedCampaigns") or [])
+                       if isinstance(c, dict) and c.get("id")]
+        return {"updated": updated_ids, "skipped": {str(k): v for k, v in skipped.items()},
+                "errors": errors}
+
     # ── Изображения для РСЯ-объявлений (куки-путь, без баллов) ───────────────
 
     def suggest_images(self, campaign_id: int) -> list[str]:
@@ -2018,7 +2214,7 @@ class GridClient:
         # видео». hasButton/button — для детекта и добивки кнопки «Получить скидку».
         q = ("query AdaptiveAdsForUpdate($login:String!,$inp:GdAdsContainerInput!){"
              "client(searchBy:{login:$login}){ads(input:$inp){rowset{id campaignId "
-             "...on GdAdaptiveTextAd{href titles bodies images{imageHash} "
+             "...on GdAdaptiveTextAd{href linkTail titles bodies images{imageHash} "
              "bannerPrice{price priceOld prefix currency} "
              "hasVideo hasButton button{action href} "
              "typedCreatives{creativeId creativeType}}"
@@ -2057,6 +2253,9 @@ class GridClient:
                 out[aid] = {
                     "id": aid,
                     "href": row.get("href") or "",
+                    # отображаемая ссылка: читается как linkTail, пишется как displayHref (хвост, не
+                    # полный URL — проверено live 17.07.2026) → без чтения RMW стирал её full-replace'ом
+                    "displayHref": row.get("linkTail") or "",
                     "titles": list(row.get("titles") or []),
                     "bodies": list(row.get("bodies") or []),
                     "imageHashes": image_hashes,

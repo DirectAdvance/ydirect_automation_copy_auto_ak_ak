@@ -1,0 +1,22 @@
+[Unit]
+Description=SEOAdvanced Direct — Tone-of-Voice watcher (audit generated content voice per done set-job)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scripts/home/seoadvanced
+# Boевой режим (без пометки [TEST]). Проверяет ТОЛЬКО джобы, завершившиеся после старта.
+Environment=TONE_WATCHER_INTERVAL=90
+ExecStart=/root/venv/bin/python3 -m direct.tools.tone_of_voice_watcher
+Restart=always
+RestartSec=15
+
+# ОТВЯЗАН от горячего пути создания РК: только читает БД/кабинеты + шлёт telegram.
+# Падение watcher НЕ влияет на direct-create/worker. Один инстанс достаточно
+# (дедуп через public.direct_tone_checks — гонки безопасны, повторов Семёну нет).
+TimeoutStopSec=30
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

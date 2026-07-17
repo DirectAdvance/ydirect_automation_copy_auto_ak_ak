@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import time                                    # _v5_callout_pool троттлит adextensions.add (стр.687); без импорта — NameError, уточнения молча не привязывались
 
-from .text_norm import _trim_clean
+from .text_norm import _trim_clean, _bad_ad_title as _text_norm_bad_title
 from .text_gen import _brand_first_reorder
 
 _DEPS: dict = {}
@@ -285,6 +285,36 @@ def _needs_credit_title_upgrade(items: list[str]) -> bool:
         return False
     buckets = {_credit_title_bucket(x) for x in seq}
     first_words = [x.split()[0].lower().rstrip(".,!?") for x in seq if x.split()]
+    # Brand-first (DoD §2.1): при брендовых кампаниях все 7 заголовков ОБЯЗАНЫ начинаться с бренда
+    # (напр. «BAIC …»), поэтому same_prefix=5–7 — это НОРМА, а не дефект.
+    # Определяем «бренд-слово»: первое слово, которое встречается 4+ раза И НЕ является
+    # типовым авто/кредит-словом (Авт*, Нов*, Купи*, Кредит, Платеж, Выгода…).
+    _GENERIC_FW_RE = re.compile(
+        r"(?i)^(авт|нов|купит|приобрет|выгод|одобр|кредит|платеж|трейд|каско|зака)")
+    _brand_fw: set[str] = {
+        w for w in set(first_words)
+        if first_words.count(w) >= 4 and not _GENERIC_FW_RE.match(w)
+    }
+    if _brand_fw:
+        # Brand-first slepok content (DoD §2.1): numeric и bucket-diversity — НЕ валидные
+        # сигналы качества для голоса слепка. Кrючкова пишет органично без цифр («Распродаём
+        # склад. Цены снижены», «Срочно! Последние авто по старой цене») и их phrases маппятся
+        # в bucket="other" (не в кредитный). «other»-phrases — это ЕСТЬслепок-голос, НЕ признак
+        # generic-вывода. Единственный разумный guard здесь: если НЕ-бренд первые слова ТОЖЕ
+        # повторяются (напр. «BAIC. Кредит. Условия» × 4 + «BAIC. Кредит. Условия» × 4) —
+        # это действительно generic. Иначе возвращаем False (upgrade НЕ нужен).
+        non_brand_fw = [w for w in first_words if w not in _brand_fw]
+        same_prefix_nb = max((non_brand_fw.count(w) for w in set(non_brand_fw)), default=0) if non_brand_fw else 0
+        # Dedup-guard: даже brand-first голос обязан быть РАЗНООБРАЗНЫМ. Если LLM выдал
+        # почти идентичные brand-first заголовки (напр. 7× «BAIC. Кредит. Условия»),
+        # non_brand_fw пуст → same_prefix_nb=0 → сломанный набор проскочил бы как «голос».
+        # Ловим по числу УНИКАЛЬНЫХ заголовков: <3 distinct = не голос, а вырожденный вывод.
+        # Разнообразный набор distinct-заголовков (≥3) остаётся False → голос сохраняется.
+        distinct_titles = len({t.strip().lower() for t in seq})
+        if distinct_titles < 3:
+            return True
+        return same_prefix_nb >= 4
+    # Non-brand-first: полная проверка (regression-guard для общего AI-вывода)
     same_prefix = max((first_words.count(w) for w in set(first_words)), default=0)
     missing_numbers = sum(1 for x in seq if not re.search(r"\d", x))
     return len(buckets - {"other"}) < 5 or same_prefix >= 4 or missing_numbers > 0
@@ -293,7 +323,9 @@ def _needs_credit_title_upgrade(items: list[str]) -> bool:
 def _upgrade_credit_titles(items: list[str], cap: int = _RA_TITLES_CAP) -> list[str]:
     seq = [str(x or "").strip() for x in (items or []) if str(x or "").strip()]
     if not _needs_credit_title_upgrade(seq):
-        return seq[:cap]
+        # Safety-net: даже в early-return прогоняем каждый через стоп-фильтр —
+        # AI мог сгенерировать «До 150% цены авто» в иначе разнообразном наборе.
+        return [t for t in seq if not _text_norm_bad_title(t)][:cap]
     anchor, brand = _credit_title_anchor(seq)
     brand_low = (brand or "").strip().lower()
     brand_real = bool(brand) and not brand_low.startswith("авто")
@@ -305,7 +337,7 @@ def _upgrade_credit_titles(items: list[str], cap: int = _RA_TITLES_CAP) -> list[
             "Одобрение за 30 минут онлайн. Новые авто",
             "Кредит от 15 банков онлайн. Подбор авто",
             "Выгода до 45% на новые авто. Узнайте условия",
-            "Трейд-ин до 150% цены авто. Оценка онлайн",
+            "Трейд-ин выше рынка. Оценка онлайн",
             "Госпрограмма 2026. Кредит на новые авто",
         ]
     else:
@@ -329,7 +361,7 @@ def _upgrade_credit_titles(items: list[str], cap: int = _RA_TITLES_CAP) -> list[
             f"Купить {brand} в кредит. Одобрение за 30 мин",          # 3: action+brand интегр. [OK]
             f"Новый {brand}. Выгода до 45%",                           # 4: AUTO-CONTEXT, brand интегр. (исп. «{brand}. Новые автомобили…»)
             f"{anchor}. Выгода до 45% при покупке",                   # 5: brand+город интегр. [OK]
-            f"{brand} трейд-ин. До 150% цены авто",                   # 6: brand интегр. (исп. «{brand}. Трейд-ин…»)
+            f"{brand} трейд-ин. Оценка онлайн",                         # 6: brand интегр. (был «До 150% цены авто» — inflated, убран 2026-07-15)
             f"{brand} и КАСКО на 1 год бесплатно",                    # 7: brand интегр., резерв (исп. «{brand}. КАСКО…»)
             f"{brand} в кредит. Кредит от 15 банков",                 # 8: резерв [OK]
             f"{brand} по госпрограмме 2026. Кредит",                  # 9: brand интегр., резерв (исп. «{brand}. Госпрограмма…»)
@@ -350,6 +382,10 @@ def _upgrade_credit_titles(items: list[str], cap: int = _RA_TITLES_CAP) -> list[
             line = _trim_ad_line(_fill(line, _RA_TITLE_MAX - 2, _RA_TITLE_MAX), _RA_TITLE_MAX)
         if not line:
             continue
+        # Safety-net: стоп-фразы «нельзя в live» (трейд-ин+big%, без документов и др.) не пропускаем
+        # даже если они вошли из хардкод-вариантов (защита на случай расхождения шаблонов и стоп-листа).
+        if _text_norm_bad_title(line):
+            continue
         low = line.lower()
         if low in seen:
             continue
@@ -360,27 +396,47 @@ def _upgrade_credit_titles(items: list[str], cap: int = _RA_TITLES_CAP) -> list[
     return out
 
 
+
+# Паттерн для детекции УТП-фразы вместо настоящего бренда в первом предложении текста.
+# «Первый взнос 0 ₽», «Платёж от 9 000 ₽» и т.п. содержат цифры или ключевые УТП-слова.
+# Если _credit_title_anchor вернул такой «brand», шаблон f"Кредит на {brand}. Первый взнос 0 ₽..."
+# приводит к тавтологии («Кредит на Первый взнос 0 ₽. Первый взнос 0 ₽…»). → force non-brand ветку.
+_UTP_ANCHOR_RE = re.compile(r"(?i)\d|взнос|платёж|платеж|одобрени|выгода|каско|скидк")
+
+
+def _has_dup_clause(text: str) -> bool:
+    """True если в тексте есть хотя бы два одинаковых предложения (split по '. ', '! ', '? ')."""
+    parts = [p.strip().lower() for p in re.split(r"[.!?]\s+", text) if p.strip()]
+    return len(parts) != len(set(parts))
+
+
 def _upgrade_credit_texts(items: list[str], cap: int = _RA_TEXTS_CAP) -> list[str]:
     seq = [str(x or "").strip() for x in (items or []) if str(x or "").strip()]
     anchor, brand = _credit_title_anchor(seq or ["Авто в кредит"])
     brand_low = (brand or "").strip().lower()
-    if not brand or brand_low.startswith("авто"):
+    # Если «brand» — это УТП-фраза (содержит цифры / слова взнос/платёж/КАСКО/…), а не марка авто,
+    # использовать non-brand ветку шаблонов (иначе f"Кредит на {brand}. Первый взнос 0 ₽. …" → тавтология).
+    brand_is_utp = _UTP_ANCHOR_RE.search(brand) if brand else False
+    if not brand or brand_low.startswith("авто") or brand_is_utp:
         variants = [
             "Новые авто в кредит. Первый взнос 0 ₽. КАСКО на 1 год. Оставьте заявку.",
             "Платеж от 9 000 ₽/мес. Одобрение за 30 минут. Подберем условия от 15 банков.",
-            "Выгода до 45% на новые авто. Трейд-ин до 150% цены автомобиля. Узнайте условия.",
+            "Выгода до 45% на новые авто. Трейд-ин выше рынка. Узнайте условия.",
         ]
     else:
         variants = [
             f"Кредит на {brand}. Первый взнос 0 ₽. КАСКО на 1 год. Заявка онлайн.",
             f"{anchor}. Платеж от 9 000 ₽/мес. Одобрение за 30 минут. Узнайте условия.",
-            f"{brand} в кредит от 15 банков. Трейд-ин до 150% цены авто. Выберите авто.",
+            f"{brand} в кредит от 15 банков. Трейд-ин выше рынка. Выберите авто.",
         ]
     out: list[str] = []
     seen: set[str] = set()
     for cand in seq + variants:
         line = _finalize_text_line(cand, _RA_TEXT_MAX)
         if not line:
+            continue
+        # Дедупликация предложений: «Кредит на Первый взнос 0 ₽. Первый взнос 0 ₽…» → skip
+        if _has_dup_clause(line):
             continue
         low = line.lower()
         if low in seen:
@@ -392,8 +448,12 @@ def _upgrade_credit_texts(items: list[str], cap: int = _RA_TEXTS_CAP) -> list[st
     if len(out) < cap:
         for cand in variants:
             line = _finalize_text_line(cand, _RA_TEXT_MAX)
+            if not line:
+                continue
+            if _has_dup_clause(line):
+                continue
             low = line.lower()
-            if line and low not in seen:
+            if low not in seen:
                 seen.add(low)
                 out.append(line)
             if len(out) >= cap:
