@@ -28,7 +28,7 @@ import sys
 from datetime import timedelta
 from pathlib import Path
 
-from flask import Blueprint, Flask, redirect, session
+from flask import Blueprint, Flask, redirect, render_template, session
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -105,6 +105,14 @@ def create_app() -> Flask:
         template_folder=str(ROOT / "templates"),
     )
     access = _service_required_any("work", "work:direct")
+
+    @bp.route("/automation/accounts")
+    @access
+    def accounts_page():
+        """Изолированная страница дашбордов «Обзор» + «Статистика» (свой процесс
+        direct-accounts.service). Весь JS — в /static/direct/accounts_ui.js; тяжёлые
+        дашборд-эндпоинты nginx уводит сюда (:5024), остальные AJAX идут на :5020."""
+        return render_template("direct/accounts.html", is_admin=bool(session.get("is_admin")))
 
     register_overview_routes(
         bp,
