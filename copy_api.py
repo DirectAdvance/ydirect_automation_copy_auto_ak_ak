@@ -15,7 +15,10 @@ Blueprint: copy_api_bp, url_prefix /api/v1/copy
 """
 from __future__ import annotations
 
+import hmac
+import ipaddress
 import sys
+import urllib.parse
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -77,7 +80,7 @@ def _copy_api_key_ok() -> bool:
         return False
     if not expected:
         return False
-    return request.headers.get("X-API-Key", "") == expected
+    return hmac.compare_digest(request.headers.get("X-API-Key", ""), expected)
 
 
 # ─── Вспомогательные утилиты ─────────────────────────────────────────────────
@@ -86,6 +89,27 @@ def _copy_api_parse_ids(body: dict) -> list:
     """Разбирает campaign_ids из тела запроса; пропускает нечисловые значения."""
     raw = body.get("campaign_ids") or []
     return [int(x) for x in raw if str(x).isdigit()]
+
+
+def _is_ssrf_url(url: str) -> bool:
+    """True если URL указывает на localhost или приватную/link-local сеть (SSRF-риск).
+
+    Проверяет только literal IP-адреса в hostname и известные опасные имена —
+    DNS-резолвинг намеренно не делается (TOCTOU).
+    """
+    try:
+        host = urllib.parse.urlparse(url).hostname or ""
+    except Exception:
+        return True  # fail-safe: при ошибке разбора — блокировать
+    if not host:
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+        return addr.is_private or addr.is_loopback or addr.is_link_local
+    except ValueError:
+        # не IP-адрес — проверяем имена
+        h = host.lower()
+        return h == "localhost" or h.endswith(".local")
 
 
 # ─── Регистрация роутов (DI через параметры, по образцу routes_copy.py) ───────
@@ -234,6 +258,11 @@ def register_copy_api(
             return _copy_api_add_cors(
                 jsonify({"error": "target_feed_url: абсолютный URL или путь от /"}), origin
             ), 400
+        if target_feed_url and target_feed_url.startswith(("http://", "https://")):
+            if _is_ssrf_url(target_feed_url):
+                return _copy_api_add_cors(
+                    jsonify({"error": "target_feed_url: URL на приватные адреса запрещён"}), origin
+                ), 400
 
         # Проверка владельца счётчика (если DI подключён)
         if counter_foreign_owner is not None:
@@ -248,7 +277,14 @@ def register_copy_api(
                 ), 400
 
         # Тело джобы по образцу _copy_start_impl из routes_copy.py
-        job_body = dict(body)
+        # Явный allowlist: только известные поля, произвольные ключи клиента не пробрасываются.
+        _JOB_BODY_ALLOWLIST = {
+            "source_login", "target_login", "campaign_ids", "target_domain",
+            "target_city", "target_region", "counter_id", "goal_id",
+            "feed_map", "target_cleanup", "mode", "image_mode", "image_hashes",
+            "geo_mode", "geo_region_ids",
+        }
+        job_body = {k: v for k, v in body.items() if k in _JOB_BODY_ALLOWLIST}
         job_body["mode"] = mode              # из валидации роута, не из payload клиента
         job_body["_kind"] = "copy_campaigns"
         job_body["login"] = target_login
@@ -262,7 +298,6 @@ def register_copy_api(
         job_body["target_feed_url"] = target_feed_url
         job_body["target_cleanup"] = target_cleanup
         job_body["campaign_ids"] = campaign_ids
-        # feed_map, image_mode, image_hashes и прочие опциональные поля — as-is из body
 
         resolved_ag = resolve_agency_hint(target_login, (body.get("agency") or "").strip())
         if resolved_ag:
@@ -380,19 +415,16 @@ def register_copy_api(
 
         if api_campaigns_func is None:
             return _copy_api_add_cors(
-                jsonify({
-                    "error": "api_campaigns_func не подключена",
-                    "TODO": "передай api_campaigns_func=accounts._campaigns_response в register_copy_api",
-                }),
+                jsonify({"error": "api_campaigns_func не подключена"}),
                 origin,
             ), 503
 
         # _campaigns_response читает request.args["login"] изнутри (Flask-aware)
         try:
             raw = api_campaigns_func()
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             return _copy_api_add_cors(
-                jsonify({"error": f"ошибка получения кампаний: {str(exc)[:200]}"}), origin
+                jsonify({"error": "ошибка получения кампаний"}), origin
             ), 502
 
         if hasattr(raw, "headers"):
