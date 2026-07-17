@@ -45,6 +45,7 @@ from direct import copy_engine  # noqa: E402
 from direct import queue_server as queue  # noqa: E402
 from direct import yandex_gateway as yandex  # noqa: E402
 from direct.routes_copy import register_copy_routes  # noqa: E402
+from direct.copy_api import copy_api_bp, register_copy_api  # noqa: E402
 
 
 def _inject_nav_context():
@@ -132,6 +133,25 @@ def create_app() -> Flask:
         images_upload_func=copy_engine._copy_images_upload,
         target_campaigns_info_func=copy_engine._copy_target_campaigns_info,  # кол-во кампаний на цели
     )
+    # Программный API /api/v1/copy для внешних клиентов (auth по X-API-Key, fail-closed).
+    register_copy_api(
+        copy_api_bp,
+        ensure_create_worker=queue._ensure_copy_worker,
+        job_new=queue._job_new,
+        copy_job_upsert=copy_engine._copy_job_upsert,
+        create_jobs_ahead=queue._create_jobs_ahead,
+        create_jobs=queue._CREATE_JOBS,
+        create_jobs_lock=queue._CREATE_JOBS_LOCK,
+        copy_jobs=copy_engine._COPY_JOBS,
+        copy_jobs_lock=copy_engine._COPY_JOBS_LOCK,
+        resolve_agency_hint=yandex.resolve_agency_hint,
+        copy_default_feed_path=copy_engine._COPY_DEFAULT_FEED_PATH,
+        counter_foreign_owner=metrika._counter_foreign_owner,
+        api_campaigns_func=accounts._campaigns_response,
+        parse_number=_parse_number,
+    )
+    app.register_blueprint(copy_api_bp)
+
     app.register_blueprint(bp)
     return app
 
