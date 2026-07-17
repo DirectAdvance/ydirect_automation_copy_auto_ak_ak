@@ -104,9 +104,12 @@ def _worker_scope() -> str:
     return s if s in ("create", "slepki") else "create"
 
 
+_EDIT_KINDS_SQL: list = sorted(_sed._EDIT_KINDS)   # неизменный набор → считаем один раз на импорте
+
+
 def _edit_kinds_list() -> list:
     """edit-виды джоб слепков (kind-колонка) для SQL-фильтров claim/recover (psycopg2 = ANY(%s))."""
-    return sorted(_sed._EDIT_KINDS)
+    return _EDIT_KINDS_SQL
 
 def _worker_request_drain() -> None:
     """SIGTERM handler в worker_main: включить drain и разбудить всех ждущих воркеров."""
@@ -2088,6 +2091,10 @@ def _worker_adopt_job(app, row) -> None:
 
 def _worker_expire_awaiting_feed() -> None:
     """web-роль поставила ожидание решения по фиду; дедлайн истёк → запускаем без фида (worker-время)."""
+    # awaiting_feed_decision бывает ТОЛЬКО у создания РК — slepki-worker не трогает эти строки
+    # (Фаза 2: изоляция scope, иначе slepki-процесс писал бы в чужие create-джобы каждые 2с).
+    if _worker_scope() == "slepki":
+        return
     try:
         conn = _victory_conn_rw()
         try:
@@ -2108,14 +2115,25 @@ def _worker_expire_awaiting_feed() -> None:
         pass
 
 def _worker_apply_controls() -> None:
-    """Применить команды web→worker из колонки control (сейчас: 'cancel' running-джобы) и обнулить её."""
+    """Применить команды web→worker из колонки control (сейчас: 'cancel' running-джобы) и обнулить её.
+
+    scope-фильтр ОБЯЗАТЕЛЕН (Фаза 2): без него slepki-worker читал бы control ЧУЖИХ create-джоб,
+    не находил их в своей памяти (j=None) и всё равно обнулял control → create-worker не видел
+    cancel и отменённая джоба продолжала исполняться (гонка двух поллеров). Каждый воркер трогает
+    только control джоб СВОЕГО scope: slepki → edit-виды; create → всё кроме copy_campaigns/edit."""
     import psycopg2.extras
+    _ek = _edit_kinds_list()
+    if _worker_scope() == "slepki":
+        _ctl_pred = "AND coalesce(kind,'') = ANY(%s)"
+    else:
+        _ctl_pred = "AND coalesce(kind,'') <> 'copy_campaigns' AND NOT (coalesce(kind,'') = ANY(%s))"
     rows = []
     try:
         conn = _victory_conn_rw()
         try:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cur.execute("SELECT job_id, control FROM public.direct_automation_jobs WHERE control IS NOT NULL")
+            cur.execute("SELECT job_id, control FROM public.direct_automation_jobs "
+                        "WHERE control IS NOT NULL " + _ctl_pred, (_ek,))
             rows = cur.fetchall() or []
         finally:
             conn.close()
