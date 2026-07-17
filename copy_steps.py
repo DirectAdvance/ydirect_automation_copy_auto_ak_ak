@@ -838,10 +838,17 @@ def step_keywords(ctx: CopyCtx, grid_batch: int = 1000, v5_batch: int = 200) -> 
     done_kw: set[str] = set(_rj(done_path)) if done_path.exists() else set()
     adg_map = ctx.maps.get("adgroups") or {}
 
+    # Задача 1: гео-замена фраз ключевых слов (морфологическая, те же пары что у имён/текстов).
+    # copy_geo_morph импортируется лениво (не на уровне модуля — паттерн copy_steps.py).
+    _geo_pairs_kw = ctx.geo_pairs or []
+    if _geo_pairs_kw:
+        from . import copy_geo_morph as _cgm_kw
+
     grid_rows: list[dict] = []
     grid_keys: list[str] = []
     v5_rows: list[dict] = []          # фразы с UserParam → только v5 (Grid не переносит UserParam)
     v5_keys: list[str] = []
+    _kw_geo_count = 0   # счётчик фраз, где применилась гео-замена
     for k in keywords:
         key = f"{k.get('AdGroupId')}|{k.get('Keyword')}"
         rep["total"] += 1
@@ -853,6 +860,12 @@ def step_keywords(ctx: CopyCtx, grid_batch: int = 1000, v5_batch: int = 200) -> 
         if not gid or not str(gid).isdigit() or not phrase or phrase.startswith("---"):
             rep["skipped_no_group"] += 1
             continue
+        # Задача 1: применить гео-морфологию к фразе (город/область источника → целевой).
+        if _geo_pairs_kw and phrase:
+            _phrase_geo, _n_geo = _cgm_kw.apply_replacements(phrase, _geo_pairs_kw)
+            if _n_geo:
+                phrase = _phrase_geo.strip() or phrase
+                _kw_geo_count += 1
         gid = int(gid)
         bid, cbid = k.get("Bid"), k.get("ContextBid")
         up1, up2 = k.get("UserParam1"), k.get("UserParam2")
@@ -978,10 +991,12 @@ def step_keywords(ctx: CopyCtx, grid_batch: int = 1000, v5_batch: int = 200) -> 
                     rep["errors"].append(f"v5 keywords.add: {str(e)[:180]}")
             _wj(done_path, sorted(done_kw))
 
+    rep["geo_replaced_phrases"] = _kw_geo_count
     ctx.log(f"ключи Grid-first (0 баллов): Grid {rep['via_grid']}, v5-фолбэк {rep['via_v5']} "
             f"(UserParam {rep['v5_userparam']}, Grid-fail батчей {rep['grid_failed_batches']}), "
             f"не добавлено {rep['failed']}, уже были {rep['already_done']}, "
-            f"без группы {rep['skipped_no_group']}")
+            f"без группы {rep['skipped_no_group']}"
+            + (f", гео-замена в фразах {_kw_geo_count}" if _kw_geo_count else ""))
     return rep
 
 

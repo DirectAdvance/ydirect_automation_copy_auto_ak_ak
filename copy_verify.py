@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # ── Sibling-импорты (цикла нет — не тянут blueprint) ────────────────────────
 from . import campaign as cmc
@@ -840,11 +840,131 @@ def diff_profiles(src_profile: Dict[str, dict],
 
 # ── ТОЧКА ВХОДА ──────────────────────────────────────────────────────────────
 
+def check_geo_kw_consistency(src_dir: Any,
+                             geo_pairs: List[Tuple[str, str]],
+                             log: Optional[Callable[[str], None]] = None,
+                             ) -> List[dict]:
+    """Задача 1: измерение гео-консистентности ключей/минус-слов (REPORT-ONLY, snapshot-based).
+
+    Проверяет snapshot-файлы ИСТОЧНИКА на два признака:
+    1. geo_kw_source_residual — количество фраз в keywords.json, содержащих формы
+       ИСТОЧНИКА (они должны были быть заменены step_keywords гео-морфологией).
+    2. geo_neg_target_blocked — количество минус-слов в adgroups.json/campaigns.json,
+       содержащих формы ЦЕЛЕВОГО города (они должны были быть отфильтрованы).
+
+    Возвращает две строки [{scope="global", dimension=..., status, source, target, ...}].
+    Пустой geo_pairs → оба измерения excluded_intentional (нет гео-замены — нет требования)."""
+    _log = log or _nolog
+    src_dir = Path(src_dir)
+    rows: List[dict] = []
+
+    def _row(dimension: str, status: str, source: Any, target: Any,
+             repair_hint: str = "") -> dict:
+        return {
+            "scope": "global",
+            "dimension": dimension,
+            "status": status,
+            "source": source,
+            "target": target,
+            "repairable": False,
+            "repair_hint": repair_hint,
+        }
+
+    if not geo_pairs:
+        rows.append(_row("geo_kw_source_residual", _EXCLUDED,
+                         0, None,
+                         "geo_pairs пуст (geo_mode=keep или нет гео-замены) — проверка не нужна"))
+        rows.append(_row("geo_neg_target_blocked", _EXCLUDED,
+                         0, None,
+                         "geo_pairs пуст — фильтрация целевого гео в минусах не применялась"))
+        return rows
+
+    # Формы источника (левые части пар) и целевого гео (правые части).
+    source_forms = sorted(
+        {old.lower() for old, _ in geo_pairs if (old or "").strip()},
+        key=len, reverse=True,
+    )
+    target_forms = sorted(
+        {new.lower() for _, new in geo_pairs if (new or "").strip()},
+        key=len, reverse=True,
+    )
+
+    # 1) geo_kw_source_residual: сколько фраз в keywords.json ещё содержат формы ИСТОЧНИКА.
+    kw_with_src = 0
+    try:
+        keywords = _rj(src_dir / "keywords.json")
+        for kw in keywords:
+            phrase = (kw.get("Keyword") or "").lower()
+            if not phrase:
+                continue
+            if any(re.search(r"\b" + re.escape(sf) + r"\b", phrase, re.UNICODE)
+                   for sf in source_forms):
+                kw_with_src += 1
+    except Exception as e:  # noqa: BLE001
+        _log(f"geo_kw_consistency: keywords.json read error: {str(e)[:150]}")
+
+    rows.append(_row(
+        "geo_kw_source_residual",
+        _OK if kw_with_src == 0 else _MISMATCH,
+        kw_with_src,
+        0,
+        repair_hint=(
+            "step_keywords (copy_steps.py) применяет гео-замену к фразам "
+            "через ctx.geo_pairs; 0 = замена успешно убрала формы источника из keywords.json"
+        ),
+    ))
+
+    # 2) geo_neg_target_blocked: сколько минус-слов содержат формы ЦЕЛЕВОГО города.
+    # Проверяем campaigns.json (campaign-level NegativeKeywords) и adgroups.json (group-level).
+    neg_with_tgt = 0
+    try:
+        campaigns = _rj(src_dir / "campaigns.json")
+        for camp in campaigns:
+            raw = camp.get("NegativeKeywords") or {}
+            items = raw.get("Items") if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
+            for m in (items or []):
+                low = (m or "").lower()
+                if any(re.search(r"\b" + re.escape(tf) + r"\b", low, re.UNICODE)
+                       for tf in target_forms):
+                    neg_with_tgt += 1
+    except Exception as e:  # noqa: BLE001
+        _log(f"geo_kw_consistency: campaigns.json read error: {str(e)[:150]}")
+
+    try:
+        adgroups = _rj(src_dir / "adgroups.json")
+        for ag in adgroups:
+            raw = ag.get("NegativeKeywords") or {}
+            items = raw.get("Items") if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
+            for m in (items or []):
+                low = (m or "").lower()
+                if any(re.search(r"\b" + re.escape(tf) + r"\b", low, re.UNICODE)
+                       for tf in target_forms):
+                    neg_with_tgt += 1
+    except Exception as e:  # noqa: BLE001
+        _log(f"geo_kw_consistency: adgroups.json read error: {str(e)[:150]}")
+
+    rows.append(_row(
+        "geo_neg_target_blocked",
+        _OK if neg_with_tgt == 0 else _MISMATCH,
+        neg_with_tgt,
+        0,
+        repair_hint=(
+            "grid-cookie путь: _copy_geo_filter_negatives (copy_engine.py) фильтрует group-level; "
+            "v5-путь: campaign/group негативы заливаются direct_copy.py до наших шагов — "
+            "ненулевое значение = диагностически значимо для v5-копирования"
+        ),
+    ))
+
+    _log(f"geo_kw_consistency: source_residual_kw={kw_with_src}, neg_with_target_geo={neg_with_tgt}")
+    return rows
+
+
 def run_copy_verification(src_dir: Any,
                           workdir: Any,
                           target_login: str,
                           target_agency: str,
                           *,
+                          geo_pairs: Optional[list] = None,
                           grid: Optional[gf.GridClient] = None,
                           source_grid: Optional[gf.GridClient] = None,
                           cached_counts: Optional[Dict[int, dict]] = None,
@@ -964,6 +1084,13 @@ def run_copy_verification(src_dir: Any,
         out = dict(_empty)
         out["error"] = f"diff_profiles: {str(e)[:200]}"
         return out
+
+    # Задача 1: гео-консистентность ключей/минусов (REPORT-ONLY, snapshot-based).
+    try:
+        geo_rows = check_geo_kw_consistency(src_dir, geo_pairs or [], log=_log)
+        results.extend(geo_rows)
+    except Exception as e:
+        _log(f"copy_verify: geo_kw_consistency error: {str(e)[:200]}")
 
     summary: Dict[str, int] = {"ok": 0, "mismatch": 0, "missing": 0, "unreadable": 0}
     for r in results:

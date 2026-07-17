@@ -314,6 +314,12 @@ def _copy_build_geo(source_ctx: dict, target_city: str, target_region: str, log=
         geo_map.append((src_city, target_city or target_region))
     if src_region:
         geo_map.append((src_region, target_region or target_city))
+        # Задача 2 (Minor #14-M1): неофициальные/разговорные алиасы региона источника.
+        # При копировании из Кузбасса слово «Кузбасс» остаётся в именах, т.к. морф знает
+        # только официальную «Кемеровская область». Добавляем алиасы явной парой.
+        _src_region_low = src_region.lower().replace("ё", "е")
+        for _alias in (_REGION_ALIASES.get(_src_region_low) or []):
+            geo_map.append((_alias, target_region or target_city))
     # Частый случай: источник вне local_gsheet_sites, но в названиях/текстах реально фигурирует Краснодар.
     if "краснодар" not in f"{target_city} {target_region}".lower():
         geo_map.append(("Краснодар", target_city or target_region))
@@ -325,6 +331,43 @@ def _copy_build_geo(source_ctx: dict, target_city: str, target_region: str, log=
     except Exception:  # noqa: BLE001
         m3 = None
     return cgm.build_geo_pairs(geo_map, m3_complete=m3, log=_log)
+
+
+# Задача 2 (Minor #14-M1): разговорные алиасы регионов.
+# Ключ — lower+ё→е ОФИЦИАЛЬНЫЙ регион из source_ctx; значения — синонимы в именах кампаний/текстах.
+# Не раздувать: только явные, встречающиеся в реальных РК.
+_REGION_ALIASES: dict[str, list[str]] = {
+    "кемеровская область": ["Кузбасс"],
+    "ханты-мансийский автономный округ — югра": ["Югра", "Ханты-Мансийский округ"],
+    "ямало-ненецкий автономный округ": ["Ямал"],
+}
+
+
+def _copy_geo_filter_negatives(minus_list: list, replacements: list) -> list:
+    """Задача 1: убрать из минус-слов те, что содержат форму ЦЕЛЕВОГО города/области.
+
+    После гео-замены «Краснодар» в минусах стал «Москва» — если целевой аккаунт в Москве,
+    он заминусует сам себе целевой город и потеряет показы. Фильтруем таких.
+    Пустой replacements (geo_mode=keep / нет гео-замены) → без изменений."""
+    if not minus_list or not replacements:
+        return list(minus_list)
+    # Правые части пар = формы ЦЕЛЕВОГО гео (то, во что заменяем).
+    target_forms = sorted(
+        {new.lower() for _, new in replacements if (new or "").strip()},
+        key=len, reverse=True,
+    )
+    if not target_forms:
+        return list(minus_list)
+    result = []
+    for m in minus_list:
+        low = (m or "").lower()
+        blocked = any(
+            re.search(r"\b" + re.escape(tf) + r"\b", low, re.UNICODE)
+            for tf in target_forms
+        )
+        if not blocked:
+            result.append(m)
+    return result
 
 
 def _copy_geo_replacements(source_ctx: dict, target_city: str, target_region: str, log=None) -> list[tuple[str, str]]:
@@ -1192,7 +1235,12 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
                     _copy_apply_geo_replacements(grp.get("adgroup_name") or "группа", replacements),
                     target_r_code),
                 "keywords": [_copy_apply_geo_replacements(k, replacements) for k in (grp.get("keywords") or [])],
-                "minus": list(grp.get("minus_keywords") or []),
+                # Задача 1: (а) применить гео-замену к группо-уровневым минусам (как к ключам);
+                # (б) убрать минусы, содержащие форму ЦЕЛЕВОГО города — иначе target заминусует себя.
+                "minus": _copy_geo_filter_negatives(
+                    [_copy_apply_geo_replacements(m, replacements)
+                     for m in (grp.get("minus_keywords") or []) if str(m or "").strip()],
+                    replacements),
                 "titles": titles,
                 "texts": bodies,
                 "image_hashes": _remap_images(list(dict.fromkeys(h for h in image_hashes if h))[:5]),
@@ -1565,7 +1613,14 @@ def _copy_grid_unified_steps(job_id: str, body: dict, target_login: str, target_
             for _cid, _row in (_src_raw or {}).items():
                 _promo = _row.get("promoExtension") or {}
                 _pid = str(_promo.get("id") or "")
-                if _pid and _pid != "0" and _promo.get("description"):
+                if not _pid or _pid == "0":
+                    continue
+                if not _promo.get("description"):
+                    # Задача 3 (Minor #14-M2): явный лог вместо тихого пропуска.
+                    _copy_job_log(job_id,
+                                  f"промо {_pid} пропущено: нет description "
+                                  f"(тип={_promo.get('type')!r}, кампания={_cid})")
+                else:
                     _promo_defs[_pid] = _promo
             _src_domain_for_promo = (body.get("_copy_source_domain") or src_domain or "").strip()
             _tgt_domain_for_promo = (body.get("target_domain") or "").strip()
@@ -2356,6 +2411,7 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
             src_dir=src_dir, workdir=workdir,
             target_login=target_login, target_agency=target_agency,
             grid=grid, source_grid=cstep_ctx.source_grid,
+            geo_pairs=cstep_ctx.geo_pairs or [],
             log=(lambda m: _copy_job_log(job_id, m)),
         )
         rep["copy_verify"] = verify_result
