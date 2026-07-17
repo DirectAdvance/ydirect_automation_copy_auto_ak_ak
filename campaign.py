@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import re
 import sys
 import time
@@ -1871,8 +1872,25 @@ def remember_working_cookie(ulogin: str, cookie: str) -> None:
 
 def pick_working_cookie(ulogin: str, accounts: tuple[str, ...] = DEFAULT_COOKIE_ACCOUNTS,
                         *, force_refresh: bool = False) -> str:
-    """Рабочая агентская кука для ulogin — ПРОВЕРЯЕТСЯ ОДИН РАЗ НА АККАУНТ (link_info → 200), потом
-    кэшируется на TTL (правило: не дёргать главпоток на каждую кампанию). Порядок подбора:
+    """Рабочая агентская кука для ulogin. Фаза 2 gateway: не-брокерные процессы берут её через
+    единый direct-gateway (:5025) — ОДИН probe главпотока/кэш на все 6 процессов вместо шести
+    независимых. Сам брокер (DIRECT_GATEWAY_SELF=1) и ЛЮБОЙ сбой брокера → локальная логика
+    (_pick_working_cookie_local). Рекурсии нет: gateway_client.gw_cookie фолбэчит в _local, не сюда."""
+    if os.environ.get("DIRECT_GATEWAY_SELF") != "1":
+        try:
+            from . import gateway_client as _gwc
+            ck = _gwc.gw_cookie(ulogin, accounts=accounts, force_refresh=force_refresh)
+            if ck:
+                return ck
+        except Exception:  # noqa: BLE001 — брокер недоступен/ошибка → локальная логика ниже
+            pass
+    return _pick_working_cookie_local(ulogin, accounts, force_refresh=force_refresh)
+
+
+def _pick_working_cookie_local(ulogin: str, accounts: tuple[str, ...] = DEFAULT_COOKIE_ACCOUNTS,
+                               *, force_refresh: bool = False) -> str:
+    """Локальная логика подбора куки (probe главпотока + кэш ЭТОГО процесса). Прямой источник
+    правды для брокера и аварийный фолбэк. Порядок подбора:
       1) уже проверенная кука из кэша (если не force_refresh и не протухла);
       2) ЛОКАЛЬНАЯ кука агентства (cookies.json) — проверяем link_info: работает → берём её;
       3) не работает / нет локальной → СВЕЖАЯ с ГЛАВПОТОКА для этого агентства, снова проверяем.
@@ -1888,16 +1906,20 @@ def pick_working_cookie(ulogin: str, accounts: tuple[str, ...] = DEFAULT_COOKIE_
     if _mng and _mng not in ("none", ""):
         accounts = tuple(dict.fromkeys((_mng, *accounts)))
     last_err: Exception | None = None
-    expired_accs: list[str] = []   # агентства, чья кука на главпотоке ПРОТУХЛА (сессия истекла)
+    expired_accs: list[str] = []   # only when the fresh Glavpotok source also confirms expiry
+    fresh_seen: set[str] = set()
     for acc in accounts:
-        # Сначала локальная (проверка «работает ли на аккаунте»), затем свежая с главпотока.
-        for getter in (load_cookie_local, fetch_cookie_glavpotok):
+        # Главпоток is the source of truth. Local cookies are static fallbacks and
+        # may be expired even while the live agency session is healthy.
+        for getter in (fetch_cookie_glavpotok, load_cookie_local):
             try:
                 cookie = getter(acc)
             except Exception:  # noqa: BLE001 — нет такого аккаунта/конфига → следующий источник
                 continue
             if not cookie:
                 continue
+            if getter is fetch_cookie_glavpotok:
+                fresh_seen.add(acc)
             try:
                 UacClient(cookie, ulogin).link_info("https://ya.ru")
                 _ACCOUNT_COOKIE_CACHE[ulogin] = (cookie, time.time())
@@ -1905,10 +1927,12 @@ def pick_working_cookie(ulogin: str, accounts: tuple[str, ...] = DEFAULT_COOKIE_
             except Exception as e:  # noqa: BLE001 — кука не подошла → следующий источник/аккаунт
                 last_err = e
                 # Сессия Яндекса протухла (главпоток отдал мёртвую куку): need_reset / «Истёк срок».
-                if any(s in str(e) for s in ("need_reset", "Истек срок", "Истёк срок", "session")):
+                if getter is fetch_cookie_glavpotok and any(
+                    s in str(e) for s in ("need_reset", "Истек срок", "Истёк срок", "session")
+                ):
                     if acc not in expired_accs:
                         expired_accs.append(acc)
-    if expired_accs:
+    if expired_accs and not fresh_seen:
         # Чёткое actionable-сообщение → видно в UI/джобе: куку надо ОБНОВИТЬ на главпотоке (перелогин).
         raise RuntimeError(
             f"кука протухла на главпотоке (сессия Яндекса истекла) для агентств: "

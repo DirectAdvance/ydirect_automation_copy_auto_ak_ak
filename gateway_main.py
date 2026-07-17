@@ -81,8 +81,12 @@ def create_app() -> Flask:
         if not login:
             return jsonify(error="login required"), 400
         force = _truthy(request.args.get("force_refresh"))
+        # accounts-подсказка от клиента (comma-join); пусто → дефолтный перебор агентств.
+        _accs_raw = (request.args.get("accounts") or "").strip()
+        _accs = tuple(a for a in _accs_raw.split(",") if a) or _cmc.DEFAULT_COOKIE_ACCOUNTS
         try:
-            cookie = _cmc.pick_working_cookie(login, force_refresh=force)
+            # прямой вызов _local: брокер — источник правды, свой probe/кэш (без захода в себя же).
+            cookie = _cmc._pick_working_cookie_local(login, _accs, force_refresh=force)
         except Exception as exc:  # noqa: BLE001
             return jsonify(login=login, error=str(exc)), 502
         if not cookie:

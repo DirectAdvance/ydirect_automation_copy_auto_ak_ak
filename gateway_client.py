@@ -59,19 +59,24 @@ def _post(path: str, payload: dict, timeout: float = _DEFAULT_TIMEOUT) -> dict:
     return resp.json()
 
 
-def gw_cookie(login: str, *, force_refresh: bool = False,
+def gw_cookie(login: str, *, accounts=None, force_refresh: bool = False,
               timeout: float = _DEFAULT_TIMEOUT) -> str:
+    params = {"login": login, "force_refresh": "1" if force_refresh else "0"}
+    if accounts:
+        params["accounts"] = ",".join(accounts)   # подсказка агентств брокеру
     try:
-        data = _get("/gw/cookie", {"login": login,
-                                   "force_refresh": "1" if force_refresh else "0"}, timeout)
+        data = _get("/gw/cookie", params, timeout)
         cookie = data.get("cookie")
         if cookie:
             return cookie
         # брокер ответил, но куки нет (протухла) → пусть локальная функция даст свой вердикт/ошибку
     except Exception:  # noqa: BLE001
         pass
+    # ⚠️ Фолбэк В _pick_working_cookie_local, НЕ в pick_working_cookie: иначе (обёртка → gw_cookie →
+    # фолбэк → обёртка) бесконечная рекурсия. _local — прямая локальная логика без захода в брокер.
     from direct import campaign as _cmc  # noqa: PLC0415
-    return _cmc.pick_working_cookie(login, force_refresh=force_refresh)
+    accs = tuple(accounts) if accounts else _cmc.DEFAULT_COOKIE_ACCOUNTS
+    return _cmc._pick_working_cookie_local(login, accs, force_refresh=force_refresh)
 
 
 def gw_token(login: str, agency: str = "",
