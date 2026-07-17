@@ -363,6 +363,29 @@ def _copy_target_region_code(target_city: str, target_region: str) -> str:
     return ""
 
 
+def _copy_rcode_to_region(r_code: str) -> str:
+    """Обратный резолв: r-код кодера → область словами (public.local_gsheet_naming, type='ag_part4').
+
+    Best-effort: при ошибке / неизвестном коде / отсутствии БД-инъекции → пустая строка.
+    Используется в гео-фолбэке grid-cookie ветки, когда source не в local_gsheet_sites."""
+    if not r_code or not re.fullmatch(r"r\d{4}", str(r_code or "")) or r_code == "r0000":
+        return ""
+    if not _victory_conn_rw:
+        return ""
+    try:
+        conn = _victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM public.local_gsheet_naming "
+                        "WHERE type='ag_part4' AND code=%s LIMIT 1", (r_code,))
+            row = cur.fetchone()
+            return str(row[0]).strip() if row and row[0] else ""
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _copy_remap_region_code(name: str | None, target_r_code: str) -> str:
     """Перекодировать r-сегмент кодера (`_r0300_` → `_<target_r_code>_`) в имени кампании/группы.
 
@@ -869,7 +892,7 @@ def _copy_grid_read_selected(login: str, selected_ids: set[int]) -> dict:
         "client(searchBy:{login:$login}){campaigns(input:$inp){rowset{"
         "id name __typename status{primaryStatus archived} "
         "...on GdUnifiedCampaign{metrikaCounters placementTypes additionalData{href} "
-        "minusKeywords disabledPlaces}}}}}"
+        "minusKeywords disabledPlaces strategy{budget{sum}}}}}}"
     )
     camps_data = reader._post("CopyCamp", q_campaigns, {"login": login, "inp": inp_common})
     campaigns = ((((camps_data.get("data") or {}).get("client") or {})
@@ -893,7 +916,8 @@ def _copy_grid_read_selected(login: str, selected_ids: set[int]) -> dict:
     return {"campaigns": campaigns, "groups": groups, "ads": ads}
 
 
-def _copy_grid_campaign_spec(name: str, counter_id: int, goal_id: int) -> dict:
+def _copy_grid_campaign_spec(name: str, counter_id: int, goal_id: int,
+                              weekly_budget: int = 7000) -> dict:
     m = re.search(r"\btp(\d+)_", str(name or ""), re.I)
     tp = int(m.group(1)) if m else 1
     search = tp in (2, 4, 5)
@@ -904,7 +928,7 @@ def _copy_grid_campaign_spec(name: str, counter_id: int, goal_id: int) -> dict:
         "counter_id": int(counter_id or 0),
         "goal_id": int(goal_id or 0),
         "cpa": 250,
-        "weekly_budget": 7000,
+        "weekly_budget": int(weekly_budget) if weekly_budget and int(weekly_budget) > 0 else 7000,
         "start_date": time.strftime("%Y-%m-%d"),
         "network": bool(network),
         "search": bool(search),
@@ -1011,6 +1035,22 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
         if target_r_code:
             _copy_job_log(job_id, f"кодер: r-сегмент региона → {target_r_code}")
         source_ctx = _copy_ctx(source_login)
+        # Баг 1 фолбэк: source не в local_gsheet_sites → source_ctx пуст → replacements=[].
+        # Резолвим источник по r-коду из имени source-кампании и добавляем регион в source_ctx.
+        if not (source_ctx.get("city") or source_ctx.get("region")):
+            _src_r_code = ""
+            for _sr in selected_grid_rows:
+                _m = _COPY_R_CODE_RE.search(str(_sr.get("name") or ""))
+                if _m:
+                    _src_r_code = _m.group()
+                    break
+            if _src_r_code and _src_r_code != target_r_code:
+                _src_oblast = _copy_rcode_to_region(_src_r_code)
+                if _src_oblast:
+                    source_ctx = dict(source_ctx) if source_ctx else {}
+                    source_ctx["region"] = _src_oblast
+                    _copy_job_log(job_id,
+                                  f"гео-фолбэк: {_src_r_code} → {_src_oblast!r} (source не в local_gsheet_sites)")
         replacements = _copy_geo_replacements(
             source_ctx, target_city, target_region, log=(lambda m: _copy_job_log(job_id, m))
         )
@@ -1161,9 +1201,17 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
             })
 
         try:
+            # Бюджет: берём из strategy.budget.sum source-кампании (добавлено в q_campaigns).
+            # Фолбэк 7000 — если source не вернул или значение некорректно.
+            _src_budget_raw = ((camp.get("strategy") or {}).get("budget") or {}).get("sum")
+            try:
+                _src_budget = max(1, int(float(str(_src_budget_raw)))) if _src_budget_raw else 7000
+            except (TypeError, ValueError):
+                _src_budget = 7000
             rep = gc.create_full(
                 target_login,
-                campaign_spec=_copy_grid_campaign_spec(new_name, counter_id, goal_id),
+                campaign_spec=_copy_grid_campaign_spec(new_name, counter_id, goal_id,
+                                                       weekly_budget=_src_budget),
                 groups=group_specs,
                 region_ids=region_ids,
                 href=base_href,
@@ -1505,14 +1553,56 @@ def _copy_grid_unified_steps(job_id: str, body: dict, target_login: str, target_
     except Exception:  # noqa: BLE001
         ctx.promo_client = None
 
+    # Промоакции: читаем определения промо из сырых строк CampaignsEditData источника и
+    # создаём их на target. campaigns_edit_rows возвращает promoExtension{id type prefix amount
+    # unit description startDate finishDate href promocode} — полный объект для воссоздания.
+    # После этого maps["promotions"] заполнен → step_attach_promos привяжет промо по связи.
+    created_promo_ids: list[int] = []
+    if source_grid is not None and src_camp_ids and ctx.promo_client is not None:
+        try:
+            _src_raw = source_grid.campaigns_edit_rows(src_camp_ids)
+            _promo_defs: dict[str, dict] = {}
+            for _cid, _row in (_src_raw or {}).items():
+                _promo = _row.get("promoExtension") or {}
+                _pid = str(_promo.get("id") or "")
+                if _pid and _pid != "0" and _promo.get("description"):
+                    _promo_defs[_pid] = _promo
+            _src_domain_for_promo = (body.get("_copy_source_domain") or src_domain or "").strip()
+            _tgt_domain_for_promo = (body.get("target_domain") or "").strip()
+            for _src_pid, _pdef in _promo_defs.items():
+                if str(_src_pid) in maps["promotions"]:
+                    created_promo_ids.append(int(maps["promotions"][str(_src_pid)]))
+                    continue
+                _new_pid, _perr = ctx.promo_client.add(
+                    type=_pdef.get("type") or "DISCOUNT",
+                    description=_pdef.get("description") or "акция",
+                    href=_copy_target_href(_pdef.get("href"),
+                                          _src_domain_for_promo, _tgt_domain_for_promo),
+                    amount=_pdef.get("amount"),
+                    unit=_pdef.get("unit"),
+                    prefix=_pdef.get("prefix"),
+                    promocode=_pdef.get("promocode"),
+                    start=_pdef.get("startDate"),
+                    finish=_pdef.get("finishDate"),
+                )
+                if _new_pid:
+                    maps["promotions"][str(_src_pid)] = int(_new_pid)
+                    created_promo_ids.append(int(_new_pid))
+                elif _perr:
+                    rep["errors"].append(f"promo {_src_pid}: {_perr[:180]}")
+            rep["promos_created"] = len(created_promo_ids)
+            _copy_job_log(job_id, f"промо: создано {len(created_promo_ids)} из {len(_promo_defs)} источника")
+        except Exception as _e:  # noqa: BLE001
+            rep["errors"].append(f"promo defs read/create: {str(_e)[:200]}")
+
     for name, fn in (
         ("age_bidmods", lambda: csteps.step_age_bidmods(ctx)),
         ("disabled_places", lambda: csteps.step_disabled_places(ctx)),
         ("attach_callouts", lambda: csteps.step_attach_callouts(ctx, per_campaign_cap=_CALLOUT_PER_CAMPAIGN_CAP)),
         # Баг 2a: быстрые ссылки по исходной связи campaign→sitelinkSet (source-grid read → target set).
         ("attach_sitelinks", lambda: csteps.step_attach_sitelinks(ctx)),
-        # step_attach_promos: source-promo-def reader отсутствует → created_promo_ids=[] → безопасный no-op.
-        ("attach_promos", lambda: csteps.step_attach_promos(ctx, [])),
+        # maps["promotions"] заполнен выше → created_promo_ids содержит реальные target-id.
+        ("attach_promos", lambda: csteps.step_attach_promos(ctx, list(created_promo_ids))),
         ("prices", lambda: csteps.step_prices(ctx)),
         ("videos", lambda: csteps.step_videos(ctx)),
     ):
