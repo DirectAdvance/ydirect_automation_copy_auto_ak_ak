@@ -387,6 +387,16 @@ def _create_text_via_token(
     _errs = build.get("errors") or []
     _units_hit = _is_units(build.get("error")) or any(_is_units(x) for x in _errs)
     # Недозаполнение (нет групп / пак пуст / 152) → удаляем недоделанную РК + defer (фолбэк на куку).
+    # `not build.get("ads")` — группы БЕЗ объявлений это тоже недозаполнение: кампания с группами и
+    # ключами, но без единого объявления не показывается, а ok:True скрыл бы дефект (шли пустышки).
+    # Безопасность (проверено AST по боевым файлам): гейт живёт ТОЛЬКО на token-пути tp2/tp4
+    # (orchestrator `_TEXT_ENGINE` = search_test/search_dynamic), а `_build_text_from_pack` здесь
+    # вызывается БЕЗ feed_id/with_shopping (дефолты 0/False) → блок товарных объявлений
+    # (create_set_text_builders.py:231 `if feed_id and with_shopping`) не выполняется и ключей
+    # listing_ads/shopping_ads в build нет. Кампании «только listing/shopping без TextAd» на этом
+    # пути не существует, поэтому пустой `ads` здесь = дефект, а не легальный товарный состав.
+    # (В tp1/tp5, где with_shopping=True, товарные аддитивны ПОСЛЕ TextAd и идут другим билдером —
+    # этого гейта там нет.) `ads` в rep инициализируется всегда (rep = {... "ads": 0 ...}).
     if build.get("error") or build.get("skipped") or not build.get("adgroups") or not build.get("ads"):
         try:
             _delete_partial_campaign(token, login, cid)
