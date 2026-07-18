@@ -1,0 +1,25 @@
+[Unit]
+Description=SEOAdvanced Direct — Slepki Edit Worker (isolated edit-jobs queue, Phase 2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scripts/home/seoadvanced
+Environment=DIRECT_ROLE=worker
+Environment=DIRECT_WORKER_SCOPE=slepki
+Environment=NEURO_PACK_MOUNT=/opt/neuro_content_local
+Environment=OPENROUTER_LLM_MODEL=deepseek/deepseek-chat
+ExecStart=/root/venv/bin/python3 -m direct.slepki_worker_main
+Restart=always
+RestartSec=5
+
+# Drain on stop: edit-джобы применяются за секунды → короткий дедлайн.
+TimeoutStopSec=90
+KillMode=mixed
+
+# Владеет ТОЛЬКО edit-очередью слепков (kind ∈ _EDIT_KINDS). claim race-safe
+# (queued→claimed FOR UPDATE SKIP LOCKED). Один процесс.
+
+[Install]
+WantedBy=multi-user.target

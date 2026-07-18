@@ -95,8 +95,15 @@ def _manual_rule_lookup_key(path: str, ct: str) -> tuple[str, str, str, str, str
         import os as _os
         from . import kontent_pack as _kp
         p = str(path or "")
-        manual_root = str(MANUAL_CREATIVES_DIR).rstrip("/")
-        if not p.startswith(manual_root + "/"):
+        # Manual-файл приходит из ДВУХ корней: sshfs-монт MANUAL_CREATIVES_DIR (легаси) и
+        # ЛОКАЛЬНОЕ зеркало NEURO_PACK_MOUNT/_manual (с 2026-07-18 — основной, sshfs вешал
+        # потоки). Оба ведут к одному файлу на M3 → ключ правила обязан совпадать, иначе
+        # выключения/allowed_for вкладки «Контент» перестали бы применяться к Manual.
+        roots = [str(MANUAL_CREATIVES_DIR).rstrip("/")]
+        _mirror = getattr(_kp, "_LOCAL_MIRROR_ROOT", None)
+        if _mirror:
+            roots.append(_os.path.join(_mirror, "_manual").rstrip("/"))
+        if not any(p.startswith(r + "/") for r in roots):
             return None
         ct_norm = _gc_ct(ct) or _gc_ct(_os.path.basename(_os.path.dirname(p))) or "ct0000"
         remote = posixpath.join(getattr(_kp, "M3_MANUAL_ROOT", "/Users/Shared/agency/creatives/Manual"),

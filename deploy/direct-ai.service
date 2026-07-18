@@ -1,0 +1,44 @@
+[Unit]
+Description=SEOAdvanced Direct — «Обучение ИИ» API (M3/LLM, isolated from campaign creation)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scripts/home/seoadvanced
+Environment=DIRECT_AI_HOST=127.0.0.1
+Environment=DIRECT_AI_PORT=5026
+# DIRECT_ROLE=web: этот процесс обслуживает только API и НЕ поднимает воркеров/демонов создания
+# РК. ai_main.py страхует это setdefault'ом до импорта automation_runtime; здесь — явно.
+Environment=DIRECT_ROLE=web
+
+# --- ПАРИТЕТ ГЕНЕРАЦИИ с direct-create.service ---
+# /direct/api/ai/campaign/generate зовёт _gen_campaign_content (ai_content.py), а тот читает env
+# В МОМЕНТ ВЫЗОВА. У этих трёх переменных прод-значение НЕ совпадает с дефолтом в коде, поэтому
+# без них вкладка «Обучение ИИ» после переезда молча начала бы генерить ИНАЧЕ, чем сегодня.
+# Значения зеркалят прод-окружение direct-create.service (там они приходят drop-in'ами):
+#   NEURO_PACK_MOUNT          — kontent_pack.py:31, дефолт /opt/neuro_kontent (sshfs-монт M3)
+#                               vs прод /opt/neuro_content_local (локальная копия пака).
+#   OPENROUTER_LLM_MODEL      — llm_providers.py:326, дефолт deepseek/deepseek-v4-flash
+#                               vs прод deepseek/deepseek-chat.
+#   DIRECT_SITELINK_REUSE_ACCOUNT — ai_content.py:169, дефолт 0 (OFF) vs прод 1 (ON).
+# При смене этих значений на direct-create (dropins/*.conf) — синхронно менять и здесь.
+Environment=NEURO_PACK_MOUNT=/opt/neuro_content_local
+Environment=OPENROUTER_LLM_MODEL=deepseek/deepseek-chat
+Environment=DIRECT_SITELINK_REUSE_ACCOUNT=1
+# Дефолт в коде (ai_content.py:95) и так ON; строка явная, чтобы паритет с продом был виден.
+Environment=DIRECT_CONTENT_REUSE_ACCOUNT=1
+ExecStart=/root/venv/bin/python3 -m direct.ai_main
+Restart=always
+RestartSec=5
+
+# Этот сервис — ВЛАДЕЛЕЦ роутов /direct/api/ai/* (8 эндпоинтов routes_ai), поэтому
+# DIRECT_REGISTER_AI=0 здесь НЕ ставится (флаг читает только direct/blueprint.py, который этот
+# процесс не импортирует — см. ai_main.py). Снимать ai-роуты нужно с ДРУГОГО процесса:
+# drop-in deploy/dropins/direct-create.service.d/ai.conf ставит DIRECT_REGISTER_AI=0 на
+# direct-create.service. Без этого drop-in оба процесса поднимут /direct/api/ai/*, и кто
+# ответит — решит nginx (изоляции не будет, но и поломки тоже: дефолт "1" = single-process).
+# Роуты ходят в M3/LLM: вызовы долгие и блокирующие → свой процесс, threaded=True.
+
+[Install]
+WantedBy=multi-user.target

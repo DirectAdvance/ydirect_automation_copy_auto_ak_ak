@@ -217,9 +217,14 @@ def build_source_profile(src_dir: Any,
             elif isinstance(raw_gneg, list):
                 group_neg_count += len(raw_gneg)
 
-        # D3: shared_sets
-        shared_sets_raw = camp.get("NegativeKeywordSharedSetIds") or []
-        shared_set_count = len([x for x in shared_sets_raw if str(x).strip()])
+        # D3: shared_sets. Source-снапшот хранит их ВЛОЖЕННО в TextCampaign.NegativeKeywordSharedSetIds
+        # (формат {"Items":[...]}), а не top-level → раньше читалось 0 → ложный mismatch vs target.
+        _nks = camp.get("NegativeKeywordSharedSetIds")
+        if not _nks:
+            _nks = (camp.get("TextCampaign") or {}).get("NegativeKeywordSharedSetIds")
+        if isinstance(_nks, dict):
+            _nks = _nks.get("Items") or []
+        shared_set_count = len([x for x in (_nks or []) if str(x).strip()])
 
         # D4: promo (from pull_source_campaign_assets или promotions.json count)
         promo_id = campaign_promos.get(cid)
@@ -361,6 +366,7 @@ def build_target_profile(target_login: str,
                           cached_invariants: Optional[Dict[int, dict]] = None,
                           cached_adaptive: Optional[Dict[int, dict]] = None,
                           log: Optional[Callable[[str], None]] = None,
+                          target_agency: str = "",
                           ) -> Dict[str, dict]:
     """Нормализованный профиль цели по созданным кампаниям через Grid/cookie.
 
@@ -378,6 +384,7 @@ def build_target_profile(target_login: str,
         cached_adaptive: Результат gf.GridClient.adaptive_ads_for_update цели
             {int(ad_id): {...}}.
         log: Функция логирования.
+        target_agency: Агентство цели (для получения v5-токена в fallback).
 
     Returns:
         {str(tgt_campaign_id): {dimension_key: value}}
@@ -448,6 +455,123 @@ def build_target_profile(target_login: str,
     # В v1 данные не агрегируются по кампании здесь; v2 TODO: передавать ad→camp dict отдельно.
     del cached_adaptive  # явно помечаем как неиспользуемый в v1; del убирает pyflakes warning
 
+    # ── v5 fallback для черновиков (Draft/State=OFF) ─────────────────────────
+    # Grid entity-запросы фильтруют по statRequirements (LAST_30DAYS): свежие черновики
+    # (0 impressions) отдают структуру (группы), но 0 КОНТЕНТА (ключи/объявления=0).
+    # Триггерим на 0 КОНТЕНТА (keywords_count пуст), а НЕ на 0 групп — Grid группы отдаёт,
+    # поэтому старое условие adgroups==0 не срабатывало (no-op). v5.get без stat-фильтра
+    # даёт реальные счётчики; ОБЯЗАТЕЛЬНА пагинация (548 групп / ~38k ключей > одной страницы).
+    # Per-campaign v5-чтение теперь безопасно (не 4001) → добираем ВСЕ кампании: Grid stat-счётчики
+    # ненадёжны для свежих черновиков не только при 0, но и при частичных значениях. Точные v5-счёта.
+    _draft_cids = list(tgt_camp_ids)
+    if _draft_cids and _v5_call is not None and _token_for_login is not None and _direct_tokens is not None:
+        try:
+            _tr = _token_for_login(target_login, target_agency or "", _direct_tokens())
+            _tok = _tr[0] if isinstance(_tr, (tuple, list)) else _tr
+            if _tok:
+                _log(f"copy_verify: v5 fallback (0 контента) для {len(_draft_cids)} кампаний")
+
+                def _v5_paged(_svc: str, _key: str, _fields: list) -> list:
+                    # ПО ОДНОЙ кампании: batch CampaignIds на смешанном наборе (TextCampaign +
+                    # UAC/товарка) даёт API 4001 → 0 (ложный tgt=0). Per-campaign безопасно.
+                    _out: list = []
+                    for _dcid in _draft_cids:
+                        _off = 0
+                        for _ in range(50):
+                            _r = _v5_call(_svc, "get", _tok, target_login, {
+                                "SelectionCriteria": {"CampaignIds": [_dcid]},
+                                "FieldNames": _fields,
+                                "Page": {"Limit": 10000, "Offset": _off},
+                            })
+                            _res = _r.get("result") or {}
+                            _items = _res.get(_key) or []
+                            _out += _items
+                            _lb = _res.get("LimitedBy")
+                            if _lb:
+                                _off = int(_lb)
+                            else:
+                                break
+                    return _out
+
+                # adgroups — реальное число групп на кампанию (перекрывает Grid-нуль)
+                _ag_cnt: Dict[int, int] = {}
+                for _ag in _v5_paged("adgroups", "AdGroups", ["Id", "CampaignId"]):
+                    try:
+                        _ag_cnt[int(_ag.get("CampaignId") or 0)] = _ag_cnt.get(int(_ag.get("CampaignId") or 0), 0) + 1
+                    except (TypeError, ValueError):
+                        pass
+                for _cid2, _n in _ag_cnt.items():
+                    if _cid2 in counts:
+                        counts[_cid2]["adgroups"] = _n
+                # keywords
+                _kw_cnt: Dict[int, int] = {}
+                for _kw in _v5_paged("keywords", "Keywords", ["Id", "CampaignId"]):
+                    try:
+                        _kw_cnt[int(_kw.get("CampaignId") or 0)] = _kw_cnt.get(int(_kw.get("CampaignId") or 0), 0) + 1
+                    except (TypeError, ValueError):
+                        pass
+                for _cid2, _n in _kw_cnt.items():
+                    if _cid2 in counts:
+                        counts[_cid2]["keywords_count"] = _n
+                        counts[_cid2]["keywords_read"] = True
+                # ads → adaptive_total (приближение: все объявления считаем адаптивными)
+                _ads_cnt: Dict[int, int] = {}
+                for _ad in _v5_paged("ads", "Ads", ["Id", "CampaignId"]):
+                    try:
+                        _ads_cnt[int(_ad.get("CampaignId") or 0)] = _ads_cnt.get(int(_ad.get("CampaignId") or 0), 0) + 1
+                    except (TypeError, ValueError):
+                        pass
+                for _cid2, _n in _ads_cnt.items():
+                    if _cid2 in counts and counts[_cid2].get("adaptive_total") in (None, 0):
+                        counts[_cid2]["adaptive_total"] = _n
+                _log(f"copy_verify: v5 fallback завершён — групп/ключей/объявл добрано для {len(_draft_cids)} кампаний")
+        except Exception as _v5e:
+            _log(f"copy_verify: v5 fallback error: {str(_v5e)[:200]}")
+
+    # ── Ad-level sitelinks/images через v5 (для ВСЕХ target-кампаний) ─────────
+    # Sitelinks/картинки копируются на ОБЪЯВЛЕНИЯ; verify (edit_rows) читает inheritable на
+    # уровне КАМПАНИИ → 0 при per-ad привязке → ложный mismatch. Добираем ad-level v5.
+    if _v5_call is not None and _token_for_login is not None and _direct_tokens is not None:
+        try:
+            _tr2 = _token_for_login(target_login, target_agency or "", _direct_tokens())
+            _tok2 = _tr2[0] if isinstance(_tr2, (tuple, list)) else _tr2
+            if _tok2:
+                _sl_by: Dict[int, int] = {}
+                _img_by: Dict[int, int] = {}
+                # ПО ОДНОЙ кампании: ads.get с TextAdFieldNames на СМЕШАННОМ наборе (TextCampaign +
+                # UAC/товарка вместе) даёт error 4001 → 0 объявлений (ложный mismatch по sitelinks/
+                # images). Per-campaign: UAC вернёт 0 TextAds без ошибки, TextCampaign — свои.
+                # Доказано: batch(13)=0/4001, per-campaign=1152 объявл/218 sitelinks на той же цели.
+                for _cid in list(tgt_camp_ids):
+                    _off2 = 0
+                    for _ in range(50):
+                        _r2 = _v5_call("ads", "get", _tok2, target_login, {
+                            "SelectionCriteria": {"CampaignIds": [_cid]},
+                            "FieldNames": ["Id", "CampaignId"],
+                            "TextAdFieldNames": ["SitelinkSetId", "AdImageHash"],
+                            "Page": {"Limit": 10000, "Offset": _off2}})
+                        _res2 = _r2.get("result") or {}
+                        for _ad in (_res2.get("Ads") or []):
+                            _ta = _ad.get("TextAd") or {}
+                            if _ta.get("SitelinkSetId"):
+                                _sl_by[_cid] = _sl_by.get(_cid, 0) + 1
+                            if _ta.get("AdImageHash"):
+                                _img_by[_cid] = _img_by.get(_cid, 0) + 1
+                        _lb2 = _res2.get("LimitedBy")
+                        if _lb2:
+                            _off2 = int(_lb2)
+                        else:
+                            break
+                for _c in _sl_by:
+                    if _c in counts:
+                        counts[_c]["has_sitelinks_v5"] = True
+                for _c, _n in _img_by.items():
+                    if _c in counts:
+                        counts[_c]["ads_with_images_v5"] = _n
+                _log(f"copy_verify: ad-level v5 (per-campaign) — sitelinks у {len(_sl_by)} камп, images у {len(_img_by)}")
+        except Exception as _ale:  # noqa: BLE001
+            _log(f"copy_verify: ad-level v5 error: {str(_ale)[:200]}")
+
     # ── Строим профиль per target campaign ──────────────────────────────────
     profile: Dict[str, dict] = {}
 
@@ -472,23 +596,30 @@ def build_target_profile(target_login: str,
             promo_ext_id and str(promo_ext_id) not in ("", "0", "None")
         )
 
-        # D7: callouts из campaigns_edit_rows
+        # D7: callouts из campaigns_edit_rows. Grid отдаёт привязку под .assetValue (см.
+        # grid_finalize.py:602), а НЕ .calloutIds — раньше читалось calloutIds → 0 → ложный
+        # mismatch, хотя callouts привязаны (проверено: 50 callout-расширений associated на цели).
         callouts_data = edit_c.get("inheritableCallouts") or {}
-        callout_ids_tgt = [str(x) for x in (callouts_data.get("calloutIds") or [])
-                           if str(x).strip()]
+        _co_raw = callouts_data.get("assetValue")
+        if _co_raw is None:
+            _co_raw = callouts_data.get("calloutIds")   # фолбэк на старое имя поля
+        callout_ids_tgt = [str(x) for x in (_co_raw or []) if str(x).strip()]
         callout_count = len(callout_ids_tgt)
 
-        # D8: sitelinks
+        # D8: sitelinks — campaign-level inheritable (Grid отдаёт под .assetValue, grid_finalize:603)
+        # ИЛИ ad-level (v5) привязка.
         sl_data = edit_c.get("inheritableSitelinkSet") or {}
-        sl_set_id = str(sl_data.get("sitelinkSetId") or "")
-        has_sitelinks = bool(sl_set_id and sl_set_id not in ("0", ""))
+        sl_set_id = str(sl_data.get("assetValue") or sl_data.get("sitelinkSetId") or "")
+        has_sitelinks = bool(sl_set_id and sl_set_id not in ("0", "")) or bool(counts_c.get("has_sitelinks_v5"))
 
         # D9: images — campaign_content_counts.adaptive_images_read
         adaptive_total = counts_c.get("adaptive_total")       # None если не читалось
         no_images_ads = counts_c.get("no_images_ads")         # None если не читалось
         adaptive_images_read = bool(counts_c.get("adaptive_images_read"))
 
-        if adaptive_images_read and adaptive_total is not None and no_images_ads is not None:
+        if counts_c.get("ads_with_images_v5") is not None:
+            ads_with_images = counts_c.get("ads_with_images_v5")   # честный ad-level v5-счёт
+        elif adaptive_images_read and adaptive_total is not None and no_images_ads is not None:
             ads_with_images = max(0, adaptive_total - no_images_ads)
         else:
             ads_with_images = None
@@ -694,20 +825,32 @@ def diff_profiles(src_profile: Dict[str, dict],
                             repairable=True,
                             repair_hint="step_adaptive_creatives copy_steps.py:982 — bodies RMW"))
 
-        # D7: callouts
+        # D7: callouts (edit_rows — campaign-level, но Grid может не вернуть черновик)
         s7, t7 = src_c["callout_count"], tgt_c["callout_count"]
-        results.append(_row(scope, "callout_count",
-                            _OK if s7 == t7 else _MISMATCH, s7, t7,
-                            repairable=True,
-                            repair_hint="step_attach_callouts copy_steps.py:332; "
-                                        "grid.add_callouts copy_engine.py:1987"))
+        if not reads_ok.get("edit_rows"):
+            results.append(_row(scope, "callout_count", _UNREADABLE, s7, None,
+                                repairable=True,
+                                repair_hint="campaigns_edit_rows не вернул кампанию (возможно черновик); "
+                                            "step_attach_callouts copy_steps.py:332"))
+        else:
+            results.append(_row(scope, "callout_count",
+                                _OK if s7 == t7 else _MISMATCH, s7, t7,
+                                repairable=True,
+                                repair_hint="step_attach_callouts copy_steps.py:332; "
+                                            "grid.add_callouts copy_engine.py:1987"))
 
-        # D8: sitelinks
+        # D8: sitelinks (аналогично D7 — campaign-level, зависит от edit_rows)
         s8, t8 = src_c["has_sitelinks"], tgt_c["has_sitelinks"]
-        results.append(_row(scope, "sitelinks_present",
-                            _OK if s8 == t8 else _MISMATCH, s8, t8,
-                            repairable=True,
-                            repair_hint="step_attach_sitelinks copy_steps.py:377 (с гео-морфом)"))
+        if not reads_ok.get("edit_rows"):
+            results.append(_row(scope, "sitelinks_present", _UNREADABLE, s8, None,
+                                repairable=True,
+                                repair_hint="campaigns_edit_rows не вернул кампанию (возможно черновик); "
+                                            "step_attach_sitelinks copy_steps.py:377"))
+        else:
+            results.append(_row(scope, "sitelinks_present",
+                                _OK if s8 == t8 else _MISMATCH, s8, t8,
+                                repairable=True,
+                                repair_hint="step_attach_sitelinks copy_steps.py:377 (с гео-морфом)"))
 
         # D9: images
         s9 = src_c["ads_with_images"]
@@ -778,8 +921,8 @@ def diff_profiles(src_profile: Dict[str, dict],
         s14 = src_c["ads_with_button"]
         results.append(_row(scope, "button_cta", _UNREADABLE, s14, None,
                             repairable=False,
-                            repair_hint="Мутатора кнопки НЕТ — copy_steps.py:998 намеренно "
-                                        "не переносит button; UpdateAdaptiveTextAds не пишет button "
+                            repair_hint="Мутатора кнопки НЕТ — step_adaptive_creatives (copy_steps.py:1021-1023) "
+                                        "намеренно не переносит button; UpdateAdaptiveTextAds не пишет button "
                                         "(grid_finalize.py:2137); UAC — нет поля в MasterCampaignSpec"))
 
         # D15: adPrice — excluded intentional
@@ -842,6 +985,8 @@ def diff_profiles(src_profile: Dict[str, dict],
 
 def check_geo_kw_consistency(src_dir: Any,
                              geo_pairs: List[Tuple[str, str]],
+                             *,
+                             snapshot_transformed: bool = True,
                              log: Optional[Callable[[str], None]] = None,
                              ) -> List[dict]:
     """Задача 1: измерение гео-консистентности ключей/минус-слов (REPORT-ONLY, snapshot-based).
@@ -851,6 +996,13 @@ def check_geo_kw_consistency(src_dir: Any,
        ИСТОЧНИКА (они должны были быть заменены step_keywords гео-морфологией).
     2. geo_neg_target_blocked — количество минус-слов в adgroups.json/campaigns.json,
        содержащих формы ЦЕЛЕВОГО города (они должны были быть отфильтрованы).
+
+    Args:
+        snapshot_transformed: True (ЕПК-путь) — snapshot содержит УЖЕ ЗАМЕЩЁННЫЕ ключи;
+            residual==0 означает корректную замену.
+            False (v5-путь) — snapshot содержит СЫРЫЕ ключи источника (замена применена
+            step_keywords к заливаемым данным, не к snapshot); остаточный подсчёт дал бы
+            ЛОЖНЫЙ MISMATCH → оба измерения возвращаются _EXCLUDED с пояснением.
 
     Возвращает две строки [{scope="global", dimension=..., status, source, target, ...}].
     Пустой geo_pairs → оба измерения excluded_intentional (нет гео-замены — нет требования)."""
@@ -869,6 +1021,17 @@ def check_geo_kw_consistency(src_dir: Any,
             "repairable": False,
             "repair_hint": repair_hint,
         }
+
+    # A3: v5-путь → snapshot сырой, residual = ложный MISMATCH → исключаем (не считаем).
+    if not snapshot_transformed:
+        rows.append(_row("geo_kw_source_residual", _EXCLUDED, 0, None,
+                         "v5-путь: snapshot источника сырой — гео-замена применена "
+                         "step_keywords при заливке, а не к snapshot; "
+                         "residual по snapshot будет ложно-положительным — измерение исключено"))
+        rows.append(_row("geo_neg_target_blocked", _EXCLUDED, 0, None,
+                         "v5-путь: snapshot источника сырой — фильтрация минусов по целевому гео "
+                         "применена step_keywords, не к snapshot — измерение исключено"))
+        return rows
 
     if not geo_pairs:
         rows.append(_row("geo_kw_source_residual", _EXCLUDED,
@@ -890,70 +1053,115 @@ def check_geo_kw_consistency(src_dir: Any,
     )
 
     # 1) geo_kw_source_residual: сколько фраз в keywords.json ещё содержат формы ИСТОЧНИКА.
+    # A4: различаем «файл отсутствует» (норма) от «файл есть, но чтение упало» (EXCLUDED+ошибка).
     kw_with_src = 0
+    _kw_read_err: Optional[str] = None
     try:
-        keywords = _rj(src_dir / "keywords.json")
-        for kw in keywords:
-            phrase = (kw.get("Keyword") or "").lower()
-            if not phrase:
-                continue
-            if any(re.search(r"\b" + re.escape(sf) + r"\b", phrase, re.UNICODE)
-                   for sf in source_forms):
-                kw_with_src += 1
+        kw_path = src_dir / "keywords.json"
+        if kw_path.exists():
+            _raw_kw = json.loads(kw_path.read_text(encoding="utf-8"))
+            keywords: list = _raw_kw if isinstance(_raw_kw, list) else \
+                ([_raw_kw] if isinstance(_raw_kw, dict) else [])
+            for kw in keywords:
+                phrase = (kw.get("Keyword") or "").lower()
+                if not phrase:
+                    continue
+                if any(re.search(r"\b" + re.escape(sf) + r"\b", phrase, re.UNICODE)
+                       for sf in source_forms):
+                    kw_with_src += 1
+        # else: файла нет → нечего проверять (не ошибка)
     except Exception as e:  # noqa: BLE001
-        _log(f"geo_kw_consistency: keywords.json read error: {str(e)[:150]}")
+        _kw_read_err = str(e)[:200]
+        _log(f"geo_kw_consistency: keywords.json read error: {_kw_read_err}")
 
-    rows.append(_row(
-        "geo_kw_source_residual",
-        _OK if kw_with_src == 0 else _MISMATCH,
-        kw_with_src,
-        0,
-        repair_hint=(
-            "step_keywords (copy_steps.py) применяет гео-замену к фразам "
-            "через ctx.geo_pairs; 0 = замена успешно убрала формы источника из keywords.json"
-        ),
-    ))
+    if _kw_read_err:
+        rows.append(_row(
+            "geo_kw_source_residual", _EXCLUDED, 0, None,
+            f"A4: ошибка чтения keywords.json (файл существует, но прочитать не удалось): {_kw_read_err}",
+        ))
+    else:
+        rows.append(_row(
+            "geo_kw_source_residual",
+            _OK if kw_with_src == 0 else _MISMATCH,
+            kw_with_src,
+            0,
+            repair_hint=(
+                "v5-путь: step_keywords (copy_steps.py) применяет гео-замену через ctx.geo_pairs; "
+                "ЕПК-путь: замена применена инлайн в group_specs перед create_full (copy_engine.py:1237); "
+                "в snapshot пишутся уже замещённые ключи → 0 = замена корректна"
+            ),
+        ))
 
     # 2) geo_neg_target_blocked: сколько минус-слов содержат формы ЦЕЛЕВОГО города.
     # Проверяем campaigns.json (campaign-level NegativeKeywords) и adgroups.json (group-level).
+    # A4: отдельные read_err для каждого файла; результат — EXCLUDED если оба прочитать не удалось.
     neg_with_tgt = 0
-    try:
-        campaigns = _rj(src_dir / "campaigns.json")
-        for camp in campaigns:
-            raw = camp.get("NegativeKeywords") or {}
-            items = raw.get("Items") if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
-            for m in (items or []):
-                low = (m or "").lower()
-                if any(re.search(r"\b" + re.escape(tf) + r"\b", low, re.UNICODE)
-                       for tf in target_forms):
-                    neg_with_tgt += 1
-    except Exception as e:  # noqa: BLE001
-        _log(f"geo_kw_consistency: campaigns.json read error: {str(e)[:150]}")
+    _camp_read_err: Optional[str] = None
+    _ag_read_err: Optional[str] = None
 
     try:
-        adgroups = _rj(src_dir / "adgroups.json")
-        for ag in adgroups:
-            raw = ag.get("NegativeKeywords") or {}
-            items = raw.get("Items") if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
-            for m in (items or []):
-                low = (m or "").lower()
-                if any(re.search(r"\b" + re.escape(tf) + r"\b", low, re.UNICODE)
-                       for tf in target_forms):
-                    neg_with_tgt += 1
+        camp_path = src_dir / "campaigns.json"
+        if camp_path.exists():
+            _raw_camps = json.loads(camp_path.read_text(encoding="utf-8"))
+            camps_list: list = _raw_camps if isinstance(_raw_camps, list) else \
+                ([_raw_camps] if isinstance(_raw_camps, dict) else [])
+            for camp in camps_list:
+                raw = camp.get("NegativeKeywords") or {}
+                items = raw.get("Items") if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
+                for m in (items or []):
+                    low = (m or "").lower()
+                    if any(re.search(r"\b" + re.escape(tf) + r"\b", low, re.UNICODE)
+                           for tf in target_forms):
+                        neg_with_tgt += 1
     except Exception as e:  # noqa: BLE001
-        _log(f"geo_kw_consistency: adgroups.json read error: {str(e)[:150]}")
+        _camp_read_err = str(e)[:150]
+        _log(f"geo_kw_consistency: campaigns.json read error: {_camp_read_err}")
 
-    rows.append(_row(
-        "geo_neg_target_blocked",
-        _OK if neg_with_tgt == 0 else _MISMATCH,
-        neg_with_tgt,
-        0,
-        repair_hint=(
-            "grid-cookie путь: _copy_geo_filter_negatives (copy_engine.py) фильтрует group-level; "
-            "v5-путь: campaign/group негативы заливаются direct_copy.py до наших шагов — "
-            "ненулевое значение = диагностически значимо для v5-копирования"
-        ),
-    ))
+    try:
+        ag_path = src_dir / "adgroups.json"
+        if ag_path.exists():
+            _raw_ags = json.loads(ag_path.read_text(encoding="utf-8"))
+            ags_list: list = _raw_ags if isinstance(_raw_ags, list) else \
+                ([_raw_ags] if isinstance(_raw_ags, dict) else [])
+            for ag in ags_list:
+                raw = ag.get("NegativeKeywords") or {}
+                items = raw.get("Items") if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
+                for m in (items or []):
+                    low = (m or "").lower()
+                    if any(re.search(r"\b" + re.escape(tf) + r"\b", low, re.UNICODE)
+                           for tf in target_forms):
+                        neg_with_tgt += 1
+    except Exception as e:  # noqa: BLE001
+        _ag_read_err = str(e)[:150]
+        _log(f"geo_kw_consistency: adgroups.json read error: {_ag_read_err}")
+
+    _neg_read_err_msg = "; ".join(
+        f for f in [
+            (f"campaigns.json: {_camp_read_err}" if _camp_read_err else ""),
+            (f"adgroups.json: {_ag_read_err}" if _ag_read_err else ""),
+        ] if f
+    )
+    if _neg_read_err_msg and neg_with_tgt == 0:
+        # Оба файла не прочитаны и счётчик 0 → не можем отличить «OK» от «ошибка чтения»
+        rows.append(_row(
+            "geo_neg_target_blocked", _EXCLUDED, 0, None,
+            f"A4: ошибка чтения файлов минус-слов, результат ненадёжен: {_neg_read_err_msg}",
+        ))
+    else:
+        if _neg_read_err_msg:
+            _log(f"geo_kw_consistency: частичная ошибка чтения минусов, счётчик={neg_with_tgt}: {_neg_read_err_msg}")
+        rows.append(_row(
+            "geo_neg_target_blocked",
+            _OK if neg_with_tgt == 0 else _MISMATCH,
+            neg_with_tgt,
+            0,
+            repair_hint=(
+                "ЕПК-путь: _copy_geo_filter_negatives удаляет минусы с формами ЦЕЛЕВОГО гео "
+                "(copy_engine.py:1240-1243); snapshot пишется с отфильтрованными минусами → 0 = фильтрация корректна; "
+                "v5-путь: campaign/group негативы заливаются direct_copy.py до наших шагов — "
+                "ненулевое значение = диагностически значимо"
+            ),
+        ))
 
     _log(f"geo_kw_consistency: source_residual_kw={kw_with_src}, neg_with_target_geo={neg_with_tgt}")
     return rows
@@ -1067,6 +1275,7 @@ def run_copy_verification(src_dir: Any,
             cached_invariants=cached_invariants,
             cached_adaptive=cached_adaptive_tgt,
             log=_log,
+            target_agency=target_agency,
         )
     except Exception as e:
         _log(f"copy_verify: build_target_profile error: {str(e)[:200]}")
@@ -1087,7 +1296,10 @@ def run_copy_verification(src_dir: Any,
 
     # Задача 1: гео-консистентность ключей/минусов (REPORT-ONLY, snapshot-based).
     try:
-        geo_rows = check_geo_kw_consistency(src_dir, geo_pairs or [], log=_log)
+        # A3: v5-путь — snapshot сырой → snapshot_transformed=False → оба измерения EXCLUDED.
+        geo_rows = check_geo_kw_consistency(
+            src_dir, geo_pairs or [], snapshot_transformed=False, log=_log
+        )
         results.extend(geo_rows)
     except Exception as e:
         _log(f"copy_verify: geo_kw_consistency error: {str(e)[:200]}")
@@ -1104,3 +1316,569 @@ def run_copy_verification(src_dir: Any,
          f"total={len(results)}")
 
     return {"results": results, "summary": summary}
+
+
+# ── АВТО-РЕМОНТ (B1) ─────────────────────────────────────────────────────────
+
+def _repair_shared_sets(
+    results: List[dict],
+    *,
+    src_dir: Path,
+    workdir: Path,
+    target_login: str,
+    target_agency: str,
+    repairs: list,
+    errors: list,
+    log: Callable[[str], None],
+) -> None:
+    """D3: создать/найти shared минус-наборы в целевом аккаунте и привязать к кампаниям.
+
+    Use-Operator-Units: v5 с токеном агентства (не Grid-куки).
+    Идемпотентно: maps["shared_sets"] уже содержит mapping → только привязка.
+    """
+    if _v5_call is None or _token_for_login is None or _direct_tokens is None:
+        errors.append("repair_shared_sets: DI не инициализирован (configure() не вызван)")
+        return
+
+    # Читаем кампании источника
+    src_camps_by_id: Dict[str, dict] = {}
+    try:
+        camp_path = src_dir / "campaigns.json"
+        if camp_path.exists():
+            for c in json.loads(camp_path.read_text(encoding="utf-8")):
+                cid = str(c.get("Id") or "")
+                if cid:
+                    src_camps_by_id[cid] = c
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"repair_shared_sets: campaigns.json: {str(exc)[:150]}")
+        return
+
+    # Snapshot shared sets (Name + NegativeKeywords)
+    src_sets_by_id: Dict[str, dict] = {}
+    try:
+        sset_path = src_dir / "negative_keyword_shared_sets.json"
+        if sset_path.exists():
+            for s in json.loads(sset_path.read_text(encoding="utf-8")):
+                sid = str(s.get("Id") or "")
+                if sid:
+                    src_sets_by_id[sid] = s
+    except Exception:  # noqa: BLE001
+        pass  # snapshot может не содержать sets — деградируем к пустым словам
+
+    # id_maps.json
+    maps_path = workdir / "id_maps.json"
+    maps: dict = {}
+    try:
+        if maps_path.exists():
+            maps = json.loads(maps_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"repair_shared_sets: id_maps.json: {str(exc)[:150]}")
+        return
+    maps.setdefault("shared_sets", {})
+    maps.setdefault("campaigns", {})
+
+    # Токен для целевого аккаунта
+    try:
+        token, _ = _token_for_login(target_login, target_agency, _direct_tokens())
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"repair_shared_sets: token: {str(exc)[:150]}")
+        return
+    if not token:
+        errors.append("repair_shared_sets: токен пуст, пропуск")
+        return
+
+    # Существующие shared sets в целевом (кэш по имени для dedup)
+    existing_by_name: Dict[str, int] = {}
+    try:
+        jg = _v5_call("negativekeywordsharedsets", "get", token, target_login, {
+            "SelectionCriteria": {}, "FieldNames": ["Id", "Name"],
+        })
+        for s in (jg.get("result") or {}).get("NegativeKeywordSharedSets", []):
+            nm = s.get("Name") or ""
+            sid_raw = s.get("Id")
+            if nm and sid_raw:
+                existing_by_name[nm] = int(sid_raw)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"repair_shared_sets: v5 get: {str(exc)[:150]}")
+        return
+
+    maps_dirty = False
+    for row in results:
+        if row.get("dimension") != "shared_set_count":
+            continue
+        if not row.get("repairable"):
+            continue
+        if row.get("status") in (_OK, _EXCLUDED):
+            continue
+        scope = row.get("scope", "")
+        if not scope.startswith("campaign:"):
+            continue
+        tail = scope[len("campaign:"):]
+        if "→" not in tail:
+            continue
+        src_id, tgt_id_str = tail.split("→", 1)
+
+        src_camp = src_camps_by_id.get(src_id) or {}
+        raw_ids = src_camp.get("NegativeKeywordSharedSetIds") or {}
+        if isinstance(raw_ids, dict):
+            raw_ids = raw_ids.get("Items") or []
+        if not raw_ids:
+            continue  # источник без shared sets — ничего не привязываем
+
+        tgt_set_ids: List[int] = []
+        for sid_str in [str(x) for x in raw_ids if str(x).strip()]:
+            # Уже смапирован в предыдущих проходах/phase_upload
+            if sid_str in maps["shared_sets"]:
+                tgt_set_ids.append(int(maps["shared_sets"][sid_str]))
+                continue
+            # Ищем / создаём в целевом
+            src_s = src_sets_by_id.get(sid_str) or {}
+            set_name = src_s.get("Name") or f"copy_set_{sid_str}"
+            if set_name in existing_by_name:
+                tgt_sid = existing_by_name[set_name]
+            else:
+                words = src_s.get("NegativeKeywords") or []
+                if isinstance(words, dict):
+                    words = words.get("Items") or []
+                try:
+                    j_add = _v5_call("negativekeywordsharedsets", "add", token, target_login, {
+                        "NegativeKeywordSharedSets": [{
+                            "Name": set_name,
+                            "NegativeKeywords": words,
+                        }],
+                    })
+                    add_results = (j_add.get("result") or {}).get("AddResults", [])
+                    new_id_raw = add_results[0].get("Id") if add_results else None
+                    if not new_id_raw:
+                        errors.append(
+                            f"repair_shared_sets: add «{set_name}» нет Id: "
+                            f"{str(j_add)[:120]}"
+                        )
+                        continue
+                    tgt_sid = int(new_id_raw)
+                    existing_by_name[set_name] = tgt_sid
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"repair_shared_sets: add «{set_name}»: {str(exc)[:150]}")
+                    continue
+            maps["shared_sets"][sid_str] = tgt_sid
+            maps_dirty = True
+            tgt_set_ids.append(tgt_sid)
+
+        if not tgt_set_ids:
+            continue
+
+        try:
+            tgt_id = int(tgt_id_str)
+        except (TypeError, ValueError):
+            errors.append(f"repair_shared_sets: bad tgt_id «{tgt_id_str}»")
+            continue
+
+        # Привязываем наборы к целевой кампании
+        try:
+            j_upd = _v5_call("campaigns", "update", token, target_login, {
+                "Campaigns": [{
+                    "Id": tgt_id,
+                    "NegativeKeywordSharedSetIds": {"Items": tgt_set_ids},
+                }],
+            })
+            upd_res = (j_upd.get("result") or {}).get("UpdateResults", [])
+            api_errs = (upd_res[0].get("Errors") or []) if upd_res else []
+            if api_errs:
+                msg = "; ".join(
+                    e.get("Message") or e.get("Details") or str(e) for e in api_errs
+                )
+                errors.append(f"repair_shared_sets: attach camp {tgt_id}: {msg}")
+                continue
+            if "error" in j_upd:
+                errors.append(
+                    f"repair_shared_sets: attach camp {tgt_id}: {j_upd.get('error')}"
+                )
+                continue
+            # Успех — обновляем строку отчёта in-place
+            row["status"] = _OK
+            row["target"] = len(tgt_set_ids)
+            repairs.append({
+                "scope": scope,
+                "dimension": "shared_set_count",
+                "action": "created_and_attached",
+                "target_set_ids": tgt_set_ids,
+            })
+            log(f"repair_shared_sets: {scope} → привязано {len(tgt_set_ids)} наборов")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"repair_shared_sets: update camp {tgt_id}: {str(exc)[:150]}")
+
+    if maps_dirty:
+        try:
+            maps_path.write_text(
+                json.dumps(maps, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"repair_shared_sets: maps write: {str(exc)[:120]}")
+
+
+def _repair_shopping_filters(
+    results: List[dict],
+    *,
+    src_dir: Path,
+    workdir: Path,
+    grid: gf.GridClient,
+    repairs: list,
+    errors: list,
+    log: Callable[[str], None],
+) -> None:
+    """D19: до-создать ShoppingAd для кампаний с неполным shopping_filter_count.
+
+    Grid-путь без баллов (gf.GridClient.add_shopping_ads).
+    Идемпотентно: объявления уже в maps["ads"] → пропуск.
+    """
+    # Собираем src_id кампаний, требующих ремонта
+    affected: Dict[str, str] = {}  # str(src_id) → str(tgt_id)
+    for row in results:
+        if row.get("dimension") != "shopping_filter_count":
+            continue
+        if not row.get("repairable"):
+            continue
+        if row.get("status") in (_OK, _EXCLUDED):
+            continue
+        scope = row.get("scope", "")
+        if scope.startswith("campaign:"):
+            tail = scope[len("campaign:"):]
+            if "→" in tail:
+                s_id, t_id = tail.split("→", 1)
+                affected[s_id] = t_id
+    if not affected:
+        return
+
+    # Читаем shopping_ads.json
+    shopping_ads: list = []
+    try:
+        sa_path = src_dir / "shopping_ads.json"
+        if sa_path.exists():
+            shopping_ads = json.loads(sa_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"repair_shopping: shopping_ads.json: {str(exc)[:150]}")
+        return
+
+    # Читаем id_maps
+    maps_path = workdir / "id_maps.json"
+    maps: dict = {}
+    try:
+        if maps_path.exists():
+            maps = json.loads(maps_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"repair_shopping: id_maps.json: {str(exc)[:150]}")
+        return
+    maps.setdefault("ads", {})
+    maps.setdefault("adgroups", {})
+    maps.setdefault("feeds", {})
+
+    shop_items: list = []
+    shop_src_ids: list = []
+    shop_camp_src_ids: list = []
+    for sa in shopping_ads:
+        src_camp_id = str(sa.get("CampaignId") or "")
+        if src_camp_id not in affected:
+            continue
+        src_ad_id = str(sa.get("Id") or "")
+        if src_ad_id and src_ad_id in maps["ads"]:
+            continue  # идемпотентно
+        gid = maps["adgroups"].get(str(sa.get("AdGroupId") or ""))
+        sad = sa.get("ShoppingAd") or {}
+        fid = maps["feeds"].get(str(sad.get("FeedId") or ""))
+        if not gid or not fid:
+            log(f"repair_shopping: пропуск ad {src_ad_id} — нет mapped adgroup/feed")
+            continue
+        item: dict = {"adgroup_id": int(gid), "feed_id": int(fid)}
+        raw_conds = sad.get("FeedFilterConditions") or []
+        if isinstance(raw_conds, dict):
+            raw_conds = raw_conds.get("Items") or []
+        for cond in raw_conds:
+            if not isinstance(cond, dict):
+                continue
+            op = str(cond.get("Operand") or "")
+            args = cond.get("Arguments") or []
+            if op == "collectionId" and args:
+                item["collection_id"] = str(args[0])
+            elif op == "vendor" and args:
+                item["vendor"] = str(args[0])
+            elif op == "model" and args:
+                item["model"] = [str(x) for x in args]
+        shop_items.append(item)
+        shop_src_ids.append(src_ad_id)
+        shop_camp_src_ids.append(src_camp_id)
+
+    if not shop_items:
+        return
+
+    try:
+        new_ids = grid.add_shopping_ads(shop_items) or []
+        added_by_camp: Dict[str, int] = {}
+        for src_ad, camp_id, new_id in zip(shop_src_ids, shop_camp_src_ids, new_ids):
+            if new_id:
+                maps["ads"][str(src_ad)] = int(new_id)
+                added_by_camp[camp_id] = added_by_camp.get(camp_id, 0) + 1
+
+        if added_by_camp:
+            maps_path.write_text(
+                json.dumps(maps, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            for row in results:
+                if row.get("dimension") != "shopping_filter_count":
+                    continue
+                scope = row.get("scope", "")
+                if not scope.startswith("campaign:"):
+                    continue
+                tail = scope[len("campaign:"):]
+                s_id = tail.split("→", 1)[0] if "→" in tail else ""
+                if s_id not in added_by_camp:
+                    continue
+                n_added = added_by_camp[s_id]
+                n_src = row.get("source") or 0
+                row["target"] = n_added
+                row["status"] = _OK if n_added >= n_src else _MISMATCH
+                repairs.append({
+                    "scope": scope,
+                    "dimension": "shopping_filter_count",
+                    "action": "add_shopping_ads",
+                    "added": n_added,
+                    "source": n_src,
+                })
+                log(f"repair_shopping: {scope} → {n_added}/{n_src} ShoppingAds")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"repair_shopping: add_shopping_ads: {str(exc)[:200]}")
+
+
+def _repair_keywords(
+    results: List[dict],
+    *,
+    src_dir: Path,
+    workdir: Path,
+    target_login: str,
+    target_agency: str,
+    geo_pairs: Optional[list],
+    repairs: list,
+    errors: list,
+    log: Callable[[str], None],
+) -> None:
+    """keyword_count: дозалить недостающие ключи по кампании через v5 (operator units).
+
+    Причина существования: наблюдалось, что на части кампаний ключи при аплоаде не оседают,
+    хотя v5 keywords.add вернул truthy Id и failed=0 (под-копирование во время создания кампании).
+    verify это ловит, но auto_repair раньше НЕ имел ремонтёра keyword_count → repairs=0.
+    Здесь сверяем ЖИВОЙ keywords.get по кампании с источником и дозаливаем недостающее.
+
+    Персистентность доказана: одиночный/батчевый v5 add на этих же группах оседает; ограничение
+    API — не более 1000 ключей на запрос (код 9300), поэтому батч 900. Гео-морфология фраз —
+    та же (geo_pairs), что применял step_keywords, иначе дубли (морфнутая≠исходная) раздуют цель."""
+    if _v5_call is None or _token_for_login is None or _direct_tokens is None:
+        errors.append("repair_keywords: DI не инициализирован (configure() не вызван)")
+        return
+    rows_kw = [
+        r for r in results
+        if r.get("dimension") == "keyword_count" and r.get("repairable")
+        and r.get("status") not in (_OK, _EXCLUDED)
+    ]
+    if not rows_kw:
+        return
+    try:
+        keywords = json.loads((src_dir / "keywords.json").read_text("utf-8")) \
+            if (src_dir / "keywords.json").exists() else []
+        adgroups = json.loads((src_dir / "adgroups.json").read_text("utf-8")) \
+            if (src_dir / "adgroups.json").exists() else []
+        maps = json.loads((workdir / "id_maps.json").read_text("utf-8")) \
+            if (workdir / "id_maps.json").exists() else {}
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"repair_keywords: чтение снапшота: {str(exc)[:150]}")
+        return
+    adg_map = {str(k): str(v) for k, v in (maps.get("adgroups") or {}).items()}
+    g2c = {str(g.get("Id")): str(g.get("CampaignId")) for g in adgroups}
+    cgm = None
+    if geo_pairs:
+        try:
+            from . import copy_geo_morph as cgm  # noqa: PLC0415
+        except Exception:  # noqa: BLE001
+            cgm = None
+    try:
+        token, _ = _token_for_login(target_login, target_agency, _direct_tokens())
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"repair_keywords: token: {str(exc)[:150]}")
+        return
+    if not token:
+        errors.append("repair_keywords: токен пуст, пропуск")
+        return
+
+    def _chunks(seq, n):
+        for i in range(0, len(seq), n):
+            yield seq[i:i + n]
+
+    def _live_kw(tgt_cid: int) -> Dict[int, set]:
+        """{tgt_gid: {phrase_lower}} — живые ключи цели по кампании (постранично)."""
+        out: Dict[int, set] = {}
+        offset = 0
+        while True:
+            j = _v5_call("keywords", "get", token, target_login, {
+                "SelectionCriteria": {"CampaignIds": [tgt_cid]},
+                "FieldNames": ["Id", "AdGroupId", "Keyword"],
+                "Page": {"Limit": 10000, "Offset": offset},
+            })
+            batch = (j.get("result") or {}).get("Keywords") or []
+            for kw in batch:
+                out.setdefault(int(kw.get("AdGroupId") or 0), set()).add(
+                    str(kw.get("Keyword") or "").strip().lower())
+            if len(batch) < 10000:
+                break
+            offset += 10000
+        return out
+
+    for row in rows_kw:
+        scope = row.get("scope", "")
+        if not scope.startswith("campaign:") or "→" not in scope:
+            continue
+        src_id, tgt_id_str = scope[len("campaign:"):].split("→", 1)
+        if not tgt_id_str.strip().isdigit():
+            continue
+        tgt_cid = int(tgt_id_str)
+        # желаемые фразы по target-группам (гео-морф как в step_keywords, без autotargeting)
+        desired: Dict[int, set] = {}
+        for k in keywords:
+            if g2c.get(str(k.get("AdGroupId"))) != src_id:
+                continue
+            phrase = str(k.get("Keyword") or "").strip()
+            if not phrase or phrase.startswith("---"):
+                continue
+            tgt_g = adg_map.get(str(k.get("AdGroupId")))
+            if not tgt_g or not str(tgt_g).isdigit():
+                continue
+            if cgm and geo_pairs:
+                p2, _n = cgm.apply_replacements(phrase, geo_pairs)
+                phrase = (p2 or "").strip() or phrase
+            desired.setdefault(int(tgt_g), set()).add(phrase)
+        if not desired:
+            continue
+        try:
+            live = _live_kw(tgt_cid)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"repair_keywords {tgt_cid}: live get: {str(exc)[:150]}")
+            continue
+        to_add = [
+            {"AdGroupId": gid, "Keyword": ph}
+            for gid, phrases in desired.items()
+            for ph in phrases
+            if ph.strip().lower() not in live.get(gid, set())
+        ]
+        if not to_add:
+            continue
+        added = 0
+        for batch in _chunks(to_add, 900):
+            try:
+                j = _v5_call("keywords", "add", token, target_login, {"Keywords": batch})
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"repair_keywords {tgt_cid}: add: {str(exc)[:150]}")
+                continue
+            err = (j.get("error") or {}).get("error_string") if isinstance(j.get("error"), dict) else None
+            if err:
+                errors.append(f"repair_keywords {tgt_cid}: v5 {err[:120]}")
+                continue
+            for ar in ((j.get("result") or {}).get("AddResults") or []):
+                if isinstance(ar, dict) and ar.get("Id"):
+                    added += 1
+        if added:
+            repairs.append({"scope": scope, "dimension": "keyword_count",
+                            "action": "add_keywords", "added": added})
+            try:
+                row["target"] = int(row.get("target") or 0) + added
+                if str(row.get("target")) == str(row.get("source")):
+                    row["status"] = _OK
+            except (TypeError, ValueError):
+                pass
+            log(f"repair keywords {tgt_cid}: дозалито {added} (недоставало {len(to_add)})")
+
+
+def run_copy_repair(
+    report: dict,
+    *,
+    src_dir: Any,
+    workdir: Any,
+    target_login: str,
+    target_agency: str,
+    grid: Optional[gf.GridClient] = None,
+    geo_pairs: Optional[list] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> dict:
+    """Авто-ремонт repairable=True измерений из результата run_copy_verification.
+
+    ГАРАНТИИ (жёсткие):
+    - Только ADD/SET недостающего, никогда не удаляет entity цели.
+    - Идемпотентно: уже созданное/привязанное → пропуск.
+    - Ошибки → rep["errors"], исключение НЕ поднимает.
+    - После ремонта обновляет строки report["results"] in-place (status / target).
+    - Use-Operator-Units: D3 — v5 с токеном; D19 — Grid без баллов.
+
+    Ремонтируемые (repairable=True в verify):
+        D3  shared_set_count — создать/найти shared минус-наборы + привязать (v5).
+        D19 shopping_filter_count — до-создать ShoppingAd через Grid.
+
+    НЕ ремонтируем (repairable=False в verify):
+        D10 audiences, D11 bid_modifiers, D14 button_cta — технический барьер (нет writer).
+
+    Returns:
+        {"repairs": [{scope, dimension, action, ...}], "errors": [str, ...]}
+    """
+    _log = log or _nolog
+    repairs: List[dict] = []
+    errors: List[str] = []
+    src_dir_p = Path(src_dir)
+    workdir_p = Path(workdir)
+
+    results = report.get("results") or []
+    has_repairable = any(
+        r.get("repairable") and r.get("status") not in (_OK, _EXCLUDED)
+        for r in results
+    )
+    if not has_repairable:
+        _log("copy_repair: нечего чинить (нет repairable=True строк с неOK/неEXCLUDED статусом)")
+        return {"repairs": repairs, "errors": errors}
+
+    # D3: shared negative keyword sets (v5 с токеном — operator units)
+    _repair_shared_sets(
+        results,
+        src_dir=src_dir_p,
+        workdir=workdir_p,
+        target_login=target_login,
+        target_agency=target_agency,
+        repairs=repairs,
+        errors=errors,
+        log=_log,
+    )
+
+    # keyword_count: дозалить недостающие ключи по кампании (v5, operator units).
+    _repair_keywords(
+        results,
+        src_dir=src_dir_p,
+        workdir=workdir_p,
+        target_login=target_login,
+        target_agency=target_agency,
+        geo_pairs=geo_pairs,
+        repairs=repairs,
+        errors=errors,
+        log=_log,
+    )
+
+    # D19: shopping filter count (Grid без баллов)
+    if grid is not None:
+        _repair_shopping_filters(
+            results,
+            src_dir=src_dir_p,
+            workdir=workdir_p,
+            grid=grid,
+            repairs=repairs,
+            errors=errors,
+            log=_log,
+        )
+    else:
+        _log("copy_repair: D19 пропущен — grid=None (GridClient цели не передан)")
+
+    _log(
+        f"copy_repair: итог — repairs={len(repairs)}, errors={len(errors)}"
+    )
+    return {"repairs": repairs, "errors": errors}

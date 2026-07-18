@@ -1,0 +1,26 @@
+[Unit]
+Description=SEOAdvanced Direct — Slepki structure editor (isolated web)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scripts/home/seoadvanced
+Environment=DIRECT_ROLE=web
+Environment=DIRECT_SLEPKI_HOST=127.0.0.1
+Environment=DIRECT_SLEPKI_PORT=5023
+Environment=DIRECT_REGISTER_CONTENT_EDITOR=0
+Environment=DIRECT_REGISTER_COPY=0
+Environment=NEURO_PACK_MOUNT=/opt/neuro_content_local
+ExecStart=/root/venv/bin/python3 -m direct.slepki_main
+Restart=always
+RestartSec=5
+
+# Владеет ТОЛЬКО страницей /direct/automation/slepki и /direct/api/slepki/* (13 эндпоинтов).
+# DIRECT_ROLE=web — обязателен: при дефолтной роли (all) этот процесс поднял бы воркеров и
+# демоны создания РК. При web _job_new пишет edit-джобу в БД (_web_posted=true), а применяет
+# её direct-create-worker. Обмен структурой с create — файлом на общей ФС (атомарная запись),
+# без HTTP-API между процессами. Рестарт этого сервиса не трогает очередь создания РК.
+
+[Install]
+WantedBy=multi-user.target

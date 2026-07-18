@@ -1038,7 +1038,9 @@ def create_set_response(deps: dict):
         # с контентом), создаём одно промо по слепку/M3 в библиотеке клиента и сразу привязываем
         # к созданным кампаниям. Создание промо НЕ публикует кампании: РК остаются черновиками.
         from .create_set_promo import attach_or_create_promo
-        promo_note = attach_or_create_promo(
+        # Второй элемент — tri-state «в библиотеке аккаунта есть промо» из уже сделанного там
+        # v5 promotions.get (0 новых запросов). Ступень 1 гейта PROMO_MISSING в live-верификаторе.
+        promo_note, _promo_library = attach_or_create_promo(
             login=login,
             items=items,
             results=results,
@@ -1084,6 +1086,7 @@ def create_set_response(deps: dict):
                 _results,
                 agency=(_w_agency or body.get("agency") or ""),
                 use_v5=False,
+                account_has_promo_library=_promo_library,
             ),
             repair_deps=_repair_deps,
             post_verify=_attach_post_repair_verification,

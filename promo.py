@@ -41,6 +41,21 @@ class PromoClient:
             self.c._absorb_csrf(r)
         return r.json()
 
+    def _ensure_csrf(self) -> None:
+        """Прогреть CSRF-токен ПЕРЕД первой мутацией.
+
+        Первый POST на свежем UacClient уходит без ``x-csrf-token`` — grid молча
+        возвращает пустой ответ (``data:null``, ни ``id``, ни ошибок), а ``_absorb_csrf``
+        подхватывает токен ТОЛЬКО из этого ответа. Итог: первая реальная мутация
+        (обычно промо самой массовой кампании) всегда падала «тихим null». Лёгкий
+        тёплый запрос делает токен доступным до первой мутации. Идемпотентно."""
+        if getattr(self.c, "csrf", None):
+            return
+        try:
+            self.gql("query{__typename}")
+        except Exception:  # noqa: BLE001 — прогрев best-effort, реальная мутация сама повторит
+            pass
+
     def add(self, *, type: str, description: str, href: str,
             amount: int | None = None, unit: str | None = None, prefix: str | None = None,
             promocode: str | None = None, start: str | None = None,
@@ -65,16 +80,27 @@ class PromoClient:
         mut = ("mutation($input: GdAddPromoExtensionsInputInput!){"
                "addPromoExtensions(input:$input){mutationResults{id} "
                "validationResult{errors{code path}}}}")
+        self._ensure_csrf()
         d = self.gql(mut, {"input": {"promoExtensions": [item]}})
         res = (d.get("data") or {}).get("addPromoExtensions") or {}
         mr = (res.get("mutationResults") or [{}])[0]
         if mr.get("id"):
             return int(mr["id"]), None
         errs = (res.get("validationResult") or {}).get("errors") or d.get("errors")
+        # «Тихий null»: ни id, ни ошибок и пустой data → cold-CSRF-провал (токен подхватился
+        # только что). Один повтор — теперь запрос уйдёт с токеном (RUB/PCT тут ни при чём).
+        if not errs and not (d.get("data") or {}).get("addPromoExtensions"):
+            d = self.gql(mut, {"input": {"promoExtensions": [item]}})
+            res = (d.get("data") or {}).get("addPromoExtensions") or {}
+            mr = (res.get("mutationResults") or [{}])[0]
+            if mr.get("id"):
+                return int(mr["id"]), None
+            errs = (res.get("validationResult") or {}).get("errors") or d.get("errors")
         return None, json.dumps(errs, ensure_ascii=False)[:300]
 
     def attach(self, promo_id: int, campaign_ids: list[int]) -> dict:
         """Привязать промо к кампаниям (updateCampaignsPromoExtension). Пока не используется в UI."""
+        self._ensure_csrf()
         mut = ("mutation($input: GdUpdateCampaignsPromoExtensionInput!){"
                "updateCampaignsPromoExtension(input:$input){updatedCampaigns{id} "
                "validationResult{errors{code path}}}}")

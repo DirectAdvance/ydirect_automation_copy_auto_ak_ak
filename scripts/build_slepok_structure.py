@@ -312,7 +312,7 @@ def count_collisions(
 # ---------------------------------------------------------------------------
 
 def build_staging(
-    slepki_path: Path,
+    slepki_path: Optional[Path],
     corpus_base: Path,
     slug_to_corpus: dict[str, str],  # {slepok_key → corpus subdirectory name}
     output_path: Path,
@@ -323,7 +323,7 @@ def build_staging(
 
     Параметры
     ---------
-    slepki_path     : Путь к текущему slepki_structure.json (суперсет-источник).
+    slepki_path     : Путь к slepki_structure.json (суперсет-источник). None → собрать из direct/slepki/.
     corpus_base     : Корень папки corpus.
     slug_to_corpus  : Маппинг {slepok_key: имя_папки_в_corpus}.
     output_path     : Куда сохранить staging-версию (НЕ перезаписывает slepki_path).
@@ -331,9 +331,18 @@ def build_staging(
 
     Возвращает: dict со статистикой (для логгирования/отчёта).
     """
-    print(f"[build_staging] Загружаем {slepki_path}...", file=sys.stderr)
-    with slepki_path.open(encoding="utf-8") as f:
-        data = json.load(f)
+    if slepki_path is None:
+        # Монолит разбит на per-slepok файлы — собираем суперсет через slepki_store.
+        print("[build_staging] Собираем структуру из direct/slepki/ (slepki_store)...", file=sys.stderr)
+        _seo = Path(__file__).resolve().parents[2]   # …/seoadvanced (в ней пакет direct)
+        if str(_seo) not in sys.path:
+            sys.path.insert(0, str(_seo))
+        from direct import slepki_store as _ss
+        data = _ss.assemble()
+    else:
+        print(f"[build_staging] Загружаем {slepki_path}...", file=sys.stderr)
+        with slepki_path.open(encoding="utf-8") as f:
+            data = json.load(f)
 
     directologists_orig: list[dict] = data["directologists"]
     target_keys = set(slug_to_corpus.keys())
@@ -584,7 +593,7 @@ def main() -> None:
         description="Генератор уникальных секций слепков из корпуса директологов."
     )
     parser.add_argument("--corpus", required=True, help="Корень папки corpus")
-    parser.add_argument("--slepki", required=True, help="Путь к slepki_structure.json")
+    parser.add_argument("--slepki", help="Путь к slepki_structure.json (не задан → собрать из direct/slepki/)")
     parser.add_argument("--output", required=True, help="Путь для staging-файла")
     parser.add_argument("--report", help="Путь для отчёта (Markdown)")
     parser.add_argument(
@@ -604,7 +613,7 @@ def main() -> None:
         slug_map[k] = v
 
     stats = build_staging(
-        slepki_path=Path(args.slepki),
+        slepki_path=Path(args.slepki) if args.slepki else None,
         corpus_base=Path(args.corpus),
         slug_to_corpus=slug_map,
         output_path=Path(args.output),

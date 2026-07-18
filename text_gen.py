@@ -319,6 +319,32 @@ def _drop_model_keys_common(keywords: list) -> list:
 _DISC_STOP: frozenset = frozenset({"новый", "новые", "new", "нов"})   # общие модификаторы ≠ дискриминаторы
 _FOREIGN_DISCRIMINATORS_CACHE: dict = {}
 
+# Кузов/модификация пишется в РАЗНЫХ алфавитах: имя группы в структуре латиницей
+# («Lada Granta Liftback», gk=lada_granta_liftback), а brand_models_catalog — кириллицей
+# («Granta Лифтбек»). Без сшивки токен «лифтбек» считался бы дискриминатором ЧУЖОЙ модели
+# и выкашивал ВСЕ ключи собственной группы (регресс per-adgroup: группа уезжала с 0 ключей).
+_MODEL_TOKEN_ALIASES: dict = {
+    "лифтбек": "liftback", "лифтбэк": "liftback",
+    "хэтчбек": "hatchback", "хетчбек": "hatchback", "хэтчбэк": "hatchback",
+    "седан": "sedan", "универсал": "universal", "кросс": "cross", "кроссовер": "crossover",
+    "спорт": "sport", "купе": "coupe", "комби": "combi",
+}
+_MODEL_TOKEN_ALIASES_REV: dict = {
+    lat: frozenset(c for c, l in _MODEL_TOKEN_ALIASES.items() if l == lat)
+    for lat in set(_MODEL_TOKEN_ALIASES.values())
+}
+
+
+def _expand_model_tokens(toks) -> frozenset:
+    """Токены + их кир↔лат эквиваленты кузова/модификации (лифтбек↔liftback, седан↔sedan)."""
+    out = set(toks or ())
+    for t in set(toks or ()):
+        lat = _MODEL_TOKEN_ALIASES.get(t)
+        if lat:
+            out.add(lat)
+        out.update(_MODEL_TOKEN_ALIASES_REV.get(t) or ())
+    return frozenset(out)
+
 
 def _model_subtokens(name: str) -> frozenset:
     """Токены строки с разбивкой на границах буква↔цифра; len≤1 отсеиваются.
@@ -331,6 +357,13 @@ def _model_subtokens(name: str) -> frozenset:
             if len(sub) > 1:
                 toks.add(sub)
     return frozenset(toks)
+
+
+def _kw_positive_tokens(kw: str) -> frozenset:
+    """Токены ключа БЕЗ минус-частей фразы: «лада гранта лифтбек -спорт» → {лада,гранта,лифтбек}.
+    Минус-слово внутри ключа наоборот ЗАПРЕЩАЕТ показ по нему, поэтому считать его признаком
+    чужой модели нельзя — иначе легальный ключ группы дропался из-за собственного минуса."""
+    return _model_subtokens(" ".join(w for w in str(kw or "").split() if not w.startswith("-")))
 
 
 def _foreign_model_discriminators(model: str) -> frozenset:
@@ -361,14 +394,25 @@ def _foreign_model_discriminators(model: str) -> frozenset:
     if not all_models:
         _FOREIGN_DISCRIMINATORS_CACHE[model] = frozenset()
         return frozenset()
-    own_toks = _model_subtokens(model)
+    own_toks = _expand_model_tokens(_model_subtokens(model))
     disc: set = set()
     for other_name in all_models:
-        other_toks = _model_subtokens(other_name)
+        other_toks = _expand_model_tokens(_model_subtokens(other_name))
         disc.update((other_toks - own_toks) - _DISC_STOP)
     result = frozenset(disc)
     _FOREIGN_DISCRIMINATORS_CACHE[model] = result
     return result
+
+
+_AUTOTARGET_KW = "---autotargeting"
+
+
+def _real_kw_count(keywords: list) -> int:
+    """Сколько РЕАЛЬНЫХ ключей в списке. Спецключ «---autotargeting» живёт в relevanceMatch и при
+    заливке пропускается (grid_create.add_keywords) → он НЕ делает список непустым. Без этого
+    анти-пустой фолбэк (`or kws`) обманывался спецключом и группа уезжала с 0 ключей в кабинете."""
+    return sum(1 for k in (keywords or [])
+               if not str(k or "").strip().startswith("---"))
 
 
 def _filter_group_keywords(positive: list, seg: str, brand: str, city: str, site_type: str,
@@ -392,15 +436,18 @@ def _filter_group_keywords(positive: list, seg: str, brand: str, city: str, site
             if disc:
                 filtered = []
                 for kw in kws:
-                    kw_toks = _model_subtokens(str(kw))
+                    kw_toks = _kw_positive_tokens(str(kw))
                     if kw_toks & disc:
                         continue  # ключ содержит токен чужой модели → дроп
                     filtered.append(kw)
-                return filtered
+                # Анти-пустой гейт: фильтр чужих моделей не должен обнулять группу (пак-модель
+                # могла разойтись с каталогом) — считаем по РЕАЛЬНЫМ ключам, спецключ не в счёт.
+                return filtered if _real_kw_count(filtered) else kws
         return kws                                    # модельные ключи — суть группы «Модели»
     if seg == "Марки":
         # Марки: убрать «марка+модель»; фолбэк на kws допустим (там марочная лексика, не чужая).
-        return _drop_brand_model_keys(kws, brand) or kws
+        _brand_only = _drop_brand_model_keys(kws, brand)
+        return _brand_only if _real_kw_count(_brand_only) else kws
     # seg == "Общее": убрать ЛЮБЫЕ марка/модель-ключи.
     out = _drop_model_keys_common(kws)
     # #6-доводка: blacklist моделей — по ЛАТ-токенам ct-имён, но кириллический транслит модели
@@ -408,7 +455,7 @@ def _filter_group_keywords(positive: list, seg: str, brand: str, city: str, site
     # группе оставляем только ключи с ОБЩИМ авто/финанс-термином; чистые модель-запросы (без общего
     # слова) выкидываем — они не по адресу в общей группе (место модельным — в группе «Модели»).
     out = _keep_general_common(out)
-    if out:
+    if _real_kw_count(out):
         return out
     # Баг #6: если дроп опустошил набор (пул общей ct несёт ТОЛЬКО модельные ключи, напр. ct0014
     # «Авто/Автомобили/Машины») — НЕЛЬЗЯ возвращать kws: это вернёт ЧУЖИЕ модельные ключи («лада x рей»)

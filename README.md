@@ -123,7 +123,7 @@ resume-skip не пропустил существующую плохую кам
 | **Контент слепка** (campaign/promo) — фолбэк при недоступном M3 | Victory БД `public.direct_slepok_content` (`slepok`×`site_type`×`kind`) |
 | **Нативные интересы** (аудитории по группам) для МК/Товарки | Victory БД `public.direct_slepok_audiences` (`slepok`×`site_type`×`tp`×`category`×`kind`→`interest_ids`) |
 | **Глобальные правила** (бюджет/CPA/корректировки/фиды/минус-площадки/минус-марки) | Victory БД `direct_automation_rules`, `direct_audience_corrections`, `direct_demographic_corrections`, `direct_global_feed_rules`, `direct_global_minus_places`, `direct_global_minus_marks` |
-| Структура слепков (кодеры кампаний `tpN_{cpc\|cpa}_{site\|kviz}`) | `direct/slepki_structure.json` (генерится из `work/slepki_direktologov`) |
+| Структура слепков (кодеры кампаний `tpN_{cpc\|cpa}_{site\|kviz}`) | `direct/slepki/<key>.json` (по файлу на слепок) + `direct/slepki/_order.json`; собирается `slepki_store.assemble()`. Монолита `slepki_structure.json` больше нет |
 | Баланс / блокировки / ассеты | Яндекс.Директ API v5 (OAuth) + Live v4 + Grid (куки) |
 | Локальная LLM | mlx_lm.server на Mac M3 (через обратный SSH-туннель, см. `_M3_LLM_URL`) |
 
@@ -266,7 +266,7 @@ python3 scripts/m3_content_filter_smoke.py
 
 ### Вкладка «Структура слепков»
 - Дерево кодеров `tp{1-11}_{cpc|cpa}_{site|kviz}`; каждый `tp` **разбит по типу сайта**
-  (`site` / `kviz`) — отдельные секции (`t.splits` в `slepki_structure.json`).
+  (`site` / `kviz`) — отдельные секции (`t.splits` в part-файле слепка `direct/slepki/<key>.json`).
 - «Прочее (без tp-схемы)» из структуры удалено.
 
 ### Вкладка «Создание РК» → блок «Кампании в наборе» (динамический)
@@ -339,9 +339,12 @@ API:
 | `blueprint.py` | все эндпоинты, БД, валидация промо, корректировки, набор РК, прокси к M3 |
 | `ai_agents.py` | профили **4** агентов (Кудерко удалён), `SITE_TYPE_PROFILE`, лимиты, промпт-билдер |
 | `promo.py` | `PromoClient` — публикация/привязка промо через grid/api |
-| `campaign.py` | движок: UAC (tp6/tp7 на куках) + `DirectV501Client` (ЕПК tp1–tp5 по OAuth v501); `UTM_TEMPLATE`; `ShoppingAd`/`ListingAd`/`TextAd`; `add_shopping_ad`/`add_listing_ad`/`add_text_ad` |
+| `campaign.py` | **re-export хаб** (437 строк): cookie-store, `_AGENCY_RESOLVER`, io; ре-экспортирует полный namespace для 30+ импортёров — API-движки вынесены в модули ниже |
+| `direct_v501_client.py` | **DirectV501Client** + `UnifiedCampaignSpec` + `build_v501_client` — v501/ЕПК API (tp1–tp5 по OAuth); `ShoppingAd`/`ListingAd`/`TextAd`; `add_shopping_ad`/`add_listing_ad`/`add_text_ad` |
+| `uac_client.py` | **UacClient** + `MasterCampaignSpec` + `UTM_TEMPLATE`/`USER_AGENT` + image/audience/sitelink-хелперы — UAC/Мастер/Товарка (tp6/tp7 на куках) |
 | `grid_finalize.py` | Grid-докрутка ЕПК (tp1–tp5): `GridClient.finalize` (места показа, наследуемые ассеты, промо, minus-set, инварианты), `set_default_text` (тексты ShoppingAd), `apply_corrections` (корректировки v5 ПОСЛЕ Grid) |
-| `grid_create.py` | **куки-движок создания/удаления без баллов** (Grid web-api): `GridCreateClient` (`add_campaign`/`add_adgroups`/`add_ads`/`add_shopping_ads`/`delete_campaigns`), билдеры `build_unified_campaign`/`build_adgroup`/`build_ad`/`build_shopping_ad`, оркестраторы `create_full` (tp1/2/4), `create_shopping_full` (tp3/5 товарная галерея), in-place добивка `add_text_content_to_existing` и `add_shopping_content_to_existing`. Реверс из HAR14/16/17 |
+| `grid_create.py` | **куки-движок создания/удаления без баллов** (Grid web-api): `GridCreateClient` (`add_campaign`/`add_adgroups`/`add_ads`/`add_shopping_ads`/`delete_campaigns`), оркестраторы `create_full` (tp1/2/4), `create_shopping_full` (tp3/5), in-place добивка `add_text_content_to_existing`/`add_shopping_content_to_existing`; ре-экспортирует payload-фабрики из `grid_create_payloads`. Реверс из HAR14/16/17 |
+| `grid_create_payloads.py` | чистые payload-фабрики Grid: `build_unified_campaign`/`build_adgroup`/`build_ad`/`build_shopping_ad` + `_fill_titles`/`_fill_bodies`/`_dedup_keep`/`_safe_old_price`/`_PLATFORMS_OFF`/`_campaign_minus_kw` |
 | `grid_read.py` | read-only Grid-снимки без баллов Direct: фактические счётчики adGroups/ads по campaign ids для live verification |
 | `uac_read.py` | read-only UAC-снимки tp6/tp7 без v5 units: детали кампании через `/web-api/uac/campaign/{id}` и нормализация счётчиков titles/texts/sitelinks/media/feed |
 | `verifier.py` | статическая post-create проверка результата `create_set`: resolved body-инварианты, shape, id, кодер-имена, локальный build, промо/callouts, repair_candidates |
@@ -363,11 +366,16 @@ API:
 | `precreate.py` | чистый pre-create planning слой: описывает ресурсы, которые должны быть готовы до загрузки РК (existing names, промо, callouts, минус-библиотеки, картинки, M3 content prefetch), без Flask/БД/Direct мутаций |
 | `repair_planner.py` | чистый план добивки по verification/live issues: какие действия нужны, каким транспортом (`cookie_grid` first), тратят ли Direct units |
 | `repair_gate.py` | чистая нормализация repair-gate: job context, truthy/jsonish, выбор исполнимых actions |
-| `repair_executor.py` | scoped executor-ы добивки без Direct units: retry wiring остаётся в `blueprint.py`, in-place `content/promo/callouts/rename` выполняются через cookie/Grid |
+| `repair_executor.py` | **тонкий re-export фасад** (76 строк): ре-экспортирует публичный API всех repair-доменов; retry wiring — в `blueprint.py` |
+| `repair_common.py` | `RepairDeps` + const/regex + алиасы `cmc`/`gc`/`gf` — общая база всех repair-доменов |
+| `repair_content.py` | `execute_promo`/`execute_callouts`/`execute_rename`/`execute_content_repair` — ремонт контента/промо/уточнений |
+| `repair_media.py` | `execute_images`/`execute_adprice`/`execute_default_text`/`execute_campaign_invariant`/`execute_images_forbidden_repair` — ремонт медиа и ценовых полей |
+| `repair_keywords.py` | `execute_keywords_repair` + `execute_keywords_wrong_group_repair` — ремонт ключевых слов и ошибочных групп |
 | `repair_auto.py` | orchestration-слой добивки: общий порядок executor-ов для repair endpoint, безопасная post-create автодобивка `promo/callouts/rename`, preflight/decision/queue orchestration и response contracts для repair без Flask/DB |
 | `kontent_pack.py` | чтение контент-пака с M3 (`/opt/neuro_kontent/kontent_oktyabr`): ключи, уточнения, картинки, видео по `(segment, tp, ct, slepok)`; батч-сбор через ssh; `videos_for_login`; **видео-пул** `/Users/Shared/agency/Video/<ct>/*.mp4` (индекс `Video\|video\|<ct>`, `videos_pool_for_ct` — до 2 роликов; фолбэк в `videos_for_ct`). Видео идут в tp6/tp7 (content_ids) и tp1 (`_tp1_video_ads`: `upload_video_creative` → `meta.creative_id` → `creativeIds` в UpdateAdaptiveTextAds). **`PACK_MOUNT` переключаем через env `NEURO_PACK_MOUNT`** — на ЛОКАЛЬНУЮ копию пака (`/opt/neuro_content_local`, собирается ночным `scripts/sync_content_m3.py`, крон 03:00 Екб; видео ≤9.9МБ, картинки q80) → днём не зависим от M3 |
 | `promotions.py` | референс-копия PromoClient из skill (не используется blueprint'ом — рабочий `promo.py`) |
-| `slepki_structure.json` | структура слепков (кодеры `tpN_*`, `splits` по site/kviz) |
+| `slepki/<key>.json` + `slepki/_order.json` | структура слепков ПО ФАЙЛАМ (кодеры `tpN_*`, `splits` по site/kviz). Собирается `slepki_store.assemble()`; `_json("slepki_structure.json")` перехвачен → те же данные. Монолита нет |
+| `slepki_store.py` | сборка структуры из part-файлов (`assemble`, кэш по сигнатуре) + атомарная запись изменившихся частей (`write_directologists`) |
 | `seed_slepok_content.py` | сидер `direct_slepok_content` (фолбэк-контент по слепкам) |
 | `CAMPAIGN_INVARIANTS.md` | 6 обязательных инвариантов создания РК + статус по коду |
 | `*.json` | пресеты аудиторий / фидов / аккаунтов / Grid-шаблоны |

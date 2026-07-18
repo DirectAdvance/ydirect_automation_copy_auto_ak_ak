@@ -1,0 +1,18 @@
+[Unit]
+Description=SEOAdvanced Direct Content Editor queue worker
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scripts/home/seoadvanced
+Environment=DIRECT_REGISTER_CONTENT_EDITOR=0
+Environment=CE_WORKER_THREADS=4
+Environment=CE_AGENCY_PARALLEL=2
+Environment=CE_DAILY_JOB_CAP=50
+ExecStart=/root/venv/bin/python3 -m direct.content_worker
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

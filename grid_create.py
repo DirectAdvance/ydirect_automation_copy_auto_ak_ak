@@ -19,9 +19,13 @@ from typing import Any
 import requests
 
 from . import campaign as cmc
-from .ai_agents import extend_title_to_max
-from .create_set_minus import _minus_char_budget as _cm_minus_char_budget  # единый бюджет 20 000 симв.
-from .text_norm import _trim_clean
+from .text_norm import _trim_clean  # используется в add_shopping_content_to_existing (line ~878)
+from .grid_create_payloads import (   # ре-экспорт: gc.build_ad и др. остаются доступны для внешних импортёров
+    _PLATFORMS_OFF, build_unified_campaign, build_adgroup,
+    _campaign_minus_kw, _safe_old_price,
+    _dedup_keep, _fill_titles, _fill_bodies,
+    build_ad, build_shopping_ad,
+)
 
 GRID_URL = "https://direct.yandex.ru/web-api/grid/api"
 COMMON_IMAGE_CTS = {
@@ -236,6 +240,13 @@ class GridCreateClient:
             return out
         j = self._mutate("AddKeywords", _ADD_KEYWORDS_Q, {"input": {"addItems": clean}})
         res = (j.get("data") or {}).get("addKeywords") or {}
+        # #ФИКС-7: surface validationResult.errors (как add_campaign/add_adgroups). МЯГКО —
+        # НЕ raise (copy_steps/repair_executor толерантны к partial), но не молчим: раньше ошибка
+        # валидатора глоталась → кампания «ok» с 0 ключей. Гейт кол-ва — на стороне build-сайтов.
+        _vr = res.get("validationResult") or {}
+        if _vr.get("errors"):
+            print(f"WARNING add_keywords: validation errors ({len(clean)} keys): "
+                  f"{str(_vr['errors'])[:240]}", file=__import__("sys").stderr)
         return res.get("addedItems") or []
 
     def _read_ads_agid_map(self, campaign_id: int) -> dict[str, int]:
@@ -378,149 +389,11 @@ class GridCreateClient:
         return {"deleted": deleted, "errors": errs}
 
 
-# ── Сборщики payload'ов (наш спек → формат Grid) ────────────────────────────
-_PLATFORMS_OFF = {k: False for k in (
-    "gallery", "network", "search", "telegram", "maxMessenger", "taxi", "pillar",
-    "cityBusDisplay", "showcaseScreen", "mediafacade", "supersite", "billboard",
-    "cityboard", "cityformat", "organic", "serpGeoWizard", "yandexMaps")}
-
-
-def build_unified_campaign(*, name: str, counter_id: int, goal_id: int, cpa: int,
-                           weekly_budget: int, start_date: str, href: str = "",
-                           network: bool = True, search: bool = False,
-                           gallery: bool = False, organic: bool = False,
-                           pay_for_conversion: bool = False, time_zone: str = "130",
-                           email: str = "", bid_modifiers: dict | None = None,
-                           placement_types: list | None = None,
-                           disabled_places: list | None = None,
-                           minus_keywords: list | None = None) -> dict:
-    """Собрать ПОЛНЫЙ GdUnifiedCampaign (48 полей) для AddCampaigns (реверс из HAR14).
-    network=True → РСЯ (tp1); search=True → Поиск; gallery+organic → Товарная галерея (tp3/tp5, HAR17).
-    Стратегия AUTOBUDGET_AVG_CPA (целевой CPA).
-    bid_modifiers — корректировки ставок (HAR21): ставятся прямо в AddCampaigns (campaignId-плейсхолдер
-    «9999999» в объекте). Так корректировки попадают на куки-пути БЕЗ баллов для ВСЕХ tp1–tp5.
-    minus_keywords — глобальные минус-слова кампании (direct_global_minus_words); проставляются
-    на ВСЕХ cookie-типах tp1–tp5/tp3. Обрезаются до 20 000 симв. без пробелов (_campaign_minus_kw)."""
-    platforms = dict(_PLATFORMS_OFF)
-    platforms["network"] = bool(network)
-    platforms["search"] = bool(search)
-    platforms["gallery"] = bool(gallery)
-    platforms["organic"] = bool(organic)
-    return {
-        "abExperiments": [], "abSegmentRetargetingConditionId": None,
-        "abSegmentStatisticRetargetingConditionId": None,
-        "additionalData": {"href": href} if href else {"href": None},
-        "attributionModel": "AUTOMATIC", "bannerHrefParams": "", "bidModifiers": (bid_modifiers or {}),
-        "biddingStategyWithPlatforms": {
-            "platforms": platforms,
-            "strategyData": {
-                "goalId": str(goal_id), "avgCpa": str(int(cpa)),
-                "sum": str(int(weekly_budget) if weekly_budget else int(cpa) * 10),
-                "budgetType": "WEEKLY", "payForConversion": bool(pay_for_conversion),
-                "payForShows": False, "isExplorationBudgetValueCustom": False,
-            },
-            "strategyName": "AUTOBUDGET_AVG_CPA",
-        },
-        "brandSafetyCategories": [],
-        "broadMatch": {"broadMatchFlag": False, "broadMatchGoalId": None, "broadMatchLimit": 0},
-        "contextLimit": 100, "dayBudget": "0",
-        "defaultPermalinkId": None, "defaultTrackingPhoneId": None, "deliveryId": None,
-        "disabledIps": None, "disabledPlaces": list(disabled_places or []), "dynamicPlacesAdvTextsOnly": False,
-        "enableCompanyInfo": True, "enableCpcHold": False, "endDate": None,
-        "excludePausedCompetingAds": False,
-        "hasAddMetrikaTagToUrl": False, "hasAddOpenstatTagToUrl": False,
-        "hasExtendedGeoTargeting": False, "hasSiteMonitoring": True, "hasTitleSubstitute": True,
-        "inheritableCallouts": {"calloutIds": []},
-        "inheritableSitelinkSet": {"sitelinkSetId": None},
-        "isAlternativeTextsEnabled": False, "isOrderPhraseLengthPrecedenceEnabled": False,
-        "isOrganicSearchEnabled": False, "isPriceRecommendationsManagementEnabled": False,
-        "isRecommendationsManagementEnabled": False, "isS2sTrackingEnabled": False,
-        "isUniversalCamp": False, "libraryMinusKeywordsIds": [], "meaningfulGoals": [],
-        "metrikaCounters": [int(counter_id)] if counter_id else [],
-        "minusKeywords": _campaign_minus_kw(minus_keywords), "name": name[:255],
-        "notification": {
-            "smsSettings": {"smsTime": {"startTime": {"hour": 9, "minute": 0},
-                                        "endTime": {"hour": 21, "minute": 0}}, "enableEvents": []},
-            "emailSettings": {"stopByReachDailyBudget": True, "email": email or "victoryagency02@yandex.ru"},
-        },
-        "placementTypes": (list(placement_types) if placement_types else None),  # tp2 → ['SEARCH_PAGE'] (без динамич. мест)
-        "promoExtensionId": None, "reserveHref": None,
-        "startDate": start_date,
-        "timeTarget": {"enabledHolidaysMode": False, "holidaysSettings": None,
-                       "idTimeZone": str(time_zone), "timeBoard": [[100] * 24 for _ in range(7)],
-                       "useWorkingWeekends": True},
-        "useDiscounts": False,
-    }
-
-
-def build_adgroup(*, campaign_id: int, name: str, region_ids: list, keywords: list,
-                  minus_keywords: list | None = None, goal_id: int = 0,
-                  autotargeting: bool = True, autotargeting_profile: str = "") -> dict:
-    """Собрать GdAddUnifiedAdGroupItem: группа + ключи (phrase) + минус-слова + интерес-таргетинг."""
-    kw = [{"phrase": str(k)} for k in (keywords or []) if str(k).strip()][:200]
-    if autotargeting_profile == "search_tp2":
-        # Поиск tp2/tp4 (HAR 38): группа ВСЕГДА имеет активный relevanceMatch профиля
-        # «Целевые запросы» (EXACT_V2_MARK) + «Запросы без упоминания вашего бренда или
-        # брендов конкурентов» (WITHOUT_BRAND) — НЕЗАВИСИМО от того, autotarget-группа или
-        # с реальными ключами. В интерфейсе Директа поисковая кампания не может иметь
-        # выключенный автотаргет, поэтому профиль применяется и при autotargeting=False.
-        relevance_match = {
-            "isActive": True, "id": None,
-            "relevanceMatchCategories": ["EXACT_V2_MARK"],
-            "autotargetingBrandSettings": ["WITHOUT_BRAND"],
-        }
-    elif autotargeting:
-        # РСЯ (tp1) / Товарная галерея (tp3/tp5) — своя ветка: все категории + все бренды.
-        relevance_match = {
-            "isActive": True, "id": None,
-            "relevanceMatchCategories": ["ALTERNATIVE_MARK", "BROADER_MARK",
-                                         "ACCESSORY_MARK", "EXACT_V2_MARK", "NARROW_MARK"],
-            "autotargetingBrandSettings": ["WITH_BRAND", "WITHOUT_BRAND",
-                                           "WITH_COMPETITOR_BRAND"],
-        }
-    else:
-        relevance_match = {"isActive": False, "id": None, "relevanceMatchCategories": [],
-                           "autotargetingBrandSettings": []}
-
-    item = {
-        "campaignId": str(campaign_id), "name": (name or "группа")[:255],
-        "regionIds": [int(r) for r in (region_ids or []) if str(r).lstrip("-").isdigit()] or [225],
-        "hyperGeoId": None, "hyperlocalGeoSegments": None, "audienceTargeting": "ALL_AUDIENCE",
-        "adGroupMinusKeywords": [str(m) for m in (minus_keywords or [])][:100],
-        "keywords": kw, "libraryMinusKeywordsIds": [],
-        # Цель-ретаргетинг на группе НЕ ставим: для РСЯ/Поиска (tp1/tp2/tp4) и Товарной галереи
-        # (tp3/tp5) таргетинг = ключи + автотаргет (relevanceMatch). Цель живёт в СТРАТЕГИИ кампании.
-        # Гол в conditionRules требует поле time (RetargetingDefectIds.REQUIRED_TIME_FOR_GOAL_OR_SEGMENT) —
-        # как в HAR17/v501-пути, оставляем retargetingCondition=null.
-        "retargetingCondition": None,
-        "caRetargetingCondition": None, "retargetings": [], "searchRetargetings": [],
-        "offerRetargeting": {"isActive": True, "id": None},
-        "relevanceMatch": relevance_match,
-        "promoExtensionInheritancePolicy": "MERGE",
-        "inheritableCallouts": {"policy": "INHERIT"},
-        "inheritableSitelinkSet": {"policy": "INHERIT"},
-        # UTM на УРОВНЕ ГРУППЫ (правило Семёна: метка должна быть в tp1–tp5). Тот же макрос, что и
-        # v5-путь (_UTM_TEMPLATE_TP1 = cmc.UTM_TEMPLATE) — параметры доедут до всех ссылок группы.
-        "generalPrice": None, "trackingParams": cmc.UTM_TEMPLATE, "bidModifiers": {},
-        "contentTypeShowSettings": {"usualAdsShowFilter": "NO_ADULT_CONTENT"},
-        "contentLanguage": None, "useBidModifiers": True,
-    }
-    return item
-
-
+# ── Операционные константы (используются GridCreateClient и оркестраторами) ──
 _AC_GROUP_CAP = 150        # макс. групп на кампанию за проход (как в v501-пути)
 _GRID_MUTATION_CHUNK = 50  # приватный Grid нестабилен на пачках ~150: режем bulk-мутации
 _KW_BUDGET = 9800          # консервативный лимит ключей/кампанию (Яндекс: 10 000)
 _KW_MAX_PER_GROUP = 200    # верхний предохранитель на группу (Яндекс лимит API)
-
-
-def _campaign_minus_kw(words) -> list:
-    """Обрезать список минус-фраз по символьному бюджету кампании (20 000 симв. без пробелов).
-    Применяется к 'minusKeywords' в AddCampaigns; лимит — официальная дока Яндекса.
-    Нормализует входной список (str→strip→пропуск пустых), затем делегирует в
-    create_set_minus._minus_char_budget — единственный источник правды по бюджету (20 000 симв.)."""
-    normalized = [s for w in (words or []) for s in [str(w).strip()] if s]
-    return _cm_minus_char_budget(normalized)  # _MINUS_CAMPAIGN_CHAR_BUDGET=20_000 из create_set_minus
 
 
 def _alloc_kw_caps(groups: list) -> list[int]:
@@ -632,6 +505,12 @@ def create_full(login: str, *, campaign_spec: dict, groups: list, region_ids: li
     if _kw_items:
         try:
             rep["keywords"] = len(cl.add_keywords(_kw_items))
+            # #ФИКС-7: keyword-кампания задумана с ключами (_kw_items>0), но 0 создано →
+            # add_keywords проглотил validationResult.errors и вернул []. Кампания без ключей
+            # показываться не будет → выносим в errors (иначе ложный ok=True).
+            if not rep["keywords"]:
+                rep["errors"].append(
+                    f"ключи(AddKeywords): 0 из {len(_kw_items)} создано (валидатор Grid отклонил)")
         except Exception as e:  # noqa: BLE001 — группы созданы; но ключи теперь ЕДИНСТВЕННЫМ путём,
             # молчать нельзя: сбой = кампания без ключей (не будет показываться). Выносим в rep["errors"],
             # чтобы вызывающий (ЕПК-копир/feed/tp1/repair) увидел провал по стандартной проверке errors.
@@ -756,6 +635,11 @@ def add_text_content_to_existing(login: str, *, campaign_id: int, groups: list,
     if _kw_items_tc:
         try:
             rep["keywords"] = len(cl.add_keywords(_kw_items_tc))
+            # #ФИКС-7: задумано с ключами, но 0 создано (проглоченный validationResult.errors) →
+            # кампания без ключей не показывается → выносим в errors (иначе ложный ok=True).
+            if not rep["keywords"]:
+                rep["errors"].append(
+                    f"ключи(AddKeywords): 0 из {len(_kw_items_tc)} создано (валидатор Grid отклонил)")
         except Exception as e:  # noqa: BLE001 — группы созданы; ключи теперь ЕДИНСТВЕННЫМ путём,
             # сбой = группы без ключей. Выносим в rep["errors"] (repair-gate проверяет not errors).
             rep["errors"].append(f"ключи(AddKeywords): {str(e)[:200]}")
@@ -915,138 +799,8 @@ def add_shopping_content_to_existing(login: str, *, campaign_id: int, groups: li
     return rep
 
 
-def _safe_old_price(current, old=0) -> int:
-    """Старая цена ТОЛЬКО из фида (правило Семёна 2026-07-05, синхронно с
-    create_set_feeds._safe_old_price): нет old в фиде / old<=current → 0 (поле пустое).
-    Синтетика +12% убрана — цены не выдумываем."""
-    try:
-        cur = int(current or 0)
-        old_i = int(old or 0)
-    except (TypeError, ValueError):
-        return 0
-    if cur <= 0:
-        return 0
-    return old_i if old_i > cur else 0
-
-
-def _dedup_keep(seq, n, cut):
-    """Обрезать каждый элемент до cut, выкинуть пустые и ДУБЛИ (Grid: MUST_NOT_CONTAIN_DUPLICATED),
-    сохранить порядок, вернуть ≤n штук."""
-    out, seen = [], set()
-    for x in (seq or []):
-        raw = str(x).strip()
-        # Direct treats slash-separated chunks as one word for the max-word validator.
-        raw = re.sub(r"\S{23,}", lambda m: m.group(0).replace("/", " "), raw)
-        # Обрезка по слову + чистка оборванного хвоста («…Одобрение за 30» — live-кейс psm/ozge),
-        # а не жёсткий срез посреди слова; ≤cut строки _trim_clean не трогает (кроме word-tail).
-        s = (raw if len(raw) <= cut else _trim_clean(raw, cut)).strip()
-        if s and s not in seen:
-            seen.add(s)
-            out.append(s)
-        if len(out) >= n:
-            break
-    return out
-
-
-def _fill_titles(seq, n=7, cut=56):
-    src = [str(x or "").strip() for x in (seq or []) if str(x or "").strip()]
-    # Добиваем короткие входящие заголовки суффиксом-УТП до целевых 48–56 символов.
-    # idx ротирует банк суффиксов; used — предотвращает повторы суффикса внутри набора.
-    _ext_used: set[str] = set()
-    src = [extend_title_to_max(t, idx, max_len=cut, used=_ext_used)
-           for idx, t in enumerate(src)]
-    out = list(src)
-    anchor = (src[0].split(".")[0].strip() if src else "Авто в кредит").rstrip(" ,.")
-    if len(anchor) > 34:
-        sp = anchor[:34].rfind(" ")
-        anchor = anchor[:sp if sp > 15 else 34].rstrip(" ,.")
-    tails = [
-        "Кредит от 9 000 ₽/мес",
-        "Одобрение за 30 минут",
-        "Трейд-ин выше рынка",
-        "КАСКО на 1 год",
-        "Первый взнос 0 ₽",
-        "Выгода при покупке",
-        "15 банков-партнеров",
-        "Авто в наличии",
-    ]
-    for tail in tails:
-        if len(out) >= n:
-            break
-        cand = f"{anchor}. {tail}" if anchor else tail
-        if len(cand) > cut:
-            cand = f"{anchor} {tail}"
-        if len(cand) > cut:
-            cand = _trim_clean(cand, cut)   # по слову + чистка хвоста («…Одобрение за 30»)
-        # Добиваем сгенерированный кандидат до целевой длины (≤2 свободных символов).
-        if cand:
-            cand = extend_title_to_max(cand, len(out), max_len=cut, used=_ext_used)
-        if cand and cand not in out:
-            out.append(cand)
-    return out
-
-
-def _fill_bodies(seq, n=3, cut=81):
-    out = [str(x or "").strip() for x in (seq or []) if str(x or "").strip()]
-    fillers = [
-        "Автокредит от 9 000 ₽/мес. Подберите авто онлайн.",
-        "Первый взнос 0 ₽. КАСКО на 1 год бесплатно.",
-        "Трейд-ин выше рынка. Оценим авто и зачтем в кредит.",
-        "Новые авто в наличии. Подбор кредита от 15 банков-партнеров.",
-    ]
-    for cand in fillers:
-        if len(out) >= n:
-            break
-        cand = _trim_clean(cand, cut).rstrip(" ,.")
-        if cand and cand not in out:
-            out.append(cand)
-    return out
-
-
-def build_ad(*, adgroup_id: int, href: str, titles: list, bodies: list,
-             image_hashes: list | None = None, ad_price: dict | None = None) -> dict:
-    """Собрать GdAddAdaptiveTextAd: комбинаторное объявление (несколько заголовков/текстов) + adPrice."""
-    return {
-        "href": href, "hrefParams": "", "domain": None,
-        "titles": _dedup_keep(_fill_titles(titles), 7, 56),   # 7 заголовков (UI Директа «… из 7»)
-        "bodies": _dedup_keep(_fill_bodies(bodies), 3, 81),
-        # ДЕДУП хэшей ОБЯЗАТЕЛЕН: пул ct с одинаковыми файлами → один hash дважды →
-        # MUST_NOT_CONTAIN_DUPLICATED_ELEMENTS валит ВЕСЬ батч AddAdaptiveTextAds (150 групп,
-        # «0 ads») → partial-кампания удаляется. Живой кейс 2026-07-05: tp1 Модели-АТ падала
-        # 3 раза подряд на adAddItems[N].imageHashes[4] (в RMW-апдейтах дедуп был, тут — нет).
-        "imageHashes": list(dict.fromkeys(image_hashes or [])), "creativeIds": [],
-        "permalinkId": None, "phoneId": None,
-        "adPrice": ad_price,                              # {"price","priceOld","prefix","currency":"RUB"} | None
-        "erirAdDescription": None,
-        "inheritableCallouts": {"policy": "INHERIT"},
-        "inheritableSitelinkSet": {"policy": "INHERIT"},
-        "adGroupId": str(adgroup_id),
-    }
-
-
-def build_shopping_ad(*, adgroup_id: int, feed_id: int, body: str = "", login: str = "") -> dict:
-    """Собрать GdAddShoppingAdItem (Товарная галерея tp3/tp5) — реверс из HAR17. feed_id обязателен;
-    body — единый текст объявления (товары тянутся из фида). fieldsToUseAs* = None (дефолт фида).
-    login: если передан — добавляет feedFilter с глобальными минус-марками/моделями."""
-    item: dict = {
-        "adGroupId": str(adgroup_id), "permalinkId": None, "phoneId": None,
-        "fieldsToUseAsBody": None, "fieldsToUseAsName": None, "feedId": str(feed_id),
-        "bodies": [_trim_clean(str(body), 81)] if str(body or "").strip() else [],
-        "hrefParams": "",
-        "inheritableCallouts": {"policy": "INHERIT"},
-        "inheritableSitelinkSet": {"policy": "INHERIT"},
-    }
-    if login:
-        try:
-            from . import create_set_feeds as _csf
-            _bf = _csf._resolve_feed_field(login, feed_id, "brand") or "vendor"
-            _mf = _csf._resolve_feed_field(login, feed_id, "model") or "model"
-            conds = _csf._minus_marks_grid_conditions(brand_field=_bf, model_field=_mf)
-            if conds:
-                item["feedFilter"] = {"tab": "CONDITION", "conditions": conds}
-        except Exception:  # noqa: BLE001
-            pass
-    return item
+# _safe_old_price, _dedup_keep, _fill_titles, _fill_bodies, build_ad, build_shopping_ad
+# вынесены в grid_create_payloads и ре-экспортированы выше.
 
 
 def create_shopping_full(login: str, *, campaign_spec: dict, group_names: list, feed_id: int,

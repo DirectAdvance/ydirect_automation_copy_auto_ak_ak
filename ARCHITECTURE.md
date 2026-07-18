@@ -69,7 +69,9 @@ routes_create_set · routes_deferred · routes_pack · routes_campaigns · route
 | Модуль | Строк | Роль |
 |--------|------:|------|
 | `blueprint.py` | **11179** | сборка Flask-app + регистрация роутов + БОЛЬШАЯ общая логика (очередь, AI-gate, нейминг, генерация текстов, склонения, минуса, добивка картинок, LLM-провайдеры). **Монолит — цель разбиения.** |
-| `campaign.py` | 1947 | примитивы кампаний Директа |
+| `campaign.py` | **437** | **re-export хаб:** cookie-store + `_AGENCY_RESOLVER` + io; ре-экспортирует полный namespace (`cmc.*`) для 30+ импортёров. API-движки вынесены (см. ниже) |
+| `direct_v501_client.py` | 956 | **DirectV501Client** + `UnifiedCampaignSpec` + `build_v501_client` — v501/ЕПК API (tp1–tp5) |
+| `uac_client.py` | 747 | **UacClient** + `MasterCampaignSpec` + UAC-константы (`USER_AGENT`/`UTM_TEMPLATE`) + image/audience/sitelink-хелперы — UAC/Мастер/Товарка (tp6/tp7) |
 | `ai_agents.py` | 2184 | AI-агенты (генерация/проверка контента) |
 | `create_content.py` | 880 | ядро генерации контента одной РК (M3 fan-out) |
 | `kontent_pack.py` | 1265 | чтение контент-пака с M3 (env `NEURO_PACK_MOUNT`, локальная копия / sshfs) |
@@ -85,7 +87,8 @@ routes_create_set · routes_deferred · routes_pack · routes_campaigns · route
 ### Движки Grid / UAC
 | Модуль | Строк | Роль |
 |--------|------:|------|
-| `grid_create.py` | 1021 | куки-движок СОЗДАНИЯ (Grid GraphQL на куках агентства) |
+| `grid_create.py` | 847 | куки-движок СОЗДАНИЯ (Grid GraphQL на куках агентства); ре-экспортирует payload-фабрики из `grid_create_payloads` |
+| `grid_create_payloads.py` | 288 | чистые payload-фабрики: `build_unified_campaign`/`build_adgroup`/`build_ad`/`build_shopping_ad` + `_fill_titles`/`_fill_bodies`/`_dedup_keep`/`_PLATFORMS_OFF`/`_campaign_minus_kw` |
 | `grid_finalize.py` | 2070 | докрутка ЕПК tp1–tp5 (то, что v5 API не умеет: картинки, фид-фильтры, места) |
 | `grid_read.py` / `grid_content_verifier.py` | 389 / 171 | read-only чтение/проверка Grid |
 | `uac_read.py` / `uac_verifier.py` | 166 / 114 | read-only UAC (tp6/tp7) |
@@ -98,7 +101,8 @@ routes_create_set · routes_deferred · routes_pack · routes_campaigns · route
 | `verifier.py` | 309 | пост-проверка |
 | `campaign_result · campaign_state_verifier · local_result_verifier · grid_content_verifier · uac_verifier` | — | pure-чекеры (без сайд-эффектов) |
 | `campaign_spec_audit.py` | 1517 | декларативный spec по tp + аудитор + фиксеры (IMAGE_MISSING, FEED_FILTER_*, PLACEMENTS_WRONG, VIDEO_MISSING…) |
-| `repair_planner · repair_gate · repair_auto · repair_executor` | 493/478/710/929 | планирование → gate → авто → исполнение починки |
+| `repair_planner · repair_gate · repair_auto · repair_executor` | 493/478/710/**76** | планирование → gate → авто → исполнение починки (`repair_executor` — тонкий re-export фасад) |
+| `repair_common · repair_content · repair_media · repair_keywords` | 64/292/285/470 | домены ремонта (извлечены из repair_executor): deps+const / promo+callouts+rename / media+adprice+default_text / keywords |
 
 ### Копировщик
 `copy_main · copy_steps(1084) · copy_geo_morph(283)` — копирование кабинетов 1:1 + морф-гео-замена
@@ -216,7 +220,7 @@ campaign_naming; `_TITLE_PROMO_IDX`/бренд-кэши→text_gen; `_CONTENT_CA
 
 | # | Слой | Файл / модуль | Типичная причина рассинхрона |
 |---|------|---------------|------------------------------|
-| 1 | **Structure** — «меню»: какие tp-типы, ct-сегменты, `targeting_mode`, `pricing`, `feed_role` существуют у (директолог, site_type) | `slepki_structure.json` | Не обновлён при онбординге: пропущены МК (tp6) или Товарка (tp7); синтетические заглушки вместо реальной структуры кабинета |
+| 1 | **Structure** — «меню»: какие tp-типы, ct-сегменты, `targeting_mode`, `pricing`, `feed_role` существуют у (директолог, site_type) | `direct/slepki/<key>.json` (по файлу на слепок) + `_order.json`, собирается `slepki_store.assemble()`; монолита `slepki_structure.json` нет | Не обновлён при онбординге: пропущены МК (tp6) или Товарка (tp7); синтетические заглушки вместо реальной структуры кабинета |
 | 2 | **Profile** — «шлюз»: что из structure реально показать в UI и пробросить в задание создания | `targeting_profile.json` | Не зеркалит structure (корень бага tp6/tp7 у Щербаковой/Павлова/Караваева, 2026-07-12/13) |
 | 3 | **Content pack** — реальные «кирпичи» контента: ключи по ct-коду, картинки/видео по site_type-папкам, минус-слова, ToV-промпт + корпус примеров директолога | M3, `kontent_pack.py`, `/opt/neuro_content_local` | Чужие ключи в ct (пример: ct0022 у Щербаковой — ключи BAIC X40 вместо X35, исправлено 2026-07-13); пустой корпус ct → молчаливый autotarget вместо явного `blocked` |
 | 4 | **Сервис-исполнитель** — код, превращающий позицию слепка в реальную кампанию через Direct API v5 (tp1/tp2/tp4/tp5) или Grid/UAC (tp6/tp7) | `create_set_plan.py`, `create_set_master_product.py`, `campaign.py` и др. | Переинтерпретирует позицию: fan-out по всем фидам вместо explicit `feed_role` (пофикшено 2026-07-13); CPC+CPA через account-level галочку конфликтует с per-position pricing новых позиций |

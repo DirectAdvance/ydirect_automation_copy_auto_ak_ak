@@ -15,11 +15,16 @@ def configure(deps: dict) -> None:
 
 
 def _create_set_live_verification(login: str, results: list, *, agency: str = "",
-                                  use_v5: bool = False) -> dict:
+                                  use_v5: bool = False,
+                                  account_has_promo_library: bool | None = None) -> dict:
     """Read-only live check for create_set results.
 
     Default path is Grid/cookie-only: this is intentional because Direct API
     units are scarce and UAC tp6/tp7 is not visible in v5 anyway.
+
+    ``account_has_promo_library`` — tri-state признак «в библиотеке аккаунта есть промо»,
+    прочитанный в штатном потоке создания (``create_set_promo.attach_or_create_promo``);
+    ``None`` (вызов не из потока создания) → верификатор использует свой прокси-фолбэк.
     """
     def _token_getter(_login: str, _agency: str) -> str | None:
         token, _ag = _token_for_login(_login, _agency, _direct_tokens())
@@ -62,6 +67,7 @@ def _create_set_live_verification(login: str, results: list, *, agency: str = ""
         use_v5=use_v5,
         grid_campaigns_getter=_filtered_grid_getter,
         token_getter=_token_getter,
+        account_has_promo_library=account_has_promo_library,
     )
 
 def _create_set_job_context(jid: str) -> tuple[dict, dict, dict, tuple[dict, int] | None]:
@@ -103,7 +109,8 @@ def _repair_text_content_context(login: str, ctx: dict, action: dict) -> dict:
     tp_code = "tp4" if item.get("type") == "search_dynamic" else "tp2"
     r_code, _ = _resolve_region(acc.get("city"))
     body_region_ids = _ints(body.get("region_ids"))
-    region_ids = body_region_ids if body_region_ids else [acc.get("geoid") or 225]
+    region_ids = body_region_ids if body_region_ids else (list(acc.get("geoids") or [])
+                                                          or [acc.get("geoid") or 225])
     groups, m3_alive = _pack_groups_with_retry(
         login,
         slepok,
@@ -145,7 +152,8 @@ def _repair_shopping_content_context(login: str, ctx: dict, action: dict) -> dic
     if not acc:
         raise RuntimeError(f"аккаунт {login} не найден в БД")
     body_region_ids = _ints(body.get("region_ids"))
-    region_ids = body_region_ids if body_region_ids else [acc.get("geoid") or 225]
+    region_ids = body_region_ids if body_region_ids else (list(acc.get("geoids") or [])
+                                                          or [acc.get("geoid") or 225])
     agency = (ctx.get("agency") or body.get("agency") or acc.get("agency") or "").strip()
     fid = _num(item.get("feed_id"), 0)
     if not fid:
@@ -470,13 +478,27 @@ def _repair_deps() -> rex.RepairDeps:
     )
 
 def _delete_uac_repair_campaigns(login: str, agency: str, replacements: list[dict]) -> dict:
-    """Delete specific incomplete UAC drafts before queued recreate."""
+    """Delete specific incomplete UAC drafts before queued recreate.
+
+    #ФИКС-C3: DRAFT-gate (как у поисковых `_delete_search_draft_campaigns`). Раньше UAC удалялись
+    по id+имени tp6_/tp7_ БЕЗ проверки статуса → stale repair-plan / ручной re-run мог снести
+    АКТИВНУЮ UAC. Grid `_grid_list_campaigns(login, only_draft=True)` видит скрытые от v5 Мастер/
+    Товарку (см. account_service.py) → удаляем ТОЛЬКО те, что реально в DRAFT. Классификация ДО
+    любого удаления: если хоть одна не DRAFT / небезопасна / Grid недоступен — не удаляем НИЧЕГО.
+    """
     from . import campaign as cmc          # cookie-клиент удаления (был NameError: cmc не импортирован)
     rows = []
     failed = []
     if not replacements:
         return {"deleted": rows, "failed": failed}
-    client = None
+    # DRAFT-gate: список UAC-черновиков Grid. Недоступен → консервативный блок (ничего не удаляем).
+    try:
+        draft_ids = {int(c["id"]) for c in _grid_list_campaigns(login, only_draft=True) if c.get("id")}
+    except Exception as e:  # noqa: BLE001
+        return {"deleted": [], "failed": [{"campaign_id": 0, "name": "",
+                "error": f"Grid draft-list недоступен — UAC-удаление заблокировано: {str(e)[:160]}"}]}
+    # Фаза 1: классифицируем ВСЕ (ничего не удаляем). Любой провал → аборт без удаления.
+    to_delete: list[dict] = []
     for row in replacements:
         try:
             cid = int(row.get("campaign_id") or 0)
@@ -486,12 +508,24 @@ def _delete_uac_repair_campaigns(login: str, agency: str, replacements: list[dic
         if cid <= 0 or not name.lower().startswith(("tp6_", "tp7_")) or not _is_tool_campaign(name):
             failed.append({"campaign_id": cid, "name": name, "error": "небезопасное имя UAC для replace"})
             continue
+        if cid not in draft_ids:
+            failed.append({"campaign_id": cid, "name": name,
+                           "error": "UAC не DRAFT (или не видна в Grid) — авто-удаление заблокировано"})
+            continue
+        to_delete.append({"campaign_id": cid, "name": name, "issue_code": row.get("issue_code")})
+    if failed:
+        # Хоть одна не прошла gate → не удаляем НИЧЕГО (delete+recreate не атомарны).
+        return {"deleted": [], "failed": failed}
+    # Фаза 2: все в DRAFT → удаляем.
+    client = None
+    for it in to_delete:
+        cid, name = it["campaign_id"], it["name"]
         try:
             if client is None:
                 client = cmc.build_client(login, account=(agency or None))
                 client.link_info("https://ya.ru")
             client.delete_campaign(str(cid))
-            rows.append({"campaign_id": cid, "name": name, "issue_code": row.get("issue_code")})
+            rows.append({"campaign_id": cid, "name": name, "issue_code": it.get("issue_code")})
         except Exception as e:  # noqa: BLE001
             failed.append({"campaign_id": cid, "name": name, "error": str(e)[:220]})
     return {"deleted": rows, "failed": failed}

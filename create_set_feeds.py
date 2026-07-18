@@ -516,6 +516,16 @@ def _reset_img_fail_cache(login: str, paths: list | None = None) -> int:
     return len(keys)
 
 
+def _kp_fs():
+    """kontent_pack с ФС-операциями, ограниченными по времени (sshfs без таймаута вешает
+    поток навсегда). Ленивый импорт — модуль DI-конфигурируемый, прямого импорта нет."""
+    try:
+        from . import kontent_pack as _kp
+    except ImportError:                                    # standalone-запуск
+        import kontent_pack as _kp                         # type: ignore[no-redef]
+    return _kp
+
+
 def _cached_upload_image(gc_img, login: str, path: str):
     """Залить картинку в библиотеку логина через Grid с переиспользованием imageHash между
     кампаниями/воркерами одного процесса. Потокобезопасно (общий lock на кеш). Возвращает
@@ -523,7 +533,9 @@ def _cached_upload_image(gc_img, login: str, path: str):
     if not path:
         return None
     try:
-        key = (login, os.path.realpath(path))
+        # realpath = stat по каждому сегменту пути: на подвисшем sshfs висит вечно
+        # (живой стек 2026-07-18, job a4bef725b5cb) → только с пределом времени.
+        key = (login, _kp_fs().realpath_bounded(path))
     except Exception:  # noqa: BLE001
         key = (login, path)
     _hit_print = None
@@ -599,7 +611,8 @@ def _parallel_upload_images(gc_img, login: str, paths: list, workers: int | None
     for p in (paths or []):
         if p:
             try:
-                if _os_pu.path.isfile(p):
+                # isfile по sshfs без таймаута вешал поток (живой стек 2026-07-18)
+                if _kp_fs().isfile_bounded(p):
                     bn = _os_pu.path.basename(p)
                     if bn not in unique:
                         unique[bn] = p

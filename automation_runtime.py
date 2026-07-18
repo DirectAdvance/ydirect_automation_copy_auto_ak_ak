@@ -2212,6 +2212,10 @@ _sed.configure({
     "_profile_invalidate": _sed_profile_invalidate,
     "_ct_segment": _ct_segment,
     "_ag_part1_map": _ag_part1_map,
+    # Карточка ключей tp6/tp7 обязана показывать то, что реально уедет в кабинет → читает ключи
+    # ТЕМ ЖЕ путём, что и создание (пак → tp67_real_keywords.json → цепочка tp7↦tp6).
+    "_tp67_keywords_for": _tp67_keywords_for,
+    "_tp67_targeting_mode": _tp67_targeting_mode,   # гейт: ключи только у keyword-позиций, как в создании
 })
 
 

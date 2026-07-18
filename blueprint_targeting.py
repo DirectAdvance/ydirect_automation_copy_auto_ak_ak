@@ -13,6 +13,7 @@ DI (инъектятся из blueprint через configure): `_json` (загр
 """
 from __future__ import annotations
 
+import os
 import re
 
 from . import kontent_pack as kp  # чтение контент-пака (read_keywords/callouts/images/feeds)
@@ -113,39 +114,90 @@ def _ct_segment(ct: str) -> str:
     return _ct_segment_map().get(_gc_ct(ct), "Марки")
 
 
-# ── Не-авто слепки (B2B-лидоген dmp и будущие) ────────────────────────────────────────────────
-# Признак хранится в slepki_structure.json: у directolog поле "auto": false. Для таких слепков
-# сегментация Марки/Модели/Общее (авто-справочник) НЕ применяется — структура показывается и
-# создаётся по splits (реальные темы кабинета), а контент берётся B2B-голосом слепка, не авто.
-def _slepok_is_auto(slepok: str) -> bool:
-    """True для авто-директологов (по умолчанию), False для не-авто (флаг "auto": false в структуре)."""
+# ── Семейства правил создания (ruleset) ───────────────────────────────────────────────────────
+# ЕДИНЫЙ источник «разных правил создания» для двух семейств слепков. Раньше эти же различия были
+# размазаны булевым признаком `auto` по 4+ местам движка (сегментация, контент-голос, фильтр
+# ключей, источник картинок). Теперь ветки читают ИМЕНОВАННЫЙ ruleset — новое семейство
+# добавляется данными (флаг в структуре), а не правкой движка.
+#
+#   auto   — стандартные авто-директологи (автосалоны): сегменты Марки/Модели/Общее из
+#            ct-справочника, авто-корпус контента с числами, фильтр «марка+модель», общий пул картинок.
+#   custom — прочие/B2B-слепки, собранные по скринам кабинета (dmp и будущие): структура по splits
+#            (реальные темы), B2B-голос без числового гейта, без фильтра ключей, только свои картинки.
+_RULESETS: dict[str, dict] = {
+    "auto": {
+        "segmentation": "ct_spravochnik",   # tp1/2/4/5 — сегменты из ct-справочника
+        "content_voice": "auto_numeric",    # заголовки/тексты авто-корпуса + generic-филлеры
+        "require_number_in_ad": True,       # number-gate объявлений
+        "generic_fillers": True,
+        "key_filter": "drop_brand_model",   # text_gen режет «марка+модель»
+        "images": "shared_pool",            # manual/M3/feed общий пул
+    },
+    "custom": {
+        "segmentation": "splits_as_is",     # структура = реальные темы кабинета (splits)
+        "content_voice": "custom_b2b",
+        "require_number_in_ad": False,
+        "generic_fillers": False,
+        "key_filter": "none",
+        "images": "own_only",               # только собственные картинки слепка
+    },
+}
+
+
+def _ruleset_name_of(x: dict) -> str:
+    """Семейство по ЗАПИСИ директолога: явное "ruleset" (если валидно) → иначе из флага "auto"."""
+    rn = x.get("ruleset")
+    if rn in _RULESETS:
+        return rn
+    return "auto" if x.get("auto", True) is not False else "custom"
+
+
+def ruleset_name(slepok: str) -> str:
+    """Имя семейства правил слепка: 'auto' | 'custom'.
+
+    Источник — директолог в slepki_structure.json: явное поле "ruleset" (если валидно) имеет
+    приоритет, иначе выводится из флага "auto" (auto:false → 'custom'). Пусто/сбой/неизвестный → 'auto'.
+    """
     if not slepok:
-        return True
+        return "auto"
     try:
         for x in (_json("slepki_structure.json").get("directologists") or []):
             if x.get("key") == slepok:
-                return x.get("auto", True) is not False
+                return _ruleset_name_of(x)
     except Exception:  # noqa: BLE001
         pass
-    return True
+    return "auto"
+
+
+def ruleset_for(slepok: str) -> dict:
+    """Именованный ruleset слепка (dict полей выше) — ЕДИНЫЙ источник правил создания auto vs custom."""
+    return _RULESETS[ruleset_name(slepok)]
+
+
+# ── Тонкие читатели ruleset (обратная совместимость call-sites движка) ─────────────────────────
+# Признак семейства хранится в slepki_structure.json (флаг "auto" / опц. "ruleset"). Для custom
+# сегментация Марки/Модели/Общее НЕ применяется — структура по splits, контент B2B-голосом.
+def _slepok_is_auto(slepok: str) -> bool:
+    """True для авто-директологов (семейство 'auto'), False для 'custom'. == ruleset_name=='auto'."""
+    return ruleset_name(slepok) == "auto"
 
 
 def _non_auto_slepki() -> list:
-    """key всех не-авто слепков — для UI (рендер splits вместо Марки/Модели) и контент-роутинга."""
+    """key всех custom-слепков — для UI (рендер splits вместо Марки/Модели) и контент-роутинга."""
     try:
         return [x.get("key") for x in (_json("slepki_structure.json").get("directologists") or [])
-                if x.get("auto", True) is False and x.get("key")]
+                if x.get("key") and _ruleset_name_of(x) == "custom"]
     except Exception:  # noqa: BLE001
         return []
 
 
 def _non_auto_site_types() -> set:
-    """Имена site_type всех не-авто слепков — для text_gen: не применять авто-фильтр ключей
-    (drop «марка+модель») к B2B-группам. Не-авто слепки используют уникальные site_type (напр. dmp)."""
+    """Имена site_type всех custom-слепков — для text_gen: не применять авто-фильтр ключей
+    (drop «марка+модель») к B2B-группам. Custom-слепки используют уникальные site_type (напр. dmp)."""
     out: set = set()
     try:
         for x in (_json("slepki_structure.json").get("directologists") or []):
-            if x.get("auto", True) is False:
+            if _ruleset_name_of(x) == "custom":
                 for st in (x.get("site_types") or []):
                     if st.get("name"):
                         out.add(st["name"])
@@ -262,6 +314,102 @@ def _slepki_structure_for_ui() -> dict:
             if source_campaigns_by_site.get(stype):
                 st["source_campaigns"] = source_campaigns_by_site[stype]
     return out
+
+
+# Маркер автотаргет-пака (та же семантика, что клиентский isAuto в slepki_ui.js:504 и
+# _slCountKeywords): строка «---autotargeting» = псевдо-ключ автотаргетинга, НЕ реальный ключ.
+_PACK_AUTO_RE = re.compile(r"-{2,}\s*autotargeting", re.I)
+# tp, у которых бейдж таргетинга считается по ФАКТУ ключей пака (kwRecompute в slepki_ui.js).
+_PACK_FACT_TPS = ("tp1", "tp2", "tp4", "tp5")
+
+
+def _pack_read_local(path: str) -> tuple[list, bool]:
+    """Быстрое ЛОКАЛЬНОЕ чтение пач-файла для BULK-предрасчёта → (строки, найден_ли).
+
+    Осознанно НЕ через kp._read_lines: тот под NEURO_PACK_MOUNT шеллит ``timeout cat`` в
+    subprocess НА КАЖДЫЙ файл (safety для настоящего sshfs-монта) → на ~13k файлов это ~36 с и
+    держит ui_structure-запрос. В проде NEURO_PACK_MOUNT = ЛОКАЛЬНОЕ зеркало (ночной синк с M3,
+    sync_content_m3.py), поэтому bulk читаем обычным open() (~1.7 с). Фильтр строк идентичен
+    kp._read_lines (strip, без пустых, без ``#``-комментариев) → контент ровно тот же, что отдаёт
+    live-эндпоинт /keywords (сверено: 0 расхождений бейджа на 400 парах). Лениво-пер-групповой
+    путь /keywords НЕ трогаем — он остаётся на subprocess-cat (одна группа за запрос — дёшево)."""
+    try:
+        if not os.path.isfile(path):
+            return [], False
+        with open(path, encoding="utf-8") as f:
+            return [ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith("#")], True
+    except Exception:  # noqa: BLE001 — битый/недоступный файл = пусто (как kp._read_lines)
+        return [], False
+
+
+def _pack_group_fact(slepok: str, site_type: str, tp: str, ct: str, gk: str) -> dict:
+    """Факт ключей ОДНОЙ группы (пер-групповой пак ct~gk) → {real:int, auto:bool}.
+
+    Разрешение файла — РОВНО как в slepki_editor.read_group_keywords (per-group
+    ``{slepok}__{slug}.txt`` с фолбэком на легаси ``{slepok}.txt``). Считаем:
+      real = число НЕ-маркерных непустых строк (реальные КС),
+      auto = есть ли строка-маркер ``---autotargeting``.
+    Это ровно то, что клиентский _slCountKeywords кладёт в _SL_PACK_CACHE, а
+    _slRecomputeKwBadges по этому факту (UNION по группам) собирает метку кампании."""
+    kd = os.path.join(kp._ct_dir(site_type, tp, ct), "keywords")
+    slug = kp._group_slug(gk)
+    if slug:
+        pos, found = _pack_read_local(os.path.join(kd, f"{slepok}__{slug}.txt"))
+        if not found:
+            pos, _ = _pack_read_local(os.path.join(kd, f"{slepok}.txt"))
+    else:
+        pos, _ = _pack_read_local(os.path.join(kd, f"{slepok}.txt"))
+    real = 0
+    auto = False
+    for line in pos:
+        s = (line or "").strip()
+        if not s:
+            continue
+        if _PACK_AUTO_RE.search(s):
+            auto = True
+        else:
+            real += 1
+    return {"real": real, "auto": auto}
+
+
+def _slepki_pack_facts(struct: dict) -> dict:
+    """Пер-групповой факт ключей для бейджей таргетинга tp1/tp2/tp4/tp5 → предрасчёт на СЕРВЕРЕ.
+
+    Ключ = ``{slepok}|{site_type}|{tp}|{ct}|{gk}`` (ровно ключ клиентского _SL_PACK_CACHE),
+    значение = {real:int, auto:bool}. Клиент сидит этим словарём _SL_PACK_CACHE ДО первого
+    рендера → _slRecomputeKwBadges синхронно ставит верную метку сразу (без «прыжка» с эвристики).
+
+    Обход = та же структура, что уходит в UI (struct = _slepki_structure_for_ui()), только
+    ветка обычных tp (source_campaigns/архив бейджей по ключам не считает). Пара (ct,gk) берётся
+    из it.gc/it.gk item'а — ровно то, из чего клиент строит data-kwgrps (ct~gk). Каждую пару
+    считаем ОДИН раз и эмитим ВСЕГДА (даже при пустом/отсутствующем файле → real:0,auto:false),
+    иначе allLoaded не станет true и кампания осталась бы на fallback-эвристике."""
+    facts: dict = {}
+    for d in (struct.get("directologists") or []):
+        slepok = d.get("key") or ""
+        if not slepok:
+            continue
+        for st in (d.get("site_types") or []):
+            site = st.get("name") or ""
+            for t in (st.get("tp") or []):
+                code = t.get("code") or ""
+                if code not in _PACK_FACT_TPS:
+                    continue
+                blocks = t.get("splits") or [{"groups": t.get("groups") or []}]
+                for sp in blocks:
+                    for g in (sp.get("groups") or []):
+                        for it in (g.get("items") or []):
+                            if not isinstance(it, dict):
+                                continue
+                            ct = _gc_ct(it.get("gc") or "")
+                            if not ct:
+                                continue
+                            gk = it.get("gk") or ""
+                            key = f"{slepok}|{site}|{code}|{ct}|{gk}"
+                            if key in facts:
+                                continue
+                            facts[key] = _pack_group_fact(slepok, site, code, ct, gk)
+    return facts
 
 
 def _donor_tp4_models_map() -> dict:

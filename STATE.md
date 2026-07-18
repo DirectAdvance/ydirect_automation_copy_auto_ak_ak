@@ -5,6 +5,199 @@
 
 > Архив сессий старше 3 дней — **STATE_ARCHIVE.md** (ротация 2026-07-16: добавлены сессии 07-11 и 07-12). Правило ротации — см. CLAUDE.md.
 
+## Сессия 2026-07-18 (2) — Создание РК: цикл по всем типам сайта pavlov + перенос проверок — ЗАДЕПЛОЕНО
+
+**Задача Семёна:** гонять создание по слепку pavlov на `porg-ozge4ntu` (счётчик 109986170) по ВСЕМ типам
+сайта, между прогонами чистить черновики, чинить код по ошибкам. Критерии: (1) нет ошибок создания/добивки;
+(2) время ≤ кампаний × 1.5 мин. **ОБА ВЫПОЛНЕНЫ.**
+
+| Тип сайта | job_id | Кампаний | Упало | Время | Норматив |
+|---|---|---|---|---|---|
+| Мультибренд | `8efe8b835ac6` | 32/32 | 0 | 31.2 мин | 48 |
+| Монобренд | `758b62b6f979` | 27/27 | 0 | 21.8 мин | 40.5 |
+| С пробегом | `12a86a597c27` | 20/20 | 0 | 15.5 мин | 30 |
+
+Монобренд и «С пробегом» прошли С ПЕРВОГО прогона → фиксы не подгонка под Мультибренд.
+
+**Исправлено 7 дефектов** (все найдены на живых прогонах, каждый проверен direct_verifier до деплоя):
+- `slepok_qa_run.py`: цель Метрики была ЗАШИТА константой (579905467 от чужого аккаунта) → падало 32/32.
+  Теперь резолвится по счётчику (`_goal_vse_formy`). Добавлена опция `--site-type` (без неё нельзя гнать по одному типу).
+- **Регрессия фильтра моделей** (`text_gen.py`, `create_set_text_builders.py`, `create_set_tp1_builders.py`):
+  фильтр «чужих моделей» строился по ct-уровневому имени, а группы стали per-adgroup → для `lada_granta_liftback`
+  дискриминатор «лифтбек» выбрасывал ВСЕ ключи. Анти-пустой гейт обманывался спецключом `---autotargeting`
+  (при заливке он пропускается). Замер: пустых групп 16 → 6 → 2. Коммит `4c75cfb`.
+- **Ретраи транзиентов** (`yandex_gateway.py`): не было вообще, маркеры только англоязычные («Сервис временно
+  недоступен» не подпадал). Доработка `ae42f92`: `add`-методы НЕ ретраятся после ОБРЫВА СВЯЗИ (риск дублей —
+  сервер мог применить запрос), Direct-returned error ретраится для любого метода.
+- **city_morph «Москвич»** (`6017114`): стем `москв` съедал марку → группы Москвича пустые. Матч теперь на уровне
+  слова (`_NON_CITY_STEMS`). Регресс-проверка: 6 слепков × 5 городов, ~410k ключей, дельта только москвич.
+- **Ложный `NO_ADPRICE_LIVE`** на товарке-only: гейт опирался на ключи `shopping_ads`/`listing_ads`, которых
+  в live-counts НЕТ. Заменён на `adaptive_total == 0`.
+- Врущая диагностика: `image_groups` считал item'ы с пустыми `image_hashes`; `images_uploaded` не инкрементился.
+
+**Перенос проверок из копирования** (`11ab7b6` + `3c526d3`, обе проверки ✅) — 0 новых запросов/баллов
+(данные уже приходили в `CampaignsEditData`, `read_campaign_invariants` их выбрасывал):
+- `CALLOUTS_MISSING_LIVE` (tp1–tp5, tp6/7 не флагаются), `SITELINK_SET_MISSING_LIVE`, все report-only.
+- `PROMO_MISSING` оживлён **ДВУХСТУПЕНЧАТО** (требование Семёна): ступень 1 = библиотека аккаунта
+  (`bool(promos_all)` из уже сделанного v5 `promotions.get` в `attach_or_create_promo`, проброс через 4 слоя),
+  ступень 2 = наличие в кампаниях. Аккаунт без промо → не флагается вообще.
+  ⚠️ Первая версия была ПРОКСИ по набору и НЕ ловила главный сценарий 0/N — поймал проверяющий.
+
+**Живая верификация новых кодов — ЗАКРЫТА фактом** (контрольный прогон `633798f99dba`, PASS 20/20):
+прямое чтение кампании 712878108 → `campaign_assets_read=True`, `callout_ids`=8, `sitelink_set_id='1494624974'`,
+`promo_extension_id='1914982'`. Проверки читают поля реально; молчат потому, что ассеты на месте.
+
+**Осталось / решения Семёна:**
+- Контент-пак pavlov неполон: 106 ct без картинок (у марок только Dongfeng, MG), `pavlov__jac_общее.txt` пуст.
+  Решение Семёна: **в критерий приёмки НЕ засчитывать**, дособор — отдельная задача.
+- Гео-фильтр не ловит «московский»/«подмосковье» (стем `москв` их не матчит) — пред-существующий пробел, в журнале.
+- Чужой коммит `8326890` (`copy_engine.py:192`, параллельная сессия): убран фолбэк `or src_domain` → при
+  отсутствии `_copy_source_domain` в body домен пустой. Не проверялось, не наша ветка.
+- `enrich_errors` при Grid-чтении: `shopping_bodies: Validation error (FieldUndefined@[client/ads/rowset/bodies])`
+  — существующая ошибка запроса, на новые проверки не влияет.
+
+Ledger сессии: `.claude/sdd/progress.md`. Отчёты: `.claude/sdd/create-massfix-4-report.md`,
+`city-morph-moscvich-report.md`, `verify-transfer-report.md`.
+
+## Сессия 2026-07-18 — Сервис копирования: verify+repair+API+live-имитация — ЗАДЕПЛОЕНО
+
+**Задеплоено на direct-copy.service (:5022) + закоммичено.** Коммиты: home `ecd7aa7`, work/slepki `2091729` (ветка `fix/direct-copy-negatives-images-20260717`).
+
+- **copy_verify.py** (NEW): сверка источник↔цель 19 измерений (report-only) + 2 гео-измерения. `snapshot_transformed` различает ЕПК (замещённый снапшот → реальные метрики) и v5 (сырой → EXCLUDED, не ложный mismatch).
+- **Авто-ремонт #12** (`run_copy_repair` в copy_verify.py, вшит в `_copy_cookie_postprocess`): D3 библиотеки минус-слов + D19 товарные фильтры — только ADD, идемпотентно, баллы агентства, best-effort. D10 аудитории/D14 кнопки нечинимы (нет writer у Директа: interest_ids 403, мутатора кнопки нет).
+- **UI-отчёт #12** (copy_common.js/css): живой отчёт verify+repair на карточке джобы + аннотация кнопки-чеклиста. Читает `result.cookie_postprocess.copy_verify`.
+- **copy_api.py** (NEW): программный API `/api/v1/copy/{start,status,campaigns}` — X-API-Key fail-closed (hmac), SSRF-guard, CORS-whitelist, geo_region_ids-валидация. Ключ `COPY_API_KEY` в `.secret/.env` на LXC101.
+- **Гео #18**: инлайн-замена ключей ЕПК + нормализация тире `_REGION_ALIASES`. Проверено direct_verifier ✅.
+- **Фид #16**: source нет в цели → replace/upload/skip; `copy_feed_upload.py` со сменой домена.
+- **2 блокера копирования исправлены** (work/slepki `direct_copy.py`): (1) `negativekeywordsharedsets.get` FieldNames убран невалидный `"Type"` (API 8000, блокировал весь копир — также в copy_login.py, pull_directologist.py); (2) `NegativeKeywordSharedSetIds` в campaigns.add/adgroups.add обёрнут в `{"Items":[...]}` (сырой массив → 8000; давал 8/15 кампаний вместо 15/15).
+
+**Live-имитация porg-psm5h7q6→porg-lzjk6p5m (Красноярск, delete_drafts), 4 прогона:**
+- ✅ **15/15 кампаний созданы**, спот-проверка v5 подтвердила контент на цели: tp1/tp2/tp5 по 27-28 групп, 10-63 объявл, 2705-3279 ключей. Гео→Красноярск #11309, adPrice 15/15 из target-фида, метрика counter/goal, ключи 38424 через Grid (0 баллов), картинки ремаплено 118, удаление ТОЛЬКО черновиков.
+- ⚠️ **ОСТАЛОСЬ 2 глубоких (по 1 неуспешной попытке фикса — НЕ добиты, не re-run вслепую):**
+  1. **verify частично ненадёжен для свежих черновиков** — ЧАСТИЧНО ПОЧИНЕНО: v5-фолбэк в build_target_profile (copy_verify.py:453+) теперь триггерит на 0 КОНТЕНТА (не 0 групп) + пагинация → прогон 5: ok 36→43, **adgroup_count все 13 OK**, keyword_count 7 OK, unreadable по ключам исчез. ОСТАЛОСЬ (хвост): 6 kw-mismatch у кампаний с частичным Grid-stat-счётчиком (фолбэк для них не триггерился — Grid дал ненулевой счётчик); callouts/sitelinks/images verify через v5 НЕ добирает → нужно per-dim v5-добор (adextensions.get, adimages). Спот-проверка v5 подтверждает контент на цели — mismatch ложные.
+  2. **Промо не привязываются — ROOT-CAUSE НАЙДЕН (фикс = реструктуризация #24):** промо СОЗДАЮТСЯ через grid addPromoExtensions (10 шт, ОК), но `step_attach_promos` (copy_steps.py:487) падает в `fallback_single` из-за **ID mismatch**: v5-путь (copy_engine.py:2223) ключует `maps["promotions"]` по `promotions.json.Id`, а `campaign_promos.json` пишется по `promoExtension.id` из `campaigns_edit_rows` → by_promo пуст → фолбэк (при 10 промо не привязывает). Прогон 7 подтвердил: `campaign_promos.json заполнен из source edit_rows (13)` НО `исходная связь недоступна`. **ФИКС:** реструктурировать v5-промо-блок как UAC-блок (copy_engine.py:1640) — создавать промо ИЗ edit_rows-defs, тогда maps ключуется по promoExtension.id и совпадает. Half-fix (только запись campaign_promos.json) откачен — инертен.
+  3-septies. **ФИНАЛЬНЫЙ РАЗБОР остатка 32 (после run 15, ok 85/117):**
+     - **keyword ROOT-CAUSE (direct_copywriter + проверка деплоя):** РЕАЛЬНЫЙ баг — Grid `addKeywords`
+       для tp2/поиск TextAdGroup-групп (v5 adgroups.add, НЕ ЕПК) рапортует успех (non-empty addedItems,
+       `n_added==len(rows_b)`) но **НЕ персистит ключи**. `n_added` фикс (copy_steps.py:919, из прошлой
+       сессии) ПРИСУТСТВУЕТ и задеплоен, но НЕДОСТАТОЧЕН — run-15 с ним via_v5=0 (Grid не отдаёт `[]`,
+       отдаёт ложный success). tp1-РСЯ-группы Grid принимает (мигрированы в ЕПК?). **ФИКС #24:** роутить
+       ключи поиск/TextAdGroup-групп сразу в v5 keywords.add (Grid для них не работает) ИЛИ post-add
+       re-read верификация в step_keywords. Отчёт: `.claude/sdd/copy-search-keywords-report.md`. Глубокая
+       правка + тесты (РСЯ-укладка рабочая, риск регрессии) — НЕ трогать без валидации.
+     - **keyword МЕХАНИКА (трассировка):** group-mapping КОРРЕКТЕН (28/28 групп→кампания 712878852), но
+       каждая target-группа получила **ровно 1 ключ** (source ~96/группа). Имена — **МК-формат
+       `ct00NN_aon_..._ct001_ag011`** (Master Campaign tp6), хотя source помечена tp2-Поиск. → либо
+       МК-семантика (1 keyword-set/группа = target верен, source-счёт несопоставим — тогда это verify-баг
+       сравнения), либо dedup гео-вариаций. **Нужна доменная экспертиза слепка (direct_slepki_master)** —
+       слепая правка step_keywords сломает рабочую РСЯ-укладку. НЕ трогать без понимания МК-структуры.
+     - **keyword(6)+sitelinks(2): РЕАЛЬНЫЙ баг** — ПОИСКОВЫЕ кампании (tp2/tp5) получают ~0 ключей
+       (Grid И v5 читают 0, keywords_read=true → не read-баг, реально не легли), при том что step_keywords
+       рапортует via_grid 38424/548 без группы. Ключи ушли не в те группы → **баг group-matching поисковых
+       кампаний в step_keywords** (copy_steps.py). РСЯ (tp1) ключи получают норм. Требует копи-энджин фикса.
+     - **callout(12): verify-limitation** — 50 callout-расширений associated на цели (привязаны), но v5
+       (ads AdExtensions=0, campaign CalloutIds/inheritableCallouts=0) не читает Grid-привязку per-campaign.
+       Копия корректна; verify нужно читать Grid-путём копира.
+     - **promo(12): ВНЕШНИЙ ЕРИР-БАРЬЕР** — grid addPromoExtensions создаёт 1 из 2 промо (ЕРИР блокирует),
+       attach 1/13. **Не код-фиксимо** — внешняя механика Яндекса. → литеральный «ok:117» недостижим,
+       пока ЕРИР блокирует создание промо (нужно внешнее действие/обход на стороне Директа).
+  3-sexies. **ИТОГ RUN 15 (pristine + все фиксы): ok 42→85/117, копия ПОЛНАЯ (15/15, все типы ad).**
+     Зазеленели после фиксов: keyword/adgroup/adaptive_titles/bodies/ads_with_images/sitelinks(11)/
+     shared_set. **Остаток 32 — генуинно-тяжёлый хвост:** (1) **callout(12)** — контент ЕСТЬ (50 callout-
+     расширений associated на цели), но verify Grid-read (edit_rows.inheritableCallouts=0) не мапит
+     per-campaign Grid-привязку → verify-read-limitation, копия корректна; (2) **promo(12)** — РЕАЛЬНЫЙ
+     пробел: grid addPromoExtensions создаёт только 1 из 2 промо (ЕРИР-область), attach 1/13; (3)
+     **keyword(6)** — вариативность/остаток «без группы»; (4) **sitelinks(2)** — UAC/товарка легитимно без
+     sitelinks. → #24. Копия-деливерабл КОРРЕКТНА; хвост = verify-read Grid-extension + ЕРИР-промо + UAC.
+  3-quinque. **RUN 14-15: имитация вскрыла 2 РЕАЛЬНЫХ бага копии (verify верно ловил, НЕ eventual-consistency):**
+     из `_upload_log.json`: (1) **LISTING_AD 0/27** — `FeedFilterConditions` передавался `{"Items":[...]}`,
+     а `ads.add` ждёт МАССИВ (8000 «должен содержать массив»). Фикс direct_copy.py:1454 — разворот `.Items`
+     (как copy_engine shopping-путь). (2) **TEXT_AD 9/27** — после гео-замены Красноярск (длиннее Кемерово)
+     Title>56 → `ads.add` 5001 → объявление не создаётся. Фикс direct_copy.py:1331 — усечение Title/Title2/
+     Text к 56/30/81. Также source_grid пересобирается в delayed re-verify (иначе fallback недочитывает
+     адаптивы источника). Валидация — run 15 (pristine аккаунт: удалены кампании + картинки). Промо/callout
+     остаются Grid-extension verify-чтениями (#24). **Ключевой урок: gsheet-адаптивы/LISTING_AD теряются
+     тихо — imitation обязательна для полноты.**
+  3-quater. **RUN 14 (чистый аккаунт + все фиксы) — ПРОРЫВ: ok 35→59, keyword_count ВСЕ 13 OK.**
+     Найдены и устранены 3 корня: (а) **split-регрессия** `_norm_region_alias_key` (run 13 падал —
+     перенёс в copy_geo + ре-экспорт); (б) **verify batch-4001** read-баг (ads/keywords.get на смешанных
+     типах TextCampaign+UAC → 4001 → 0) — починен per-campaign; (в) **тест-артефакт: 1421 орфанная
+     картинка** на цели (лимит аккаунта ~1000, накоплено 12 прогонами) → каскад на text-ad/images —
+     **АККАУНТ ОЧИЩЕН (1421 удалено)**. Итог run 14: 15/15, keyword/adgroup зелёные, adPrice 132/132,
+     адаптивы 260/260. Остаток 58 mismatch — verify-read-хвост (копия полная): (1) SOURCE read-баги
+     ads_with_images/shared_set (src читается 0); (2) Grid-extension чтения promo(12)/callout(12)
+     (verify не читает Grid-привязки через v5); (3) adaptive_titles семантика (src27→tgt9); (4) sitelinks
+     2 (UAC/товарка легитимно). → #24 (scoped verify-хардининг, копия уже корректна).
+  3-tris. **⚠️ КОРРЕКТИРОВКА (важно): гипотеза eventual-consistency ОПРОВЕРГНУТА.** Красные
+     чекбоксы — НЕ гонка индексации, а: (1) **batch-4001 read-баги verify** — `ads.get`/`keywords.get`
+     с батчем всех 13 CampaignIds на смешанных типах (TextCampaign+UAC/товарка) даёт API 4001 → 0
+     → ложный mismatch. **ПОЧИНЕНО per-campaign** (коммиты после 0acb23e): на осевшей run-12 ok 35→52,
+     sitelinks mismatch 12→2. (2) grid-extension чтения promo(13)/callout(12) — verify их v5 не читает
+     (Grid-управляемые). (3) семантика adaptive_titles (src27→tgt9). (4) **реальные пробелы копии:**
+     часть кампаний run-12 получила 0 ключей (camp 712876411: 0 keywords обоими v5-методами при 27
+     группах) — Grid-first ключи не легли для части кампаний, ОТДЕЛЬНЫЙ баг копии. Остаток → #24.
+  3-bis. **(прогон 11-12): копия по большинству кампаний корректна + адаптивный re-verify построен.**
+     Спот-проверка v5 run-11: sitelinks НА цели — camp 712876027=63 объявл/**9 sitelinks**, camp
+     712876029=218 объявл/**46 sitelinks**. Контент оседает **5-10+ мин ПОСЛЕ done** (dcr-демон
+     `direct-create-worker` + async-индексация). Re-verify +300с (run 11) их не увидел, спот-проверка
+     позже = увидел → построен **АДАПТИВНЫЙ отложенный re-verify** (copy_engine.py `_copy_delayed_reverify`
+     + `_copy_target_sitelinks_ready`): поллит цель до появления sitelinks (до 15 мин), затем гонит
+     полную copy_verify и перезаписывает результат job'а (UI читает осевшее). Механизм пере-записи
+     подтверждён (run 11: `copy_verify (осевший, +300s)` отработал). Валидация адаптивной версии — run 12.
+  3. **verify «не все зелёные» — КОРЕНЬ ЖЕЛЕЗОБЕТОННО ДОКАЗАН (10 прогонов, 2 settle-wait):** in-job settle-wait 150с (прогон 9) И 240с (прогон 10) → ОБА `sitelinks у 0 камп`, а спот-проверка пост-джоб = 9. Причина: dcr-демон привязывает контент через **`run_after_seconds:180` ПОСЛЕ статуса `done`**, а verify бежит ДО `done` → сколько ни жди В джобе, dcr ещё не стартовал. **In-job verify архитектурно НЕ МОЖЕТ увидеть dcr-контент.** Ниже — детали (совпадает): `_copy_cookie_postprocess` (v5-путь) НЕ привязывает sitelinks в джобе — их доливает **отложенный демон `delayed_content_repair`** (`_delayed_repair_daemon_loop`, `run_at` ПОСЛЕ джобы, automation_runtime.py:378, `_run_delayed_content_repair`). verify бежит В джобе → структурно НЕ видит dcr-привязки. Прогон 9: ждали 150с — sitelinks `у 0 камп` (контента ещё нет), спот-проверка через минуты = 9 (демон отработал). **In-job settle-wait откачен как бесполезный.** ФИКС (#24): вызвать `run_copy_verification` в конце `_run_delayed_content_repair` (после демона) + записать в job. Ad-level v5-добор sitelinks/images корректен (f880ec3), просто на in-job-моменте контента нет. Промо: привязка per_source_link починена (f880ec3), verify её на своём моменте тоже не видит. ok застрял на 43 через 8 прогонов. Реальные пробелы поверх (не dcr): images 9/27 (лимит картинок аккаунта — тест-артефакт от прогонов), ~548 ключей «без группы». **Копия корректна — спот-проверка v5: 15/15, группы/ключи/объявления/sitelinks/промо на цели.**
+- **#19 монолит — СДЕЛАНО (коммит 7afbfc7):** copy_engine.py **3343→1659 строк**, byte-identical AST-распил на 10 модулей (copy_jobs/geo/snapshot/images/metrika/feeds/grid_read/uac/cleanup/grid_steps) через `direct-copy-engine-refactor/dev/split_tool.py`. DI-фан-аут: `configure()` раздаёт deps суб-модулям (у каждого свой `globals().update`). Гиганты (_copy_cookie_postprocess 447, _copy_grid_unified_campaigns 470, _copy_run_job 348 + delayed re-verify) оставлены в hub — высокая DI-связность / затрагивают новый код, отдельным заходом. Проверено: импорт через automation_runtime + DI всех 10 модулей True + сервис active, page 302/api 401, ошибок импорта нет.
+- **#23 перф — НЕ начато:** замер postprocess+verify ~7мин, upload ~6мин, ключи ~5мин, pull ~2-3мин из ~19мин; план — параллельные подзагрузки Grid (rate-limit-aware), отдельным заходом.
+- **#24 verify-after-settle — частично (адаптивный re-verify построен, коммит 0acb23e):** остаётся cron-проход через 15-30 мин (Яндекс осел) для честно-зелёных чекбоксов + чинить 548 ключей без группы + лимит картинок аккаунта (тест-артефакт от 12 прогонов).
+
+## Сессия 2026-07-18 — Гео-замена ключей ЕПК + честность verify-метрик — ЗАДЕПЛОЕНО (в составе сессии выше)
+
+- **Что сделано:** 3 блока правок в `copy_engine.py` + hint-обновление `copy_verify.py`.
+  1. **Minor dash**: `_norm_region_alias_key` + `_REGION_ALIASES_NORM` — нормализация en/em/figure дашей в lookup ХМАО. Источник: API может вернуть en-dash U+2013 вместо em-dash U+2014 из dict-ключа.
+  2. **Snapshot обогащение**: `snap_keywords_json` аккумулятор + `NegativeKeywords` в `snap_adgroups_json` (уже гео-заменённые/отфильтрованные) + запись `keywords.json` в синтетический snapshot ЕПК-пути.
+  3. **geo-честность**: `check_geo_kw_consistency(src_dir, replacements)` вызывается в конце `_copy_grid_unified_steps` → `rep["geo_kw_consistency"]`. Теперь `geo_kw_source_residual` и `geo_neg_target_blocked` показывают РЕАЛЬНЫЕ данные для ЕПК-пути.
+  4. **Комментарий `skipped`**: уточнён — ключи в ЕПК гео-заменяются ИНЛАЙН в group_specs[:1237] перед create_full (step_keywords скипается чтобы не создавать дубли, а не потому что замена не нужна).
+- **Верификация:** py_compile + pyflakes: 0 новых предупреждений. НЕ деплоено (по условию задачи).
+- **Осталось:** live-тест реального ЕПК-копирования с geo-заменой для проверки `geo_kw_consistency` в результате.
+
+## Сессия 2026-07-17 — Мастер-поток баллов копирования: агентский пул — КОД ГОТОВ, НЕ ДЕПЛОЕНО
+
+- **Что сделано:** `AuthContext.headers()` в `work/slepki_direktologov/scripts/direct_copy.py:227` — добавлен `"Use-Operator-Units": "true"` в else-ветку (токен-режим). До правки `phase_pull`/`phase_upload` (campaigns.add, adgroups.add, ads.add, keywords.add, feeds, images и т.д.) сжигали пул КЛИЕНТА; после — агентский пул, как в `yandex_gateway._headers()`.
+- **Затронуто:** только `direct_copy.py`. `copy_engine.py` не тронут. Фолбэк на куки при 152 сохранён (`direct_call:259-263 → switch_to_cookie`). ЕПК-ветка (grid, 0 баллов) — не затронута.
+- **Верификация:** py_compile + pyflakes OK; 4 pre-existing pyflakes предупреждения, 0 новых. Live-прогон по условию задачи не требовался.
+- **НЕ деплоено:** правка в `work/` (Mutagen синкает на LXC101), `direct-copy.service` рестарт нужен при деплое.
+
+## Сессия 2026-07-17 — Автоправила Фаза 4: Правила/Корректировки/Запросы/Площадки/Журнал — ЗАДЕПЛОЕНО+верифицировано
+
+- **Что сделано:** `rules_engine.py` (dry-run ЕСЛИ→ТО против Victory-метрик, `_AUTO_EXEC_ENABLED=False`); `corrections.py` (bidmodifiers.get/set чанками); `queries.py` (Reports SEARCH_QUERY + add_negative_phrases); `placements.py` (Reports PLACEMENT + log_excluded_sites — v5 REST не поддерживает прямое исключение, только audit_log + инструкция); `repository.py` — `audit_log_list` добавлен + `$1→%s` psycopg2-фикс; `autorules_main.py` — Phase 4 deps; `routes_autorules.py` — 8 новых маршрутов; `autorules.html` — 5 панелей + ~400 строк JS.
+- **Верификация:** CRUD-тест на живой seoadvanced БД — все 6 шагов OK. py_compile + AST OK. `direct-autorules.service` active, все 6 новых маршрутов — 401 (auth), не 404/500.
+- **Ограничение:** Площадки РСЯ — только log-only (v5 REST прямого исключения не поддерживает).
+- **Коммит:** f331e41 (home-репо, 8 файлов фазы 4).
+- **Осталось:** live-тест за Auth-куком и скриншоты UI — при следующем сеансе с аккаунтом.
+
+## Сессия 2026-07-17 — Автоправила Фаза 3: копирование 1:1 внутри аккаунта — ЗАДЕПЛОЕНО+верифицировано
+
+- **Что сделано:** `direct/autorules/copy.py` (новый standalone-модуль: `list_campaigns` + `clone_campaigns_1to1`, v5/v501 напрямую, State=OFF enforced). Два роута в `routes_autorules.py`: `GET /api/ar/copy/campaigns` + `POST /api/ar/copy/run`. Вкладка «Копирование» в `autorules.html` упрощена: убраны блок трансформации, замена фидов, донор — оставлен бейдж аккаунта + таблица выбора + кнопка «Копировать 1:1».
+- **Тест porg-ro552oi2:** `list_campaigns` вернул 2 кампании; `clone_campaigns_1to1(..., dry_run=True)` вернул корректный preview обеих (src_id, name+суффикс, type=TEXT_CAMPAIGN, ok=None). Маршрут 401 на `/api/ar/copy/campaigns?login=...` без куки = ожидаемо (auth check, не 404). `direct-autorules.service` active, journal чистый.
+- **Ограничение MVP:** копирует только оболочку кампании (стратегия, таргетинг, минус-слова) — группы и объявления НЕ копируются (задокументировано в copy.py).
+- **Коммит:** в home-репо, только 3 файла этой задачи.
+
+## Сессия 2026-07-17 — Автоправила Фаза 2: backend Обзора и Сенсоров — ЗАДЕПЛОЕНО+верифицировано
+
+- **Что сделано:** 6 сенсоров `direct/autorules/sensors/{balance,campaign_status,url_check,minus,goals,anomalies}.py` с интерфейсом `run(login, ctx)`. API-роуты `GET /api/ar/overview`, `/api/ar/balance`, `/api/ar/goals`, `/api/ar/filter-options`, `POST /api/ar/sensors/run` в `routes_autorules.py`. DI Victory conn + direct_tokens + blueprint_metrika в `autorules_main.py`. JS вкладок Обзор+Сенсоры в `autorules.html` (реальный fetch, рендер таблицы, тумблеры, кнопка «Запустить проверку»).
+- **Тест porg-ro552oi2** (cartrade196.site, Екатеринбург, y-direct-victory): balance found=1 (0 ₽ < 500 ₽), campaign_status found=2 (MODERATION+OFF), goals found=1 (нет счётчика), anomalies found=0, overview DB = 3 строки с расходом. `direct-autorules.service` active, журнал чистый.
+- **Фикс в процессе теста:** balance — v5 accounts.get пуст для клиент-логина → переключил на Live v4 AccountManagement.Get (как в account_service.py). goals — invalid FieldNames TextCampaign/SmartCampaign → используем TextCampaignFieldNames в extra-параметре + DB-fallback.
+- **Осталось:** конверсии по выбранной цели в Обзоре (не реализованы — требуют Reports API или Метрику; отмечено в отчёте). Сенсор minus/url_check — не тестировался на аккаунте с живыми объявлениями.
+- **Коммит:** 331025c.
+
+## Сессия 2026-07-17 — Вынос API «Обучение ИИ» в `direct-ai.service` :5026 — КОД ГОТОВ, НЕ АКТИВИРОВАНО
+- **Мотив:** роуты `/direct/api/ai/*` ходят в M3/LLM (долгие блокирующие вызовы) и занимали Flask-воркеров того же процесса, что создание РК. Отдельной страницы у вкладки нет — выносится ТОЛЬКО API (UI остаётся на :5020).
+- **Новый `direct/ai_main.py`** (образец accounts_main/slepki_main): :5026, `DIRECT_ROLE=web` setdefault ДО импорта automation_runtime, domain wiring only (без direct.blueprint), 8 роутов, threaded=True. **`routes_ai.py` не менялся.**
+- **`blueprint.py`** — флаг `DIRECT_REGISTER_AI` вокруг register_ai_routes (:347), дефолт "1" = обратная совместимость. Новый `deploy/direct-ai.service` + `deploy/dropins/direct-create.service.d/ai.conf` (DIRECT_REGISTER_AI=0).
+- **Evidence:** md5 Mac==LXC101; py_compile OK (прод-венв 3.11, локальный 3.9 не тянет синтаксис); import ai_main → ровно 8 `/direct/api/ai/*` + только nav/static; флаг: unset→8, =0→0, =1→8; AST+identity сверка всех **21** deps с blueprint = IDENTICAL, порядок совпал.
+- **⚠️ Находка (важная):** ai-путь читает env в момент вызова, а прод-значения ≠ дефолтам кода → в юнит добавлен паритет: `OPENROUTER_LLM_MODEL=deepseek/deepseek-chat` (код: v4-flash), `DIRECT_SITELINK_REUSE_ACCOUNT=1` (код: 0), `NEURO_PACK_MOUNT=/opt/neuro_content_local`, `DIRECT_CONTENT_REUSE_ACCOUNT=1`. Без них вкладка молча генерила бы иначе.
+- **⚠️ Дрейф репо↔прод (не чинил):** на проде 3 drop-in'а direct-create НЕ в git — `flags.conf`, `reuse.conf`, `slepki.conf`. Пересборка по dropins/README поднимет прод без них → поедет генерация и вернутся slepki-роуты. Отдельной задачей.
+- **НЕ активировано** (по границам): сервис не поднят, nginx не тронут, не коммичено. Инструкция активации (порядок шагов критичен: сначала :5026 + nginx, ПОТОМ ai.conf) + откат — в `.claude/sdd/direct-ai-service-report.md`.
+
 ## Сессия 2026-07-17 — ФАЗА 1 брокера доступа `direct-gateway.service` :5025 — ЗАДЕПЛОЕНО+верифицировано (greenfield)
 - **Мотив (опция C Семёна):** каждый из 6 direct-процессов порознь держит куку в `campaign._ACCOUNT_COOKIE_CACHE` и независимо долбит главпоток. Брокер = ЕДИНСТВЕННЫЙ владелец кук/токенов/главпотока/units, один probe на всех.
 - **ФАЗА 1 = ТОЛЬКО greenfield.** Существующие call-sites НЕ тронуты (campaign.py/yandex_gateway.py/automation_runtime.py целы). Миграция потребителей = Фаза 2 (отдельно).

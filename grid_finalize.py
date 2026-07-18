@@ -936,7 +936,8 @@ class GridClient:
         Возвращает ``{cid: {field: tri-state}}`` для DoD-инвариантов кампании tp1–tp5:
         персонализация / расш.гео / «Директ помогает» / ценовые рек. / Карты (enableCompanyInfo) /
         Карты-платформа (yandexMaps) / список организаций (serpGeoWizard) / стратегия
-        (payForConversion) + libraryMinusKeywordsIds. Каждое булево — **tri-state**: реальный
+        (payForConversion) + libraryMinusKeywordsIds + кампанийные АССЕТЫ ``callout_ids`` /
+        ``sitelink_set_id`` / ``promo_extension_id`` (тот же ответ, 0 доп. запросов). Каждое булево — **tri-state**: реальный
         ``True``/``False`` только если Grid вернул поле; иначе ``None`` (fail-safe — верификатор такое
         НЕ флагает, чтобы Grid-лаг/FieldUndefined не породил ложный детект и ложный ремонт, журнал I).
         ⚠️ ``hasSiteMonitoring`` (#4) в read-схеме Grid ОТСУТСТВУЕТ (нет в grid_campaigns_edit_data.graphql
@@ -989,6 +990,21 @@ class GridClient:
                     continue
                 strat = row.get("strategy") if isinstance(row.get("strategy"), dict) else {}
                 pf = strat.get("platforms") if isinstance(strat.get("platforms"), dict) else {}
+                # Кампанийные АССЕТЫ (уточнения / набор быстрых ссылок / промо) — ИЗ ТОГО ЖЕ ответа,
+                # без единого дополнительного запроса: поля уже в фрагменте UnifiedCampaign
+                # (grid_campaigns_edit_data.graphql). Нормализация — ровно как в
+                # _unified_campaign_update_from_edit_row:601-603 (сырой rowset отдаёт их под
+                # inheritableCallouts{assetValue} / inheritableSitelinkSet{assetValue} /
+                # promoExtension{id}, а НЕ плоскими ключами — читать сырьё «по имени write-поля»
+                # нельзя, будет вечный None).
+                # Read-гейт — ПРИСУТСТВИЕ КЛЮЧА в row: GraphQL всегда возвращает запрошенный ключ
+                # (пусть и null), а его отсутствие = поле не пришло/схема поменялась → tri-state None
+                # → верификатор МОЛЧИТ (fail-safe, тот же контракт, что у инвариант-галочек).
+                _assets_read = any(k in row for k in
+                                   ("inheritableCallouts", "inheritableSitelinkSet", "promoExtension"))
+                _co_raw = (row.get("inheritableCallouts") or {}).get("assetValue") or []
+                _sl_raw = (row.get("inheritableSitelinkSet") or {}).get("assetValue")
+                _pr_raw = (row.get("promoExtension") or {}).get("id")
                 out[cid] = {
                     "is_alternative_texts_enabled": _tri(row.get("isAlternativeTextsEnabled")),
                     "has_extended_geo_targeting": _tri(row.get("hasExtendedGeoTargeting")),
@@ -999,6 +1015,13 @@ class GridClient:
                     "serp_geo_wizard_enabled": _tri(pf.get("serpGeoWizard")),
                     "pay_for_conversion": _tri(strat.get("payForConversion")),
                     "library_minus_ids": [str(x) for x in (row.get("libraryMinusKeywordsIds") or [])],
+                    "campaign_assets_read": bool(_assets_read),
+                    "callout_ids": ([str(x) for x in _co_raw]
+                                    if "inheritableCallouts" in row else None),
+                    "sitelink_set_id": ((str(_sl_raw) if _sl_raw else "")
+                                        if "inheritableSitelinkSet" in row else None),
+                    "promo_extension_id": ((str(_pr_raw) if _pr_raw else "")
+                                           if "promoExtension" in row else None),
                 }
         return out
 
@@ -2084,11 +2107,15 @@ class GridClient:
         Реверс из HAR-25/Entry10. image_type=BANNER_TEXT (РСЯ-баннер).
         → imageHash строка или None при ошибке. Не требует баллов (куки-путь)."""
         import os as _os
+        try:                                     # пакетный контекст / standalone
+            from . import kontent_pack as _kpf
+        except ImportError:
+            import kontent_pack as _kpf          # type: ignore[no-redef]
         fname = _os.path.basename(image_path or "")
         try:
-            if not _os.path.isfile(image_path):
-                print(f"[img-upload] FAIL {self.login} {fname}: файл не найден ({image_path})",
-                      flush=True)
+            if not _kpf.isfile_bounded(image_path):
+                print(f"[img-upload] FAIL {self.login} {fname}: файл не найден или недоступен "
+                      f"({image_path})", flush=True)
                 return None
             if not self.csrf:                          # CSRF живёт на клиенте — не бутстрапить
                 self._bootstrap_csrf()                 # заново на каждую картинку
@@ -2105,8 +2132,14 @@ class GridClient:
             # в requests растягивал ОТПРАВКУ тела на минуты/бесконечно (read-timeout=60 меряет
             # только ответ, не отправку) → воркер висел в ssl.read, watchdog убивал джобу
             # (live-стек 2026-07-02 21:39, job 0bf287c861f2: upload_image → ssl.read).
-            with open(image_path, "rb") as fh:
-                _img_bytes = fh.read()
+            # 2026-07-18: сам fh.read() тоже зависал НАВСЕГДА — у FUSE таймаута нет by design
+            # (job f58a123d8405 / a4bef725b5cb: 12-14 потоков стояли здесь, created 3/20).
+            # Читаем с пределом времени; недоступен → пропускаем картинку, а не вешаем джобу.
+            _img_bytes = _kpf.read_bytes_bounded(image_path)
+            if not _img_bytes:
+                print(f"[img-upload] SKIP {self.login} {fname}: файл не прочитан за "
+                      f"{_kpf._FS_OP_TIMEOUT:.0f}с или пуст ({image_path})", flush=True)
+                return None
             files = {"files": (fname, _img_bytes, "image/jpeg")}
             data = {"image_type": "BANNER_TEXT"}
             r = self.sess.post(url, files=files, data=data, headers=headers, timeout=60)

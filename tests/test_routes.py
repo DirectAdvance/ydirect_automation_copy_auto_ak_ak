@@ -851,3 +851,355 @@ def test_load_cookie_local_accepts_yandex_direct_nested_cookie_file(tmp_path, mo
     monkeypatch.setattr(campaign, "_find_secret_dir", lambda start=None: secret_dir)
 
     assert campaign.load_cookie_local("agency") == "cookie=value"
+
+
+# ── Скоуп/доступ: _scope_check + снапшот в make_job_executor ──────────────────
+# Характеризуют ТЕКУЩЕЕ поведение защиты доступа (было 0 тестов). _scope_check —
+# модульная функция без Flask: allowed=None → полный доступ; []=нет выданных;
+# иначе сверка directologist аккаунта из public.local_gsheet_sites со списком.
+
+class _FakeScopeConn:
+    """Мини-заглушка psycopg2-соединения для _scope_check/_pairs_allowed.
+
+    row — то, что вернёт fetchone() (dict для RealDictCursor или tuple)."""
+
+    def __init__(self, row):
+        self._row = row
+        self.executed = []
+        self.closed = False
+
+    def cursor(self, cursor_factory=None):
+        return self
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+
+    def fetchone(self):
+        return self._row
+
+    def close(self):
+        self.closed = True
+
+
+def test_scope_check_full_access_allows_any_login_without_db():
+    def victory_conn():
+        raise AssertionError("allowed=None must short-circuit before touching DB")
+
+    ok, err = content_editor._scope_check(victory_conn, "acc-login", None)
+
+    assert ok is True
+    assert err == ""
+
+
+def test_scope_check_empty_login_rejected():
+    ok, err = content_editor._scope_check(lambda: None, "  ", None)
+
+    assert ok is False
+    assert "login обязателен" in err
+
+
+def test_scope_check_empty_allowed_list_denies_everything():
+    def victory_conn():
+        raise AssertionError("empty allowed must deny before touching DB")
+
+    ok, err = content_editor._scope_check(victory_conn, "acc-login", [])
+
+    assert ok is False
+    assert "нет выданных директологов" in err
+
+
+def test_scope_check_unknown_login_not_found_in_gsheet():
+    conn = _FakeScopeConn(row=None)
+
+    ok, err = content_editor._scope_check(lambda: conn, "acc-login", ["Иванов"])
+
+    assert ok is False
+    assert "не найден" in err
+    assert conn.closed is True
+    assert conn.executed[0][1] == ("acc-login",)
+
+
+def test_scope_check_foreign_directologist_denied():
+    conn = _FakeScopeConn(row={"directologist": "Чужой"})
+
+    ok, err = content_editor._scope_check(lambda: conn, "acc-login", ["Иванов"])
+
+    assert ok is False
+    assert "нет доступа к аккаунту" in err
+    assert conn.closed is True
+
+
+def test_scope_check_own_directologist_allowed():
+    conn = _FakeScopeConn(row={"directologist": "Иванов"})
+
+    ok, err = content_editor._scope_check(lambda: conn, "acc-login", ["Иванов", "Петров"])
+
+    assert ok is True
+    assert err == ""
+
+
+def test_make_job_executor_rechecks_allowed_snapshot_against_live_directologist():
+    # Снапшот allowed кладётся в job при enqueue; воркер ПЕРЕПРОВЕРЯЕТ его через
+    # _scope_check по живой БД — подмена чужого login в payload не проходит.
+    conn = _FakeScopeConn(row={"directologist": "Чужой"})
+
+    execute = content_editor.make_job_executor(
+        victory_conn=lambda: conn,
+        token_for_login=lambda *a, **k: (_ for _ in ()).throw(AssertionError("scope must fail first")),
+        direct_tokens=lambda: (_ for _ in ()).throw(AssertionError("scope must fail first")),
+        v5_call=lambda *a, **k: None,
+        v501_svc=lambda *a, **k: None,
+    )
+
+    import pytest
+    with pytest.raises(RuntimeError) as ei:
+        execute({"login": "acc-login", "access_directologists": ["Иванов"], "type": "ad_title"})
+
+    assert "нет доступа к аккаунту" in str(ei.value)
+
+
+def test_make_job_executor_passes_scope_then_reaches_token_stage():
+    # Позитив: снапшот совпал с живым directologist → скоуп пройден, дальше воркер
+    # идёт за токенами (здесь их нет → характерная ошибка следующего этапа).
+    conn = _FakeScopeConn(row={"directologist": "Иванов"})
+
+    execute = content_editor.make_job_executor(
+        victory_conn=lambda: conn,
+        token_for_login=lambda *a, **k: (None, None),
+        direct_tokens=lambda: [],
+        v5_call=lambda *a, **k: None,
+        v501_svc=lambda *a, **k: None,
+    )
+
+    import pytest
+    with pytest.raises(RuntimeError) as ei:
+        execute({"login": "acc-login", "access_directologists": ["Иванов"], "type": "ad_title"})
+
+    assert "нет агентских токенов" in str(ei.value)
+
+
+# ── _validate_permutation ────────────────────────────────────────────────────
+def test_validate_permutation_valid_swap():
+    perm, why = content_editor._validate_permutation([1, 0])
+    assert perm == [1, 0]
+    assert why == ""
+
+
+def test_validate_permutation_rejects_duplicates():
+    perm, why = content_editor._validate_permutation([0, 0])
+    assert perm == []
+    assert "биекцией" in why
+
+
+def test_validate_permutation_rejects_out_of_range():
+    perm, why = content_editor._validate_permutation([0, 2])
+    assert perm == []
+    assert "биекцией" in why
+
+
+def test_validate_permutation_rejects_too_short():
+    for bad in ([], [0]):
+        perm, why = content_editor._validate_permutation(bad)
+        assert perm == []
+        assert "минимум 2 позиции" in why
+
+
+def test_validate_permutation_rejects_identity():
+    perm, why = content_editor._validate_permutation([0, 1, 2])
+    assert perm == []
+    assert "тождественна" in why
+
+
+def test_validate_permutation_rejects_non_int():
+    perm, why = content_editor._validate_permutation(["a", "b"])
+    assert perm == []
+    assert "целых индексов" in why
+
+
+# ── _reorder_sitelinks ───────────────────────────────────────────────────────
+class _FakeReorderGrid:
+    def __init__(self, login):
+        self.login = login
+        self.added = []
+        self.rebinds = []
+
+    def add_sitelink_set(self, sitelinks):
+        self.added.append(list(sitelinks))
+        return 900 + len(self.added)
+
+    def set_campaign_sitelink_set(self, campaign_ids, sitelink_set_id):
+        self.rebinds.append((list(campaign_ids), sitelink_set_id))
+        return [{"id": str(cid)} for cid in campaign_ids]
+
+
+def test_reorder_sitelinks_invalid_perm_short_circuits():
+    grid_calls = []
+
+    def factory(login):
+        grid_calls.append(login)
+        return _FakeReorderGrid(login)
+
+    out = content_editor._reorder_sitelinks(
+        "token", "login", [0, 1],  # тождественная — отсекается до обхода наборов
+        {"sitelinks": [{"set_id": 1, "level": "campaign",
+                        "campaign_ids": [1], "items": [{"title": "A"}, {"title": "B"}]}]},
+        lambda *a, **k: None,
+        grid_client_factory=factory,
+    )
+
+    assert out["replaced"] == 0
+    assert out["reports"] == []
+    assert "тождественна" in out["errors"][0]
+    assert grid_calls == []  # набор ни разу не тронут
+
+
+def test_reorder_sitelinks_campaign_level_applies_and_reads_back():
+    grid = _FakeReorderGrid("login")
+    content = {
+        "sitelinks": [{
+            "set_id": 55, "set_title": "Набор", "source": "grid", "level": "campaign",
+            "campaign_ids": [11, 12],
+            "items": [
+                {"title": "Первая", "href": "https://a", "description": "d1"},
+                {"title": "Вторая", "href": "https://b", "description": "d2"},
+            ],
+        }],
+    }
+
+    out = content_editor._reorder_sitelinks(
+        "token", "login", [1, 0], content, lambda *a, **k: None,
+        grid_client_factory=lambda login: grid,
+    )
+
+    assert out["replaced"] == 1
+    assert out["applied_sets"] == 1
+    assert out["campaigns_touched"] == 2
+    rep = out["reports"][0]
+    assert rep["status"] == "applied"
+    assert rep["before"] == ["Первая", "Вторая"]
+    assert rep["after"] == ["Вторая", "Первая"]
+    assert rep["campaign_ids"] == [11, 12]
+    # порядок реально применён к новому набору
+    assert [it["title"] for it in grid.added[0]] == ["Вторая", "Первая"]
+    assert grid.rebinds[0][0] == [11, 12]
+
+
+def test_reorder_sitelinks_skips_when_order_unchanged():
+    # Дубликаты-по-кортежу: perm не тождественна, но _apply даёт тот же список
+    # кортежей → skip «порядок не изменился», Grid НЕ вызывается.
+    grid = _FakeReorderGrid("login")
+    content = {
+        "sitelinks": [{
+            "set_id": 7, "source": "grid", "level": "campaign", "campaign_ids": [1],
+            "items": [
+                {"title": "X", "href": "https://x", "description": "d"},
+                {"title": "X", "href": "https://x", "description": "d"},
+            ],
+        }],
+    }
+
+    out = content_editor._reorder_sitelinks(
+        "token", "login", [1, 0], content, lambda *a, **k: None,
+        grid_client_factory=lambda login: grid,
+    )
+
+    assert out["replaced"] == 0
+    assert out["skipped_sets"] == 1
+    assert out["reports"][0]["status"] == "skipped"
+    assert "порядок не изменился" in out["reports"][0]["reason"]
+    assert grid.added == []
+    assert grid.rebinds == []
+
+
+def test_reorder_sitelinks_skips_set_shorter_than_perm():
+    grid = _FakeReorderGrid("login")
+    content = {
+        "sitelinks": [{
+            "set_id": 8, "source": "grid", "level": "campaign", "campaign_ids": [1],
+            "items": [{"title": "Одна", "href": "https://a", "description": "d"}],
+        }],
+    }
+
+    out = content_editor._reorder_sitelinks(
+        "token", "login", [1, 0], content, lambda *a, **k: None,
+        grid_client_factory=lambda login: grid,
+    )
+
+    assert out["replaced"] == 0
+    assert out["skipped_sets"] == 1
+    assert out["reports"][0]["status"] == "skipped"
+    assert "перестановка требует 2" in out["reports"][0]["reason"]
+    assert grid.added == []
+
+
+def test_reorder_sitelinks_target_set_id_filters_other_sets():
+    grid = _FakeReorderGrid("login")
+    content = {
+        "sitelinks": [
+            {"set_id": 100, "source": "grid", "level": "campaign", "campaign_ids": [1],
+             "items": [{"title": "A", "href": "https://a", "description": "d1"},
+                       {"title": "B", "href": "https://b", "description": "d2"}]},
+            {"set_id": 200, "source": "grid", "level": "campaign", "campaign_ids": [2],
+             "items": [{"title": "C", "href": "https://c", "description": "d3"},
+                       {"title": "D", "href": "https://d", "description": "d4"}]},
+        ],
+    }
+
+    out = content_editor._reorder_sitelinks(
+        "token", "login", [1, 0], content, lambda *a, **k: None,
+        target_set_id=200,
+        grid_client_factory=lambda login: grid,
+    )
+
+    assert out["applied_sets"] == 1
+    assert len(out["reports"]) == 1
+    assert out["reports"][0]["set_id"] == 200
+    assert grid.rebinds == [([2], 901)]
+
+
+def test_reorder_sitelinks_uac_branch_patches_and_confirms_read_back():
+    # UAC-ветка: перечитывает живую деталь, PATCH массива sitelinks, read-back по
+    # полному кортежу (title,href,description). _sl_tuple подтверждает новый порядок.
+    class FakeUacClient:
+        def __init__(self):
+            self.csrf = "csrf"
+            self.sitelinks = [
+                {"title": "П1", "href": "https://1", "description": "оп1"},
+                {"title": "П2", "href": "https://2", "description": "оп2"},
+            ]
+            self.patched = []
+
+        def link_info(self, url):
+            return {}
+
+        def _request(self, method, path, *, params=None, json_body=None, step=""):
+            if method == "GET":
+                return {"result": {"id": 501, "sitelinks": [dict(x) for x in self.sitelinks]}}
+            if method == "PATCH":
+                self.patched.append(json_body)
+                self.sitelinks = [dict(x) for x in json_body["sitelinks"]]
+                return {"result": {"id": 501, "sitelinks": self.sitelinks}}
+            raise AssertionError(method)
+
+    client = FakeUacClient()
+    content = {
+        "sitelinks": [{
+            "set_id": "uac:501", "source": "uac", "campaign_id": 501,
+            "items": [
+                {"title": "П1", "href": "https://1", "description": "оп1"},
+                {"title": "П2", "href": "https://2", "description": "оп2"},
+            ],
+        }],
+    }
+
+    out = content_editor._reorder_sitelinks(
+        "token", "login", [1, 0], content, lambda *a, **k: None,
+        uac_client_factory=lambda login: client,
+    )
+
+    assert out["replaced"] == 1
+    assert out["uac_sets"] == 1
+    rep = out["reports"][0]
+    assert rep["status"] == "applied"
+    assert rep["orig_order"] == ["П1", "П2"]
+    assert [x["title"] for x in client.patched[0]["sitelinks"]] == ["П2", "П1"]

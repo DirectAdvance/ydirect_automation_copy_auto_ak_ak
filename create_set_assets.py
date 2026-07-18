@@ -28,6 +28,14 @@ def _manual_creative_paths(ct_code: str) -> list:
     а здесь мы лениво скачиваем эти файлы в локальный cache через `fetch_remote_asset`.
 
     Legacy-fallback `/opt/creatives/Manual/{ct}/` оставлен только если такой mount реально есть.
+
+    ⚠️ `/opt/creatives` — НЕ локальный диск, а sshfs-монт M3 (`mount`: m3-relay:/Users/Shared/
+    agency/creatives, fuse.sshfs), хотя комментарий ниже исторически звал его «локальным».
+    Те же файлы лежат ЛОКАЛЬНО в зеркале `NEURO_PACK_MOUNT/_manual/{ct}/` (ночной
+    sync_content_m3.py). Отдавали sshfs-пути → их потом читал upload_image голым fh.read()
+    без таймаута → бесконечное зависание потоков (job f58a123d8405 / a4bef725b5cb, 2026-07-18:
+    12-14 потоков в fh.read/isfile/realpath, created 3/20). Поэтому: зеркало ПЕРВЫМ,
+    sshfs — только фолбэк и только через операции с пределом времени.
     """
     import os as _os
     ct = (ct_code or "").strip().lower()
@@ -35,13 +43,17 @@ def _manual_creative_paths(ct_code: str) -> list:
         return []
     out: list[str] = []
 
-    # 1) Старый локальный mount, если он вообще существует на текущем LXC.
-    folder = _os.path.join(MANUAL_CREATIVES_DIR, ct)
+    # 1) Manual-креативы с диска. Приоритет — ЛОКАЛЬНОЕ зеркало (_manual/{ct}), sshfs-монт
+    #    /opt/creatives/Manual — только если в зеркале этого ct нет.
     try:
-        if _os.path.isdir(folder):
+        _mirror = getattr(kp, "_LOCAL_MIRROR_ROOT", None)
+        folder = _os.path.join(_mirror, "_manual", ct) if _mirror else ""
+        if not (folder and kp.isdir_bounded(folder)):
+            folder = _os.path.join(MANUAL_CREATIVES_DIR, ct)
+        if kp.isdir_bounded(folder):
             out.extend(sorted(
                 _os.path.join(folder, f)
-                for f in _os.listdir(folder)
+                for f in kp.listdir_bounded(folder)
                 if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
             ))
     except Exception:  # noqa: BLE001

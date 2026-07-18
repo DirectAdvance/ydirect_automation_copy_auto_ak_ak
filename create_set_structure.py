@@ -62,28 +62,14 @@ def _slepok_key(slepok: str) -> str:
     return _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
 
 
-# Кэш распарсенной структуры: ~16.5k items перечитывались на КАЖДЫЙ вызов (per-tp, до 7× за план).
-# Ключ инвалидации — mtime файла: правка структуры (Mutagen-синк) меняет mtime → авто-переразбор.
-_STRUCT_CACHE: dict = {"mtime": None, "data": None}
-
-
 def _load_struct() -> dict:
-    path = os.path.join(os.path.dirname(__file__), "slepki_structure.json")
+    # Структура разбита на per-slepok файлы (direct/slepki/) — собираем через slepki_store
+    # (у него свой кэш по сигнатуре mtime+size частей, ~16.5k items не перечитываются зря).
+    from . import slepki_store as _ss
     try:
-        mtime = os.path.getmtime(path)
+        return _ss.assemble()
     except Exception:  # noqa: BLE001
         return {}
-    c = _STRUCT_CACHE
-    if c["data"] is not None and c["mtime"] == mtime:
-        return c["data"]
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:  # noqa: BLE001
-        return {}
-    c["mtime"] = mtime
-    c["data"] = data
-    return data
 
 
 def _gk_of(it: dict) -> str:

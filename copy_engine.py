@@ -40,12 +40,21 @@ _job_touch = _job_db_save = _CALLOUT_PER_CAMPAIGN_CAP = None
 
 
 def configure(deps: dict) -> None:
-    """Инъекция зависимостей из blueprint (Direct API/токены/Grid/очередь)."""
+    """Инъекция зависимостей из blueprint (Direct API/токены/Grid/очередь).
+
+    Фан-аут: те же deps раздаются извлечённым суб-модулям распила (у каждого свой
+    globals().update — берёт нужные ключи). Модули импортируются ниже (ре-экспорт распила),
+    к моменту вызова configure() (runtime, после load) имена уже связаны.
+    """
     globals().update(deps)
+    for _sub in (copy_jobs, copy_geo, copy_snapshot, copy_images, copy_metrika,
+                 copy_feeds, copy_grid_read, copy_uac, copy_cleanup, copy_grid_steps):
+        try:
+            _sub.configure(deps)
+        except Exception:  # noqa: BLE001 — фан-аут best-effort, не валит основную инъекцию
+            pass
 
 
-_COPY_JOBS: dict = {}
-_COPY_JOBS_LOCK = threading.Lock()
 _DIRECT_COPY_MOD = None
 
 
@@ -64,283 +73,34 @@ def _direct_copy_module():
     return mod
 
 
-def _copy_job_upsert(job_id: str, **fields) -> dict:
-    with _COPY_JOBS_LOCK:
-        job = _COPY_JOBS.setdefault(job_id, {"job_id": job_id, "log": [], "created_at": time.time()})
-        job.update(fields)
-        job["updated_at"] = time.time()
-        snap = dict(job)
-    _copy_mirror_create_job(job_id, snap)
-    return snap
 
 
-def _copy_mirror_create_job(job_id: str, copy_job: dict) -> None:
-    """Mirror copy-flow progress into the shared create queue card."""
-    snap = None
-    with _CREATE_JOBS_LOCK:
-        j = _CREATE_JOBS.get(job_id)
-        if not j or j.get("kind") != "copy_campaigns":
-            return
-        status = copy_job.get("status")
-        total = int(copy_job.get("total") or j.get("total") or 0)
-        progress = int(copy_job.get("progress") or 0)
-        result = copy_job.get("result") if isinstance(copy_job.get("result"), dict) else {}
-        rows = result.get("results") or []
-        created = sum(1 for r in rows if isinstance(r, dict) and r.get("ok"))
-        failed = sum(1 for r in rows if isinstance(r, dict) and r.get("ok") is False)
-        if status:
-            j["status"] = status
-        j["total"] = total
-        j["set_total"] = total
-        j["done"] = total if status in _JOB_TERMINAL else (min(total, round(total * progress / 100)) if total else progress)
-        j["set_done"] = j["done"]
-        j["created"] = created or int((result.get("uac_copy") or {}).get("created") or j.get("created") or 0)
-        j["failed"] = failed
-        if copy_job.get("error"):
-            j["error"] = copy_job.get("error")
-        if copy_job.get("result") is not None:
-            j["result"] = copy_job.get("result")
-        _job_touch(j)
-        snap = dict(j)
-    if snap:
-        _job_db_save(job_id, snap, full=status in _JOB_TERMINAL)
 
 
-def _copy_job_log(job_id: str, message: str) -> None:
-    with _COPY_JOBS_LOCK:
-        job = _COPY_JOBS.setdefault(job_id, {"job_id": job_id, "log": [], "created_at": time.time()})
-        log = job.setdefault("log", [])
-        log.append(str(message)[:400])
-        if len(log) > 200:
-            del log[:-200]
-        job["updated_at"] = time.time()
-        snap = dict(job)
-    _copy_mirror_create_job(job_id, snap)
 
 
-def _copy_read_json(path: Path):
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
 
 
-def _copy_write_json(path: Path, data) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def _copy_filter_snapshot(src_dir: Path, selected_campaign_ids: set[int]) -> dict:
-    """Оставить в snapshot только выбранные кампании и связанные сущности."""
-    campaigns = [c for c in _copy_read_json(src_dir / "campaigns.json") if int(c.get("Id") or 0) in selected_campaign_ids]
-    campaign_ids = {int(c["Id"]) for c in campaigns if c.get("Id")}
-    adgroups = [g for g in _copy_read_json(src_dir / "adgroups.json") if int(g.get("CampaignId") or 0) in campaign_ids]
-    adgroup_ids = {int(g["Id"]) for g in adgroups if g.get("Id")}
-    ads = [a for a in _copy_read_json(src_dir / "ads.json")
-           if int(a.get("CampaignId") or 0) in campaign_ids or int(a.get("AdGroupId") or 0) in adgroup_ids]
-    shopping_ads = [a for a in _copy_read_json(src_dir / "shopping_ads.json") if int(a.get("AdGroupId") or 0) in adgroup_ids]
-    keywords = [k for k in _copy_read_json(src_dir / "keywords.json")
-                if int(k.get("CampaignId") or 0) in campaign_ids or int(k.get("AdGroupId") or 0) in adgroup_ids]
-    bidmods = [m for m in _copy_read_json(src_dir / "bidmodifiers.json")
-               if int(m.get("CampaignId") or 0) in campaign_ids or int(m.get("AdGroupId") or 0) in adgroup_ids]
-    selected_domains = set()
-    for a in ads:
-        for key in ("TextAd", "TextImageAd", "TextAdBuilderAd", "DynamicTextAd", "SmartAd"):
-            href = str((a.get(key) or {}).get("Href") or "")
-            if "://" in href:
-                selected_domains.add(href.split("://", 1)[1].split("/", 1)[0].lower())
-
-    sitelink_ids, callout_ids, vcard_ids, image_hashes, feed_ids, shared_ids, retargeting_ids = set(), set(), set(), set(), set(), set(), set()
-    for c in campaigns:
-        for struct_key in ("TextCampaign", "DynamicTextCampaign", "SmartCampaign", "CpmBannerCampaign", "UnifiedAdCampaign"):
-            td = c.get(struct_key) or {}
-            shared_ids.update((td.get("NegativeKeywordSharedSetIds") or {}).get("Items") or [])
-    for g in adgroups:
-        shared_ids.update((g.get("NegativeKeywordSharedSetIds") or {}).get("Items") or [])
-        fp = g.get("TextAdGroupFeedParams") or {}
-        if fp.get("FeedId"):
-            feed_ids.add(int(fp["FeedId"]))
-    for a in ads + shopping_ads:
-        for key in ("TextAd", "DynamicTextAd", "ShoppingAd"):
-            td = a.get(key) or {}
-            if td.get("SitelinkSetId"):
-                sitelink_ids.add(int(td["SitelinkSetId"]))
-            for ext in (td.get("AdExtensions") or []):
-                if ext.get("AdExtensionId"):
-                    callout_ids.add(int(ext["AdExtensionId"]))
-            if td.get("VCardId"):
-                vcard_ids.add(int(td["VCardId"]))
-            if td.get("AdImageHash"):
-                image_hashes.add(td["AdImageHash"])
-            if td.get("FeedId"):
-                feed_ids.add(int(td["FeedId"]))
-    for m in bidmods:
-        payload = m.get("RetargetingAdjustment") or {}
-        if payload.get("RetargetingConditionId"):
-            retargeting_ids.add(int(payload["RetargetingConditionId"]))
-
-    sitelinks = [s for s in _copy_read_json(src_dir / "sitelinks.json") if int(s.get("Id") or 0) in sitelink_ids]
-    callouts = [c for c in _copy_read_json(src_dir / "callouts.json") if int(c.get("Id") or 0) in callout_ids]
-    vcards = [v for v in _copy_read_json(src_dir / "vcards.json") if int(v.get("Id") or 0) in vcard_ids]
-    feeds = [f for f in _copy_read_json(src_dir / "feeds.json") if int(f.get("Id") or 0) in feed_ids]
-    shared_sets = [s for s in _copy_read_json(src_dir / "negative_keyword_shared_sets.json") if int(s.get("Id") or 0) in shared_ids]
-    ret_lists = [r for r in _copy_read_json(src_dir / "retargeting_lists.json") if int(r.get("Id") or 0) in retargeting_ids]
-    promotions = []
-    for p in _copy_read_json(src_dir / "promotions.json"):
-        href = str(p.get("Href") or "")
-        dom = href.split("://", 1)[1].split("/", 1)[0].lower() if "://" in href else ""
-        if dom and dom in selected_domains:
-            promotions.append(p)
-
-    _copy_write_json(src_dir / "campaigns.json", campaigns)
-    _copy_write_json(src_dir / "campaigns_skipped.json", [])
-    _copy_write_json(src_dir / "adgroups.json", adgroups)
-    _copy_write_json(src_dir / "ads.json", ads)
-    _copy_write_json(src_dir / "shopping_ads.json", shopping_ads)
-    _copy_write_json(src_dir / "keywords.json", keywords)
-    _copy_write_json(src_dir / "bidmodifiers.json", bidmods)
-    _copy_write_json(src_dir / "sitelinks.json", sitelinks)
-    _copy_write_json(src_dir / "callouts.json", callouts)
-    _copy_write_json(src_dir / "vcards.json", vcards)
-    _copy_write_json(src_dir / "feeds.json", feeds)
-    _copy_write_json(src_dir / "negative_keyword_shared_sets.json", shared_sets)
-    _copy_write_json(src_dir / "retargeting_lists.json", ret_lists)
-    _copy_write_json(src_dir / "promotions.json", promotions)
-
-    img_dir = src_dir / "images"
-    if img_dir.exists():
-        for img in img_dir.glob("*.img"):
-            if img.stem not in image_hashes:
-                try:
-                    img.unlink()
-                except Exception:  # noqa: BLE001
-                    pass
-
-    meta = {
-        "campaigns": len(campaigns), "adgroups": len(adgroups), "ads": len(ads),
-        "keywords": len(keywords), "sitelinks": len(sitelinks), "callouts": len(callouts),
-        "vcards": len(vcards), "adimages_used": len(image_hashes), "promotions": len(promotions),
-        "shared_sets": len(shared_sets), "bidmodifiers": len(bidmods), "feeds": len(feeds),
-        "retargeting_lists": len(ret_lists),
-    }
-    meta_path = src_dir / "_meta.json"
-    meta_json = _copy_read_json(meta_path) if meta_path.exists() else {}
-    meta_json["counts"] = meta
-    _copy_write_json(meta_path, meta_json)
-    return meta
 
 
-_COPY_DEFAULT_FEED_PATH = "/dostup-k-rasprodazhe-live-01-b.xml"
-_COPY_SUPPORTED_V5_TYPES = {"TEXT_CAMPAIGN", "DYNAMIC_TEXT_CAMPAIGN", "UNIFIED_AD_CAMPAIGN"}
-_COPY_JSON_PAYLOADS = (
-    "campaigns.json", "adgroups.json", "ads.json", "shopping_ads.json", "keywords.json",
-    "sitelinks.json", "vcards.json", "feeds.json", "promotions.json",
-)
 
 
-def _copy_canonical_region_name(region: str) -> str:
-    """Normalize Direct/Victory region labels for copied campaign names."""
-    text = (region or "").strip()
-    low = text.lower().replace("ё", "е")
-    if low in {"башкортостан, республика", "республика башкортостан"}:
-        return "Республика Башкортостан"
-    return text
 
 
-def _copy_geo_id_for_target(city: str | None, region: str | None) -> tuple[int | None, str | None]:
-    """Geo for copy-flow.
-
-    For campaign copy we target the account's business region, not the city
-    prefill. Example: Ufa accounts must copy to Republic of Bashkortostan
-    (11111), while generic create_set still keeps city-first _geo_id().
-    """
-    region_name = _copy_canonical_region_name(region or "")
-    # Страновой таргетинг: РФ/Россия/Russia → GeoRegionId России (225). Мультигород-аккаунты
-    # префилл сводит к 225 (account_service.py:623, «регион не распознан по городу → Россия»),
-    # но текст региона уходит как «РФ»/«Россия» — резолвим его тем же id, иначе city-мультистрока
-    # («Краснодар, Нижний Новгород, …») не матчится и копирование падает (не найден GeoRegionId).
-    if (region_name or "").strip().lower().replace("ё", "е") in {
-        "рф", "россия", "russia", "ru", "российская федерация",
-    }:
-        return 225, "Россия"
-    if region_name:
-        gid, used = _geo_id(None, region_name)
-        if gid:
-            return gid, used
-    return _geo_id(city, region_name or region)
 
 
-def _copy_ctx(login: str) -> dict:
-    try:
-        ctx = _account_ctx(login) or {}
-    except Exception:  # noqa: BLE001 - source login may be outside local_gsheet_sites
-        ctx = {}
-    return {
-        "domain": (ctx.get("domain") or "").strip(),
-        "city": (ctx.get("city") or "").strip(),
-        "region": (ctx.get("oblast") or ctx.get("region") or "").strip(),
-        "geoid": ctx.get("geoid"),
-    }
 
 
-def _copy_walk_strings(obj, fn):
-    if isinstance(obj, str):
-        return fn(obj)
-    if isinstance(obj, list):
-        return [_copy_walk_strings(x, fn) for x in obj]
-    if isinstance(obj, dict):
-        return {k: _copy_walk_strings(v, fn) for k, v in obj.items()}
-    return obj
 
 
-def _copy_m3_decliner():
-    """Callable для copy_geo_morph: messages -> (text, err). temperature=0, короткий таймаут,
-    2 попытки (склонение — быстрая задача, долго ждать M3 в copy-job'е не нужно)."""
-    def _call(messages):
-        return _m3_complete(messages, max_tokens=220, temperature=0.0, tries=2, backoff=4.0, timeout=60)
-    return _call
 
 
-def _copy_build_geo(source_ctx: dict, target_city: str, target_region: str, log=None):
-    """Строит морфологические пары гео-замены (все падежи) через M3 + метадату.
-
-    Возвращает (pairs, meta). pairs — list[(old, new)] по падежам, отсортировано по длине убыв.
-    meta — {m3_used, m3_failed, source_forms (для residual), pairs_count}. Фолбзк на именительный
-    (по границам слов) внутри copy_geo_morph, если M3 недоступен/невалиден — job не падает."""
-    from . import copy_geo_morph as cgm
-    target_city = (target_city or "").strip()
-    target_region = (target_region or "").strip()
-    src_city = (source_ctx.get("city") or "").strip()
-    src_region = (source_ctx.get("region") or "").strip()
-    geo_map: list[tuple[str, str]] = []
-    if src_city:
-        geo_map.append((src_city, target_city or target_region))
-    if src_region:
-        geo_map.append((src_region, target_region or target_city))
-        # Задача 2 (Minor #14-M1): неофициальные/разговорные алиасы региона источника.
-        # При копировании из Кузбасса слово «Кузбасс» остаётся в именах, т.к. морф знает
-        # только официальную «Кемеровская область». Добавляем алиасы явной парой.
-        _src_region_low = src_region.lower().replace("ё", "е")
-        for _alias in (_REGION_ALIASES.get(_src_region_low) or []):
-            geo_map.append((_alias, target_region or target_city))
-    # Частый случай: источник вне local_gsheet_sites, но в названиях/текстах реально фигурирует Краснодар.
-    if "краснодар" not in f"{target_city} {target_region}".lower():
-        geo_map.append(("Краснодар", target_city or target_region))
-        geo_map.append(("Краснодарский край", target_region or target_city))
-    _log = log or (lambda _m: None)
-    # Пробуем M3 только если LLM жива (иначе paradigm_for отдаст закэшированное, а несозданное — фолбэк).
-    try:
-        m3 = _copy_m3_decliner() if _m3_llm_probe() else None
-    except Exception:  # noqa: BLE001
-        m3 = None
-    return cgm.build_geo_pairs(geo_map, m3_complete=m3, log=_log)
 
 
-# Задача 2 (Minor #14-M1): разговорные алиасы регионов.
-# Ключ — lower+ё→е ОФИЦИАЛЬНЫЙ регион из source_ctx; значения — синонимы в именах кампаний/текстах.
-# Не раздувать: только явные, встречающиеся в реальных РК.
-_REGION_ALIASES: dict[str, list[str]] = {
-    "кемеровская область": ["Кузбасс"],
-    "ханты-мансийский автономный округ — югра": ["Югра", "Ханты-Мансийский округ"],
-    "ямало-ненецкий автономный округ": ["Ямал"],
-}
+# _REGION_ALIASES / _REGION_ALIASES_NORM / _norm_region_alias_key перенесены в copy_geo.py
+# (распил): их использует _copy_geo_replacements там же. Ре-экспорт — ниже в блоке copy_geo.
 
 
 def _copy_geo_filter_negatives(minus_list: list, replacements: list) -> list:
@@ -370,40 +130,12 @@ def _copy_geo_filter_negatives(minus_list: list, replacements: list) -> list:
     return result
 
 
-def _copy_geo_replacements(source_ctx: dict, target_city: str, target_region: str, log=None) -> list[tuple[str, str]]:
-    pairs, _meta = _copy_build_geo(source_ctx, target_city, target_region, log=log)
-    return pairs
 
 
-def _copy_apply_geo_replacements(text: str | None, replacements: list[tuple[str, str]]) -> str:
-    from . import copy_geo_morph as cgm
-    out, _n = cgm.apply_replacements(text, replacements or [])
-    return out
 
 
-_COPY_R_CODE_RE = re.compile(r"(?<=_)r\d{4}(?=_)")
 
 
-def _copy_target_region_code(target_city: str, target_region: str) -> str:
-    """Целевой r-код кодера (ag_part4) по гео target-аккаунта. Один источник для кампаний и групп.
-
-    Использует DI'd _resolve_region(city) -> (r_code, oblast) (create_set_plan). Возвращает валидный
-    r#### ТОЛЬКО если он определён и не плейсхолдер r0000 — иначе '' (ремап пропускается, чтобы не
-    затирать исходный код неопределённым плейсхолдером). None-DI (standalone без wiring) → ''."""
-    if not _resolve_region:
-        return ""
-    for probe in (target_city, target_region):
-        probe = (probe or "").strip()
-        if not probe:
-            continue
-        try:
-            r_code, _oblast = _resolve_region(probe)
-        except Exception:  # noqa: BLE001 — резолв региона best-effort, ремап не критичен для create
-            r_code = ""
-        r_code = str(r_code or "").strip()
-        if re.fullmatch(r"r\d{4}", r_code) and r_code != "r0000":
-            return r_code
-    return ""
 
 
 def _copy_rcode_to_region(r_code: str) -> str:
@@ -429,556 +161,32 @@ def _copy_rcode_to_region(r_code: str) -> str:
         return ""
 
 
-def _copy_remap_region_code(name: str | None, target_r_code: str) -> str:
-    """Перекодировать r-сегмент кодера (`_r0300_` → `_<target_r_code>_`) в имени кампании/группы.
-
-    Баги 1/4: гео-морфология меняет только словоформы (\\b), но регион в кодере зашит КОДОМ
-    (`ag_part4`, напр. r0300=Краснодарский край) — код словами не задеть. Здесь ремапим сам код на
-    r-код target-региона. target_r_code пуст/невалиден → имя без изменений (безопасно)."""
-    text = str(name or "")
-    if not text or not re.fullmatch(r"r\d{4}", str(target_r_code or "")):
-        return text
-    return _COPY_R_CODE_RE.sub(target_r_code, text)
 
 
-def _copy_normalize_campaign_name(name: str | None, replacements: list[tuple[str, str]],
-                                  target_r_code: str = "") -> str:
-    out = _copy_apply_geo_replacements(name, replacements).strip()
-    out = re.sub(r"^\s*Копия\s+ХАВАЛ\s+", "Haval ", out, flags=re.I)
-    out = re.sub(r"^\s*Копия\s+", "", out, flags=re.I)
-    out = out.replace("Башкортостан, республика", "Республика Башкортостан")
-    out = out.replace("ХАВАЛ", "Haval")
-    # Баг 4: r-сегмент кодера в ИМЕНИ кампании (tp6/tp7 — весь кодер в имени) → target r-код.
-    out = _copy_remap_region_code(out, target_r_code)
-    return out.strip()
 
 
-def _copy_domain_from_href(href: str | None) -> str:
-    m = re.match(r"^https?://([^/?#]+)", str(href or "").strip(), re.I)
-    return (m.group(1).lower() if m else "").strip()
 
 
-def _copy_grid_ad_image_hashes(ad: dict) -> list[str]:
-    out: list[str] = []
-    img = ad.get("image")
-    if isinstance(img, dict) and img.get("imageHash"):
-        out.append(str(img["imageHash"]))
-    for item in ad.get("images") or []:
-        if isinstance(item, dict) and item.get("imageHash"):
-            out.append(str(item["imageHash"]))
-    return list(dict.fromkeys(x for x in out if x))
 
 
-def _copy_v501_ad_image_hashes(login: str, campaign_ids: set[int], agency_hint: str = "") -> dict[int, list[str]]:
-    """Best-effort source image read: {adGroupId: [imageHash, ...]}.
-
-    Grid read often returns ``GdTextAd.image`` as null, while v501 exposes
-    legacy ``TextAd.AdImageHash`` and responsive ``AdImages``. This is read-only
-    and used only to preserve source creatives during cookie copy when available.
-    """
-    ids = [int(x) for x in (campaign_ids or []) if int(x) > 0]
-    if not ids:
-        return {}
-    try:
-        token, _agency = _token_for_login(login, agency_hint or _resolve_agency_hint(login, ""), _direct_tokens())
-    except Exception:
-        token = None
-    if not token:
-        return {}
-    out: dict[int, list[str]] = {}
-
-    def _add(gid: int, value) -> None:
-        if not gid or not value:
-            return
-        vals = out.setdefault(int(gid), [])
-        if isinstance(value, dict):
-            value = value.get("Items") or []
-        if isinstance(value, list):
-            for item in value:
-                if isinstance(item, dict):
-                    h = item.get("ImageHash") or item.get("AdImageHash") or item.get("Hash")
-                else:
-                    h = item
-                h = str(h or "").strip()
-                if h and h not in vals:
-                    vals.append(h)
-        else:
-            h = str(value or "").strip()
-            if h and h not in vals:
-                vals.append(h)
-
-    for i in range(0, len(ids), 10):
-        params = {
-            "SelectionCriteria": {"CampaignIds": ids[i:i + 10]},
-            "FieldNames": ["Id", "CampaignId", "AdGroupId", "Type"],
-            "TextAdFieldNames": ["AdImageHash"],
-            "ResponsiveAdFieldNames": ["AdImages"],
-            "Page": {"Limit": 10000, "Offset": 0},
-        }
-        try:
-            data = _v501_svc("ads", "get", token, login, params)
-        except Exception:
-            continue
-        if data.get("error"):
-            continue
-        for ad in ((data.get("result") or {}).get("Ads") or []):
-            try:
-                gid = int(ad.get("AdGroupId") or 0)
-            except (TypeError, ValueError):
-                continue
-            if ad.get("TextAd"):
-                _add(gid, (ad.get("TextAd") or {}).get("AdImageHash"))
-            if ad.get("ResponsiveAd"):
-                _add(gid, (ad.get("ResponsiveAd") or {}).get("AdImages"))
-    return out
 
 
-def _copy_image_remapper(source_login: str, source_agency: str, target_login: str,
-                         target_agency: str, all_source_hashes, maps: dict, workdir: Path,
-                         *, log=lambda m: None, provided_hashes: list | None = None):
-    """Build ``fn(src_hashes) -> [target-valid image hashes]`` для ЕПК-ветки копировщика (по кукам).
-
-    Image-хэши в Яндекс.Директе привязаны к АККАУНТУ: source-хэш валиден в target только если такая
-    же картинка уже загружена в target (контент-хэш совпал). Иначе AddAdaptiveTextAds падает
-    ``BannerDefectIds.Gen.IMAGE_NOT_FOUND`` и роняет ВЕСЬ ad-add кампании (живой инцидент job
-    b344eafcdad8: src 712117605/712117626 → 2 битые оболочки).
-
-    Стратегия (п.12 «картинки 1:1», 0 v5-баллов):
-      • хэш уже есть в target (v501 ``adimages.get`` target) → используем как есть;
-      • иначе скачиваем оригинал источника (v501 ``adimages.get`` source → ``OriginalUrl``, публичный
-        avatars-URL) и ПЕРЕАПЛОАДИМ в target по кукам (``gf.GridClient.upload_image`` →
-        web-api/image/upload, 0 баллов) → target-хэш, кэшируем в ``maps['images']`` (src→tgt);
-      • картинку не удалось скачать/залить → ДРОПАЕМ этот хэш (лог), НЕ роняем ad-add
-        (объявление без 1 картинки лучше, чем падение всей кампании).
-
-    mode="other" + provided_hashes: вместо ремапа из источника подставляем загруженные хэши
-    ПО КРУГУ (вызов i → hash[i % len(hashes)], детерминировано по порядку вызовов).
-    """
-    # mode="other": предзагруженные хэши уже в target-аккаунте → round-robin по вызовам.
-    if provided_hashes:
-        _ph = [str(h).strip() for h in provided_hashes if str(h).strip()]
-        if _ph:
-            _counter = [0]
-
-            def _remap_provided(src_hashes):  # noqa: ARG001 — src_hashes игнорируется
-                idx = _counter[0]
-                _counter[0] += 1
-                return [_ph[idx % len(_ph)]]
-
-            return _remap_provided
-
-    import requests as _rqs
-    maps.setdefault("images", {})
-    img_cache = maps["images"]  # src_hash -> tgt_hash (persist across all campaigns of the job)
-
-    # 1) существующие хэши target — их можно ставить как есть (1:1, без переаплоада).
-    target_hashes: set[str] = set()
-    try:
-        tgt_token, _ = _token_for_login(
-            target_login, target_agency or _resolve_agency_hint(target_login, ""), _direct_tokens())
-    except Exception:  # noqa: BLE001
-        tgt_token = None
-    if tgt_token:
-        data = _v501_svc("adimages", "get", tgt_token, target_login,
-                         {"SelectionCriteria": {}, "FieldNames": ["AdImageHash"]})
-        for im in ((data.get("result") or {}).get("AdImages") or []):
-            h = str(im.get("AdImageHash") or "").strip()
-            if h:
-                target_hashes.add(h)
-
-    # 2) OriginalUrl источника для хэшей, которых НЕТ в target (кандидаты на переаплоад).
-    need = [h for h in {str(x).strip() for x in (all_source_hashes or []) if str(x).strip()}
-            if h not in target_hashes]
-    src_url_by_hash: dict[str, str] = {}
-    if need:
-        try:
-            src_token, _ = _token_for_login(
-                source_login, source_agency or _resolve_agency_hint(source_login, ""), _direct_tokens())
-        except Exception:  # noqa: BLE001
-            src_token = None
-        if src_token:
-            for i in range(0, len(need), 100):
-                data = _v501_svc("adimages", "get", src_token, source_login,
-                                 {"SelectionCriteria": {"AdImageHashes": need[i:i + 100]},
-                                  "FieldNames": ["AdImageHash", "OriginalUrl"]})
-                for im in ((data.get("result") or {}).get("AdImages") or []):
-                    h = str(im.get("AdImageHash") or "").strip()
-                    u = str(im.get("OriginalUrl") or "").strip()
-                    if h and u:
-                        src_url_by_hash[h] = u
-        log(f"картинки: target уже имеет {len(target_hashes)} хэшей, к переаплоаду {len(need)} "
-            f"(получено URL источника: {len(src_url_by_hash)})")
-
-    cache_dir = Path(workdir) / "_image_cache"
-    tgt_grid_holder: dict = {}
-
-    def _tgt_grid():
-        if "cli" not in tgt_grid_holder:
-            tgt_grid_holder["cli"] = gf.GridClient(target_login)
-        return tgt_grid_holder["cli"]
-
-    def _remap(src_hashes):
-        out: list[str] = []
-        for h in [str(x).strip() for x in (src_hashes or []) if str(x).strip()]:
-            if h in target_hashes:                 # уже валиден в target — 1:1 без переаплоада
-                out.append(h)
-                continue
-            if h in img_cache:                     # уже переаплоадили ранее в этом job
-                out.append(img_cache[h])
-                continue
-            url = src_url_by_hash.get(h)
-            if not url:
-                log(f"картинка {h[:12]}…: нет OriginalUrl источника — дроп (ad-add не падает)")
-                continue
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            dst = cache_dir / f"{h}.img"
-            try:
-                if not (dst.exists() and dst.stat().st_size > 0):
-                    with _rqs.get(url, stream=True, timeout=60, verify=False) as r:
-                        if r.status_code != 200:
-                            log(f"картинка {h[:12]}…: скачивание HTTP {r.status_code} — дроп")
-                            continue
-                        with open(dst, "wb") as fh:
-                            for chunk in r.iter_content(chunk_size=1 << 16):
-                                if chunk:
-                                    fh.write(chunk)
-                if dst.stat().st_size <= 0:
-                    log(f"картинка {h[:12]}…: пустой файл — дроп")
-                    continue
-            except Exception as e:  # noqa: BLE001
-                log(f"картинка {h[:12]}…: скачивание не удалось ({str(e)[:120]}) — дроп")
-                continue
-            try:
-                tgt_hash = _tgt_grid().upload_image(str(dst))
-            except Exception as e:  # noqa: BLE001
-                log(f"картинка {h[:12]}…: переаплоад в target не удался ({str(e)[:120]}) — дроп")
-                tgt_hash = None
-            if tgt_hash:
-                img_cache[h] = tgt_hash
-                target_hashes.add(tgt_hash)
-                out.append(tgt_hash)
-            else:
-                log(f"картинка {h[:12]}…: upload_image вернул пусто — дроп")
-        return list(dict.fromkeys(out))
-
-    return _remap
 
 
-def _copy_scan_payload_terms(src_dir: Path, terms: list[str], *, limit: int = 8) -> list[str]:
-    terms_l = [t.strip().lower() for t in terms if str(t or "").strip()]
-    if not terms_l:
-        return []
-    hits: list[str] = []
-    for name in _COPY_JSON_PAYLOADS:
-        path = src_dir / name
-        if not path.exists():
-            continue
-        try:
-            text = path.read_text(encoding="utf-8").lower()
-        except Exception:  # noqa: BLE001
-            continue
-        for term in terms_l:
-            if term in text:
-                hits.append(f"{name}: {term}")
-                if len(hits) >= limit:
-                    return hits
-    return hits
 
 
-def _copy_rewrite_snapshot_context(src_dir: Path, source_ctx: dict, target_ctx: dict, log=None) -> dict:
-    """Replace source geo words in copied payloads before upload — морфологически (по падежам).
-
-    Пары строит _copy_build_geo (M3-парадигма 6 падежей для старого и нового города/области),
-    замена — copy_geo_morph.apply_replacements: ПО ГРАНИЦАМ СЛОВ + сохранение регистра.
-    Так «в Краснодаре»→«в Уфе», «Краснодара»→«Уфы», а не «Уфае/Уфаа». Residual — по ВСЕМ падежам."""
-    from . import copy_geo_morph as cgm
-    target_city = (target_ctx.get("city") or "").strip()
-    target_region = (target_ctx.get("region") or "").strip()
-    pairs, geo_meta = _copy_build_geo(source_ctx, target_city, target_region, log=log)
-
-    if not pairs:
-        return {"files": 0, "replacements": 0, "pairs": [], "m3_used": False, "residual_geo": []}
-
-    changed_files = 0
-    changed_count = 0
-
-    for name in _COPY_JSON_PAYLOADS:
-        path = src_dir / name
-        if not path.exists():
-            continue
-        before = path.read_text(encoding="utf-8")
-        data = json.loads(before)
-        cnt = {"n": 0}
-
-        def _repl(s, _c=cnt):
-            out, n = cgm.apply_replacements(s, pairs)
-            _c["n"] += n
-            return out
-
-        data = _copy_walk_strings(data, _repl)
-        after = json.dumps(data, ensure_ascii=False, indent=1)
-        if after != before:
-            path.write_text(after, encoding="utf-8")
-            changed_files += 1
-        changed_count += cnt["n"]
-
-    # Residual (case-aware): любая падежная форма старого гео, кроме форм, входящих в новое гео.
-    paths_texts: list[tuple[str, str]] = []
-    for name in _COPY_JSON_PAYLOADS:
-        p = src_dir / name
-        if p.exists():
-            try:
-                paths_texts.append((name, p.read_text(encoding="utf-8")))
-            except Exception:  # noqa: BLE001
-                pass
-    residual = cgm.scan_residual(
-        paths_texts, geo_meta.get("source_forms") or [],
-        target_text=f"{target_city} {target_region}",
-    )
-    return {
-        "files": changed_files,
-        "replacements": changed_count,
-        "pairs": pairs,
-        "m3_used": bool(geo_meta.get("m3_used")),
-        "m3_failed": geo_meta.get("m3_failed") or [],
-        "residual_geo": residual,
-    }
 
 
-def _copy_target_href(href: str | None, source_domain: str, target_domain: str) -> str:
-    """Доменно-агностичная трансформация URL объявления/ссылки в целевой домен (баг 3).
-
-    Раньше: наивный ``href.replace(source_domain, target)`` по ОДНОМУ инференс-домену — если href
-    указывал на ДРУГОЙ хост (quiz-поддомен, турбо-страница, яндексовая «Подборка», маркетплейс), он
-    уезжал в target без замены. Теперь заменяем ЛЮБОЙ хост, не равный target, на target-хост:
-      • хост источника или его ПОДДОМЕН (тот же бизнес, сменил домен) → target-хост + path/query/fragment;
-      • ЧУЖОЙ хост (Яндекс-«Подборка»/турбо/маркетплейс — path на клиентском домене не существует) →
-        голый target (без мусорного пути, иначе 404).
-    Относительный URL (без хоста) и пустой target — не трогаем."""
-    from urllib.parse import urlsplit, urlunsplit
-    href = str(href or "").strip()
-    target = str(target_domain or "").strip()
-    # target-хост: срезаем возможную схему/путь, берём чистый netloc.
-    t_split = urlsplit(target if "://" in target else "https://" + target)
-    target_host = (t_split.netloc or t_split.path.strip("/").split("/", 1)[0]).strip().strip("/")
-    target_abs = ("https://" + target_host) if target_host else ""
-    if not href:
-        return target_abs
-    if not target_host:
-        return href
-    parts = urlsplit(href)
-    if not parts.netloc:            # относительный URL (нет хоста) — оставляем как есть
-        return href
-    host = parts.netloc.lower()
-    if host == target_host.lower():
-        return href                 # уже целевой хост
-    scheme = parts.scheme or "https"
-    src = str(source_domain or "").strip().lower().lstrip(".")
-    # свой домен/поддомен источника → перенос пути; чужой (подборка/турбо/маркетплейс) → голый target.
-    same_business = bool(src) and (host == src or host.endswith("." + src))
-    if src and not same_business:
-        return target_abs
-    return urlunsplit((scheme, target_host, parts.path, parts.query, parts.fragment))
 
 
-def _copy_snapshot_preflight(src_dir: Path, *, target_feed_url: str, target_city: str, target_region: str,
-                             geo_mode: str = "") -> dict:
-    campaigns = _copy_read_json(src_dir / "campaigns.json")
-    adgroups = _copy_read_json(src_dir / "adgroups.json")
-    ads = _copy_read_json(src_dir / "ads.json")
-    shopping_ads = _copy_read_json(src_dir / "shopping_ads.json")
-
-    critical: list[str] = []
-    warnings: list[str] = []
-    unsupported = [c for c in campaigns if (c.get("Type") or "TEXT_CAMPAIGN") not in _COPY_SUPPORTED_V5_TYPES]
-    if unsupported:
-        sample = ", ".join(f"{c.get('Name') or c.get('Id')}[{c.get('Type')}]" for c in unsupported[:6])
-        critical.append(
-            "выбраны типы РК, которые старый direct_copy не восстанавливает корректно: "
-            f"{sample}. Для UAC/tp6/tp7 и ЕПК нужен create_set/нейродиректолог, не snapshot-copy"
-        )
-
-    ads_by_group: dict[int, int] = {}
-    for a in ads + shopping_ads:
-        try:
-            gid = int(a.get("AdGroupId") or 0)
-        except Exception:  # noqa: BLE001
-            gid = 0
-        if gid:
-            ads_by_group[gid] = ads_by_group.get(gid, 0) + 1
-    empty_groups = [g for g in adgroups if int(g.get("Id") or 0) not in ads_by_group]
-    if empty_groups:
-        sample = ", ".join(str(g.get("Name") or g.get("Id")) for g in empty_groups[:8])
-        critical.append(f"в snapshot есть группы без объявлений ({len(empty_groups)}): {sample}")
-
-    feed_group_count = sum(1 for g in adgroups if (g.get("TextAdGroupFeedParams") or {}).get("FeedId"))
-    shopping_count = len(shopping_ads)
-    if (feed_group_count or shopping_count) and not target_feed_url:
-        critical.append("есть товарные/каталожные группы или ShoppingAd, но целевой фид не задан")
-    if shopping_count and not campaigns:
-        critical.append("есть ShoppingAd без выбранных кампаний — snapshot неконсистентен")
-
-    target_geo = " ".join(x for x in (target_city, target_region) if x).strip()
-    if not target_geo and geo_mode != "keep":
-        critical.append("целевое гео пустое")
-
-    return {
-        "critical": critical,
-        "warnings": warnings,
-        "campaigns": len(campaigns),
-        "adgroups": len(adgroups),
-        "ads": len(ads),
-        "shopping_ads": shopping_count,
-        "feed_groups": feed_group_count,
-    }
 
 
-def _copy_build_results(src_dir: Path, workdir: Path) -> list[dict]:
-    """Build create_set-like result rows from direct_copy id_maps for live verification."""
-    maps = _copy_read_json(workdir / "id_maps.json") if (workdir / "id_maps.json").exists() else {}
-    camp_map = maps.get("campaigns") or {}
-    adgroup_map = maps.get("adgroups") or {}
-    ad_map = maps.get("ads") or {}
-    campaigns = _copy_read_json(src_dir / "campaigns.json")
-    adgroups = _copy_read_json(src_dir / "adgroups.json")
-    ads = _copy_read_json(src_dir / "ads.json")
-    shopping_ads = _copy_read_json(src_dir / "shopping_ads.json")
-
-    groups_by_campaign: dict[int, int] = {}
-    ads_by_campaign: dict[int, int] = {}
-    shopping_by_campaign: dict[int, int] = {}
-    for g in adgroups:
-        try:
-            src_gid = str(int(g.get("Id") or 0))
-            src_cid = int(g.get("CampaignId") or 0)
-        except Exception:  # noqa: BLE001
-            continue
-        if src_gid in adgroup_map:
-            groups_by_campaign[src_cid] = groups_by_campaign.get(src_cid, 0) + 1
-    for a in ads:
-        try:
-            src_aid = str(int(a.get("Id") or 0))
-            src_cid = int(a.get("CampaignId") or 0)
-        except Exception:  # noqa: BLE001
-            continue
-        if src_aid in ad_map:
-            ads_by_campaign[src_cid] = ads_by_campaign.get(src_cid, 0) + 1
-    for a in shopping_ads:
-        try:
-            src_aid = str(int(a.get("Id") or 0))
-            src_cid = int(a.get("CampaignId") or 0)
-        except Exception:  # noqa: BLE001
-            continue
-        if src_aid in ad_map:
-            ads_by_campaign[src_cid] = ads_by_campaign.get(src_cid, 0) + 1
-            shopping_by_campaign[src_cid] = shopping_by_campaign.get(src_cid, 0) + 1
-
-    out = []
-    for c in campaigns:
-        src_id = str(c.get("Id") or "")
-        target_id = camp_map.get(src_id)
-        name = str(c.get("Name") or "").strip()
-        if target_id:
-            out.append({
-                "ok": True,
-                "id": int(target_id),
-                "campaign_id": int(target_id),
-                "name": name,
-                "result": {
-                    "build": {
-                        "groups": groups_by_campaign.get(int(c.get("Id") or 0), 0),
-                        "ads": ads_by_campaign.get(int(c.get("Id") or 0), 0),
-                        "shopping_ads": shopping_by_campaign.get(int(c.get("Id") or 0), 0),
-                    }
-                },
-            })
-        else:
-            out.append({"ok": False, "name": name, "error": "campaign not mapped by direct_copy"})
-    return out
 
 
-def _copy_selected_grid_campaigns(login: str, selected_ids: set[int]) -> list[dict]:
-    if not selected_ids:
-        return []
-    try:
-        rows = _grid_list_campaigns(login)
-    except Exception:
-        return []
-    out = []
-    for row in rows or []:
-        try:
-            cid = int(row.get("id") or 0)
-        except (TypeError, ValueError):
-            cid = 0
-        if cid in selected_ids:
-            out.append(row)
-    return out
 
 
-def _copy_grid_read_selected(login: str, selected_ids: set[int]) -> dict:
-    """Read selected Unified campaigns with Grid cookies, without Direct API units."""
-    from .grid_read import GridReadClient
-
-    ids = [int(x) for x in selected_ids if int(x) > 0]
-    if not ids:
-        return {"campaigns": [], "groups": [], "ads": []}
-    id_strings = [str(x) for x in ids]
-    reader = GridReadClient(login)
-    inp_common = {
-        "filter": {"campaignIdIn": id_strings},
-        "statRequirements": {"preset": "TODAY", "goalIds": [], "useCampaignGoalIds": True},
-        "limitOffset": {"limit": 10000, "offset": 0},
-        "orderBy": [{"order": "ASC", "field": "ID"}],
-    }
-    q_campaigns = (
-        "query CopyCamp($login:String!,$inp:GdCampaignsContainerInput!){"
-        "client(searchBy:{login:$login}){campaigns(input:$inp){rowset{"
-        "id name __typename status{primaryStatus archived} "
-        "...on GdUnifiedCampaign{metrikaCounters placementTypes additionalData{href} "
-        "minusKeywords disabledPlaces strategy{budget{sum}}}}}}"
-    )
-    camps_data = reader._post("CopyCamp", q_campaigns, {"login": login, "inp": inp_common})
-    campaigns = ((((camps_data.get("data") or {}).get("client") or {})
-                  .get("campaigns") or {}).get("rowset") or [])
-
-    q_ads = (
-        "query CopyAds($login:String!,$inp:GdAdsContainerInput!){"
-        "client(searchBy:{login:$login}){ads(input:$inp){rowset{"
-        "__typename id campaignId adGroupId "
-        "...on GdTextAd{href title titleExtension body domain image{imageHash name} status{primaryStatus}} "
-        "...on GdAdaptiveTextAd{href titles bodies images{imageHash name}} "
-        "...on GdShoppingAd{id adGroupId campaignId} "
-        "...on GdListingAd{id adGroupId campaignId}"
-        "}}}}"
-    )
-    ads_data = reader._post("CopyAds", q_ads, {"login": login, "inp": inp_common})
-    ads = ((((ads_data.get("data") or {}).get("client") or {})
-            .get("ads") or {}).get("rowset") or [])
-
-    groups = gf.GridClient(login, cookie=reader.cookie).groups_for_edit(ids)
-    return {"campaigns": campaigns, "groups": groups, "ads": ads}
 
 
-def _copy_grid_campaign_spec(name: str, counter_id: int, goal_id: int,
-                              weekly_budget: int = 7000) -> dict:
-    m = re.search(r"\btp(\d+)_", str(name or ""), re.I)
-    tp = int(m.group(1)) if m else 1
-    search = tp in (2, 4, 5)
-    gallery = tp in (3, 5)
-    network = tp in (1, 3)
-    return {
-        "name": str(name or "")[:255],
-        "counter_id": int(counter_id or 0),
-        "goal_id": int(goal_id or 0),
-        "cpa": 250,
-        "weekly_budget": int(weekly_budget) if weekly_budget and int(weekly_budget) > 0 else 7000,
-        "start_date": time.strftime("%Y-%m-%d"),
-        "network": bool(network),
-        "search": bool(search),
-        "gallery": bool(gallery),
-        "organic": bool(tp == 5),
-        "pay_for_conversion": False,
-    }
 
 
 def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: list[dict],
@@ -1191,6 +399,9 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
     snap_campaigns_json: list[dict] = []
     snap_adgroups_json: list[dict] = []
     snap_ads_json: list[dict] = []
+    # [geo-честность] ключи и минусы для check_geo_kw_consistency в ЕПК-пути.
+    # Ключи уже гео-заменены (copy_engine:1237), минусы — гео-заменены и отфильтрованы (:1240-1243).
+    snap_keywords_json: list[dict] = []
 
     for idx, camp in enumerate(campaigns, start=1):
         old_cid = int(camp["id"])
@@ -1297,11 +508,21 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
                 "Id": int(old_cid), "Name": new_name,
                 "UnifiedAdCampaign": {"BiddingStrategy": {"Network": {
                     "BiddingStrategyType": ("AVERAGE_CPA" if spec_net else "SERVING_OFF")}}}})
-            for grp in src_groups:
+            # [geo-честность] snap_adgroups включает NegativeKeywords (уже гео-заменённые +
+            # отфильтрованные _copy_geo_filter_negatives) и собираем snap_keywords.
+            # zip корректен: group_specs и src_groups строятся из одного src_groups в том же порядке.
+            for grp, spec in zip(src_groups, group_specs):
                 gid = int(grp.get("adgroup_id") or 0)
                 if gid > 0:
-                    snap_adgroups_json.append({"Id": gid, "CampaignId": int(old_cid),
-                                               "Name": str(grp.get("adgroup_name") or "группа")})
+                    snap_adgroups_json.append({
+                        "Id": gid, "CampaignId": int(old_cid),
+                        "Name": str(grp.get("adgroup_name") or "группа"),
+                        "NegativeKeywords": {"Items": list(spec.get("minus") or [])},
+                    })
+                    for _kw in (spec.get("keywords") or []):
+                        if _kw and str(_kw).strip():
+                            snap_keywords_json.append({"Keyword": str(_kw), "AdGroupId": gid,
+                                                       "CampaignId": int(old_cid)})
 
             shopping_added = 0
             listing_added = 0
@@ -1407,6 +628,8 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
             _copy_write_json(src_dir / "campaigns.json", snap_campaigns_json)
             _copy_write_json(src_dir / "adgroups.json", snap_adgroups_json)
             _copy_write_json(src_dir / "ads.json", snap_ads_json)
+            # [geo-честность] keywords.json: уже гео-заменённые ключи для check_geo_kw_consistency
+            _copy_write_json(src_dir / "keywords.json", snap_keywords_json)
             cookie_post = _copy_grid_unified_steps(
                 job_id, body, target_login, target_agency or "", src_domain,
                 replacements, maps, src_dir, workdir)
@@ -1438,601 +661,28 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
     }
 
 
-def _copy_grid_validate_feed_map(target_login: str, target_agency: str, body: dict,
-                                 *, log=lambda m: None) -> dict:
-    """Разобрать и провалидировать body.feed_map для ЕПК-ветки (та же логика, что _copy_run_job).
-
-    Возвращает {src_feed_id: tgt_feed_id} только с ЦЕЛЕВЫМИ фидами, ПРИНАДЛЕЖАЩИМИ target-аккаунту.
-    Grid недоступен/пустой список фидов → доверяем вводу без валидации (как в _copy_run_job).
-    feed_map пуст/битый → {}."""
-    raw: dict[str, int] = {}
-    fm = body.get("feed_map")
-    if not isinstance(fm, dict):
-        return {}
-    for k, v in fm.items():
-        if str(k).strip().isdigit() and str(v).strip().isdigit() and int(v) > 0:
-            raw[str(int(k))] = int(v)
-    if not raw:
-        return {}
-    try:
-        tgt_ids = {int(f.get("id")) for f in _grid_feeds(target_login, target_agency or _resolve_agency_hint(target_login, ""))
-                   if str(f.get("id") or "").strip().isdigit()}
-    except Exception:  # noqa: BLE001
-        tgt_ids = set()
-    if not tgt_ids:
-        log("feed_map: фиды target недоступны (grid пуст/ошибка) — feed_map применён без валидации")
-        return raw
-    valid: dict[str, int] = {}
-    for sid, tid in raw.items():
-        if tid in tgt_ids:
-            valid[sid] = tid
-        else:
-            log(f"feed_map: целевой фид {tid} не принадлежит {target_login} — пропуск (source {sid})")
-    return valid
 
 
-def _copy_grid_bridge_callouts(source_grid, target_grid, src_dir: Path, maps: dict,
-                               *, log=lambda m: None) -> None:
-    """Перенести уточнения источника на target ПО ТЕКСТУ (Grid, 0 баллов) и заполнить
-    maps['callouts'] = {src_callout_id: tgt_callout_id}.
-
-    Связь campaign→callout_ids даёт campaign_callouts.json (pull_source_campaign_assets), а тексты —
-    source_grid.get_callouts() ({текст: id}, инвертируем в {id: текст}). Затем target_grid.add_callouts
-    создаёт (с дедупом) те же тексты на target.
-
-    Баг 2b: раньше при source_grid=None (сбой куки источника) — ТИХИЙ no-op, уточнения молча терялись.
-    Теперь: если исходные callout-id ЕСТЬ, а source/target grid недоступен — поднимаем ошибку (caller
-    вынесет её в rep['errors']). Нет исходных id — реально нечего переносить, тихо ок."""
-    links = _copy_read_json(src_dir / "campaign_callouts.json")
-    links = links if isinstance(links, dict) else {}
-    wanted_ids = {str(x) for co_ids in links.values() for x in (co_ids or []) if str(x).strip()}
-    if not wanted_ids:
-        return
-    if target_grid is None:
-        raise RuntimeError("нет target grid-клиента — уточнения не перенесены")
-    if source_grid is None:
-        raise RuntimeError(
-            f"нет source grid-клиента (куки источника) — {len(wanted_ids)} уточнений не перенесены")
-    src_text_by_id: dict[str, str] = {}
-    try:
-        for text, cid in (source_grid.get_callouts() or {}).items():
-            src_text_by_id[str(cid)] = text
-    except Exception as e:  # noqa: BLE001
-        log(f"уточнения: чтение текстов источника не удалось ({str(e)[:150]})")
-        return
-    texts = list(dict.fromkeys(
-        src_text_by_id[i] for i in wanted_ids if i in src_text_by_id and str(src_text_by_id[i]).strip()))
-    if not texts:
-        return
-    try:
-        tgt_map = target_grid.add_callouts(texts) or {}   # {текст: tgt_id}
-    except Exception as e:  # noqa: BLE001
-        log(f"уточнения: создание на target не удалось ({str(e)[:150]})")
-        return
-    maps.setdefault("callouts", {})
-    for src_id in wanted_ids:
-        text = src_text_by_id.get(src_id)
-        if text and tgt_map.get(text):
-            maps["callouts"][str(src_id)] = int(tgt_map[text])
-    log(f"уточнения перенесены на target: {len(maps['callouts'])} id (из {len(wanted_ids)} исходных)")
 
 
-def _copy_grid_unified_steps(job_id: str, body: dict, target_login: str, target_agency: str,
-                             src_domain: str, replacements, maps: dict,
-                             src_dir: Path, workdir: Path) -> dict:
-    """copy_steps-постобработка ЕПК-ветки (cookie/Grid, НОЛЬ v5-баллов).
-
-    Применяет к комбинированным кампаниям, созданным create_full, те же под-сервисы, что и
-    v5-snapshot путь (_copy_cookie_postprocess):
-      • step_age_bidmods    (п.14) — возраст −100% (<18/18–24) через Grid set_campaign_age_bidmods;
-      • step_disabled_places(п.13) — наш минус-список площадок на РСЯ (network из синт. campaigns.json);
-      • step_attach_callouts(п.11) — уточнения по исходной связи (text-bridge источник→target);
-      • step_attach_promos  (п.10) — формально (нет source-promo-def reader → безопасный no-op);
-      • step_prices         (п.8)  — новые цены из ФИДА target-аккаунта на комбинаторные объявления;
-      • step_videos         (п.12) — видео 1:1 по куке (resolver originalUrl из Grid-интроспекции).
-
-    СОЗНАТЕЛЬНО НЕ вызываем (иначе двойная работа — см. ДОРАБОТКА 3):
-      • step_keywords — create_full УЖЕ залил ключи по Grid (0 баллов); повтор = дубли фраз;
-      • step_adaptive_creatives — create_full УЖЕ собрал комбинированное объявление 1:1
-        (заголовки/тексты/картинки источника + гео-склонения применены в _copy_apply_geo_replacements);
-        картинки ремапятся ДО create_full (_copy_image_remapper: as-is или переаплоад в target по
-        кукам, недоступные дропаются) — повторная запись здесь избыточна.
-    """
-    from . import copy_steps as csteps
-    rep: dict = {"skipped": ["keywords (create_full уже залил)",
-                             "adaptive_creatives (create_full собрал 1:1)"], "errors": []}
-    source_login = (body.get("source_login") or "").strip()
-    # Баг 2a/3: source-домен для доменной трансформации href быстрых ссылок (step_attach_sitelinks).
-    if src_domain and not body.get("_copy_source_domain"):
-        body["_copy_source_domain"] = src_domain
-    try:
-        tgt_uac = cmc.build_client(target_login, account=(target_agency or None))
-        tgt_cookie = tgt_uac.sess.headers.get("Cookie") or ""
-        grid = gf.GridClient(target_login, cookie=tgt_cookie)
-    except Exception as e:  # noqa: BLE001
-        rep["errors"].append(f"target cookie init: {str(e)[:200]}")
-        return rep
-    source_grid = None
-    if source_login:
-        try:
-            _src_ag = _resolve_agency_hint(source_login, "")
-            _src_uac = cmc.build_client(source_login, account=(_src_ag or None))
-            source_grid = gf.GridClient(source_login, cookie=(_src_uac.sess.headers.get("Cookie") or ""))
-        except Exception as e:  # noqa: BLE001
-            rep["errors"].append(f"source cookie init: {str(e)[:180]}")
-    try:
-        _tgt_token, _ = _token_for_login(
-            target_login, target_agency or _resolve_agency_hint(target_login, ""), _direct_tokens())
-    except Exception:  # noqa: BLE001
-        _tgt_token = ""
-
-    # Исходные связи campaign→callouts/promo (Grid источника) → src_dir/campaign_callouts.json + promos.
-    src_camp_ids = [int(x) for x in (maps.get("campaigns") or {}).keys() if str(x).isdigit()]
-    try:
-        csteps.pull_source_campaign_assets(
-            source_grid, src_camp_ids, src_dir, log=(lambda m: _copy_job_log(job_id, m)))
-    except Exception as e:  # noqa: BLE001
-        rep["errors"].append(f"pull source assets: {str(e)[:180]}")
-    # Уточнения: тексты source-callout id → создать на target → maps['callouts'].
-    try:
-        _copy_grid_bridge_callouts(
-            source_grid, grid, src_dir, maps, log=(lambda m: _copy_job_log(job_id, m)))
-    except Exception as e:  # noqa: BLE001
-        rep["errors"].append(f"callouts bridge: {str(e)[:180]}")
-
-    ctx = csteps.CopyCtx(
-        target_login=target_login, target_agency=target_agency or "",
-        src_dir=src_dir, workdir=workdir, body=body, maps=maps,
-        grid=grid, target_token=_tgt_token or "",
-        log=(lambda m: _copy_job_log(job_id, m)),
-        v5_call=_v5_call, enabled_minus_places=_enabled_baseline_minus_places,
-        feed_offer_prices=_grid_feed_offer_prices, account_offer_prices=_account_offer_prices,
-        group_ad_price=_group_ad_price, set_ad_prices=_grid_set_ad_prices,
-    )
-    ctx.source_login = source_login
-    ctx.source_grid = source_grid
-    ctx.geo_pairs = replacements or []
-    ctx.update_adaptive_ads = _grid_update_adaptive_ads
-    ctx.video_upload_client = tgt_uac
-    ctx.video_file_resolver = _copy_make_video_resolver(job_id, source_grid, maps, workdir)
-    try:
-        from .promo import PromoClient
-        ctx.promo_client = PromoClient(tgt_uac, target_login)
-    except Exception:  # noqa: BLE001
-        ctx.promo_client = None
-
-    # Промоакции: читаем определения промо из сырых строк CampaignsEditData источника и
-    # создаём их на target. campaigns_edit_rows возвращает promoExtension{id type prefix amount
-    # unit description startDate finishDate href promocode} — полный объект для воссоздания.
-    # После этого maps["promotions"] заполнен → step_attach_promos привяжет промо по связи.
-    created_promo_ids: list[int] = []
-    if source_grid is not None and src_camp_ids and ctx.promo_client is not None:
-        try:
-            _src_raw = source_grid.campaigns_edit_rows(src_camp_ids)
-            _promo_defs: dict[str, dict] = {}
-            for _cid, _row in (_src_raw or {}).items():
-                _promo = _row.get("promoExtension") or {}
-                _pid = str(_promo.get("id") or "")
-                if not _pid or _pid == "0":
-                    continue
-                if not _promo.get("description"):
-                    # Задача 3 (Minor #14-M2): явный лог вместо тихого пропуска.
-                    _copy_job_log(job_id,
-                                  f"промо {_pid} пропущено: нет description "
-                                  f"(тип={_promo.get('type')!r}, кампания={_cid})")
-                else:
-                    _promo_defs[_pid] = _promo
-            _src_domain_for_promo = (body.get("_copy_source_domain") or src_domain or "").strip()
-            _tgt_domain_for_promo = (body.get("target_domain") or "").strip()
-            for _src_pid, _pdef in _promo_defs.items():
-                if str(_src_pid) in maps["promotions"]:
-                    created_promo_ids.append(int(maps["promotions"][str(_src_pid)]))
-                    continue
-                _new_pid, _perr = ctx.promo_client.add(
-                    type=_pdef.get("type") or "DISCOUNT",
-                    description=_pdef.get("description") or "акция",
-                    href=_copy_target_href(_pdef.get("href"),
-                                          _src_domain_for_promo, _tgt_domain_for_promo),
-                    amount=_pdef.get("amount"),
-                    unit=_pdef.get("unit"),
-                    prefix=_pdef.get("prefix"),
-                    promocode=_pdef.get("promocode"),
-                    start=_pdef.get("startDate"),
-                    finish=_pdef.get("finishDate"),
-                )
-                if _new_pid:
-                    maps["promotions"][str(_src_pid)] = int(_new_pid)
-                    created_promo_ids.append(int(_new_pid))
-                elif _perr:
-                    rep["errors"].append(f"promo {_src_pid}: {_perr[:180]}")
-            rep["promos_created"] = len(created_promo_ids)
-            _copy_job_log(job_id, f"промо: создано {len(created_promo_ids)} из {len(_promo_defs)} источника")
-        except Exception as _e:  # noqa: BLE001
-            rep["errors"].append(f"promo defs read/create: {str(_e)[:200]}")
-
-    for name, fn in (
-        ("age_bidmods", lambda: csteps.step_age_bidmods(ctx)),
-        ("disabled_places", lambda: csteps.step_disabled_places(ctx)),
-        ("attach_callouts", lambda: csteps.step_attach_callouts(ctx, per_campaign_cap=_CALLOUT_PER_CAMPAIGN_CAP)),
-        # Баг 2a: быстрые ссылки по исходной связи campaign→sitelinkSet (source-grid read → target set).
-        ("attach_sitelinks", lambda: csteps.step_attach_sitelinks(ctx)),
-        # maps["promotions"] заполнен выше → created_promo_ids содержит реальные target-id.
-        ("attach_promos", lambda: csteps.step_attach_promos(ctx, list(created_promo_ids))),
-        ("prices", lambda: csteps.step_prices(ctx)),
-        ("videos", lambda: csteps.step_videos(ctx)),
-    ):
-        try:
-            r = fn()
-            rep[name] = r
-            if isinstance(r, dict):
-                rep["errors"] += r.get("errors") or []
-        except Exception as e:  # noqa: BLE001
-            rep["errors"].append(f"{name}: {str(e)[:200]}")
-    _copy_write_json(workdir / "id_maps.json", maps)
-    return rep
 
 
-def _copy_is_uac_grid_row(row: dict) -> bool:
-    typ = str(row.get("typename") or row.get("type") or "").lower()
-    name = str(row.get("name") or "").lower()
-    return "uac" in typ or "tp6_" in name or "tp7_" in name
 
 
-def _copy_uac_value(row: dict, *keys, default=None):
-    for key in keys:
-        val = row.get(key)
-        if val not in (None, "", []):
-            return val
-    return default
 
 
-def _copy_uac_strings(value, *keys: str, limit: int = 8) -> list[str]:
-    """Extract UAC text arrays from either strings or browser dict rows."""
-    vals = []
-    if isinstance(value, dict):
-        raw = _copy_uac_value(value, *keys, default=[])
-    else:
-        raw = value
-    for item in (raw or []):
-        if isinstance(item, dict):
-            text = ""
-            for key in ("text", "title", "value", "body", "name"):
-                text = str(item.get(key) or "").strip()
-                if text:
-                    break
-        else:
-            text = str(item or "").strip()
-        if text and text not in vals:
-            vals.append(text)
-        if len(vals) >= limit:
-            break
-    return vals
 
 
-def _copy_uac_sitelinks(value, *, source_domain: str, target_domain: str) -> list[dict]:
-    out = []
-    for item in (value or []):
-        if not isinstance(item, dict):
-            continue
-        title = str(item.get("title") or item.get("Title") or item.get("text") or "").strip()
-        href = str(item.get("href") or item.get("Href") or item.get("url") or "").strip()
-        desc = str(item.get("description") or item.get("Description") or "").strip()
-        if not title:
-            continue
-        out.append({"title": title, "href": _copy_target_href(href, source_domain, target_domain), "description": desc})
-    return out
 
 
-def _copy_uac_media_urls(row: dict, *, want: str) -> list[str]:
-    """Find reusable media URLs in unstable UAC detail payloads."""
-    rx = re.compile(r"https?://[^\s\"'<>]+", re.I)
-    urls: list[str] = []
-    seen: set[str] = set()
-    image_ext = (".jpg", ".jpeg", ".png", ".webp", ".gif")
-    video_ext = (".mp4", ".mov", ".webm")
-    preferred_keys = {
-        "image": ("images", "image_urls", "media", "contents", "content"),
-        "video": ("videos", "video_urls", "media", "contents", "content"),
-    }.get(want, ())
-
-    def ok(url: str) -> bool:
-        low = url.lower().split("?", 1)[0]
-        if want == "video":
-            return low.endswith(video_ext)
-        return low.endswith(image_ext) or any(x in low for x in ("/image/", "/img/", "avatars.mds.yandex.net"))
-
-    def walk(node):
-        if isinstance(node, dict):
-            for key, val in node.items():
-                key_l = str(key).lower()
-                if key_l in {"url", "href", "source_url", "preview_url", "download_url"} and isinstance(val, str):
-                    for u in rx.findall(val):
-                        if ok(u) and u not in seen:
-                            seen.add(u); urls.append(u)
-                else:
-                    walk(val)
-        elif isinstance(node, list):
-            for val in node:
-                walk(val)
-        elif isinstance(node, str):
-            for u in rx.findall(node):
-                if ok(u) and u not in seen:
-                    seen.add(u); urls.append(u)
-
-    for key in preferred_keys:
-        walk(row.get(key))
-    return urls[:5 if want == "image" else 2]
 
 
-def _copy_uac_filter_list(value) -> list[dict]:
-    if isinstance(value, list):
-        return value
-    return []
 
 
-def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str,
-                        selected_grid_rows: list[dict], body: dict, *,
-                        target_href: str, region_ids: list[int], counter_id: int,
-                        goal_id: int, target_feed_id: int | None,
-                        feed_map: dict | None = None) -> dict:
-    """Recreate selected UAC/tp6/tp7 campaigns from source detail into target account."""
-    rep = {"created": 0, "results": [], "errors": [], "uses_direct_units": False}
-    rows = [r for r in selected_grid_rows if _copy_is_uac_grid_row(r)]
-    if not rows:
-        return rep
-    try:
-        from .uac_read import UacReadClient
-        source_reader = UacReadClient(source_login)
-        target_client = cmc.build_client(target_login, account=(target_agency or None))
-    except Exception as e:  # noqa: BLE001
-        rep["errors"].append(f"uac init: {str(e)[:220]}")
-        return rep
-
-    default_cpa = int(body.get("cpa") or 2000)
-    default_budget = int(body.get("week_budget") or body.get("budget") or 5000)
-
-    # image_mode=upload: картинки берём из ЦЕЛЕВОГО аккаунта (уже залиты copy_other._copy_images_upload).
-    # Иначе upload_content качает файл источника → одинаковый хэш и бренд-тема источника во всех копиях.
-    tgt_img_urls: list[str] = []
-    if str(body.get("image_mode") or "") == "upload":
-        hashes = [str(h).strip() for h in (body.get("image_hashes") or []) if str(h).strip()]
-        if hashes:
-            try:
-                _tt, _ = _token_for_login(
-                    target_login, target_agency or _resolve_agency_hint(target_login, ""), _direct_tokens())
-            except Exception:  # noqa: BLE001
-                _tt = None
-            for i in range(0, len(hashes), 100) if _tt else []:
-                try:
-                    data = _v501_svc("adimages", "get", _tt, target_login,
-                                     {"SelectionCriteria": {"AdImageHashes": hashes[i:i + 100]},
-                                      "FieldNames": ["AdImageHash", "OriginalUrl"]})
-                except Exception:  # noqa: BLE001
-                    continue
-                for im in ((data.get("result") or {}).get("AdImages") or []):
-                    u = str(im.get("OriginalUrl") or "").strip()
-                    if u and u not in tgt_img_urls:
-                        tgt_img_urls.append(u)
-
-    for cidx, row in enumerate(rows):
-        try:
-            src_id = int(row.get("id") or 0)
-        except (TypeError, ValueError):
-            src_id = 0
-        name = str(row.get("name") or "").strip() or f"copy-uac-{src_id}"
-        if src_id <= 0:
-            continue
-        try:
-            d = source_reader.campaign_detail(src_id)
-            source_domain = str(body.get("_copy_source_domain") or "").strip()
-            target_domain = str(body.get("target_domain") or "").strip()
-            titles = _copy_uac_strings(d, "titles", "title_items", limit=5)
-            texts = _copy_uac_strings(d, "texts", "text_items", limit=3)
-            sitelinks = _copy_uac_sitelinks(_copy_uac_value(d, "sitelinks", default=[]) or [],
-                                            source_domain=source_domain, target_domain=target_domain)
-            keywords = _copy_uac_strings(d, "keywords", limit=200)
-            minus_keywords = _copy_uac_strings(d, "minus_keywords", limit=200)
-            audiences = _copy_uac_value(d, "audiences", "interest_ids", default=[]) or []
-            pricing = str(_copy_uac_value(d, "pricing", "payment_type", "paymentType", default="PER_CLICK") or "PER_CLICK")
-            week_limit = _copy_uac_value(d, "week_limit", "weekly_budget", "weekBudget", default=default_budget)
-            cpa = default_cpa
-            goals = _copy_uac_value(d, "goals", default=[]) or []
-            if isinstance(goals, list) and goals and isinstance(goals[0], dict):
-                cpa = int(goals[0].get("cpa") or cpa)
-            if not titles:
-                titles = ["Автомобили в наличии", "Выгода на авто", "Официальный дилер"]
-            if not texts:
-                texts = ["Подберите автомобиль с выгодой. Оставьте заявку на сайте."]
-            src_feed_raw = _copy_uac_value(d, "feed_id", "listings_feed_id")
-            is_product = name.lower().startswith("tp7_") or bool(src_feed_raw)
-            # Пофидовая замена: если исходный фид кампании есть в feed_map — берём целевой из карты,
-            # иначе фолбэк на общий target_feed_id (прежнее поведение).
-            eff_target_feed = target_feed_id
-            try:
-                _sf = str(int(src_feed_raw)) if src_feed_raw not in (None, "") else ""
-            except (TypeError, ValueError):
-                _sf = ""
-            if feed_map and _sf and _sf in feed_map:
-                eff_target_feed = feed_map[_sf]
-            feed_id = int(eff_target_feed or 0) if is_product else None
-            # Детерминированный round-robin: у каждой i-й МК свои 5 картинок из архива цели.
-            if tgt_img_urls:
-                _img = [tgt_img_urls[(cidx * 5 + k) % len(tgt_img_urls)] for k in range(5)]
-            else:
-                _img = _copy_uac_media_urls(d, want="image")
-            # socdem источника, иначе датакласс молча подставит дефолт age_18 вместо возраста источника.
-            _sd = _copy_uac_value(d, "socdem", default={}) or {}
-            if not isinstance(_sd, dict):
-                _sd = {}
-            # Таргетинг-поля источника: не передашь — датакласс молча подставит свой дефолт (как было с socdem).
-            _dev = _copy_uac_value(d, "device_types", default=[]) or []
-            _dev = [str(x).strip() for x in _dev if str(x).strip()] if isinstance(_dev, list) else []
-            _mreg_raw = _copy_uac_value(d, "minus_regions", "minus_region_ids", default=[]) or []
-            _mreg: list[int] = []
-            for _r in (_mreg_raw if isinstance(_mreg_raw, list) else []):
-                try:
-                    _mreg.append(int(_r))
-                except (TypeError, ValueError):
-                    continue
-            _rm = _copy_uac_value(d, "relevance_match", default={}) or {}
-            if not isinstance(_rm, dict):
-                _rm = {}
-            _rm_cats = [str(c).strip() for c in (_rm.get("categories") or []) if str(c).strip()]
-            _ttg = _copy_uac_value(d, "time_target", default={}) or {}
-            if not isinstance(_ttg, dict):
-                _ttg = {}
-            try:
-                _tz = int(_ttg.get("id_time_zone") or 130)
-            except (TypeError, ValueError):
-                _tz = 130
-            _extra = {"relevance_match_categories": _rm_cats} if _rm_cats else {}
-            spec = cmc.MasterCampaignSpec(
-                href=target_href,
-                titles=titles[:5],
-                texts=texts[:3],
-                region_ids=region_ids,
-                counter_id=int(counter_id),
-                goal_id=int(goal_id),
-                cpa=cpa,
-                week_budget=float(week_limit or default_budget),
-                campaign_type=("product" if is_product else "master"),
-                feed_id=feed_id,
-                listings_feed_id=feed_id,
-                feed_filters=_copy_uac_filter_list(d.get("feed_filters")),
-                listings_feed_filters=_copy_uac_filter_list(d.get("listings_feed_filters")),
-                display_name=name,
-                pricing=pricing,
-                keywords=keywords,
-                minus_keywords=minus_keywords or ["отзывы"],
-                sitelinks=sitelinks,
-                image_urls=_img,
-                video_urls=_copy_uac_media_urls(d, want="video"),
-                audiences=audiences if isinstance(audiences, list) else [],
-                genders=_sd.get("genders") or ["female", "male"],
-                age_lower=str(_sd.get("age_lower") or "age_18"),
-                age_upper=str(_sd.get("age_upper") or "age_inf"),
-                limit_period=str(_copy_uac_value(d, "limit_period", "limitPeriod", default="week") or "week"),
-                device_types=_dev or ["all"],
-                minus_regions=_mreg,
-                id_time_zone=_tz,
-                # Наш стандарт tp6/tp7 (create_set_master_product.py:692, коды uac_verifier
-                # UAC_ALTERNATIVE_TEXTS_ENABLED / UAC_MAPS_ENABLED) — сильнее «копии 1:1».
-                alternative_texts_enabled=False,
-                ml_banners_enabled=False,
-                yandex_maps_enabled=False,
-                utm_template=cmc.UTM_TEMPLATE,
-                **_extra,
-            )
-            cid = target_client.create_master_campaign(spec, launch=False)
-            res = {"ok": True, "id": int(cid), "campaign_id": int(cid), "name": name, "kind": "uac", "source_id": src_id}
-            rep["results"].append(res)
-            rep["created"] += 1
-        except Exception as e:  # noqa: BLE001
-            msg = str(e)[:260]
-            rep["errors"].append(f"{name}: {msg}")
-            rep["results"].append({"ok": False, "name": name, "source_id": src_id, "error": msg})
-    return rep
 
 
-def _copy_target_feed_id(target_login: str, target_agency: str, workdir: Path,
-                         target_domain: str = "") -> int | None:
-    maps = _copy_read_json(workdir / "id_maps.json") if (workdir / "id_maps.json").exists() else {}
-    for raw in (maps.get("feeds") or {}).values():
-        try:
-            fid = int(raw)
-        except (TypeError, ValueError):
-            fid = 0
-            if fid > 0:
-                return fid
-    try:
-        rows = _filter_allowed_feed_rows(_grid_feeds(target_login, target_agency))
-        wanted_key = _feed_key(_COPY_DEFAULT_FEED_PATH)
-        wanted_domain = (target_domain or "").strip().lower()
-
-        def _score(row: dict) -> tuple[int, int, int]:
-            raw = " ".join(str(row.get(k) or "") for k in ("name", "url", "href", "source", "SourceUrl"))
-            key = _feed_key(raw)
-            low = raw.lower()
-            return (
-                1 if key == wanted_key else 0,
-                1 if wanted_domain and wanted_domain in low else 0,
-                1 if row.get("listings") else 0,
-            )
-
-        for row in sorted(rows, key=_score, reverse=True):
-            try:
-                fid = int(row.get("id") or 0)
-            except (TypeError, ValueError):
-                fid = 0
-            if fid > 0:
-                return fid
-    except Exception:  # noqa: BLE001
-        pass
-    return None
 
 
-def _copy_make_video_resolver(job_id: str, source_grid, maps: dict, workdir: Path):
-    """ФАЗА 3c п.12: resolver mp4 исходного видео по Grid-интроспекции (originalUrl).
-
-    Один prefetch по куки ИСТОЧНИКА (source_grid.video_creative_urls на src camp/ad из maps) →
-    {src_creative_id: originalUrl}. Затем на каждый вызов (meta.creative_id) скачивает mp4 в
-    workdir/_video_cache/<cid>.mp4 (кэш — один и тот же ролик у нескольких объявлений качаем раз) и
-    отдаёт путь; None — если URL нет или скачать не удалось (step_videos тогда честно репортит).
-
-    Скачиваемость доказана live 2026-07-03: originalUrl отдаёт HTTP 200 video/mp4 без авторизации.
-    Приоритет URL: originalUrl (исходник 1:1) → livePreviewUrl (рендер-превью) как запасной."""
-    src_camp_ids = [int(x) for x in (maps.get("campaigns") or {}).keys() if str(x).isdigit()]
-    src_ad_ids = [int(x) for x in (maps.get("ads") or {}).keys() if str(x).isdigit()]
-    url_map: dict[str, dict] = {}
-    if source_grid is not None and src_ad_ids:
-        try:
-            url_map = source_grid.video_creative_urls(src_camp_ids, src_ad_ids) or {}
-            if url_map:
-                _copy_job_log(job_id, f"видео: Grid-интроспекция дала {len(url_map)} скачиваемых mp4-URL (originalUrl)")
-        except Exception as e:  # noqa: BLE001
-            _copy_job_log(job_id, f"видео: чтение URL источника не удалось ({str(e)[:150]})")
-            url_map = {}
-    if not url_map:
-        return None
-    cache_dir = Path(workdir) / "_video_cache"
-
-    def _resolver(meta: dict):
-        cid = str((meta or {}).get("creative_id") or "").strip()
-        info = url_map.get(cid) or {}
-        url = info.get("original_url") or info.get("live_preview_url") or ""
-        if not cid or not url:
-            return None
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        dst = cache_dir / f"{cid}.mp4"
-        if dst.exists() and dst.stat().st_size > 0:
-            return str(dst)
-        import requests as _rqs
-        try:
-            with _rqs.get(url, stream=True, timeout=90, verify=False) as r:
-                if r.status_code != 200:
-                    _copy_job_log(job_id, f"видео {cid}: originalUrl HTTP {r.status_code} — пропуск")
-                    return None
-                ct = (r.headers.get("Content-Type") or "").lower()
-                if "video" not in ct and "octet-stream" not in ct and "mp4" not in ct:
-                    _copy_job_log(job_id, f"видео {cid}: неожиданный content-type {ct!r} — пропуск")
-                    return None
-                with open(dst, "wb") as fh:
-                    for chunk in r.iter_content(chunk_size=1 << 16):
-                        if chunk:
-                            fh.write(chunk)
-        except Exception as e:  # noqa: BLE001
-            _copy_job_log(job_id, f"видео {cid}: скачивание не удалось ({str(e)[:120]})")
-            try:
-                if dst.exists():
-                    dst.unlink()
-            except OSError:
-                pass
-            return None
-        if dst.stat().st_size <= 0:
-            return None
-        return str(dst)
-
-    return _resolver
 
 
 def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
@@ -2153,43 +803,77 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
         except Exception as e:  # noqa: BLE001
             rep["errors"].append(f"callouts grid: {str(e)[:220]}")
 
-    # 1a) Промоакции: official promotions.add часто заблокирован, поэтому переносим
-    # библиотечные промо через Grid addPromoExtensions. Attachment делаем только если промо одно:
-    # иначе неизвестна source-связь "какое промо к какой кампании" и blind attach опасен.
+    # 1a) Промоакции: official promotions.add заблокирован (8000/ЕРИР) → переносим через Grid
+    # addPromoExtensions. КЛЮЧЕВОЕ (root-cause привязки): создаём промо ИЗ source
+    # campaigns_edit_rows (promoExtension), тогда maps["promotions"] ключуется по promoExtension.id,
+    # совпадающему с campaign_promos.json → step_attach_promos привязывает per-campaign даже при
+    # 2+ промо. Раньше создавали из promotions.json (ключ = promotions.json.Id) ≠ promoExtension.id
+    # из campaign_promos.json → by_promo пуст → fallback_single → при 10 промо не привязывало.
+    # Фолбэк (нет source_grid / нет промо в edit_rows): прежний путь из promotions.json.
     promotions = _copy_read_json(src_dir / "promotions.json")
     created_promo_ids = []
-    if promotions:
+    if promotions or cstep_ctx.source_grid is not None:
         try:
             from .promo import PromoClient
             pc = PromoClient(client, target_login)
-            for p in promotions:
-                src_id = str(p.get("Id") or "")
-                if src_id and src_id in maps["promotions"]:
-                    created_promo_ids.append(int(maps["promotions"][src_id]))
-                    continue
-                pid, perr = pc.add(
-                    type=p.get("Type") or "DISCOUNT",
-                    description=p.get("Description") or p.get("Name") or "акция",
-                    href=_copy_target_href(
-                        p.get("Href"),
-                        str(body.get("_copy_source_domain") or ""),
-                        str(body.get("target_domain") or ""),
-                    ),
-                    amount=p.get("Amount"),
-                    unit=p.get("AmountUnit"),
-                    prefix=p.get("AmountPrefix"),
-                    promocode=p.get("Promocode"),
-                    start=p.get("StartDate"),
-                    finish=p.get("EndDate"),
-                )
-                if pid:
-                    maps["promotions"][src_id] = int(pid)
-                    created_promo_ids.append(int(pid))
-                elif perr:
-                    rep["errors"].append(f"promo {src_id}: {perr[:180]}")
+            _src_dom = str(body.get("_copy_source_domain") or "")
+            _tgt_dom = str(body.get("target_domain") or "")
+            _used_edit_rows = False
+            if cstep_ctx.source_grid is not None:
+                _src_cids = [int(x) for x in (maps.get("campaigns") or {}).keys() if str(x).isdigit()]
+                _src_rows = cstep_ctx.source_grid.campaigns_edit_rows(_src_cids) if _src_cids else {}
+                _promo_defs: dict[str, dict] = {}
+                _cp_links: dict[str, str] = {}
+                for _cid, _row in (_src_rows or {}).items():
+                    _pe = _row.get("promoExtension") or {}
+                    _pid = str(_pe.get("id") or "")
+                    if not _pid or _pid == "0":
+                        continue
+                    _cp_links[str(_cid)] = _pid
+                    if _pe.get("description"):
+                        _promo_defs[_pid] = _pe
+                if _promo_defs:
+                    _used_edit_rows = True
+                    for _src_pid, _pdef in _promo_defs.items():
+                        if str(_src_pid) in maps["promotions"]:
+                            created_promo_ids.append(int(maps["promotions"][str(_src_pid)]))
+                            continue
+                        _npid, _perr = pc.add(
+                            type=_pdef.get("type") or "DISCOUNT",
+                            description=_pdef.get("description") or "акция",
+                            href=_copy_target_href(_pdef.get("href"), _src_dom, _tgt_dom),
+                            amount=_pdef.get("amount"), unit=_pdef.get("unit"),
+                            prefix=_pdef.get("prefix"), promocode=_pdef.get("promocode"),
+                            start=_pdef.get("startDate"), finish=_pdef.get("finishDate"))
+                        if _npid:
+                            maps["promotions"][str(_src_pid)] = int(_npid)
+                            created_promo_ids.append(int(_npid))
+                        elif _perr:
+                            rep["errors"].append(f"promo {_src_pid}: {_perr[:180]}")
+                    if _cp_links:
+                        (src_dir / "campaign_promos.json").write_text(
+                            json.dumps(_cp_links, ensure_ascii=False, indent=1), encoding="utf-8")
+                        _copy_job_log(job_id, f"промо: создано из source edit_rows "
+                                              f"({len(_promo_defs)} промо, {len(_cp_links)} связей)")
+            if not _used_edit_rows:
+                for p in (promotions or []):
+                    src_id = str(p.get("Id") or "")
+                    if src_id and src_id in maps["promotions"]:
+                        created_promo_ids.append(int(maps["promotions"][src_id]))
+                        continue
+                    pid, perr = pc.add(
+                        type=p.get("Type") or "DISCOUNT",
+                        description=p.get("Description") or p.get("Name") or "акция",
+                        href=_copy_target_href(p.get("Href"), _src_dom, _tgt_dom),
+                        amount=p.get("Amount"), unit=p.get("AmountUnit"),
+                        prefix=p.get("AmountPrefix"), promocode=p.get("Promocode"),
+                        start=p.get("StartDate"), finish=p.get("EndDate"))
+                    if pid:
+                        maps["promotions"][src_id] = int(pid)
+                        created_promo_ids.append(int(pid))
+                    elif perr:
+                        rep["errors"].append(f"promo {src_id}: {perr[:180]}")
             rep["promos_created"] = len(created_promo_ids)
-            # П.10: привязка промо по исходной связи campaign→promo (работает и при 2+ промо).
-            # Фолбэк на прежнее единичное поведение — внутри шага.
             cstep_ctx.promo_client = pc
             promo_report = csteps.step_attach_promos(cstep_ctx, created_promo_ids)
             rep["promos_attached_campaigns"] = promo_report.get("attached_campaigns") or 0
@@ -2421,399 +1105,160 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
     except Exception as _ve:  # noqa: BLE001
         rep["errors"].append(f"copy_verify: {str(_ve)[:200]}")
 
+    # B1: авто-ремонт repairable=True измерений (shared_sets D3 + shopping D19).
+    # Обновляет report["results"] in-place; ошибки → rep["copy_repair"]["errors"].
+    try:
+        from . import copy_verify as cv
+        _cv_report = rep.get("copy_verify") or {}
+        if _cv_report.get("results"):
+            _repair_result = cv.run_copy_repair(
+                _cv_report,
+                src_dir=src_dir,
+                workdir=workdir,
+                target_login=target_login,
+                target_agency=target_agency,
+                grid=grid,
+                geo_pairs=(cstep_ctx.geo_pairs or []),
+                log=(lambda m: _copy_job_log(job_id, m)),
+            )
+            rep["copy_repair"] = _repair_result
+            _rr = _repair_result
+            _copy_job_log(
+                job_id,
+                f"copy_repair: repairs={len(_rr.get('repairs') or [])}, "
+                f"errors={len(_rr.get('errors') or [])}",
+            )
+            # sitelinks_present: те же под-копированные кампании иногда не получают набор быстрых
+            # ссылок при первом проходе (flux во время создания). step_attach_sitelinks идемпотентен
+            # (дедуп через maps["sitelinks"]) — повторный вызов дозакрывает пропущенные кампании.
+            try:
+                _sl_miss = [
+                    r for r in (_cv_report.get("results") or [])
+                    if r.get("dimension") == "sitelinks_present"
+                    and r.get("status") not in ("ok", "excluded_intentional")
+                ]
+                if _sl_miss and cstep_ctx.source_grid is not None and grid is not None:
+                    _sl_rep = csteps.step_attach_sitelinks(cstep_ctx)
+                    _copy_job_log(
+                        job_id,
+                        f"copy_repair sitelinks-retry: наборов {_sl_rep.get('sets_created', 0)}, "
+                        f"привязано {_sl_rep.get('attached_campaigns', 0)}, "
+                        f"пропущено {_sl_rep.get('skipped', 0)}",
+                    )
+            except Exception as _sle:  # noqa: BLE001
+                rep["errors"].append(f"copy_repair sitelinks-retry: {str(_sle)[:150]}")
+    except Exception as _re:  # noqa: BLE001
+        rep["errors"].append(f"copy_repair: {str(_re)[:200]}")
+
     rep["results"] = results
     return rep
 
 
-def _copy_rewrite_strategy_goal(strategy: dict, goal_id: int) -> dict:
-    """Проставить новую цель «Все формы» во всех goal-bearing стратегиях."""
-    s = json.loads(json.dumps(strategy or {}))
-    for side in ("Search", "Network"):
-        blk = s.get(side) or {}
-        for k in ("AverageCpa", "PayForConversion", "WbMaximumConversionRate", "AverageCrr", "PayForConversionCrr", "AverageRoi"):
-            if isinstance(blk.get(k), dict):
-                blk[k]["GoalId"] = int(goal_id)
-    return s
 
 
-def _copy_apply_metrika(login: str, token: str, src_dir: Path, workdir: Path,
-                        counter_id: int, goal_id: int, source_ids: set[int], job_id: str) -> dict:
-    """Докрутить на скопированных кампаниях счётчик Метрики и goal_id."""
-    maps = _copy_read_json(workdir / "id_maps.json") if (workdir / "id_maps.json").exists() else {}
-    camp_map = maps.get("campaigns") or {}
-    campaigns = [c for c in _copy_read_json(src_dir / "campaigns.json") if int(c.get("Id") or 0) in source_ids]
-    updated = 0
-    warned = 0
-    for c in campaigns:
-        src_id = str(c.get("Id"))
-        tgt_id = camp_map.get(src_id)
-        if not tgt_id:
-            continue
-        ctype = c.get("Type", "TEXT_CAMPAIGN")
-        struct_key = {
-            "TEXT_CAMPAIGN": "TextCampaign",
-            "DYNAMIC_TEXT_CAMPAIGN": "DynamicTextCampaign",
-            "SMART_CAMPAIGN": "SmartCampaign",
-            "CPM_BANNER_CAMPAIGN": "CpmBannerCampaign",
-        }.get(ctype)
-        if not struct_key:
-            warned += 1
-            _copy_job_log(job_id, f"метрика: {c.get('Name') or src_id} — тип {ctype} оставлен без авто-докрутки стратегии")
-            continue
-        type_data = c.get(struct_key) or {}
-        body = {"Id": int(tgt_id), struct_key: {}}
-        if struct_key == "SmartCampaign":
-            body[struct_key]["CounterId"] = int(counter_id)
-        else:
-            body[struct_key]["CounterIds"] = {"Items": [int(counter_id)]}
-        if type_data.get("TrackingParams"):
-            body[struct_key]["TrackingParams"] = type_data["TrackingParams"]
-        if type_data.get("AttributionModel"):
-            body[struct_key]["AttributionModel"] = type_data["AttributionModel"]
-        strategy = type_data.get("BiddingStrategy") or {}
-        # PAY_FOR_CONVERSION_MULTIPLE_GOALS: v5 не принимает без счётчика+целей (4000/8000).
-        # Стратегия будет восстановлена через Grid в _copy_cookie_postprocess — здесь пропускаем.
-        _has_pfcmg = any(
-            (strategy.get(side) or {}).get("BiddingStrategyType") == "PAY_FOR_CONVERSION_MULTIPLE_GOALS"
-            for side in ("Search", "Network")
-        )
-        if strategy and not _has_pfcmg:
-            body[struct_key]["BiddingStrategy"] = _copy_rewrite_strategy_goal(strategy, goal_id)
-        try:
-            j = _v5_call("campaigns", "update", token, login, {"Campaigns": [body]})
-            if "error" in j:
-                warned += 1
-                _copy_job_log(job_id, f"метрика update {c.get('Name') or src_id}: {_v5_err(j)[:220]}")
-                continue
-            updated += 1
-        except Exception as e:  # noqa: BLE001
-            warned += 1
-            _copy_job_log(job_id, f"метрика update {c.get('Name') or src_id}: {str(e)[:220]}")
-            continue
-        # Цели переносим 1:1 только при ОБЩЕМ счётчике: GoalId привязан к счётчику источника,
-        # чужой счётчик → невалидные цели (4000/8000). Value — микро-единицы, как в источнике.
-        pg_items = (type_data.get("PriorityGoals") or {}).get("Items") or []
-        src_counters = [int(x) for x in ((type_data.get("CounterIds") or {}).get("Items") or [])
-                        if str(x).strip().isdigit()]
-        if not (pg_items and int(counter_id) in src_counters):
-            continue
-        goals = []
-        for g in pg_items:
-            gid = g.get("GoalId")
-            if gid in (None, ""):
-                continue
-            # Operation только SET: ADD отвергается API (3500).
-            item = {"GoalId": int(gid), "Operation": "SET"}
-            if g.get("Value") is not None:
-                item["Value"] = int(g["Value"])
-            if g.get("IsMetrikaSourceOfValue") is not None:
-                item["IsMetrikaSourceOfValue"] = g["IsMetrikaSourceOfValue"]
-            goals.append(item)
-        if not goals:
-            continue
-        # Отдельным update ПОСЛЕ основного: отказ по целям не должен утащить CounterIds/стратегию.
-        try:
-            j = _v5_call("campaigns", "update", token, login,
-                         {"Campaigns": [{"Id": int(tgt_id), struct_key: {"PriorityGoals": {"Items": goals}}}]})
-            if "error" in j:
-                warned += 1
-                _copy_job_log(job_id, f"цели update {c.get('Name') or src_id}: {_v5_err(j)[:220]}")
-        except Exception as e:  # noqa: BLE001
-            warned += 1
-            _copy_job_log(job_id, f"цели update {c.get('Name') or src_id}: {str(e)[:220]}")
-    return {"updated": updated, "warned": warned}
 
 
-def _copy_preseed_feed_maps(workdir: Path, feed_map: dict) -> None:
-    """Предзаписать id_maps.json с пофидовым маппингом ДО phase_upload. direct_copy.phase_upload
-    делает `maps = jload(id_maps.json) if exists` и для фида, уже присутствующего в maps['feeds'],
-    пропускает создание (continue) → подставит наш целевой FeedId в группы/ShoppingAd/ListingAd.
-    Пишем ПОЛНЫЙ скелет ключей — иначе phase_upload обратится к maps['shared_sets'] и упадёт KeyError."""
-    maps_path = workdir / "id_maps.json"
-    maps = _copy_read_json(maps_path) if maps_path.exists() else {}
-    for key in ("shared_sets", "vcards", "images", "sitelinks", "callouts",
-                "campaigns", "adgroups", "ads", "promotions", "feeds"):
-        maps.setdefault(key, {})
-    for sid, tid in (feed_map or {}).items():
-        maps["feeds"][str(sid)] = int(tid)
-    _copy_write_json(maps_path, maps)
 
 
-def _copy_feeds_preview(source_login: str, target_login: str, selected_ids: set[int]) -> dict:
-    """Данные для секции «Замена фидов»: фиды исходного аккаунта с кол-вом кампаний/групп
-    из выбранных (selected_ids), фиды целевого аккаунта. Grid-фиды без балловой стоимости."""
-    def _feeds_for(login: str) -> list[dict]:
-        agency = _resolve_agency_hint(login, "")
-        rows = _grid_feeds(login, agency) or []
-        out = []
-        for f in rows:
-            fid = f.get("id")
-            if not str(fid or "").strip().isdigit():
-                continue
-            out.append({
-                "id": int(fid),
-                "name": (f.get("name") or "").strip() or f"feed {fid}",
-            })
-        out.sort(key=lambda r: r["name"].lower())
-        return out
-
-    # Task 2: подсчёт выбранных кампаний/групп, использующих каждый исходный фид (v5 adgroups.get)
-    feed_camps: dict[int, set] = {}   # feed_id → set of campaign_ids
-    feed_groups: dict[int, int] = {}  # feed_id → count of adgroups
-    if selected_ids:
-        try:
-            src_agency = _resolve_agency_hint(source_login, "")
-            src_token, _ = _token_for_login(source_login, src_agency, _direct_tokens())
-            if src_token:
-                params = {
-                    "SelectionCriteria": {"CampaignIds": list(selected_ids)},
-                    "FieldNames": ["Id", "CampaignId"],
-                    "TextAdGroupFeedParamFieldNames": ["FeedId"],
-                }
-                data = _v5_call("adgroups", "get", src_token, source_login, params)
-                for ag in ((data.get("result") or {}).get("AdGroups") or []):
-                    fp = ag.get("TextAdGroupFeedParams") or {}
-                    fid_raw = fp.get("FeedId")
-                    if not fid_raw:
-                        continue
-                    try:
-                        fid = int(fid_raw)
-                        cid = int(ag.get("CampaignId") or 0)
-                    except (TypeError, ValueError):
-                        continue
-                    feed_camps.setdefault(fid, set()).add(cid)
-                    feed_groups[fid] = feed_groups.get(fid, 0) + 1
-        except Exception:  # noqa: BLE001 — best-effort, не ломаем превью
-            pass
-
-    source_feeds = []
-    for f in _feeds_for(source_login):
-        fid = f["id"]
-        f["campaigns"] = len(feed_camps.get(fid) or set())
-        f["groups"] = feed_groups.get(fid) or 0
-        source_feeds.append(f)
-
-    return {"source_feeds": source_feeds, "target_feeds": _feeds_for(target_login)}
 
 
-def _copy_skip_unmapped_feed_campaigns(src_dir: Path, feed_map: dict, *, log=None) -> list[int]:
-    """Task 4: убрать из snapshot кампании, использующие фиды без замены в feed_map.
-
-    Читает campaigns.json и adgroups.json из уже отфильтрованного snapshot, определяет кампании,
-    у которых хотя бы одна группа ссылается на фид, не входящий в feed_map, и удаляет их вместе
-    со связанными сущностями. Возвращает список ID пропущенных кампаний."""
-    if not feed_map:
-        return []
-    _log = log or (lambda _m: None)
-
-    campaigns = _copy_read_json(src_dir / "campaigns.json")
-    adgroups = _copy_read_json(src_dir / "adgroups.json")
-
-    # feed_id → set campaign_ids (какие кампании используют этот фид)
-    feeds_by_campaign: dict[int, set] = {}
-    for g in adgroups:
-        cid = int(g.get("CampaignId") or 0)
-        fp = g.get("TextAdGroupFeedParams") or {}
-        fid = fp.get("FeedId")
-        if fid and cid:
-            feeds_by_campaign.setdefault(cid, set()).add(str(int(fid)))
-
-    mapped_feeds = {str(k) for k in feed_map}
-    skip_ids: set[int] = set()
-    for c in campaigns:
-        cid = int(c.get("Id") or 0)
-        unmapped = feeds_by_campaign.get(cid, set()) - mapped_feeds
-        if unmapped:
-            skip_ids.add(cid)
-            _log(f"пропуск кампании «{c.get('Name') or cid}»: фиды без замены: {', '.join(sorted(unmapped))}")
-
-    if not skip_ids:
-        return []
-
-    remaining_ids = {int(c.get("Id") or 0) for c in campaigns} - skip_ids
-    _copy_write_json(src_dir / "campaigns.json", [c for c in campaigns if int(c.get("Id") or 0) in remaining_ids])
-    _copy_write_json(src_dir / "campaigns_skipped.json", [
-        {"id": int(c.get("Id") or 0), "name": c.get("Name") or "", "reason": "feed_not_mapped"}
-        for c in campaigns if int(c.get("Id") or 0) in skip_ids
-    ])
-
-    remaining_ag_ids = {int(g.get("Id") or 0) for g in adgroups if int(g.get("CampaignId") or 0) in remaining_ids}
-    _copy_write_json(src_dir / "adgroups.json", [g for g in adgroups if int(g.get("CampaignId") or 0) in remaining_ids])
-
-    for fname in ("ads.json", "shopping_ads.json", "keywords.json", "bidmodifiers.json"):
-        path = src_dir / fname
-        if not path.exists():
-            continue
-        items = _copy_read_json(path)
-        _copy_write_json(path, [
-            x for x in items
-            if int(x.get("CampaignId") or 0) in remaining_ids
-            or int(x.get("AdGroupId") or 0) in remaining_ag_ids
-        ])
-
-    _log(f"feed-фильтрация: пропущено {len(skip_ids)} кампаний из {len(campaigns)}")
-    return list(skip_ids)
 
 
-def _copy_target_campaigns_info(login: str) -> dict:
-    """Read-only снимок кампаний целевого аккаунта для UI выбора очистки.
 
-    Возвращает {total, draft_count, non_draft_count, archivable_count, breakdown}.
-    DRAFT не могут быть заархивированы (v5 API error 8303) →
-    archivable_count = non_draft_count (не-черновики, не архивированные).
-    campaigns.get без фильтра по умолчанию не возвращает ARCHIVED-кампании.
+
+
+
+
+
+# verify-after-settle: in-job copy_verify бежит ДО статуса done, а привязки (sitelinks/промо/
+# картинки) доливаются/индексируются 5-10+ мин ПОСЛЕ done (dcr-демон direct-create-worker +
+# async-индексация Яндекса). Доказано: settle-wait 150/240с в джобе и re-verify +300с → 0
+# sitelinks, но спот-проверка позже = 9/46 на цели. Поэтому re-verify АДАПТИВНЫЙ: поллит цель
+# до появления sitelinks (или таймаут), затем гонит полную сверку и перезаписывает copy_verify.
+_COPY_REVERIFY_FIRST_SEC = 240          # первая проба (dcr стартует ~180с после done)
+_COPY_REVERIFY_POLL_SEC = 90            # шаг опроса оседания
+_COPY_REVERIFY_MAX_SEC = 900            # общий бюджет ожидания оседания (15 мин)
+
+
+def _copy_target_sitelinks_ready(target_login: str, target_agency: str,
+                                 workdir: Path) -> bool:
+    """Быстрая проба: появились ли sitelinks на объявлениях цели (индикатор оседания привязок).
+
+    Читает id_maps.json (созданные кампании) + v5 ads.get TextAd.SitelinkSetId по первым
+    кампаниям. True как только хоть одно объявление имеет sitelink. Best-effort → False при сбое.
     """
     try:
-        agency = _resolve_agency_hint(login, "")
-        token, _ = _token_for_login(login, agency, _direct_tokens())
-        if not token:
-            return {"error": "нет рабочего токена для этого логина"}
-        j = _v5_call("campaigns", "get", token, login, {
-            "FieldNames": ["Id", "State", "Status"],
-            "SelectionCriteria": {},
-        })
-        if "error" in j:
-            err_text = (_v5_err(j) if callable(_v5_err) else str(j.get("error")))
-            return {"error": (err_text or "API error")[:200]}
-        campaigns = (j.get("result") or {}).get("Campaigns", [])
-        draft_count = sum(1 for c in campaigns if c.get("Status") == "DRAFT")
-        non_draft_count = len(campaigns) - draft_count
-        breakdown: dict[str, int] = {}
-        for c in campaigns:
-            key = f"{c.get('State') or '?'}/{c.get('Status') or '?'}"
-            breakdown[key] = breakdown.get(key, 0) + 1
-        return {
-            "total": len(campaigns),
-            "draft_count": draft_count,
-            "non_draft_count": non_draft_count,
-            # DRAFT нельзя архивировать (v5 8303); archivable = только не-черновики
-            "archivable_count": non_draft_count,
-            "breakdown": breakdown,
-        }
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)[:200]}
+        maps = _copy_read_json(workdir / "id_maps.json")
+        cids = [int(v) for v in (maps.get("campaigns") or {}).values() if str(v).isdigit()][:6]
+        if not cids:
+            return False
+        tr = _token_for_login(target_login, target_agency or "", _direct_tokens())
+        tok = tr[0] if isinstance(tr, (tuple, list)) else tr
+        if not tok:
+            return False
+        r = _v5_call("ads", "get", tok, target_login, {
+            "SelectionCriteria": {"CampaignIds": cids},
+            "FieldNames": ["Id"], "TextAdFieldNames": ["SitelinkSetId"],
+            "Page": {"Limit": 500}})
+        for a in ((r.get("result") or {}).get("Ads") or []):
+            if (a.get("TextAd") or {}).get("SitelinkSetId"):
+                return True
+        return False
+    except Exception:  # noqa: BLE001
+        return False
 
 
-def _copy_cleanup_uac_drafts(job_id: str, login: str, errors: list[str]) -> int:
-    """Удалить UAC/МК-ЧЕРНОВИКИ целевого логина по кукам (v5 их не видит → дубли +3 за прогон).
+def _copy_delayed_reverify(job_id: str, src_dir: Path, workdir: Path,
+                           target_login: str, target_agency: str,
+                           source_login: str = "") -> None:
+    """Отложенная адаптивная пере-сверка source↔target ПОСЛЕ оседания привязок.
 
-    Удаляем ТОЛЬКО status=DRAFT и не-archived: запущенные кампании не трогаем.
-    Сбой кук — не критичен (v5-ветка уже отработала): пишем в errors, копирование не рвём.
+    Ждёт первую пробу, затем поллит появление sitelinks до таймаута; как только осело (или
+    бюджет исчерпан) — гонит полную copy_verify и перезаписывает результат job'а (UI читает его).
+    source_grid ПЕРЕСОБИРАЕТСЯ (иначе build_source_profile уходит в fallback без Grid и недочитывает
+    адаптивы titles/bodies/images источника → ложный mismatch adaptive/images).
+    Best-effort: ошибки/рестарт сервиса не критичны — in-job copy_verify остаётся как есть.
     """
     try:
-        rows = _grid_list_campaigns(login) or []
+        time.sleep(_COPY_REVERIFY_FIRST_SEC)
+        _waited = _COPY_REVERIFY_FIRST_SEC
+        while _waited < _COPY_REVERIFY_MAX_SEC:
+            if _copy_target_sitelinks_ready(target_login, target_agency, workdir):
+                break
+            _copy_job_log(job_id, f"copy_verify: жду оседания привязок ({_waited}/{_COPY_REVERIFY_MAX_SEC}s)")
+            time.sleep(_COPY_REVERIFY_POLL_SEC)
+            _waited += _COPY_REVERIFY_POLL_SEC
+        _src_grid_rv = None
+        if source_login:
+            try:
+                _src_ag_rv = _resolve_agency_hint(source_login, "")
+                _src_cli_rv = cmc.build_client(source_login, account=(_src_ag_rv or None))
+                _src_grid_rv = gf.GridClient(source_login, cookie=(_src_cli_rv.sess.headers.get("Cookie") or ""))
+            except Exception as _sge:  # noqa: BLE001 — без source_grid профиль источника уйдёт в fallback
+                _copy_job_log(job_id, f"copy_verify (осевший): source_grid не пересобран ({str(_sge)[:120]})")
+        from . import copy_verify as cv
+        vr = cv.run_copy_verification(
+            src_dir=src_dir, workdir=workdir,
+            target_login=target_login, target_agency=target_agency or "",
+            geo_pairs=[], grid=None, source_grid=_src_grid_rv,
+            log=(lambda m: _copy_job_log(job_id, m)))
+        _s = vr.get("summary") or {}
+        _copy_job_log(job_id, f"copy_verify (осевший, +{_waited}s): "
+                              f"ok={_s.get('ok')}, mismatch={_s.get('mismatch')}, "
+                              f"unreadable={_s.get('unreadable')}")
+        with _COPY_JOBS_LOCK:
+            j = _COPY_JOBS.get(job_id)
+            _res = dict(j["result"]) if (j and isinstance(j.get("result"), dict)) else None
+        if _res is not None:
+            _res["copy_verify_settled"] = vr
+            _cp = _res.get("cookie_postprocess")
+            if isinstance(_cp, dict):
+                _cp = dict(_cp)
+                _cp["copy_verify"] = vr        # UI (_cvAggregate) читает отсюда → покажет осевшее
+                _res["cookie_postprocess"] = _cp
+            _copy_job_upsert(job_id, result=_res)
     except Exception as e:  # noqa: BLE001
-        errors.append(f"cleanup uac list: {str(e)[:120]}")
-        return 0
-    ids: list[int] = []
-    for row in rows:
-        if str(row.get("status") or "").upper() != "DRAFT" or row.get("archived"):
-            continue
-        if not _copy_is_uac_grid_row(row):
-            continue
-        try:
-            cid = int(row.get("id") or 0)
-        except (TypeError, ValueError):
-            continue
-        if cid > 0:
-            ids.append(cid)
-    if not ids:
-        return 0
-    _copy_job_log(job_id, f"cleanup delete_drafts: МК-черновиков по кукам {len(ids)} → удаляю")
-    try:
-        res = gc.GridCreateClient(login).delete_campaigns(ids)
-    except Exception as e:  # noqa: BLE001
-        errors.append(f"cleanup uac delete: {str(e)[:120]}")
-        return 0
-    for err in (res.get("errors") or []):
-        errors.append(f"uac delete: {str(err)[:100]}")
-    return len(res.get("deleted") or [])
-
-
-def _copy_target_cleanup(job_id: str, login: str, agency: str, mode: str) -> dict:
-    """Очистить целевой аккаунт ДО копирования.
-
-    mode='delete_drafts': удаляет только кампании со Status=DRAFT (v5 campaigns.delete,
-        без archive-шага — DRAFT удаляются напрямую, подтверждено тестом 2026-07-17).
-    mode='archive':       архивирует все non-DRAFT кампании. ON-кампании сначала
-        suspend, потом archive. DRAFT пропускаются (v5 8303).
-
-    Возвращает {ok, deleted, archived, skipped_non_draft|skipped_draft, errors}.
-    Поднимает RuntimeError при критической ошибке API (не per-item) — _copy_run_job
-    тогда прерывает копирование, не льёт РК в неочищенный аккаунт.
-    """
-    if mode not in ("delete_drafts", "archive"):
-        return {"ok": True, "deleted": 0, "archived": 0, "skipped": 0, "errors": []}
-
-    ag = agency or _resolve_agency_hint(login, "")
-    token, _ = _token_for_login(login, ag, _direct_tokens())
-    if not token:
-        raise RuntimeError(f"cleanup: нет рабочего токена для {login!r}")
-
-    _copy_job_log(job_id, f"cleanup {mode}: получаю кампании {login}")
-    j = _v5_call("campaigns", "get", token, login, {
-        "FieldNames": ["Id", "Name", "State", "Status"],
-        "SelectionCriteria": {},
-    })
-    if "error" in j:
-        raise RuntimeError(f"cleanup campaigns.get: {(_v5_err(j) if callable(_v5_err) else str(j.get('error')))[:200]}")
-
-    campaigns = (j.get("result") or {}).get("Campaigns", [])
-    errors: list[str] = []
-
-    if mode == "delete_drafts":
-        drafts = [c["Id"] for c in campaigns if c.get("Status") == "DRAFT"]
-        non_draft_skip = len(campaigns) - len(drafts)
-        _copy_job_log(job_id, f"cleanup delete_drafts: к удалению {len(drafts)}, пропускаем не-черновики {non_draft_skip}")
-        deleted = 0
-        for i in range(0, len(drafts), 100):
-            chunk = drafts[i:i + 100]
-            jd = _v5_call("campaigns", "delete", token, login, {"SelectionCriteria": {"Ids": chunk}})
-            if "error" in jd:
-                raise RuntimeError(f"cleanup delete batch: {(_v5_err(jd) if callable(_v5_err) else str(jd.get('error')))[:200]}")
-            for rr in (jd.get("result") or {}).get("DeleteResults", []):
-                if rr.get("Id") and not rr.get("Errors"):
-                    deleted += 1
-                else:
-                    errors.append(f"delete {rr.get('Id')}: {str(rr.get('Errors') or 'unknown')[:100]}")
-        # МК/tp6 невидимы для v5 (campaigns.get их не отдаёт) → копятся дублями: чистим по кукам.
-        deleted += _copy_cleanup_uac_drafts(job_id, login, errors)
-        _copy_job_log(job_id, f"cleanup delete_drafts: удалено {deleted}, ошибок {len(errors)}, пропущено {non_draft_skip}")
-        return {"ok": True, "deleted": deleted, "archived": 0,
-                "skipped_non_draft": non_draft_skip, "errors": errors}
-
-    # mode == "archive"
-    non_draft = [c for c in campaigns if c.get("Status") != "DRAFT"]
-    draft_skip = len(campaigns) - len(non_draft)
-    on_ids = [c["Id"] for c in non_draft if c.get("State") == "ON"]
-    archive_ids = [c["Id"] for c in non_draft]
-    _copy_job_log(job_id, f"cleanup archive: к архивации {len(archive_ids)}, suspend ON {len(on_ids)}, пропускаем DRAFT {draft_skip}")
-
-    if on_ids:
-        for i in range(0, len(on_ids), 100):
-            chunk = on_ids[i:i + 100]
-            js = _v5_call("campaigns", "suspend", token, login, {"SelectionCriteria": {"Ids": chunk}})
-            if "error" in js:
-                raise RuntimeError(f"cleanup suspend: {(_v5_err(js) if callable(_v5_err) else str(js.get('error')))[:200]}")
-            for rr in (js.get("result") or {}).get("SuspendResults", []):
-                if rr.get("Errors"):
-                    errors.append(f"suspend {rr.get('Id')}: {str(rr['Errors'])[:80]}")
-
-    archived = 0
-    for i in range(0, len(archive_ids), 100):
-        chunk = archive_ids[i:i + 100]
-        ja = _v5_call("campaigns", "archive", token, login, {"SelectionCriteria": {"Ids": chunk}})
-        if "error" in ja:
-            raise RuntimeError(f"cleanup archive batch: {(_v5_err(ja) if callable(_v5_err) else str(ja.get('error')))[:200]}")
-        for rr in (ja.get("result") or {}).get("ArchiveResults", []):
-            if rr.get("Id") and not rr.get("Errors"):
-                archived += 1
-            else:
-                errors.append(f"archive {rr.get('Id')}: {str(rr.get('Errors') or 'unknown')[:100]}")
-
-    _copy_job_log(job_id, f"cleanup archive: заархивировано {archived}, пропущено DRAFT {draft_skip}, ошибок {len(errors)}")
-    return {"ok": True, "deleted": 0, "archived": archived,
-            "skipped_draft": draft_skip, "errors": errors}
+        _copy_job_log(job_id, f"copy_verify (осевший) error: {str(e)[:200]}")
 
 
 def _copy_run_job(job_id: str, body: dict) -> None:
@@ -2878,9 +1323,28 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         selected_uac_rows = [r for r in selected_grid_rows if _copy_is_uac_grid_row(r)]
         if selected_uac_rows:
             _copy_job_log(job_id, f"uac selected: {len(selected_uac_rows)} кампаний через Grid/UAC")
+        # Кросс-чек с v5 (авторитетный, стабильный источник типа). Grid-typename флейкует:
+        # наблюдалось «13 GdUnifiedCampaign» на кампаниях, которые v5 стабильно отдаёт как
+        # TEXT_CAMPAIGN → неверный grid-cookie путь → битый CopyCamp-снапшот (EOF@305) и падение
+        # ПОСЛЕ delete_drafts. Кампанию, которую v5 видит как НЕ-ЕПК (текст/динамика/приложение),
+        # НИКОГДА не гоним grid-unified путём — только v5-pull (как в рабочем прогоне). Настоящие
+        # UAC/ЕПК-черновики v5 не отдаёт → в _v5_native их нет → grid-путь для них сохраняется.
+        _v5_native: set[int] = set()
+        try:
+            _st_x, _sa_x = _token_for_login(source_login, _resolve_agency_hint(source_login, ""), _direct_tokens())
+            _vr_x = _v5_call("campaigns", "get", _st_x, source_login,
+                             {"SelectionCriteria": {"Ids": list(selected_ids)}, "FieldNames": ["Id", "Type"]})
+            for _cx in ((_vr_x.get("result") or {}).get("Campaigns") or []):
+                if str(_cx.get("Type") or "") in (
+                    "TEXT_CAMPAIGN", "DYNAMIC_TEXT_CAMPAIGN", "MOBILE_APP_CAMPAIGN", "SMART_CAMPAIGN",
+                ):
+                    _v5_native.add(int(_cx.get("Id") or 0))
+        except Exception as _ex:  # noqa: BLE001 — кросс-чек best-effort; при сбое остаётся прежняя grid-логика
+            _copy_job_log(job_id, f"v5-кросс-чек типов недоступен ({str(_ex)[:80]}) — grid-классификация как есть")
         selected_unified_rows = [
             r for r in selected_grid_rows
             if str(r.get("typename") or r.get("type") or "") == "GdUnifiedCampaign"
+            and int(r.get("id") or 0) not in _v5_native
         ]
         if selected_unified_rows and len(selected_unified_rows) == len(selected_ids):
             _copy_job_log(job_id, f"grid-cookie copy: {len(selected_unified_rows)} Unified campaigns без Direct API баллов")
@@ -3144,6 +1608,15 @@ def _copy_run_job(job_id: str, body: dict) -> None:
                 "workdir": str(workdir),
                 "cleanup": cleanup_result,
             })
+        # verify-after-settle: отложенная пере-сверка после оседания dcr-привязок (см. выше).
+        try:
+            threading.Thread(
+                target=_copy_delayed_reverify,
+                args=(job_id, src_dir, workdir, target_login, target_agency or "", source_login),
+                daemon=True, name=f"copy-reverify-{job_id[:8]}").start()
+            _copy_job_log(job_id, f"copy_verify: осевшая пере-сверка запланирована (до {_COPY_REVERIFY_MAX_SEC}s ожидания оседания)")
+        except Exception as _te:  # noqa: BLE001
+            _copy_job_log(job_id, f"copy_verify reverify schedule error: {str(_te)[:150]}")
     except BaseException as e:  # noqa: BLE001
         # cleanup_result инициализирован вне try → всегда доступен здесь.
         # Если очистка отработала до падения job — явно включаем её в result,
@@ -3159,22 +1632,52 @@ def _copy_run_job(job_id: str, body: dict) -> None:
 
 
 
-def _copy_jobs_recover() -> None:
-    """Старт copy-сервиса (direct-copy.service): осиротевшие copy-джобы (running/queued) → interrupted.
-    Трогает ТОЛЬКО kind='copy_campaigns' — очередь создания РК в direct.service не задета.
-    Авто-докрутку не делаем: повторный «Копировать» сам пропустит уже созданное (суффикс _vNN)."""
-    try:
-        conn = _victory_conn_rw()
-        try:
-            cur = conn.cursor()
-            cur.execute("UPDATE public.direct_automation_jobs SET status='interrupted', updated_at=now() "
-                        "WHERE kind='copy_campaigns' AND status IN ('running','queued')")
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception:  # noqa: BLE001
-        pass
 
+
+# Модульные имена для DI-фан-аута в configure() (см. выше).
+from . import copy_jobs, copy_geo, copy_snapshot, copy_images, copy_metrika  # noqa: E402,F401
+from . import copy_feeds, copy_grid_read, copy_uac, copy_cleanup, copy_grid_steps  # noqa: E402,F401
+
+from .copy_jobs import (  # noqa: E402,F401  (ре-экспорт распила)
+    _COPY_JOBS, _COPY_JOBS_LOCK, _copy_job_upsert, _copy_mirror_create_job, _copy_job_log, _copy_jobs_recover,
+)
+
+from .copy_geo import (  # noqa: E402,F401  (ре-экспорт распила)
+    _COPY_R_CODE_RE, _copy_canonical_region_name, _copy_geo_id_for_target, _copy_ctx, _copy_m3_decliner, _copy_build_geo, _copy_geo_replacements, _copy_apply_geo_replacements, _copy_target_region_code, _copy_remap_region_code, _copy_normalize_campaign_name, _copy_domain_from_href, _copy_target_href,
+    _REGION_ALIASES, _REGION_ALIASES_NORM, _norm_region_alias_key, _REGION_ALIAS_DASH_RE,
+)
+
+from .copy_snapshot import (  # noqa: E402,F401  (ре-экспорт распила)
+    _COPY_JSON_PAYLOADS, _COPY_SUPPORTED_V5_TYPES, _copy_read_json, _copy_write_json, _copy_filter_snapshot, _copy_walk_strings, _copy_scan_payload_terms, _copy_rewrite_snapshot_context, _copy_snapshot_preflight, _copy_build_results, _copy_preseed_feed_maps, _copy_skip_unmapped_feed_campaigns,
+)
+
+from .copy_images import (  # noqa: E402,F401  (ре-экспорт распила)
+    _copy_grid_ad_image_hashes, _copy_v501_ad_image_hashes, _copy_image_remapper,
+)
+
+from .copy_metrika import (  # noqa: E402,F401  (ре-экспорт распила)
+    _copy_rewrite_strategy_goal, _copy_apply_metrika,
+)
+
+from .copy_feeds import (  # noqa: E402,F401  (ре-экспорт распила)
+    _COPY_DEFAULT_FEED_PATH, _copy_target_feed_id, _copy_feeds_preview, _copy_grid_validate_feed_map,
+)
+
+from .copy_grid_read import (  # noqa: E402,F401  (ре-экспорт распила)
+    _copy_selected_grid_campaigns, _copy_grid_read_selected, _copy_grid_campaign_spec,
+)
+
+from .copy_uac import (  # noqa: E402,F401  (ре-экспорт распила)
+    _copy_is_uac_grid_row, _copy_uac_value, _copy_uac_strings, _copy_uac_sitelinks, _copy_uac_media_urls, _copy_uac_filter_list, _copy_uac_campaigns,
+)
+
+from .copy_cleanup import (  # noqa: E402,F401  (ре-экспорт распила)
+    _copy_target_campaigns_info, _copy_cleanup_uac_drafts, _copy_target_cleanup,
+)
+
+from .copy_grid_steps import (  # noqa: E402,F401  (ре-экспорт распила)
+    _copy_grid_bridge_callouts, _copy_grid_unified_steps, _copy_make_video_resolver,
+)
 
 # ── copy_other: ре-экспорт функций вкладки «Прочие сферы» ───────────────────
 # copy_other не импортирует copy_engine на уровне модуля → цикла нет.

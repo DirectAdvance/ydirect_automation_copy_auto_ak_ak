@@ -34,7 +34,12 @@ from direct import blueprint as B   # noqa: E402
 # --- тест-аккаунт по умолчанию (совпадает с историческим ручным прогоном) ---
 QA_LOGIN = os.environ.get("SLEPOK_QA_LOGIN", "porg-vfdnaolu")
 COUNTER = int(os.environ.get("SLEPOK_QA_COUNTER", "110499992"))
-GOAL = int(os.environ.get("SLEPOK_QA_GOAL", "579905467"))
+# Цель НЕ хардкодим: она принадлежит конкретному счётчику. Прежний дефолт (579905467) жил
+# от дефолтного счётчика, и прогон на другом аккаунте падал на ВСЕХ позициях с
+# «goalId … Объект не найден» (v501 4000 / DefectIds.OBJECT_NOT_FOUND). None → резолвим
+# «Все формы» по COUNTER в main() тем же путём, что и UI-создание (_goal_vse_formy).
+_GOAL_ENV = os.environ.get("SLEPOK_QA_GOAL")
+GOAL = int(_GOAL_ENV) if _GOAL_ENV else None
 
 VARIANTS = ["tp1_rsy", "search_test", "search_dynamic", "search_gallery",
             "rsya_gallery", "master_auto", "product_auto"]
@@ -72,8 +77,9 @@ def _log(msg):
 
 
 def _load_slepki():
-    with open(os.path.join(os.path.dirname(__file__), "slepki_structure.json"), encoding="utf-8") as fh:
-        struct = json.load(fh)
+    # Структура разбита на per-slepok файлы (direct/slepki/) — собираем через slepki_store.
+    from direct import slepki_store as _sstore
+    struct = _sstore.assemble()
     return {e.get("key"): [s.get("name") for s in (e.get("site_types") or [])]
             for e in struct.get("directologists", [])}
 
@@ -221,6 +227,10 @@ def main():
     ap.add_argument("--dry", action="store_true", help="только set_plan (превью), без создания")
     ap.add_argument("--only", default="", help="список слепков через запятую")
     ap.add_argument("--fast", action="store_true", help="один лёгкий site_type на слепок")
+    # Прогон строго по ОДНОМУ типу сайта за заход: создать → проверить ошибки → починить → повторить.
+    # --fast для этого не годится (жёстко прибит к FAST_SITETYPE и не даёт выбрать нужный).
+    ap.add_argument("--site-type", default="", dest="site_type",
+                    help="конкретный site_type (напр. 'Мультибренд'); приоритетнее --fast")
     ap.add_argument("--jtimeout", type=int, default=5400)
     args = ap.parse_args()
 
@@ -240,6 +250,19 @@ def main():
         order = [s for s in ORDER if s in want]
 
     app = create_app()
+
+    global GOAL
+    if GOAL is None:
+        from .blueprint_metrika import _goal_vse_formy
+        with app.app_context():
+            gid, gname = _goal_vse_formy(COUNTER)
+        if not gid:
+            _log(f"❌ у счётчика {COUNTER} не нашлась цель «Все формы» — прогон бессмысленен "
+                 f"(все кампании упадут на goalId). Задай SLEPOK_QA_GOAL явно.")
+            return
+        GOAL = int(gid)
+        _log(f"goal резолвнут по счётчику {COUNTER}: {GOAL} ({gname})")
+
     results = {}
     if os.path.exists(RESULTS_PATH):
         try:
@@ -256,7 +279,13 @@ def main():
         for slepok in order:
             login = login_for(slepok)
             site_types = slepki.get(slepok) or []
-            if args.fast:
+            if args.site_type:
+                if args.site_type not in site_types:
+                    _log(f"  ⚠ site_type={args.site_type!r} нет у слепка {slepok} "
+                         f"(есть: {site_types}) — пропускаю слепок")
+                    continue
+                site_types = [args.site_type]
+            elif args.fast:
                 fst = FAST_SITETYPE.get(slepok)
                 site_types = [fst] if fst in site_types else site_types[:1]
             _log(f"=== SLEPOK {slepok} | login={login} | site_types={site_types} ===")

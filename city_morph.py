@@ -165,6 +165,23 @@ _RU_CITY_STEMS = (
 )
 
 
+# Токены, которые НАЧИНАЮТСЯ с городского стема, но городом НЕ являются (марки авто и т.п.).
+# Проверяются как префикс СЛОВА: более длинный/специфичный префикс перебивает городской стем.
+# «москвич»/«москвича»/«москвич-412» → марка (не город), а «москва»/«москве»/«москвы» → город.
+# NB: «московский»/«подмосковье» стем «москв» не ловит вовсе (там «моско», а не «москв») —
+# пред-существующий пробел фильтра, к этой правке отношения не имеет (см. ERRORS_JOURNAL).
+_NON_CITY_STEMS = ("москвич",)
+
+
+def _city_stem_hit(kl: str, stem: str) -> bool:
+    """Стем города реально встретился как ГОРОД (а не как слово из _NON_CITY_STEMS)."""
+    for m in re.finditer(r"\b" + re.escape(stem), kl):
+        word = re.match(r"[\w\-]*", kl[m.start():]).group(0)   # слово целиком от начала совпадения
+        if not any(word.startswith(nc) for nc in _NON_CITY_STEMS):
+            return True
+    return False
+
+
 def _drop_foreign_city_keywords(keywords: list, own_city: str) -> list:
     """Выкинуть ключи с упоминанием ЧУЖОГО города (не города рекламирования) — правило пользователя:
     «changan волгоград» в кампании Кемерово → отбросить. Источник городов: local_gsheet_sites +
@@ -181,7 +198,7 @@ def _drop_foreign_city_keywords(keywords: list, own_city: str) -> list:
     out = []
     for k in (keywords or []):
         kl = str(k).lower()
-        if any(re.search(r"\b" + re.escape(c), kl) for c in foreign):
+        if any(_city_stem_hit(kl, c) for c in foreign):
             continue
         out.append(k)
     return out

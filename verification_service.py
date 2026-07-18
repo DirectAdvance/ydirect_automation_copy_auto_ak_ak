@@ -36,8 +36,13 @@ def _created_ids(results: list[dict[str, Any]], *, kind: Optional[str] = None) -
 def verify_create_set_live(login: str, results: list[dict[str, Any]], *,
                            agency: str = "", use_v5: bool = False,
                            grid_campaigns_getter: Optional[GridCampaignsGetter] = None,
-                           token_getter: Optional[TokenGetter] = None) -> dict[str, Any]:
-    """Run Grid-first live verification for create_set results."""
+                           token_getter: Optional[TokenGetter] = None,
+                           account_has_promo_library: Optional[bool] = None) -> dict[str, Any]:
+    """Run Grid-first live verification for create_set results.
+
+    ``account_has_promo_library`` пробрасывается как есть в ``verify_live_create_set``
+    (ступень 1 гейта ``PROMO_MISSING``); ``None`` = признак не передан → фолбэк на прокси.
+    """
     login = (login or "").strip()
     if not login:
         return {"status": "error", "error": "login пустой", "prefer_grid": True}
@@ -99,6 +104,7 @@ def verify_create_set_live(login: str, results: list[dict[str, Any]], *,
             grid_content_counts=grid_content_counts,
             uac_details=uac_details,
             prefer_grid=True,
+            account_has_promo_library=account_has_promo_library,
         )
         if live_errors:
             live_report.setdefault("issues", []).append(

@@ -330,9 +330,13 @@ def register_slepki_edit_routes(
         # group (=gk группы) → per-group файл {slepok}__{gk}.txt (фикс «одинаковые ключи по группам»:
         # без него читался ct-агрегат и все группы одного ct показывали одинаковые ключи). Пусто → легаси-агрегат.
         group = (request.args.get("group") or request.args.get("gk") or "").strip()
+        # position (опц.) — имя позиции/кампании строки (tp6/tp7). Нужно фолбэку реальных ключей:
+        # создание матчит набор по ct И по позиции (create_set_context._tp67_keywords_from_real_library),
+        # поэтому без него карточка могла бы взять не тот набор, что уедет в кабинет.
+        position = (request.args.get("position") or "").strip()
         if not (slepok and site_type and tp and ct):
             return jsonify({"error": "нужны slepok/site_type/tp/ct"}), 400
-        data = slepki_editor.read_group_keywords(site_type, tp, ct, slepok, group=group)
+        data = slepki_editor.read_group_keywords(site_type, tp, ct, slepok, group=group, position=position)
         return jsonify({"slepok": slepok, "site_type": site_type, "tp": tp, "ct": ct, "group": group, **data})
 
     # ── ассеты слепка: агрегат уточнений + библиотечных минусов (read-only) ────

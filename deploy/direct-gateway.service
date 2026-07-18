@@ -1,0 +1,25 @@
+[Unit]
+Description=SEOAdvanced Direct — Internal access broker (cookies/tokens/units, loopback-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scripts/home/seoadvanced
+Environment=DIRECT_ROLE=web
+Environment=DIRECT_GATEWAY_HOST=127.0.0.1
+Environment=DIRECT_GATEWAY_PORT=5025
+Environment=DIRECT_REGISTER_CONTENT_EDITOR=0
+Environment=DIRECT_REGISTER_COPY=0
+Environment=NEURO_PACK_MOUNT=/opt/neuro_content_local
+ExecStart=/root/venv/bin/python3 -m direct.gateway_main
+Restart=always
+RestartSec=5
+
+# ФАЗА 1: ЕДИНСТВЕННЫЙ владелец кук/токенов/главпотока/units. Отдаёт /gw/* по HTTP другим
+# direct-* процессам (Фаза 2 переключит их через gateway_client с фолбэком). DIRECT_ROLE=web —
+# обязателен: при дефолтной роли (all) процесс поднял бы воркеров и демоны создания РК.
+# ⚠️ Порт строго 127.0.0.1 и НЕ в nginx: /gw/* отдаёт куки/токены — наружу выставлять НЕЛЬЗЯ.
+
+[Install]
+WantedBy=multi-user.target

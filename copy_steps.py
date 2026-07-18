@@ -346,6 +346,11 @@ def step_attach_callouts(ctx: CopyCtx, per_campaign_cap: int = 8) -> dict:
         return rep
     src_links = _rj(ctx.src_dir / "campaign_callouts.json")
     src_links = src_links if isinstance(src_links, dict) else {}
+    # Связь campaign→callouts спуллилась (файл непустой) → она полная: кампания, которой в
+    # ней НЕТ, у источника реально имеет 0 уточнений — вешать union нельзя (иначе цель получит
+    # уточнения, которых у источника нет: verify callout_count src=0 tgt=8). Union — только когда
+    # связь вообще недоступна (файл пуст: pull грид-связи не удался) — глобальный фолбэк.
+    have_link_data = bool(src_links)
 
     for src_cid, tgt_cid in camp_map.items():
         if not str(tgt_cid).isdigit():
@@ -356,7 +361,12 @@ def step_attach_callouts(ctx: CopyCtx, per_campaign_cap: int = 8) -> dict:
             int(callout_map[str(x)]) for x in raw_co
             if str(x) in callout_map and str(callout_map[str(x)]).isdigit()
         ))
-        use_ids, mode = (remapped, "per_campaign") if remapped else (union_ids, "fallback_union")
+        if remapped:
+            use_ids, mode = remapped, "per_campaign"
+        elif have_link_data:
+            continue                         # связь известна, у кампании 0 уточнений → ничего не вешаем
+        else:
+            use_ids, mode = union_ids, "fallback_union"
         if not use_ids:
             continue
         try:
@@ -838,6 +848,21 @@ def step_keywords(ctx: CopyCtx, grid_batch: int = 1000, v5_batch: int = 200) -> 
     done_kw: set[str] = set(_rj(done_path)) if done_path.exists() else set()
     adg_map = ctx.maps.get("adgroups") or {}
 
+    # Тип-детектор: TEXT_AD_GROUP (старый формат, v5-создание) → ключи в v5 напрямую.
+    # Grid addKeywords для TextAdGroup возвращает ложный n_added==len(batch) (не пустой addedItems),
+    # при этом ключи НЕ персистятся (прогон 2026-07-17, porg-lzjk6p5m tp2; run-15 с n_added-фиксом
+    # тоже дал via_v5=0 — Grid врёт на уровне addedItems). Для UNIFIED_AD_GROUP (ЕПК) Grid работает.
+    _src_agid_type: dict[str, str] = {}
+    _adgroups_file = ctx.src_dir / "adgroups.json"
+    if _adgroups_file.exists():
+        try:
+            _src_agid_type = {
+                str(ag.get("Id") or ""): str(ag.get("Type") or "")
+                for ag in (_rj(_adgroups_file) or [])
+            }
+        except Exception:  # noqa: BLE001
+            pass  # безопасно: при ошибке adg_type пуст, все ключи идут в Grid (прежнее поведение)
+
     # Задача 1: гео-замена фраз ключевых слов (морфологическая, те же пары что у имён/текстов).
     # copy_geo_morph импортируется лениво (не на уровне модуля — паттерн copy_steps.py).
     _geo_pairs_kw = ctx.geo_pairs or []
@@ -848,6 +873,8 @@ def step_keywords(ctx: CopyCtx, grid_batch: int = 1000, v5_batch: int = 200) -> 
     grid_keys: list[str] = []
     v5_rows: list[dict] = []          # фразы с UserParam → только v5 (Grid не переносит UserParam)
     v5_keys: list[str] = []
+    v5_text_rows: list[dict] = []     # TEXT_AD_GROUP фразы → v5 напрямую (Grid addKeywords лжёт)
+    v5_text_keys: list[str] = []
     _kw_geo_count = 0   # счётчик фраз, где применилась гео-замена
     for k in keywords:
         key = f"{k.get('AdGroupId')}|{k.get('Keyword')}"
@@ -887,6 +914,22 @@ def step_keywords(ctx: CopyCtx, grid_batch: int = 1000, v5_batch: int = 200) -> 
                 item["UserParam2"] = up2
             v5_rows.append(item)
             v5_keys.append(key)
+        elif _src_agid_type.get(str(k.get("AdGroupId") or "")) == "TEXT_AD_GROUP":
+            # TEXT_AD_GROUP (v5-created старый формат): Grid addKeywords возвращает ложный success,
+            # ключи фактически не персистятся. Слать сразу в v5 keywords.add (агентские баллы).
+            item = {"AdGroupId": gid, "Keyword": phrase}
+            if bid is not None:
+                try:
+                    item["Bid"] = int(bid)
+                except (TypeError, ValueError):
+                    pass
+            if cbid is not None:
+                try:
+                    item["ContextBid"] = int(cbid)
+                except (TypeError, ValueError):
+                    pass
+            v5_text_rows.append(item)
+            v5_text_keys.append(key)
         else:
             row: dict = {"adgroup_id": gid, "keyword": phrase}
             if bid is not None:
@@ -940,10 +983,11 @@ def step_keywords(ctx: CopyCtx, grid_batch: int = 1000, v5_batch: int = 200) -> 
         grid_failed_rows = list(grid_rows)        # нет grid-клиента → всё в v5-фолбэк
         grid_failed_keys = list(grid_keys)
 
-    # 2) V5-ФОЛБЭК: UserParam-фразы + не прошедшие Grid (перепаковка grid-row → v5 keyword item).
+    # 2) V5-ФОЛБЭК: UserParam-фразы + TEXT_AD_GROUP (прямой маршрут) + не прошедшие Grid.
     rep["v5_userparam"] = len(v5_rows)
-    v5_all_rows = list(v5_rows)
-    v5_all_keys = list(v5_keys)
+    rep["v5_text_adgroup"] = len(v5_text_rows)  # TEXT_AD_GROUP фразы — Grid для них лжёт
+    v5_all_rows = list(v5_rows) + list(v5_text_rows)
+    v5_all_keys = list(v5_keys) + list(v5_text_keys)
     for row, key in zip(grid_failed_rows, grid_failed_keys):
         item = {"AdGroupId": int(row["adgroup_id"]), "Keyword": row["keyword"]}
         if row.get("_bid") is not None:

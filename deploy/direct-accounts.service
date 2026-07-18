@@ -1,0 +1,26 @@
+[Unit]
+Description=SEOAdvanced Direct — Read-only account dashboards (Обзор/Статистика, isolated web)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scripts/home/seoadvanced
+Environment=DIRECT_ROLE=web
+Environment=DIRECT_ACCOUNTS_HOST=127.0.0.1
+Environment=DIRECT_ACCOUNTS_PORT=5024
+Environment=DIRECT_REGISTER_CONTENT_EDITOR=0
+Environment=DIRECT_REGISTER_COPY=0
+Environment=NEURO_PACK_MOUNT=/opt/neuro_content_local
+ExecStart=/root/venv/bin/python3 -m direct.accounts_main
+Restart=always
+RestartSec=5
+
+# Владеет ТОЛЬКО read-only дашбордами «Обзор»/«Статистика» (тяжёлые Direct-API вызовы, могут
+# ВИСНУТЬ). nginx уводит сюда exact-match: /direct/api/{overview,account_stats,balance,
+# accounts_otkrut,statuses}. DIRECT_ROLE=web — обязателен: при дефолтной роли (all) процесс
+# поднял бы воркеров и демоны создания РК. Рестарт этого сервиса НЕ трогает очередь создания РК;
+# рестарт direct-create НЕ роняет дашборды. Форма создания РК от 5024 не зависит.
+
+[Install]
+WantedBy=multi-user.target

@@ -127,11 +127,13 @@
 | `NO_KEYWORDS_LIVE` | error | поисковая группа без ключей | grid_content_verifier.py:84,97 | 🟡 (keyword_repair) |
 | `WRONG_AUTOTARGET` | error | автотаргет ≠ EXACT_V2_MARK+WITHOUT_BRAND | grid_content_verifier.py:89 | 🟡 (keyword_repair/пересоздание) |
 | `DYNAMIC_PLACES_ON` | warn | динамич. места включены там, где нельзя (tp2) | grid_content_verifier.py:104 | 🟡 |
-| `MINUS_PLACES_MISSING` | warn | нет минус-площадок (tp1 РСЯ) | grid_content_verifier.py:112 | 🟡 |
-| `PROMO_MISSING` | warn | промо не прикреплено (live) | grid_content_verifier.py:125 | 🟡 |
-| `NO_IMAGES_LIVE` | error | у объявления нет картинок | grid_content_verifier.py:135 | ✅ (fix_image_missing) |
-| `NO_ADPRICE_LIVE` | warn | нет adPrice на фидовой группе | grid_content_verifier.py:154 | 🟡 (adprice_repair) |
-| `EMPTY_DEFAULT_TEXT_LIVE` | warn | пустой `set_default_text` у ShoppingAd | grid_content_verifier.py:165 | 🟡 |
+| `MINUS_PLACES_MISSING` | warn | нет минус-площадок (tp1 РСЯ) | grid_content_verifier.py:122 | 🟡 |
+| `CALLOUTS_MISSING_LIVE` | warn | **tp1–tp5: у кампании не привязаны уточнения** (`inheritableCallouts.assetValue` пуст). Гейт: только tp1–tp5 — **tp6/tp7 (МК/Товарка, UAC) уточнения не поддерживают** и НЕ флагаются | grid_content_verifier.py:148 | ⬜ (report-only) |
+| `SITELINK_SET_MISSING_LIVE` | warn | **tp1–tp5: у кампании не привязан НАБОР быстрых ссылок** (`inheritableSitelinkSet.assetValue` пуст). Уровень КАМПАНИИ — дополняет ad-level `SITELINK_MISSING`/`UAC_SITELINKS_MISSING` | grid_content_verifier.py:157 | ⬜ (report-only) |
+| `PROMO_MISSING` | warn | **tp1–tp5: промо не прикреплено. ДВУХСТУПЕНЧАТО** — ступень 1: в БИБЛИОТЕКЕ аккаунта вообще есть промо-акции (`expected["account_has_promo"]` ← проброшенный `account_has_promo_library`, фолбэк — прокси); ступень 2: промо доехало в кампанию. Аккаунт без промо → **не флагается вообще** | grid_content_verifier.py:174 | ⬜ (report-only) |
+| `NO_IMAGES_LIVE` | error | у объявления нет картинок | grid_content_verifier.py:185 | ✅ (fix_image_missing) |
+| `NO_ADPRICE_LIVE` | warn | нет adPrice (bannerPrice) ни на одном объявлении tp1. **Исключение: товарка-only** (`adaptive_images_read=True` и `adaptive_total==0`, напр. смарт-баннер) — `bannerPrice` есть только у адаптивных текстовых, у ShoppingAd/ListingAd цена идёт из фида → код НЕ выдаётся | grid_content_verifier.py:208 | 🟡 (adprice_repair) |
+| `EMPTY_DEFAULT_TEXT_LIVE` | warn | пустой `set_default_text` у ShoppingAd | grid_content_verifier.py:219 | 🟡 |
 | `ALT_TEXTS_ENABLED_LIVE` | error | tp1–tp5: персонализация (адаптивные тексты) ВКЛ (#3, должна OFF) | grid_content_verifier.py (кампания) | ✅ `campaign_invariant_repair` (grid_finalize.set_campaign_invariants) |
 | `EXTENDED_GEO_ENABLED_LIVE` | error | tp1–tp5: расш.гео ВКЛ (#5, должен OFF) | grid_content_verifier.py (кампания) | ✅ `campaign_invariant_repair` |
 | `RECOMMENDATIONS_ENABLED_LIVE` | error | tp1–tp5: «Директ помогает» ВКЛ (#6, должен OFF) | grid_content_verifier.py (кампания) | ✅ `campaign_invariant_repair` |
@@ -140,6 +142,28 @@
 | `MAPS_ENABLED_LIVE` | error | tp1–tp5: площадка «Карты» (yandexMaps) ВКЛ | grid_content_verifier.py (кампания) | ✅ `campaign_invariant_repair` |
 | `ORG_LIST_ENABLED_LIVE` | error | tp1–tp5: список организаций (serpGeoWizard) ВКЛ | grid_content_verifier.py (кампания) | ✅ `campaign_invariant_repair` |
 | `STRATEGY_MISMATCH_LIVE` | warn | tp1–tp5: payForConversion ≠ pay-mode (cpc→False/cpa→True) | grid_content_verifier.py (кампания) | ⬜ (report-only; recreate, не in-place) |
+
+> **Кампанийные АССЕТЫ (`CALLOUTS_MISSING_LIVE` / `SITELINK_SET_MISSING_LIVE` / `PROMO_MISSING`),
+> 2026-07-18 — 0 новых обращений к API.** Источник — тот же ответ `CampaignsEditData`, которым уже
+> читаются инвариант-галочки: `grid_finalize.read_campaign_invariants` →
+> `grid_read._enrich_campaign_invariants`. Поля `inheritableCallouts{assetValue}` /
+> `inheritableSitelinkSet{assetValue}` / `promoExtension{id}` уже входят во фрагмент
+> `UnifiedCampaign` (`grid_campaigns_edit_data.graphql`) — раньше просто выбрасывались.
+> Нормализация — как в `_unified_campaign_update_from_edit_row:601-603` (в сыром rowset эти поля
+> лежат под `assetValue`/`promoExtension.id`, а НЕ плоскими write-ключами).
+> **Tri-state (fail-safe, тот же контракт, что у галочек):** ключ отсутствует в ответе → `None` →
+> верификатор МОЛЧИТ (ложный детект дороже пропуска). Флаг чтения — `campaign_assets_read`.
+> **Все три report-only (без repair-кандидата):** `campaign_invariant_repair`
+> (`set_campaign_invariants`) эти поля НЕ переставляет; ремонт не выдумываем.
+> **Ступень 1 промо = БИБЛИОТЕКА АККАУНТА** (`account_has_promo_library`, tri-state). Признак
+> берётся из v5 `promotions.get`, который **уже выполняется в штатном потоке создания**
+> (`create_set_promo.attach_or_create_promo:34`, `precreate.py:262`) → **0 новых запросов, 0 баллов**.
+> Проброс: `attach_or_create_promo` → `create_set_orchestrator:1041` → `_create_set_live_verification`
+> → `verification_service.verify_create_set_live` → `live_verifier.verify_live_create_set`.
+> `False` (библиотека пуста) → `PROMO_MISSING` не выдаётся вообще (требование Семёна).
+> `True` → флагаются ВСЕ кампании без промо, включая полный провал доставки **0/N**.
+> `None` (признак не проброшен — вызов не из потока создания) → фолбэк на прокси
+> `live_verifier._account_has_promo` (промо по кампаниям набора; 0/N он не ловит — на то и фолбэк).
 
 **1.b.4 — UAC tp6/tp7 (`uac_verifier.py`)** — все толкают repair `stop_or_recreate_campaign`/`_repair(nm,cid)` = **пересоздание** (не in-place), поэтому Fix = 🟡.
 
@@ -427,9 +451,14 @@
   > ✅ **ИСПРАВЛЕНО (Семён 2026-07-09):** прежний текст «Фолбэк (нет цены марки) → `_min_offer_price`
   > ВСЕГДА» был НЕВЕРНЫМ пересказом. Код НЕ фолбэкает брендовую группу на минимум — он это РАЗЛИЧАЕт
   > по `seg`. Правило Семёна выполняется, багом это НЕ является.
-- **Проверка (live):** `NO_ADPRICE_LIVE` (warn, `grid_content_verifier.py:154`) — фидовая группа без adPrice;
+- **Проверка (live):** `NO_ADPRICE_LIVE` (warn, `grid_content_verifier.py:208`) — фидовая группа без adPrice;
   добивается `adprice_repair` (докрутка, статус 🟡). ⚠️ на tp1 мутация объявления без `ad_price_payload`
   ЗАТИРАЕТ цену (см. 2.4 про видео-attach).
+  > ✅ **ИСПРАВЛЕНО (2026-07-18):** прежняя формулировка не упоминала исключение **товарки-only**.
+  > `bannerPrice` — поле ТОЛЬКО адаптивных текстовых объявлений; у ShoppingAd/ListingAd (смарт-баннер,
+  > каталог) цена приходит **из фида**, поэтому код к ним неприменим. Код это учитывает:
+  > `adaptive_images_read=True` и `adaptive_total==0` → `NO_ADPRICE_LIVE` НЕ выдаётся
+  > (`grid_content_verifier.py:200-206`). Fail-safe: адаптивные не прочитаны → флаг не глушится.
 - **Лимит:** `priceOld` показываем ТОЛЬКО если `old > current` (иначе Яндекс отвергает).
 
 **Консистентность суммы платежа по АККАУНТУ (R2-4 (г) 2026-07-10):** `unify_utp_numbers`/`_coherent_payments`

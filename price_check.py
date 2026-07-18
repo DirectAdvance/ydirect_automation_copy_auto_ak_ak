@@ -879,7 +879,8 @@ def run_check_job(deps: dict, job_id: str, items: list[dict]) -> None:
 
     logins = [it["login"] for it in items]
     dir_by_login = {it["login"]: (it.get("directologist") or "") for it in items}
-    result = {"logins": len(logins), "ads": 0, "offers": 0, "diffs": 0, "errors": []}
+    result = {"logins": len(logins), "ads": 0, "offers": 0,
+              "diffs": 0, "compared": 0, "errors": []}
     counters = {"done": 0}
     lock = threading.Lock()
 
@@ -914,11 +915,12 @@ def run_check_job(deps: dict, job_id: str, items: list[dict]) -> None:
             ads_rows, err = _fetch_account_ads(v5_call, token, login)
             offers = feed_cache.get(domain, [])          # фид уже скачан на этапе 1
             _write_snapshot(victory_conn_rw, login, ads_rows, offers)
-            diffs = _compute_and_store_diff(victory_conn_rw, login, dir_by_login.get(login, ""))
+            compared, diffs = _compute_and_store_diff(victory_conn_rw, login, dir_by_login.get(login, ""))
             with lock:
                 result["ads"] += len(ads_rows)
                 result["offers"] += len(offers)
                 result["diffs"] += diffs
+                result["compared"] += compared
                 if err:
                     result["errors"].append(f"{login}: Direct API — {err}")
         except Exception as e:  # noqa: BLE001
@@ -946,7 +948,7 @@ def run_check_job(deps: dict, job_id: str, items: list[dict]) -> None:
         # (_write_diff_to_sheet — dead-but-off, вызов намеренно удалён.)
         status = "done" if not result["errors"] else "done_with_errors"
         msg = (f"сверка: {result['ads']} объявлений, {result['offers']} офферов, "
-               f"{result['diffs']} строк расхождений")
+               f"{result['diffs']} расхождений ({result['compared']} строк сверено)")
         _job_finish(victory_conn_rw, job_id, status, result, message=msg)
     except Exception as e:  # noqa: BLE001
         _job_finish(victory_conn_rw, job_id, "error", result,
@@ -1065,8 +1067,13 @@ ORDER BY m.url, m.price_direct, m.oldprice_direct
 """
 
 
-def _compute_and_store_diff(victory_conn_rw: Callable, login: str, directologist: str) -> int:
-    """Считает расхождения Direct↔Feed для логина и пишет в direct_price_check_diff."""
+def _compute_and_store_diff(victory_conn_rw: Callable, login: str,
+                            directologist: str) -> tuple[int, int]:
+    """Считает сверку Direct↔Feed для логина и пишет в direct_price_check_diff.
+
+    Возвращает (compared, mismatches): compared — все сопоставленные строки (в т.ч. с
+    равной ценой и без матча в фиде), mismatches — только строки с реальным расхождением
+    (price_diff<>0 или oldprice_diff<>0), т.е. то, что реально уходит в заливку."""
     from psycopg2.extras import execute_values
     conn = victory_conn_rw()
     try:
@@ -1098,8 +1105,12 @@ def _compute_and_store_diff(victory_conn_rw: Callable, login: str, directologist
                     "price_direct, oldprice_direct, price_feed, oldprice_feed, price_diff, oldprice_diff) "
                     "VALUES %s", out)
             cur.execute("DROP TABLE IF EXISTS _pc_fid")
+        # r[9]=price_diff, r[10]=oldprice_diff (порядок колонок _DIFF_QUERY SELECT)
+        mismatches = sum(1 for r in rows
+                         if (r[9] is not None and r[9] != 0)
+                         or (r[10] is not None and r[10] != 0))
         conn.commit()
-        return len(rows)
+        return len(rows), mismatches
     except Exception:  # noqa: BLE001
         conn.rollback()
         raise

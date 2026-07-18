@@ -130,6 +130,7 @@ def register_copy_api(
     counter_foreign_owner: Optional[Callable] = None,
     api_campaigns_func: Optional[Callable] = None,
     parse_number: Optional[Callable] = None,
+    geo_validate_id_func: Optional[Callable] = None,
 ) -> None:
     """Добавляет роуты /api/v1/copy/* в переданный blueprint.
 
@@ -170,6 +171,12 @@ def register_copy_api(
 
     @bp.route("/campaigns", methods=["OPTIONS"])
     def copy_api_campaigns_options():
+        resp = jsonify({})
+        return _copy_api_add_cors(resp, request.headers.get("Origin"))
+
+    @bp.route("/status/<job_id>", methods=["OPTIONS"])
+    def copy_api_status_options(job_id: str):  # noqa: ARG001
+        """Preflight для поллинга статуса с X-API-Key заголовком (A2)."""
         resp = jsonify({})
         return _copy_api_add_cors(resp, request.headers.get("Origin"))
 
@@ -217,6 +224,9 @@ def register_copy_api(
         target_feed_url = (body.get("target_feed_url") or copy_default_feed_path).strip()
         target_cleanup = (body.get("target_cleanup") or "none").strip()
         mode = (body.get("mode") or "auto").strip()
+        # A1: geo_mode с дефолтом как в _copy_start_impl (routes_copy.py:224).
+        # mode="other" → keep (нет city/region); mode="auto" → replace (привычный путь).
+        geo_mode = (body.get("geo_mode") or ("keep" if mode == "other" else "replace")).strip()
 
         # Валидация обязательных полей
         if not source_login or not target_login:
@@ -247,6 +257,45 @@ def register_copy_api(
             return _copy_api_add_cors(
                 jsonify({"error": "target_city или target_region обязательны при mode=auto"}), origin
             ), 400
+        # A1: geo_mode-валидация для mode="other" (зеркало routes_copy.py:238-263).
+        _geo_region_ids_parsed: list = []
+        if mode == "other":
+            if geo_mode not in ("keep", "change"):
+                return _copy_api_add_cors(
+                    jsonify({"error": "geo_mode при mode='other' допустимо: keep, change"}), origin
+                ), 400
+            if geo_mode == "change":
+                _raw_gids = body.get("geo_region_ids")
+                if not isinstance(_raw_gids, list) or not _raw_gids:
+                    return _copy_api_add_cors(
+                        jsonify({"error": "geo_mode='change': передайте geo_region_ids (список регионов)"}), origin
+                    ), 400
+                try:
+                    _geo_region_ids_parsed = [int(x) for x in _raw_gids if str(x).lstrip("-").isdigit()]
+                except (TypeError, ValueError):
+                    return _copy_api_add_cors(
+                        jsonify({"error": "geo_region_ids: все элементы должны быть целыми числами"}), origin
+                    ), 400
+                if not _geo_region_ids_parsed:
+                    return _copy_api_add_cors(
+                        jsonify({"error": "geo_mode='change': geo_region_ids пуст после парсинга"}), origin
+                    ), 400
+                if any(x == 0 for x in _geo_region_ids_parsed):
+                    return _copy_api_add_cors(
+                        jsonify({"error": "geo_region_ids: нулевой id недопустим"}), origin
+                    ), 400
+                if not [x for x in _geo_region_ids_parsed if x > 0]:
+                    return _copy_api_add_cors(
+                        jsonify({"error": "geo_mode='change': нет ни одного включённого региона (все минус?)"}), origin
+                    ), 400
+                # Валидация id по справочнику GeoRegions (зеркало routes_copy.py:258-263):
+                # внешний клиент не должен слать несуществующие регионы → чистый 400, не падёж джобы.
+                if geo_validate_id_func is not None:
+                    _invalid = [x for x in _geo_region_ids_parsed if not geo_validate_id_func(abs(x))]
+                    if _invalid:
+                        return _copy_api_add_cors(
+                            jsonify({"error": f"geo_region_ids: неизвестные id: {_invalid[:5]}"}), origin
+                        ), 400
         if target_cleanup not in ("none", "delete_drafts", "archive"):
             return _copy_api_add_cors(
                 jsonify({"error": "target_cleanup допустимо: none, delete_drafts, archive"}), origin
@@ -286,6 +335,9 @@ def register_copy_api(
         }
         job_body = {k: v for k, v in body.items() if k in _JOB_BODY_ALLOWLIST}
         job_body["mode"] = mode              # из валидации роута, не из payload клиента
+        job_body["geo_mode"] = geo_mode       # A1: нормализованный geo_mode (не из payload)
+        if _geo_region_ids_parsed:
+            job_body["geo_region_ids"] = _geo_region_ids_parsed  # A1: валидированный список
         job_body["_kind"] = "copy_campaigns"
         job_body["login"] = target_login
         job_body["source_login"] = source_login

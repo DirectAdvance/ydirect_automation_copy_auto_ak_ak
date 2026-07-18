@@ -137,14 +137,11 @@ register_settings_routes(
     feed_rules_ensure=_feed_rules_ensure,
     global_minus_places=_global_minus_places,
     minus_places_ensure=_minus_places_ensure,
-    slepok_minus_places=_slepok_minus_places,
-    slepok_minus_places_ensure=_slepok_minus_places_ensure,
     place_host=_place_host,
     minus_words_slice=_global_minus_words_slice,
     minus_words_ensure=_minus_words_ensure,
     global_minus_marks=_global_minus_marks,
     minus_marks_ensure=_minus_marks_ensure,
-    known_brand_canons=lambda: sorted(_known_brand_canons()),
     global_minus_models=_global_minus_models,
     minus_models_ensure=_minus_models_ensure,
     load_brand_models_catalog=_load_brand_models_catalog,
@@ -339,31 +336,37 @@ register_create_set_routes(
     job_terminal=_JOB_TERMINAL,
 )
 
-register_ai_routes(
-    bp,
-    _direct_access,
-    ai_agents=_ai_agents_routes,
-    campaign_module=cmc,
-    promo_client_cls=_PromoClientRoutes,
-    m3_llm_url=_M3_LLM_URL,
-    m3_llm_timeout=_M3_LLM_TIMEOUT,
-    m3_complete=_m3_complete,
-    promo_ctx=_promo_ctx,
-    promo_extract_json=_promo_extract_json,
-    promo_from_slepok=_promo_from_slepok,
-    promo_preview=_promo_preview,
-    promo_validate=_promo_validate,
-    promo_amount_steps=_promo_amount_steps,
-    gen_campaign_content=_gen_campaign_content,
-    seed_slepok_content=_seed_slepok_content,
-    victory_conn=_victory_conn,
-    direct_tokens=_direct_tokens,
-    token_for_login=_token_for_login,
-    pull_begin=_pull_begin,
-    pull_end=_pull_end,
-    busy_response=_busy_response,
-    v5_get=_v5_get,
-)
+# API вкладки «Обучение ИИ» живёт в своём процессе direct-ai.service (:5026, direct/ai_main.py):
+# эти роуты ходят в M3/LLM — долгие блокирующие вызовы, которые занимали Flask-воркеров общего
+# процесса с созданием РК. Флаг DIRECT_REGISTER_AI=0 (drop-in direct-create.service) снимает их
+# с этого процесса, чтобы нагрузка/рестарты ИИ не задевали создание. Дефолт "1" — single-process
+# обратная совместимость (как DIRECT_REGISTER_SLEPKI / DIRECT_REGISTER_CONTENT_EDITOR выше).
+if os.environ.get("DIRECT_REGISTER_AI", "1") != "0":
+    register_ai_routes(
+        bp,
+        _direct_access,
+        ai_agents=_ai_agents_routes,
+        campaign_module=cmc,
+        promo_client_cls=_PromoClientRoutes,
+        m3_llm_url=_M3_LLM_URL,
+        m3_llm_timeout=_M3_LLM_TIMEOUT,
+        m3_complete=_m3_complete,
+        promo_ctx=_promo_ctx,
+        promo_extract_json=_promo_extract_json,
+        promo_from_slepok=_promo_from_slepok,
+        promo_preview=_promo_preview,
+        promo_validate=_promo_validate,
+        promo_amount_steps=_promo_amount_steps,
+        gen_campaign_content=_gen_campaign_content,
+        seed_slepok_content=_seed_slepok_content,
+        victory_conn=_victory_conn,
+        direct_tokens=_direct_tokens,
+        token_for_login=_token_for_login,
+        pull_begin=_pull_begin,
+        pull_end=_pull_end,
+        busy_response=_busy_response,
+        v5_get=_v5_get,
+    )
 
 
 class _CompatibilityModule(types.ModuleType):

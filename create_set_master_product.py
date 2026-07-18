@@ -128,8 +128,12 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             it_sq,
         )
         if not it_keywords:
+            # Ключей нет НИ в паке слепка, НИ в его собственной библиотеке реальных UAC-payload
+            # (чужой слепок источником быть не может — жёсткий фильтр create_set_context._score).
             _err = (f"tp6/tp7 КС без ключей: slepok={agent}, site_type={eff_site}, "
-                    f"tp={it_tp}, ct={c_ct or it.get('ct') or 'ct0000'}")
+                    f"tp={it_tp}, ct={c_ct or it.get('ct') or 'ct0000'}, "
+                    f"position={(it.get('position_name') or it.get('audience_cat') or name)!r} "
+                    f"(нет в паке и в СВОЕЙ библиотеке; заимствование у другого слепка запрещено)")
             if _keyword_source:
                 # keyword_source-ГЕЙТ: позиция ЯВНО объявлена keyword-driven (keyword_source задан),
                 # но корпус ключей пуст → НЕ уходить молча в autotarget (это баг). Блокируем позицию

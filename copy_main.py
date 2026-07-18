@@ -149,6 +149,7 @@ def create_app() -> Flask:
         counter_foreign_owner=metrika._counter_foreign_owner,
         api_campaigns_func=accounts._campaigns_response,
         parse_number=_parse_number,
+        geo_validate_id_func=metrika._geo_is_valid_id,   # валидация geo_region_ids (mode=other/change)
     )
     app.register_blueprint(copy_api_bp)
 

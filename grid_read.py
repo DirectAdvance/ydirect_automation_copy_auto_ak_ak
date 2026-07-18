@@ -197,6 +197,13 @@ class GridReadClient:
                         "serp_geo_wizard_enabled", "pay_for_conversion"):
                 counts[cid][key] = row.get(key)
             counts[cid]["campaign_invariants_read"] = True
+            # Кампанийные ассеты из ТОГО ЖЕ ответа CampaignsEditData (0 доп. запросов):
+            # уточнения / набор быстрых ссылок / промо. tri-state: None = не прочитано → тишина.
+            # promo_extension_id перетирает None, выставленный _enrich_campaign_settings
+            # (там поле promoExtensionId FieldUndefined) — этот enrichment идёт ПОСЛЕ settings.
+            for key in ("callout_ids", "sitelink_set_id", "promo_extension_id"):
+                counts[cid][key] = row.get(key)
+            counts[cid]["campaign_assets_read"] = bool(row.get("campaign_assets_read"))
 
     def _enrich_keyword_counts(self, id_strings: list[str], counts: dict[int, dict[str, Any]]) -> None:
         """keywords_count вычисляется в _enrich_group_targeting (из groups_for_edit).
@@ -347,6 +354,10 @@ class GridReadClient:
                 "is_price_recommendations_management_enabled": None,
                 "yandex_maps_enabled": None, "serp_geo_wizard_enabled": None,
                 "pay_for_conversion": None, "campaign_invariants_read": False,
+                # Кампанийные ассеты (тот же edit-view ответ, 0 доп. запросов) — tri-state.
+                # Всего в группе 4 поля: callout_ids, sitelink_set_id, campaign_assets_read
+                # и promo_extension_id (объявлен выше, рядом с settings_read — исторически).
+                "callout_ids": None, "sitelink_set_id": None, "campaign_assets_read": False,
                 "enrich_errors": [],
             }
 

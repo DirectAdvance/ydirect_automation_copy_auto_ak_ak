@@ -3,7 +3,7 @@ from pathlib import Path
 
 from flask import Flask
 
-from direct import blueprint, create_set_plan
+from direct import blueprint, create_set_plan, slepki_store
 from direct.scripts.slepki_preflight import _source_manifest_errors
 
 
@@ -11,7 +11,7 @@ DIRECT_DIR = Path(__file__).resolve().parents[1]
 
 
 def test_gen_ses_manifest_is_complete_and_matches_archive_shape():
-    structure = json.loads((DIRECT_DIR / "slepki_structure.json").read_text(encoding="utf-8"))
+    structure = slepki_store.assemble()   # структура собирается из direct/slepki/
     manifest = json.loads((DIRECT_DIR / "gen_ses_source_manifest.json").read_text(encoding="utf-8"))
 
     assert _source_manifest_errors(structure, DIRECT_DIR) == []
@@ -27,7 +27,7 @@ def test_gen_ses_manifest_is_complete_and_matches_archive_shape():
 
 
 def test_gen_ses_structure_references_manifest_instead_of_copying_source_campaigns():
-    structure = json.loads((DIRECT_DIR / "slepki_structure.json").read_text(encoding="utf-8"))
+    structure = slepki_store.assemble()   # структура собирается из direct/slepki/
     gen_ses = next(item for item in structure["directologists"] if item["key"] == "gen_ses")
 
     assert gen_ses["source_manifest"] == "gen_ses_source_manifest.json"

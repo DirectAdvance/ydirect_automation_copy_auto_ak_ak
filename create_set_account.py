@@ -37,7 +37,9 @@ def prepare_create_set_account(*, login: str, body: dict[str, Any],
     site_type = (body.get("site_type") or "").strip() or ctx.get("site_type")
     tpl_titles, tpl_texts, tpl_sitelinks = templates_for(site_type)
     body_region_ids = parse_region_ids(body.get("region_ids"))
-    region_ids = body_region_ids if body_region_ids else [ctx.get("geoid")]
+    # #ФИКС-5: мультигород → union geoid (ctx["geoids"]); одногород — тот же список из одного id.
+    region_ids = body_region_ids if body_region_ids else (list(ctx.get("geoids") or [])
+                                                          or [ctx.get("geoid")])
     return {
         "ok": True,
         "ctx": ctx,

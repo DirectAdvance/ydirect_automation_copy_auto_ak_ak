@@ -170,8 +170,15 @@ def _source_manifest_errors(struct: dict, base_dir: Path) -> list[str]:
     return errors
 
 
-def check(struct_path: Path, profile_path: Path | None = None) -> int:
-    st = json.loads(struct_path.read_text(encoding="utf-8"))
+def check(struct_path: Path | None, profile_path: Path | None = None) -> int:
+    if struct_path is None:
+        # структура разбита на per-slepok файлы — собираем через slepki_store (HERE = direct/)
+        if str(HERE.parent) not in sys.path:
+            sys.path.insert(0, str(HERE.parent))
+        from direct import slepki_store as _ss
+        st = _ss.assemble()
+    else:
+        st = json.loads(struct_path.read_text(encoding="utf-8"))
     dl = st["directologists"]
     profile = {}
     if profile_path and profile_path.exists():
@@ -238,7 +245,8 @@ def check(struct_path: Path, profile_path: Path | None = None) -> int:
                     (e.get("key"), s.get("name"), t.get("code"), signature, count)
                     for signature, count in counts.items() if count > 1
                 )
-    source_manifest_errors = _source_manifest_errors(st, struct_path.parent)
+    # base_dir манифестов = папка структуры; при сборке из частей (struct_path=None) это HERE (direct/)
+    source_manifest_errors = _source_manifest_errors(st, struct_path.parent if struct_path else HERE)
 
     # 3. пустые tp, открытые в профиле
     def in_profile(k, site, code):
@@ -329,6 +337,6 @@ def check(struct_path: Path, profile_path: Path | None = None) -> int:
 
 
 if __name__ == "__main__":
-    struct = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "slepki_structure.json"
+    struct = Path(sys.argv[1]) if len(sys.argv) > 1 else None   # None → собрать из direct/slepki/
     prof = HERE / "targeting_profile.json"
     sys.exit(check(struct, prof))

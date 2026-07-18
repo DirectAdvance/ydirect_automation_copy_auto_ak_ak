@@ -88,8 +88,17 @@ def _campaign_id(path: Path) -> int:
     return int(match.group(1))
 
 
-def _current_group_map(structure_path: Path) -> dict[str, dict]:
-    struct = json.loads(structure_path.read_text(encoding="utf-8"))
+def _current_group_map(structure_path: Path | None) -> dict[str, dict]:
+    if structure_path is None:
+        # Монолит разбит на per-slepok файлы — собираем через slepki_store.
+        import sys as _sys
+        _seo = Path(__file__).resolve().parents[2]   # …/seoadvanced (в ней пакет direct)
+        if str(_seo) not in _sys.path:
+            _sys.path.insert(0, str(_seo))
+        from direct import slepki_store as _ss
+        struct = _ss.assemble()
+    else:
+        struct = json.loads(structure_path.read_text(encoding="utf-8"))
     directologist = next(d for d in struct["directologists"] if d.get("key") == "gen_ses")
     site = next(s for s in directologist["site_types"] if s.get("name") == "С пробегом")
     out: dict[str, dict] = {}
@@ -189,7 +198,7 @@ def read_campaign(path: Path, group_map: dict[str, dict]) -> dict:
     return meta
 
 
-def build_manifest(archive_dir: Path, structure_path: Path) -> dict:
+def build_manifest(archive_dir: Path, structure_path: Path | None = None) -> dict:
     group_map = _current_group_map(structure_path)
     campaigns = [read_campaign(path, group_map) for path in sorted(archive_dir.glob("*.xlsx"))]
     campaigns.sort(key=lambda item: list(SCREEN_META).index(item["source_name"]))
@@ -212,8 +221,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("archive_dir", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--structure", type=Path,
-                        default=Path(__file__).resolve().parents[1] / "slepki_structure.json")
+    parser.add_argument("--structure", type=Path, default=None,
+                        help="Путь к slepki_structure.json (не задан → собрать из direct/slepki/)")
     args = parser.parse_args()
     manifest = build_manifest(args.archive_dir, args.structure)
     args.output.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

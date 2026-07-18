@@ -50,6 +50,11 @@ def verify_grid_content(name: str, campaign_id: int | None,
     a false defect. ``expected`` may carry per-item business hints
     (``minus_places`` int, ``expects_price`` bool, ``expects_promo`` bool); when
     absent, project-wide tp invariants are used as the expectation.
+
+    ``expected["account_has_promo"]`` is the tri-state promo gate: ``True`` — the account
+    library has promos (so a campaign without one is a defect), ``False``/``None`` — never
+    flag ``PROMO_MISSING`` (an account with no promos at all must not produce a storm of
+    false issues). It is derived by the caller from data already read, without extra API calls.
     """
     nm = str(name or "")
     cid = campaign_id
@@ -121,15 +126,55 @@ def verify_grid_content(name: str, campaign_id: int | None,
 
     # PRICE_MISSING (report-only) заменён на NO_ADPRICE_LIVE (с repair-candidate) ниже.
 
-    # ── PROMO_MISSING (report-only, НЕ auto-repair) ───────────────────────────
-    # Фиксируем только при ЯВНОМ ожидании промо (expects_promo=True).
-    # promoExtensionId FieldUndefined в Grid-схеме → promo_extension_id всегда None → не детектируем.
+    # ── Кампанийные АССЕТЫ tp1–tp5: уточнения / набор быстрых ссылок / промо ──────
+    # Источник — тот же ответ CampaignsEditData, что и инвариант-галочки (grid_finalize.
+    # read_campaign_invariants → grid_read._enrich_campaign_invariants): НОЛЬ новых запросов
+    # к Grid/Direct API. Все три — tri-state: None = поле не прочитано → МОЛЧИМ (fail-safe,
+    # ложный детект здесь дороже пропуска — журнал I).
+    # Все три report-only (severity warn, БЕЗ repair-кандидата): существующий
+    # campaign_invariant_repair (set_campaign_invariants) эти поля НЕ переставляет, а
+    # выдумывать ремонт вслепую нельзя. Задача кодов — сделать дефект ВИДИМЫМ в отчёте
+    # (инциденты DMP_CALLOUTS_NOT_PUSHED / CALLOUTS_NAMEERROR_TIME / SITELINK_SET_NULL_SILENT
+    # ловились руками именно потому, что верификатор молчал).
+    _assets_read = bool(counts.get("campaign_assets_read"))
+    _assets_tp = tp in (1, 2, 3, 4, 5)
+
+    # CALLOUTS_MISSING_LIVE — у кампании не привязаны уточнения.
+    # ⚠️ Гейт по типу: tp6/tp7 (МК/Товарка, UAC) уточнения НЕ поддерживают
+    # (ERRORS_JOURNAL: DMP_CALLOUTS_NOT_PUSHED — «UAC/tp7 пропущены — не поддерживают уточнения»)
+    # → для них молчим, иначе получим гарантированный ложный флаг на каждой UAC-кампании.
+    _callouts = counts.get("callout_ids")
+    if _assets_tp and _assets_read and isinstance(_callouts, list) and len(_callouts) == 0:
+        issues.append({"severity": "warn", "code": "CALLOUTS_MISSING_LIVE",
+                       "name": nm, "id": cid, "actual": 0,
+                       "note": "у кампании не привязаны уточнения (inheritableCallouts пуст; report-only)"})
+
+    # SITELINK_SET_MISSING_LIVE — у кампании не привязан НАБОР быстрых ссылок.
+    # Дополняет ad-level SITELINK_MISSING/UAC_SITELINKS_MISSING: набор живёт на КАМПАНИИ,
+    # и его null (SITELINK_SET_NULL_SILENT) прежде не детектировался вообще.
+    _slset = counts.get("sitelink_set_id")
+    if _assets_tp and _assets_read and isinstance(_slset, str) and not _slset.strip():
+        issues.append({"severity": "warn", "code": "SITELINK_SET_MISSING_LIVE",
+                       "name": nm, "id": cid,
+                       "note": "у кампании не привязан набор быстрых ссылок "
+                               "(inheritableSitelinkSet.assetValue пуст; report-only)"})
+
+    # PROMO_MISSING — ДВУХСТУПЕНЧАТО (требование Семёна).
+    # Ступень 1: есть ли промо в БИБЛИОТЕКЕ АККАУНТА (exp["account_has_promo"], tri-state).
+    #   None (неизвестно) или False (промо в аккаунте нет) → НЕ флагаем вообще: иначе на каждом
+    #   аккаунте без промо получим шквал ложных ошибок.
+    # Ступень 2: только при account_has_promo=True проверяем, что промо доехало в кампанию.
+    # Обратная совместимость: явный exp["expects_promo"] по-прежнему уважается.
     promo_present = bool(str(counts.get("promo_extension_id") or "").strip())
+    _acct_promo = exp.get("account_has_promo")
     exp_promo = exp.get("expects_promo")
-    if (tp is not None and counts.get("settings_read") and not promo_present and bool(exp_promo)):
+    if exp_promo is None and _acct_promo is True:
+        exp_promo = True
+    if (_assets_tp and _assets_read and not promo_present and exp_promo is True):
         issues.append({"severity": "warn", "code": "PROMO_MISSING",
                        "name": nm, "id": cid,
-                       "note": "у кампании не привязано промо (report-only)"})
+                       "note": "в аккаунте есть промо-акции, но у кампании промо "
+                               "не привязано (report-only)"})
 
     # ── NO_IMAGES_LIVE (error): tp1 адаптивные объявления без imageHashes ────────
     # Детектируется через _enrich_adaptive_images (Grid images{imageHash}).
@@ -149,10 +194,14 @@ def verify_grid_content(name: str, campaign_id: int | None,
     # PRICE_MISSING (report-only) ниже не дублируем — оба бы сработали на том же условии.
     hp = counts.get("has_ad_price")
     exp_price = exp.get("expects_price")
-    # Товарка-only (только ShoppingAd/ListingAd): bannerPrice неприменим — не выдаём NO_ADPRICE_LIVE.
-    # Когда читалка shopping_bodies оживёт — заменить на EMPTY_DEFAULT_TEXT_LIVE.
-    _shop_only_live = (int(counts.get("shopping_ads") or 0) > 0
-                       or int(counts.get("listing_ads") or 0) > 0)
+    # Товарка-only (только ShoppingAd/ListingAd, напр. смарт-баннер): bannerPrice — поле ТОЛЬКО
+    # адаптивных текстовых объявлений, у товарки цена приходит из фида → NO_ADPRICE_LIVE неприменим.
+    # Признак берём из реально читаемого Grid'ом adaptive_total (_enrich_adaptive_images): ключей
+    # shopping_ads/listing_ads в live-counts НЕ существует (они есть только в build-отчёте, который
+    # в верификатор не передаётся) → прежнее условие всегда было False и давало ложный флаг.
+    # Fail-safe: если адаптивные не прочитаны — ведём себя как раньше (флаг не глушим).
+    _shop_only_live = (bool(counts.get("adaptive_images_read"))
+                       and int(counts.get("adaptive_total") or 0) == 0)
     if (tp == 1 and ads > 0 and not _shop_only_live
             and counts.get("ad_price_read")
             and hp is False and (exp_price is None or bool(exp_price))):

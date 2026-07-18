@@ -33,6 +33,9 @@ from typing import Callable
 
 from flask import jsonify, render_template, request, session
 
+from .content_dashboard_routes import register_content_dashboards
+from .content_price_check_routes import register_price_check_routes
+
 
 # ─────────────────────────── v5 low-level helpers ────────────────────────────
 
@@ -649,6 +652,47 @@ def _uac_patch_campaign_texts(client, campaign_id: int, field_key: str, values: 
         )
 
 
+def _uac_read_client(login: str, factory: Callable | None):
+    """Обёртка ``UacReadClient`` (есть ``.client`` и ``.campaign_details``).
+
+    ``factory`` (тест-инъекция) возвращает такую же обёртку целиком."""
+    if factory is None:
+        from .uac_read import UacReadClient
+
+        return UacReadClient(login)
+    return factory(login)
+
+
+def _uac_client(login: str, factory: Callable | None):
+    """Низкоуровневый UAC web-api клиент (``._request``) для replace/reorder.
+
+    ``factory`` (тест-инъекция) возвращает уже сам клиент, а не обёртку."""
+    if factory is None:
+        from .uac_read import UacReadClient
+
+        return UacReadClient(login).client
+    return factory(login)
+
+
+def _uac_cids_from_targets(targets: list[dict] | None) -> list[int]:
+    """Уникальные положительные campaign_id из targets (прямой или из usages)."""
+    campaign_ids: list[int] = []
+    for target in targets or []:
+        raw_cid = target.get("campaign_id")
+        if not raw_cid:
+            for usage in target.get("usages") or []:
+                raw_cid = usage.get("campaign_id")
+                if raw_cid:
+                    break
+        try:
+            cid = int(raw_cid)
+        except (TypeError, ValueError):
+            continue
+        if cid > 0 and cid not in campaign_ids:
+            campaign_ids.append(cid)
+    return campaign_ids
+
+
 def _load_account(
     token: str,
     login: str,
@@ -682,12 +726,7 @@ def _load_account(
     uac_read_error: str | None = None
     uac_detail_client = None
     try:
-        if uac_read_client_factory is None:
-            from .uac_read import UacReadClient
-
-            uac_detail_client = UacReadClient(login)
-        else:
-            uac_detail_client = uac_read_client_factory(login)
+        uac_detail_client = _uac_read_client(login, uac_read_client_factory)
         for row in uac_detail_client.client.list_campaigns():
             if not isinstance(row, dict):
                 continue
@@ -703,6 +742,7 @@ def _load_account(
             )
             camp_type[cid] = "UAC"
     except Exception as e:  # noqa: BLE001 - UAC read is enrichment; load can continue with v5 data
+        print(f"[content-editor] UAC list_campaigns failed login={login}: {e!r}", flush=True)
         uac_read_error = str(e)[:200]
         try:
             for row in _grid_tp67_campaigns(login, grid_client_factory=grid_client_factory):
@@ -715,6 +755,7 @@ def _load_account(
                 camp_name.setdefault(cid, row.get("name") or f"UAC {cid}")
                 camp_type[cid] = "UAC"
         except Exception as grid_e:  # noqa: BLE001
+            print(f"[content-editor] Grid tp6/tp7 fallback failed login={login}: {grid_e!r}", flush=True)
             uac_read_error = f"{uac_read_error}; Grid tp6/tp7: {str(grid_e)[:160]}"
     campaign_ids = sorted(camp_name)
     if not campaign_ids:
@@ -815,12 +856,7 @@ def _load_account(
     if uac_ids:
         try:
             if uac_detail_client is None:
-                if uac_read_client_factory is None:
-                    from .uac_read import UacReadClient
-
-                    uac_detail_client = UacReadClient(login)
-                else:
-                    uac_detail_client = uac_read_client_factory(login)
+                uac_detail_client = _uac_read_client(login, uac_read_client_factory)
             uac_details = uac_detail_client.campaign_details(uac_ids)
             for cid, raw in uac_details.items():
                 usage = _usage_for(int(cid), 0)
@@ -859,7 +895,12 @@ def _load_account(
                         "campaign_id": int(cid),
                     })
         except Exception as e:  # noqa: BLE001 — UAC read is enrichment; must not block load
-            uac_read_error = str(e)[:200]
+            print(f"[content-editor] UAC campaign_details read failed login={login}: {e!r}", flush=True)
+            _uac_detail_err = str(e)[:200]
+            uac_read_error = (
+                f"{uac_read_error}; UAC details: {_uac_detail_err}"
+                if uac_read_error else _uac_detail_err
+            )
 
     # 3c) Наборы быстрых ссылок УРОВНЯ КАМПАНИИ (inheritableSitelinkSet). В ЕПК
     # unified-кампаниях быстрые ссылки часто привязаны к КАМПАНИИ, а объявления их
@@ -896,6 +937,7 @@ def _load_account(
                            for u in _cl_usages):
                     _cl_usages.append(_usage_for(_cl_cid_i, 0))
         except Exception as e:  # noqa: BLE001 - read-only enrichment must not break editor load
+            print(f"[content-editor] Grid campaign-level sitelinks failed login={login}: {e!r}", flush=True)
             grid_sitelink_error = f"Grid campaign-level sitelinks: {str(e)[:200]}"
 
     # 4) Наборы быстрых ссылок. Direct API requires explicit set ids.
@@ -969,6 +1011,7 @@ def _load_account(
             for eid in callout_ids:
                 callout_to_camps.setdefault(str(eid), []).append(cid)
     except Exception as e:  # noqa: BLE001 - read-only enrichment must not break editor load
+        print(f"[content-editor] Grid callout-usages failed login={login}: {e!r}", flush=True)
         campaign_callout_ids = {}
         grid_callout_error = f"Grid callout-usages: {str(e)[:200]}"
     else:
@@ -1136,29 +1179,11 @@ def _replace_uac_texts(
     if not new:
         return {"replaced": 0, "errors": ["новый текст пустой"]}
     field_key = "texts" if typ == "ad_text" else "titles"
-    campaign_ids: list[int] = []
-    for target in targets or []:
-        raw_cid = target.get("campaign_id")
-        if not raw_cid:
-            for usage in target.get("usages") or []:
-                raw_cid = usage.get("campaign_id")
-                if raw_cid:
-                    break
-        try:
-            cid = int(raw_cid)
-        except (TypeError, ValueError):
-            continue
-        if cid > 0 and cid not in campaign_ids:
-            campaign_ids.append(cid)
+    campaign_ids = _uac_cids_from_targets(targets)
     if not campaign_ids:
         return {"replaced": 0, "errors": ["не найдены UAC-кампании для замены"]}
 
-    if uac_client_factory is None:
-        from .uac_read import UacReadClient
-
-        client = UacReadClient(login).client
-    else:
-        client = uac_client_factory(login)
+    client = _uac_client(login, uac_client_factory)
 
     replaced = 0
     errors: list[str] = []
@@ -1232,29 +1257,11 @@ def _replace_uac_sitelinks(
         return {"replaced": 0, "errors": ["новое значение быстрой ссылки пустое"]}
     if field not in ("title", "description", "href"):
         return {"replaced": 0, "errors": [f"неподдерживаемое поле быстрой ссылки: {field}"]}
-    campaign_ids: list[int] = []
-    for target in targets or []:
-        raw_cid = target.get("campaign_id")
-        if not raw_cid:
-            for usage in target.get("usages") or []:
-                raw_cid = usage.get("campaign_id")
-                if raw_cid:
-                    break
-        try:
-            cid = int(raw_cid)
-        except (TypeError, ValueError):
-            continue
-        if cid > 0 and cid not in campaign_ids:
-            campaign_ids.append(cid)
+    campaign_ids = _uac_cids_from_targets(targets)
     if not campaign_ids:
         return {"replaced": 0, "errors": ["не найдены UAC-кампании для замены быстрой ссылки"]}
 
-    if uac_client_factory is None:
-        from .uac_read import UacReadClient
-
-        client = UacReadClient(login).client
-    else:
-        client = uac_client_factory(login)
+    client = _uac_client(login, uac_client_factory)
 
     replaced = 0
     errors: list[str] = []
@@ -1734,12 +1741,7 @@ def _reorder_sitelinks(
                     reports.append(rep)
                     continue
                 if uac_client is None:
-                    if uac_client_factory is None:
-                        from .uac_read import UacReadClient
-
-                        uac_client = UacReadClient(login).client
-                    else:
-                        uac_client = uac_client_factory(login)
+                    uac_client = _uac_client(login, uac_client_factory)
                 # Перечитываем деталь кампании и переставляем РЕАЛЬНЫЙ текущий массив
                 # (полные элементы, не наш обрезанный снимок) — для byte-safe записи.
                 detail = _unwrap_uac_response(
@@ -2457,37 +2459,16 @@ def register_content_editor_routes(
                 return jsonify({"error": err}), 403
             return check_blocks_response()
 
-    @bp.route("/api/content-editor/admin/directologists")
-    @access
-    def ce_admin_directologists():
-        # Дропдаун директологов для «Сверки цен». Модель как «Обзор»:
-        # full access → все директологи; обычный юзер → только свои (allowed).
-        import psycopg2.extras
-        allowed = _allowed_directologists()
-        if allowed is not None and not allowed:
-            return jsonify({"rows": []})
-        where = ["direction='Авто'", "directologist IS NOT NULL", "btrim(directologist)<>''"]
-        params: list = [default_status]
-        if allowed is not None:
-            where.append("directologist = ANY(%s)")
-            params.append(allowed)
-        if exclude_directologs:
-            where.append("directologist <> ALL(%s)")
-            params.append(exclude_directologs)
-        conn = victory_conn()
-        try:
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cur.execute(
-                "SELECT directologist, count(*) AS accounts, "
-                "count(*) FILTER (WHERE status=%s) AS active_accounts "
-                "FROM public.local_gsheet_sites "
-                f"WHERE {' AND '.join(where)} "
-                "GROUP BY directologist ORDER BY directologist",
-                params,
-            )
-            return jsonify({"rows": cur.fetchall()})
-        finally:
-            conn.close()
+    # Read-only дашборды (директологи / аккаунты / 404) — вынесены в content_dashboard_routes.py
+    register_content_dashboards(
+        bp,
+        access,
+        victory_conn=victory_conn,
+        _allowed_directologists=_allowed_directologists,
+        _admin_allowed=_admin_allowed,
+        default_status=default_status,
+        exclude_directologs=exclude_directologs,
+    )
 
     @bp.route("/api/content-editor/admin/access", methods=["GET"])
     @access
@@ -2525,287 +2506,25 @@ def register_content_editor_routes(
         return jsonify({"ok": True, "users": users})
 
     # ── Сверка цен (admin-only): Direct ↔ фиды → расхождения → заливка ─────────
+    # Весь блок вынесен в content_price_check_routes.py (self-contained, RW-only).
     if victory_conn_rw is not None:
-        from . import price_check as pc
-
-        try:
-            pc.ensure_price_check_tables(victory_conn_rw)
-            # На старте сервиса: джобы, застрявшие в 'running' (рестарт в середине) → 'interrupted'.
-            pc.reconcile_stuck_jobs(victory_conn_rw)
-        except Exception as e:  # noqa: BLE001
-            print(f"[price-check] ensure_price_check_tables failed: {e}", flush=True)
-
-        _pc_deps = {
-            "victory_conn": victory_conn,
-            "victory_conn_rw": victory_conn_rw,
-            "token_for_login": token_for_login,
-            "direct_tokens": direct_tokens,
-            "v5_call": v5_call,
-        }
-
-        # Модель доступа «Сверки цен» = 1:1 с «Обзором»:
-        #   full access (admin ИЛИ content_admin) → allowed=None → видят ВСЁ;
-        #   обычный юзер → allowed=[его директологи] (пусто → нет доступов).
-        # Скоуп применяется на КАЖДОМ эндпоинте: листинги режем по allowed,
-        # действия по job_id — только над своими заданиями (created_by).
-        def _pc_scope_deny():
-            """Для мутирующих ручек: 403, если у обычного юзера нет ни одного
-            директолога. Возвращает (allowed, resp|None)."""
-            allowed = _allowed_directologists()
-            if allowed is not None and not allowed:
-                return allowed, (jsonify({"error": "Доступы не выданы"}), 403)
-            return allowed, None
-
-        def _pc_job_owned(job_id: str) -> bool:
-            """True, если текущий пользователь вправе видеть/управлять заданием.
-            Full access → всегда True; обычный юзер → только своё (created_by)."""
-            if _content_full_access():
-                return True
-            owner = pc.job_created_by(victory_conn, job_id)
-            if owner is None:
-                return False
-            return owner == (session.get("username") or "").strip()
-
-        @bp.route("/api/content-editor/admin/pricecheck/run", methods=["POST"])
-        @access
-        def ce_pc_run():
-            allowed, deny = _pc_scope_deny()
-            if deny is not None:
-                return deny
-            body = request.json or {}
-            logins = [str(x).strip() for x in (body.get("logins") or []) if str(x).strip()]
-            directologist = (body.get("directologist") or "").strip() or None
-            status = (body.get("status") or default_status).strip()
-            all_active = bool(body.get("all_active"))
-            if all_active:
-                items = pc.active_logins(victory_conn, status=status,
-                                         exclude=exclude_directologs, allowed=allowed)
-            else:
-                if not logins and not directologist:
-                    return jsonify({"error": "укажите логины или директолога"}), 400
-                items = pc.logins_for(victory_conn, logins=logins or None,
-                                      directologist=directologist, status=status,
-                                      exclude=exclude_directologs, allowed=allowed)
-            if not items:
-                return jsonify({"error": "по фильтру не найдено ни одного аккаунта"}), 404
-            job_id = pc.new_job_id()
-            try:
-                pc._job_insert(victory_conn_rw, job_id, "check",
-                               (session.get("username") or "").strip(),
-                               [it["login"] for it in items], {"directologist": directologist},
-                               len(items))
-            except Exception as e:  # noqa: BLE001
-                return jsonify({"error": f"не удалось создать задание: {e}"}), 500
-            pc.launch_background(pc.run_check_job, _pc_deps, job_id, items)
-            return jsonify({"ok": True, "job_id": job_id, "total": len(items)})
-
-        @bp.route("/api/content-editor/admin/pricecheck/status")
-        @access
-        def ce_pc_status():
-            pc.reconcile_stuck_jobs(victory_conn_rw)   # зависшие running → interrupted
-            job_id = (request.args.get("job_id") or "").strip()
-            # обычный юзер видит прогресс/ошибки (в них — логины) ТОЛЬКО своих джоб;
-            # 404 на чужую — не раскрываем даже факт существования
-            if not _pc_job_owned(job_id):
-                return jsonify({"error": "job not found"}), 404
-            row = pc.job_public(victory_conn, job_id)
-            if not row:
-                return jsonify({"error": "job not found"}), 404
-            return jsonify(row)
-
-        @bp.route("/api/content-editor/admin/pricecheck/jobs")
-        @access
-        def ce_pc_jobs():
-            # full access → все задания; обычный юзер → только свои
-            cb = None if _content_full_access() else (session.get("username") or "").strip()
-            return jsonify({"jobs": pc.jobs_recent(victory_conn, 30, created_by=cb)})
-
-        @bp.route("/api/content-editor/admin/pricecheck/results")
-        @access
-        def ce_pc_results():
-            allowed = _allowed_directologists()   # None=все; []=пусто; иначе скоуп
-            directologist = (request.args.get("directologist") or "").strip() or None
-            login = (request.args.get("login") or "").strip() or None
-            only_mismatch = (request.args.get("only_mismatch") or "1").strip() not in ("0", "false", "")
-            rows = pc.diff_rows(victory_conn, directologist=directologist, login=login,
-                                only_mismatch=only_mismatch, allowed=allowed)
-            try:
-                last_run = pc.last_check_run(victory_conn)
-            except Exception:  # noqa: BLE001
-                last_run = None
-            return jsonify({"rows": rows, "count": len(rows), "last_run": last_run})
-
-        @bp.route("/api/content-editor/admin/pricecheck/apply", methods=["POST"])
-        @access
-        def ce_pc_apply():
-            allowed, deny = _pc_scope_deny()
-            if deny is not None:
-                return deny
-            body = request.json or {}
-            raw = body.get("items") or []
-            items = []
-            for r in raw:
-                login = str((r or {}).get("login") or "").strip()
-                url = str((r or {}).get("url") or "").strip()
-                if not login or not url:
-                    continue
-
-                def _num(v):
-                    try:
-                        return float(v) if v not in (None, "") else None
-                    except (TypeError, ValueError):
-                        return None
-
-                items.append({
-                    "login": login, "url": url, "agency": (r or {}).get("agency") or "",
-                    "price_direct": _num((r or {}).get("price_direct")),
-                    "oldprice_direct": _num((r or {}).get("oldprice_direct")),
-                    "price_feed": _num((r or {}).get("price_feed")),
-                    "oldprice_feed": _num((r or {}).get("oldprice_feed")),
-                })
-            if not items:
-                return jsonify({"error": "не выбрано ни одной строки для заливки"}), 400
-            # Скоуп по логину: обычный юзер не может залить цены в ЧУЖОЙ аккаунт
-            # (даже подставив login напрямую в payload). full access → allowed=None.
-            if allowed is not None:
-                for it in items:
-                    ok, err = _login_allowed_for(it["login"], allowed)
-                    if not ok:
-                        return jsonify({"error": err or f"нет доступа к аккаунту {it['login']}"}), 403
-            # Ставим в ОЧЕРЕДЬ (status='queued'); реальный ads.update — крон 20:00 Екб.
-            try:
-                job_id = pc.enqueue_apply(victory_conn_rw,
-                                          (session.get("username") or "").strip(), items)
-            except Exception as e:  # noqa: BLE001
-                return jsonify({"error": f"не удалось поставить в очередь: {e}"}), 500
-            return jsonify({"ok": True, "job_id": job_id, "total": len(items), "queued": True})
-
-        @bp.route("/api/content-editor/admin/pricecheck/queue")
-        @access
-        def ce_pc_queue():
-            pc.reconcile_stuck_jobs(victory_conn_rw)   # зависшие running → interrupted
-            # full access → вся очередь; обычный юзер → только свои заявки
-            cb = None if _content_full_access() else (session.get("username") or "").strip()
-            return jsonify({"jobs": pc.apply_queue_for_ui(victory_conn, 500, created_by=cb)})
-
-        # ── Управление заданием очереди: пауза / старт / удаление ─────────────
-        @bp.route("/api/content-editor/admin/pricecheck/pause", methods=["POST"])
-        @access
-        def ce_pc_pause():
-            job_id = ((request.json or {}).get("job_id") or "").strip()
-            if not job_id:
-                return jsonify({"error": "job_id обязателен"}), 400
-            if not _pc_job_owned(job_id):   # обычный юзер — только своё задание
-                return jsonify({"error": "нет доступа к заданию"}), 403
-            ok = pc.request_pause(victory_conn_rw, job_id)
-            if not ok:
-                return jsonify({"error": "задание не активно (уже завершено/на паузе)"}), 409
-            return jsonify({"ok": True})
-
-        @bp.route("/api/content-editor/admin/pricecheck/resume", methods=["POST"])
-        @access
-        def ce_pc_resume():
-            job_id = ((request.json or {}).get("job_id") or "").strip()
-            if not job_id:
-                return jsonify({"error": "job_id обязателен"}), 400
-            if not _pc_job_owned(job_id):   # обычный юзер — только своё задание
-                return jsonify({"error": "нет доступа к заданию"}), 403
-            ok = pc.request_resume(victory_conn_rw, job_id)
-            if not ok:
-                return jsonify({"error": "задание не на паузе"}), 409
-            return jsonify({"ok": True})
-
-        @bp.route("/api/content-editor/admin/pricecheck/delete", methods=["POST"])
-        @access
-        def ce_pc_delete():
-            job_id = ((request.json or {}).get("job_id") or "").strip()
-            if not job_id:
-                return jsonify({"error": "job_id обязателен"}), 400
-            if not _pc_job_owned(job_id):   # обычный юзер — только своё задание
-                return jsonify({"error": "нет доступа к заданию"}), 403
-            ok = pc.request_delete(victory_conn_rw, job_id)
-            if not ok:
-                # нельзя удалить активное — сначала пауза
-                return jsonify({"error": "удалить можно только задание в очереди или на паузе"}), 409
-            return jsonify({"ok": True, "removed": True})
-
-        @bp.route("/api/content-editor/admin/pricecheck/start_now", methods=["POST"])
-        @access
-        def ce_pc_start_now():
-            job_id = ((request.json or {}).get("job_id") or "").strip()
-            if not job_id:
-                return jsonify({"error": "job_id обязателен"}), 400
-            if not _pc_job_owned(job_id):   # обычный юзер — только своё задание
-                return jsonify({"error": "нет доступа к заданию"}), 403
-            res = pc.request_start_now(victory_conn_rw, job_id)
-            if res is None:
-                return jsonify({"error": "задание не в очереди (уже выполняется/завершено)"}), 409
-            status, items = res
-            if status == "running":
-                pc.launch_background(pc.run_apply_job, _pc_deps, job_id, items)
-            return jsonify({"ok": True, "status": status})
-
-        # ── Очистка очереди: обе таблицы (content_jobs + price-check jobs) ──────
-        # Удаляет только ЗАВЕРШЁННЫЕ задания (done/done_with_errors/error/cancelled)
-        # старше keep_days суток. Активные (queued/running/paused) не трогает
-        # НЕЗАВИСИМО от возраста — очередь не должна ломать работающие задачи.
-        @bp.route("/api/content-editor/admin/queue/cleanup", methods=["POST"])
-        @access
-        def ce_queue_cleanup():
-            if not _admin_allowed():
-                return jsonify({"error": "Forbidden"}), 403
-            keep_days = 3
-            removed_text = _jobs_exec(
-                f"DELETE FROM {CE_JOBS_TABLE} "
-                "WHERE status IN ('done','done_with_errors','error','cancelled') "
-                "AND created_at < now() - (%s || ' days')::interval "
-                "RETURNING job_id",
-                (keep_days,), "all") or []
-            removed_price = pc.cleanup_old_jobs(victory_conn_rw, keep_days=keep_days)
-            return jsonify({"ok": True, "removed_text": len(removed_text),
-                            "removed_price": removed_price, "keep_days": keep_days})
-
-    # ── Аккаунты для умного поиска ─────────────────────────────────────────────
-    @bp.route("/api/content-editor/accounts")
-    @access
-    def ce_accounts():
-        import psycopg2.extras
-
-        from .account_filters import base_account_where
-        status = (request.args.get("status") or default_status).strip()
-        q = (request.args.get("q") or "").strip()
-        where = list(base_account_where())
-        params: list = []
-        if exclude_directologs:
-            where.append("(directologist IS NULL OR directologist <> ALL(%s))")
-            params.append(exclude_directologs)
-        if status and status != "__all__":
-            where.append("status=%s")
-            params.append(status)
-        if q:
-            where.append("(domain ILIKE %s OR login_key ILIKE %s OR city ILIKE %s "
-                         "OR site_type ILIKE %s OR salon ILIKE %s OR directologist ILIKE %s)")
-            params += [f"%{q}%"] * 6
-        allowed = _allowed_directologists()
-        if allowed is not None:
-            if not allowed:
-                return jsonify({"rows": []})
-            where.append("directologist = ANY(%s)")
-            params.append(allowed)
-        sql = (
-            "SELECT domain, salon, city, site_type, login_key, counter_number, "
-            "client_id, agency_account, status, directologist "
-            "FROM public.local_gsheet_sites "
-            f"WHERE {' AND '.join(where)} ORDER BY domain LIMIT 2000"
+        register_price_check_routes(
+            bp,
+            access,
+            victory_conn=victory_conn,
+            victory_conn_rw=victory_conn_rw,
+            token_for_login=token_for_login,
+            direct_tokens=direct_tokens,
+            v5_call=v5_call,
+            _allowed_directologists=_allowed_directologists,
+            _content_full_access=_content_full_access,
+            _login_allowed_for=_login_allowed_for,
+            _admin_allowed=_admin_allowed,
+            _jobs_exec=_jobs_exec,
+            CE_JOBS_TABLE=CE_JOBS_TABLE,
+            default_status=default_status,
+            exclude_directologs=exclude_directologs,
         )
-        conn = victory_conn()
-        try:
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cur.execute(sql, params)
-            rows = cur.fetchall()
-        finally:
-            conn.close()
-        return jsonify({"rows": rows})
 
     # ── Загрузка всего контента аккаунта ───────────────────────────────────────
     @bp.route("/api/content-editor/load", methods=["POST"])
@@ -2834,6 +2553,12 @@ def register_content_editor_routes(
         # предупреждение (замена набора уровня кампании может не примениться).
         if content.get("_grid_sitelink_error"):
             resp["_grid_sitelink_error"] = content["_grid_sitelink_error"]
+        # UAC-чтение (tp6/7) и Grid-маппинг callout→кампании тоже могут упасть —
+        # без этого фронт видит «нет объектов»/пустые usages вместо «чтение упало».
+        if content.get("_uac_read_error"):
+            resp["_uac_read_error"] = content["_uac_read_error"]
+        if content.get("_grid_callout_error"):
+            resp["_grid_callout_error"] = content["_grid_callout_error"]
         return jsonify(resp)
 
     # ── Смена ссылки (Фаза 1): чтение ссылок объявлений, дедуп по пути ──────────
@@ -2985,10 +2710,6 @@ def register_content_editor_routes(
             return jsonify({"error": scope_err}), 403
         if typ not in _AD_FIELD and typ != "callout" and typ not in _SITELINK_TYPES:
             return jsonify({"error": f"неизвестный тип: {typ}"}), 400
-        # substring доступен только для заголовков/текстов (как в preview и replace_async).
-        # Раньше sync-replace этот гард пропускал (finding #4) — выравниваем.
-        if mode == "substring" and typ not in _AD_FIELD:
-            return jsonify({"error": "массовая замена фрагмента доступна только для заголовков и текстов"}), 400
         if mode == "substring" and len(_frag_trim(new_text)) > len(_frag_trim(old_text)):
             return jsonify({"error": "новый фрагмент длиннее старого — замена отклонена"}), 400
         token, _, err = _token(login)
@@ -3001,6 +2722,40 @@ def register_content_editor_routes(
             return jsonify({"error": content["error"]}), 502
         out = _do_replace(token, login, typ, old_text, new_text, content, v5_call, v501_svc, mode=mode)
         return jsonify(out)
+
+    def _enqueue_content_job(login, agency, db_type, old_val, new_val, mode_val,
+                             campaign_count, *, resp_type=None):
+        """Общий хвост постановки задачи content-editor в очередь.
+
+        day-cap → job_id → INSERT → ahead → JSON-ответ. Различаются только значения,
+        пишущиеся в строку (db_type/old_val/new_val/mode_val) и наличие поля ``type``
+        в ответе (``resp_type``). Порядок ключей ответа сохранён 1:1 с прежним."""
+        day_cnt = _jobs_exec(
+            f"SELECT count(*) AS c FROM {CE_JOBS_TABLE} "
+            f"WHERE login=%s AND status<>'cancelled' AND created_at >= {CE_EKB_DAY_SQL}",
+            (login,), "one")["c"]
+        if day_cnt >= CE_DAILY_JOB_CAP:
+            return jsonify({"error": f"лимит {CE_DAILY_JOB_CAP} заданий на аккаунт в сутки "
+                                     f"(уже поставлено {day_cnt})"}), 429
+        job_id = "ce_" + uuid.uuid4().hex[:12]
+        allowed = _allowed_directologists()
+        _jobs_exec(
+            f"INSERT INTO {CE_JOBS_TABLE} "
+            "(job_id, username, login, agency, type, old_text, new_text, mode, campaign_count, access_directologists) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (job_id, (session.get("username") or "").strip(), login, agency or "", db_type,
+             old_val, new_val, mode_val, campaign_count,
+             json.dumps(allowed, ensure_ascii=False) if allowed is not None else None))
+        ahead = _jobs_exec(
+            f"SELECT count(*) AS c FROM {CE_JOBS_TABLE} WHERE status='queued' "
+            f"AND created_at < (SELECT created_at FROM {CE_JOBS_TABLE} WHERE job_id=%s)",
+            (job_id,), "one")["c"]
+        resp = {"ok": True, "job_id": job_id, "login": login, "agency": agency}
+        if resp_type is not None:
+            resp["type"] = resp_type
+        resp.update({"status": "queued", "total": 1, "ahead": ahead,
+                     "campaign_count": campaign_count})
+        return jsonify(resp)
 
     @bp.route("/api/content-editor/replace_async", methods=["POST"])
     @access
@@ -3030,31 +2785,9 @@ def register_content_editor_routes(
         _, agency, err = _token(login)
         if err:
             return jsonify({"error": err}), 404
-        day_cnt = _jobs_exec(
-            f"SELECT count(*) AS c FROM {CE_JOBS_TABLE} "
-            f"WHERE login=%s AND status<>'cancelled' AND created_at >= {CE_EKB_DAY_SQL}",
-            (login,), "one")["c"]
-        if day_cnt >= CE_DAILY_JOB_CAP:
-            return jsonify({"error": f"лимит {CE_DAILY_JOB_CAP} заданий на аккаунт в сутки "
-                                     f"(уже поставлено {day_cnt})"}), 429
-        job_id = "ce_" + uuid.uuid4().hex[:12]
-        allowed = _allowed_directologists()
-        _jobs_exec(
-            f"INSERT INTO {CE_JOBS_TABLE} "
-            "(job_id, username, login, agency, type, old_text, new_text, mode, campaign_count, access_directologists) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (job_id, (session.get("username") or "").strip(), login, agency or "", typ,
-             old_text, new_text, (mode if mode == "substring" else "exact"), campaign_count,
-             json.dumps(allowed, ensure_ascii=False) if allowed is not None else None))
-        ahead = _jobs_exec(
-            f"SELECT count(*) AS c FROM {CE_JOBS_TABLE} WHERE status='queued' "
-            f"AND created_at < (SELECT created_at FROM {CE_JOBS_TABLE} WHERE job_id=%s)",
-            (job_id,), "one")["c"]
-        return jsonify({
-            "ok": True, "job_id": job_id, "login": login, "agency": agency,
-            "status": "queued", "total": 1, "ahead": ahead,
-            "campaign_count": campaign_count,
-        })
+        return _enqueue_content_job(
+            login, agency, typ, old_text, new_text,
+            (mode if mode == "substring" else "exact"), campaign_count)
 
     # ── Смена ссылки (Фаза 3): постановка задачи смены Href в очередь ───────────
     @bp.route("/api/content-editor/links/replace_async", methods=["POST"])
@@ -3078,31 +2811,9 @@ def register_content_editor_routes(
         _, agency, err = _token(login)
         if err:
             return jsonify({"error": err}), 404
-        day_cnt = _jobs_exec(
-            f"SELECT count(*) AS c FROM {CE_JOBS_TABLE} "
-            f"WHERE login=%s AND status<>'cancelled' AND created_at >= {CE_EKB_DAY_SQL}",
-            (login,), "one")["c"]
-        if day_cnt >= CE_DAILY_JOB_CAP:
-            return jsonify({"error": f"лимит {CE_DAILY_JOB_CAP} заданий на аккаунт в сутки "
-                                     f"(уже поставлено {day_cnt})"}), 429
-        job_id = "ce_" + uuid.uuid4().hex[:12]
-        allowed = _allowed_directologists()
-        _jobs_exec(
-            f"INSERT INTO {CE_JOBS_TABLE} "
-            "(job_id, username, login, agency, type, old_text, new_text, mode, campaign_count, access_directologists) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (job_id, (session.get("username") or "").strip(), login, agency or "", "ad_href",
-             old_path, new_path, "link", campaign_count,
-             json.dumps(allowed, ensure_ascii=False) if allowed is not None else None))
-        ahead = _jobs_exec(
-            f"SELECT count(*) AS c FROM {CE_JOBS_TABLE} WHERE status='queued' "
-            f"AND created_at < (SELECT created_at FROM {CE_JOBS_TABLE} WHERE job_id=%s)",
-            (job_id,), "one")["c"]
-        return jsonify({
-            "ok": True, "job_id": job_id, "login": login, "agency": agency,
-            "type": "ad_href", "status": "queued", "total": 1, "ahead": ahead,
-            "campaign_count": campaign_count,
-        })
+        return _enqueue_content_job(
+            login, agency, "ad_href", old_path, new_path, "link", campaign_count,
+            resp_type="ad_href")
 
     # ── Перестановка порядка быстрых ссылок (sitelink_reorder) ──────────────────
     # Позиционная перестановка (вариант A): целевой порядок позиций (drag-and-drop)
@@ -3135,32 +2846,10 @@ def register_content_editor_routes(
         _, agency, err = _token(login)
         if err:
             return jsonify({"error": err}), 404
-        day_cnt = _jobs_exec(
-            f"SELECT count(*) AS c FROM {CE_JOBS_TABLE} "
-            f"WHERE login=%s AND status<>'cancelled' AND created_at >= {CE_EKB_DAY_SQL}",
-            (login,), "one")["c"]
-        if day_cnt >= CE_DAILY_JOB_CAP:
-            return jsonify({"error": f"лимит {CE_DAILY_JOB_CAP} заданий на аккаунт в сутки "
-                                     f"(уже поставлено {day_cnt})"}), 429
-        job_id = "ce_" + uuid.uuid4().hex[:12]
-        allowed = _allowed_directologists()
         perm_json = json.dumps({"perm": perm, "target_set_id": target_set_id}, ensure_ascii=False)
-        _jobs_exec(
-            f"INSERT INTO {CE_JOBS_TABLE} "
-            "(job_id, username, login, agency, type, old_text, new_text, mode, campaign_count, access_directologists) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (job_id, (session.get("username") or "").strip(), login, agency or "", "sitelink_reorder",
-             perm_json, perm_json, "reorder", campaign_count,
-             json.dumps(allowed, ensure_ascii=False) if allowed is not None else None))
-        ahead = _jobs_exec(
-            f"SELECT count(*) AS c FROM {CE_JOBS_TABLE} WHERE status='queued' "
-            f"AND created_at < (SELECT created_at FROM {CE_JOBS_TABLE} WHERE job_id=%s)",
-            (job_id,), "one")["c"]
-        return jsonify({
-            "ok": True, "job_id": job_id, "login": login, "agency": agency,
-            "type": "sitelink_reorder", "status": "queued", "total": 1, "ahead": ahead,
-            "campaign_count": campaign_count,
-        })
+        return _enqueue_content_job(
+            login, agency, "sitelink_reorder", perm_json, perm_json, "reorder",
+            campaign_count, resp_type="sitelink_reorder")
 
     def _queued_ahead_map() -> dict:
         rows = _jobs_exec(

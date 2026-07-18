@@ -59,10 +59,103 @@ _LOCAL_MIRROR_ROOT = PACK_MOUNT if (PACK_MOUNT != "/opt/neuro_kontent" and os.pa
 #      небольшой LRU-кэш. Никаких os.listdir по sshfs → нет бесконечных зависаний.
 import hashlib
 import posixpath
+import threading as _threading
 import time as _time
 import base64
 import struct
 import zlib
+
+# ── БЕЗОПАСНЫЕ ФС-ОПЕРАЦИИ С ПРЕДЕЛОМ ВРЕМЕНИ (sshfs-монты) ──────────────────
+# У FUSE-чтения таймаута НЕТ by design: open/read/stat/listdir по подвисшему sshfs
+# висят БЕСКОНЕЧНО (инциденты job 0bf287c861f2 2026-07-02 и f58a123d8405/a4bef725b5cb
+# 2026-07-18: 12-14 потоков воркера стояли в fh.read()/isfile/realpath на
+# /opt/creatives и /opt/neuro_kontent, watchdog убивал джобу на 3/20 кампаний).
+# signal.alarm тут неприменим (работает только в главном потоке, а весь аплоад —
+# в ThreadPoolExecutor). Единственный механизм, который реально освобождает вызывающего:
+# выполнить ФС-операцию в ОТДЕЛЬНОМ daemon-потоке и join(timeout). Застрявший поток
+# прервать нельзя (он в непрерываемом syscall), но вызывающий продолжает работу и
+# получает предсказуемый default вместо вечного зависания.
+_FS_OP_TIMEOUT = float(os.environ.get("NEURO_FS_OP_TIMEOUT", "20") or 20)
+_FS_STUCK_MAX = int(os.environ.get("NEURO_FS_STUCK_MAX", "16") or 16)
+_FS_STUCK = {"n": 0}
+_FS_STUCK_LOCK = _threading.Lock()
+
+
+def fs_call_bounded(fn, *args, timeout: float | None = None, default=None):
+    """Выполнить ФС-операцию с пределом времени. Вернёт default при таймауте/ошибке.
+
+    Защита от накопления потоков: если уже _FS_STUCK_MAX операций висят на мёртвом
+    монте — новые НЕ запускаем (сразу default), иначе подвисший sshfs расплодил бы
+    поток на каждую картинку."""
+    tmo = _FS_OP_TIMEOUT if timeout is None else float(timeout)
+    with _FS_STUCK_LOCK:
+        if _FS_STUCK["n"] >= _FS_STUCK_MAX:
+            return default
+    box: dict = {}
+
+    def _run():
+        try:
+            box["v"] = fn(*args)
+        except Exception:  # noqa: BLE001 — нечитаемый файл/нет прав → default
+            box["err"] = True
+
+    th = _threading.Thread(target=_run, daemon=True)
+    with _FS_STUCK_LOCK:
+        _FS_STUCK["n"] += 1
+    th.start()
+    th.join(tmo)
+    if th.is_alive():
+        # Поток остаётся висеть в FUSE (снять нельзя) — счётчик вернёт его сам,
+        # когда монт оживёт; вызывающий освобождён прямо сейчас.
+        def _reap(_t=th):
+            _t.join()
+            with _FS_STUCK_LOCK:
+                _FS_STUCK["n"] -= 1
+        _threading.Thread(target=_reap, daemon=True).start()
+        return default
+    with _FS_STUCK_LOCK:
+        _FS_STUCK["n"] -= 1
+    return box.get("v", default) if "err" not in box else default
+
+
+def _read_all(path: str) -> bytes:
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def read_bytes_bounded(path: str, timeout: float | None = None) -> bytes | None:
+    """Прочитать файл целиком с пределом времени. None — недоступен/таймаут."""
+    if not path:
+        return None
+    return fs_call_bounded(_read_all, path, timeout=timeout, default=None)
+
+
+def isfile_bounded(path: str, timeout: float | None = None) -> bool:
+    """os.path.isfile с пределом времени (подвисший sshfs → False, а не вечный stat)."""
+    if not path:
+        return False
+    return bool(fs_call_bounded(os.path.isfile, path, timeout=timeout, default=False))
+
+
+def realpath_bounded(path: str, timeout: float | None = None) -> str:
+    """os.path.realpath с пределом времени; при таймауте — исходный путь (ключ кэша)."""
+    if not path:
+        return path
+    return fs_call_bounded(os.path.realpath, path, timeout=timeout, default=path)
+
+
+def listdir_bounded(path: str, timeout: float | None = None) -> list:
+    """os.listdir с пределом времени. [] — недоступен/таймаут."""
+    if not path:
+        return []
+    return list(fs_call_bounded(os.listdir, path, timeout=timeout, default=[]) or [])
+
+
+def isdir_bounded(path: str, timeout: float | None = None) -> bool:
+    """os.path.isdir с пределом времени."""
+    if not path:
+        return False
+    return bool(fs_call_bounded(os.path.isdir, path, timeout=timeout, default=False))
 
 # Гео-нормализатор ключей (lazy relative import — не ломает standalone python kontent_pack.py).
 try:
@@ -785,9 +878,32 @@ SLEPOK_LABELS = {
 }
 
 
+def _struct_slepok_names() -> dict:
+    """{key.lower(): display_name} из структуры слепков — ТОТ ЖЕ источник имён, что «Структура
+    слепков» (directolog.name). Через slepki_store.assemble() (свой кэш). Чтобы метки контент-дерева
+    совпадали с дропдауном, а не жили в отдельном хардкод-словаре."""
+    out: dict = {}
+    try:
+        from . import slepki_store as _ss
+        for d in _ss.assemble().get("directologists", []):
+            k = str(d.get("key") or "").strip().lower()
+            nm = str(d.get("name") or "").strip()
+            if k and nm:
+                out[k] = nm
+    except Exception:  # noqa: BLE001 — структура недоступна → фолбэк на SLEPOK_LABELS/ключ
+        pass
+    return out
+
+
 def _slepok_label(slepok: str) -> str:
-    key = (slepok or "common").strip().lower() or "common"
-    return SLEPOK_LABELS.get(key, key)
+    """Единое имя слепка для UI = имя из структуры (как в «Структуре слепков»).
+    Многосайтовый слепок (`base:site`, напр. `dmp:need-lead.ru`) → «Имя_сайт» (правило Семёна)."""
+    raw = (slepok or "common").strip().lower() or "common"
+    if raw == "common":
+        return "Общее"
+    base, _sep, site = raw.partition(":")            # многосайтовый ключ «слепок:сайт»
+    name = _struct_slepok_names().get(base) or SLEPOK_LABELS.get(base) or base
+    return f"{name}_{site}" if site else name
 
 
 def _slepok_tags(raw: str) -> list[str]:

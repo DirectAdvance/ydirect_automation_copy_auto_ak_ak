@@ -24,16 +24,49 @@ def _index_by_name(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {result_name(row): row for row in rows or [] if result_name(row)}
 
 
+def _account_has_promo(content_counts: dict[int, dict[str, Any]] | None) -> bool | None:
+    """ФОЛБЭК ступени 1 промо-гейта — прокси по кампаниям набора (tri-state).
+
+    ⚠️ Используется, ТОЛЬКО когда настоящий признак библиотеки аккаунта не передан
+    (``account_has_promo_library is None``): например, вызов верификатора не из штатного
+    потока создания. В штатном потоке приоритет у ``account_has_promo_library``, который
+    приходит из v5 ``promotions.get``, уже выполненного в ``create_set_promo`` /
+    ``precreate`` — там признак точный и покрывает случай 0/N.
+
+    Прокси считается ИЗ УЖЕ ПРОЧИТАННЫХ данных (``promo_extension_id`` из того же ответа
+    CampaignsEditData) → **ноль дополнительных обращений** к Grid/Direct API.
+
+    * ``None``  — ассеты ни у одной кампании не прочитаны → неизвестно → верификатор молчит.
+    * ``True``  — хотя бы у одной кампании набора промо привязано ⇒ библиотека непуста ⇒
+      кампании без промо в том же наборе — дефект (класс «промо доехало не до всех»).
+    * ``False`` — ассеты прочитаны, промо нет НИ У КОГО.
+
+    Известное ограничение прокси (почему он лишь фолбэк): полный провал доставки 0/N
+    неотличим от «библиотека пуста» → вернётся ``False`` и код промолчит. Именно этот
+    слепой угол закрывает проброшенный ``account_has_promo_library``.
+    """
+    rows = [r for r in (content_counts or {}).values() if r and r.get("campaign_assets_read")]
+    if not rows:
+        return None
+    return any(str(r.get("promo_extension_id") or "").strip() for r in rows)
+
+
 def verify_live_create_set(*, login: str, results: list[dict[str, Any]],
                            v5_campaigns: list[dict[str, Any]] | None = None,
                            grid_campaigns: list[dict[str, Any]] | None = None,
                            grid_content_counts: dict[int, dict[str, int]] | None = None,
                            uac_details: dict[int, dict[str, Any]] | None = None,
-                           prefer_grid: bool = True) -> dict[str, Any]:
+                           prefer_grid: bool = True,
+                           account_has_promo_library: bool | None = None) -> dict[str, Any]:
     """Compare created result rows with read-only v5/Grid snapshots.
 
     ``v5_campaigns`` and ``grid_campaigns`` are optional. When a snapshot is not
     supplied, the corresponding checks are reported as skipped, not failed.
+
+    ``account_has_promo_library`` — ступень 1 гейта ``PROMO_MISSING``: tri-state признак
+    «в БИБЛИОТЕКЕ аккаунта есть промо-акции», прочитанный в штатном потоке создания
+    (v5 ``promotions.get``, 0 новых запросов). ``None`` → фолбэк на прокси
+    ``_account_has_promo`` (прежнее поведение).
 
     ``prefer_grid=True`` is intentional for this project: Direct API units are
     scarce, while the service can read/create/finalize many entities through the
@@ -46,6 +79,11 @@ def verify_live_create_set(*, login: str, results: list[dict[str, Any]],
     grid_by_name = _index_by_name(grid_campaigns or [])
     content_counts = grid_content_counts or {}
     uac_detail_rows = uac_details or {}
+    # Ступень 1 промо-гейта — один раз на весь набор (данные уже прочитаны, 0 новых запросов).
+    # Приоритет — настоящий признак библиотеки аккаунта из потока создания; прокси по кампаниям
+    # набора остаётся ФОЛБЭКОМ на случай, когда признак не проброшен (None).
+    account_promo = (account_has_promo_library if account_has_promo_library is not None
+                     else _account_has_promo(content_counts))
     issues: list[dict[str, Any]] = []
     repair: list[dict[str, Any]] = []
     checked = {
@@ -111,7 +149,8 @@ def verify_live_create_set(*, login: str, results: list[dict[str, Any]],
         if kind != "uac" and grid_content_counts is not None:
             counts = content_counts.get(int(cid)) or {}
             from .grid_content_verifier import verify_grid_content
-            grid_issues, grid_repair = verify_grid_content(nm, int(cid), counts)
+            grid_issues, grid_repair = verify_grid_content(
+                nm, int(cid), counts, {"account_has_promo": account_promo})
             issues.extend(grid_issues)
             repair.extend(grid_repair)
 

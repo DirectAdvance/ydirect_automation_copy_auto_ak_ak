@@ -46,7 +46,8 @@ from . import kontent_pack as kp
 import importlib.util as _ilu
 
 _HERE = Path(__file__).resolve().parent
-_STRUCT_PATH = _HERE / "slepki_structure.json"
+# slepki_structure.json больше не монолит — структура в direct/slepki/ (см. slepki_store),
+# читается _load_struct()→assemble(), пишется _write_struct()→write_directologists().
 _PROFILE_PATH = _HERE / "targeting_profile.json"
 _AUDIT_JSONL = _HERE / "slepki_edits_audit.jsonl"
 
@@ -84,6 +85,17 @@ def _ct_segment(ct: str) -> str:
 
 def _ag_part1_map() -> dict:
     return {}
+
+
+def _tp67_keywords_for(*a, **k) -> tuple:
+    """DI: create_set_context._tp67_keywords_for (пак → библиотека реальных UAC-ключей → tp7↦tp6).
+    Без configure — фолбэка нет, читается только пак (прежнее поведение)."""
+    return [], []
+
+
+def _tp67_targeting_mode(g: dict) -> str:
+    """DI: create_set_context._tp67_targeting_mode. Без configure — режим неизвестен."""
+    return ""
 
 
 def configure(deps: dict) -> None:
@@ -325,7 +337,9 @@ def _audit(action: str, actor: str, spec: dict, result: dict) -> None:
 
 # ── чтение json структурных файлов ───────────────────────────────────────────
 def _load_struct() -> dict:
-    return json.loads(_STRUCT_PATH.read_text(encoding="utf-8"))
+    # Структура разбита на per-slepok файлы (direct/slepki/) — собираем единый словарь.
+    from . import slepki_store as _sstore
+    return _sstore.assemble()
 
 
 def _load_profile() -> dict:
@@ -333,10 +347,25 @@ def _load_profile() -> dict:
 
 
 def _write_struct(struct: dict) -> str:
-    bak = _backup(_STRUCT_PATH)
-    _atomic_write_local(str(_STRUCT_PATH),
-                        json.dumps(struct, ensure_ascii=False, indent=1))
-    return bak
+    # Пишем per-slepok файлы (атомарно, только изменившиеся) + _order.json. Бэкап — СТАРОЕ
+    # содержимое изменившихся part-файлов (до записи), обратимость сохранена без 2.5 MiB-снимка.
+    from . import slepki_store as _sstore
+    dirs = struct.get("directologists") or []
+    old: dict[str, bytes] = {}                 # снимок ДО записи по ключам входящих директологов
+    for d in dirs:
+        key = d.get("key")
+        p = _sstore._part_path(key) if key else None
+        if p and p.exists():
+            old[key] = p.read_bytes()
+    changed = _sstore.write_directologists(dirs)
+    baks: list[str] = []
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    for key in changed:
+        if key in old:                         # был на диске → сохранить прежнюю версию
+            dst = _sstore._part_path(key).with_name(f"{key}.json.editbak.{ts}")
+            dst.write_bytes(old[key])
+            baks.append(str(dst))
+    return ";".join(baks)
 
 
 def _write_profile(profile: dict) -> str:
@@ -348,11 +377,15 @@ def _write_profile(profile: dict) -> str:
 
 
 # ── чтение ключей группы (для просмотра в UI) ────────────────────────────────
-def read_group_keywords(site_type: str, tp: str, ct: str, slepok: str, group: str = "") -> dict:
-    """{positive, minus, minus_shared, callouts} по (тип сайта, tp, ct, слепок[, group]).
+def read_group_keywords(site_type: str, tp: str, ct: str, slepok: str, group: str = "",
+                        position: str = "") -> dict:
+    """{positive, minus, minus_shared, callouts, kw_source} по (тип сайта, tp, ct, слепок[, group]).
     minus_shared — библиотечный набор (просмотр, пер-ct); callouts — уточнения кампании.
     group непустой → per-group файлы ``{slepok}__{slug}...`` с фолбэком на легаси; ``group=""`` —
-    прежнее поведение."""
+    прежнее поведение.
+
+    ``kw_source``: ``"pack"`` — ключи из M3-пака; ``"real_library"`` — пак пуст и ключи взяты
+    ТЕМ ЖЕ фолбэком, которым их берёт СОЗДАНИЕ кампании (см. ниже)."""
     ctn = kp._norm_ct(ct) or kp.GENERAL_CT
     kd = os.path.join(kp._ct_dir(site_type, tp, ctn), "keywords")
     slug = kp._group_slug(group)
@@ -368,8 +401,33 @@ def read_group_keywords(site_type: str, tp: str, ct: str, slepok: str, group: st
         neg = kp._read_lines(os.path.join(kd, f"{slepok}_minus.txt"))
     neg_shared = kp._read_lines(os.path.join(kd, f"{slepok}_minus_shared.txt"))
     callouts = kp.read_callouts(site_type, tp, ctn, slepok, group=group)
+    kw_source = "pack"
+    # tp6/tp7: M3-пака может не быть вовсе, а ключи всё равно уедут в кабинет — СОЗДАНИЕ берёт их
+    # фолбэком из библиотеки реальных UAC-payload (create_set_context._tp67_keywords_for →
+    # tp67_real_keywords.json). Без этого же фолбэка карточка врала: dmp/tp6/ct0834 показывал
+    # «Автотаргетинг — ключевых слов в паке нет» при 69 реальных фразах. Зовём РОВНО ту функцию,
+    # что и создание (пак → библиотека → цепочка tp7↦tp6), логику чтения не дублируем.
+    # city="" — аккаунта в контексте структуры слепка нет; без своего города гео-фильтр ничего
+    # не режет (city_morph._drop_foreign_city_keywords:191), т.е. показываем ДО-гео состав.
+    #
+    # ГЕЙТ РЕЖИМА (обязателен): создание берёт ключи ТОЛЬКО для keyword-позиций
+    # (create_set_master_product.py:124 `if _want_keywords`). Без гейта карточка автотаргет-строки
+    # («МК - Общая - Автотаргетинг», tp6/tp7 авто-слепков) показала бы библиотечные ключи, которые
+    # в кабинет НЕ уедут — то же враньё, только наизнанку. position пуст (режим неизвестен) →
+    # фолбэк НЕ включаем: остаётся прежнее поведение «только пак».
+    if (not pos and tp in ("tp6", "tp7") and position
+            and _tp67_targeting_mode({"name": position}) == "keywords"):
+        try:
+            f_pos, f_neg = _tp67_keywords_for(slepok, site_type, tp, ctn, "", position or None, None)
+        except Exception:  # noqa: BLE001 — фолбэк best-effort, карточка не должна падать
+            f_pos, f_neg = [], []
+        if f_pos:
+            pos, kw_source = list(f_pos), "real_library"
+            if not neg:
+                neg = list(f_neg or [])
     return {"positive": kp._dedup(pos), "minus": kp._dedup(neg),
-            "minus_shared": kp._dedup(neg_shared), "callouts": callouts}
+            "minus_shared": kp._dedup(neg_shared), "callouts": callouts,
+            "kw_source": kw_source}
 
 
 # ── ПРАВКА 1: ключи группы ───────────────────────────────────────────────────

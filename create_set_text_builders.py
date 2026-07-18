@@ -429,7 +429,10 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
         # текстов/тайтлов остаётся пустым у тем (не марок) → «Авто» не течёт в заголовки dmp.
         # Авто-слепки: прежнее поведение (фид-фолбэк ct_model + «Авто»).
         if _struct_names:
-            raw_name = ct_name.get(ct) or _struct_names.get(ct) or ct
+            # Приоритет СТРУКТУРЫ (см. _struct_ct_names): у не-авто слепка справочник марок
+            # (_ag_part1_map = gsheet_naming) НЕ авторитет — авто-ct может совпасть с темой
+            # слепка (ct0084: авто «Faw Bestune T77» ↔ dmp «Конкуренты») и подменить тему марка-брендом.
+            raw_name = _struct_names.get(ct) or ct_name.get(ct) or ct
             brand = _valid_pack_brand_name(ct, raw_name)          # тема → "" → не авто-лексика
         else:
             raw_name = ct_name.get(ct) or ct_model.get(ct) or ct
@@ -472,7 +475,12 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
             "name": (_uname if (_multi and _uname)
                      else (display if _struct_names else _text_group_name(ct, r_code, display))),
             # БАГ-13: для «Марки» — убрать ключи «марка+модель» (напр. «Chery Tiggo 8 Pro»)
-            "keywords": _filter_group_keywords(data.get("positive", []), _ct_segment(ct), brand, city, site_type, model=brand),
+            # model=: в per-adgroup режиме (_multi) фильтр чужих моделей строим по модели САМОЙ
+            # ГРУППЫ (структурный `t`, напр. «Lada Granta Liftback»), а не по ct-уровневому brand
+            # («Lada Granta») — иначе под-модели одного ct дискриминируют друг друга и группа
+            # уезжает с 0 ключей (лифтбек/седан/универсал попадали в «чужие»).
+            "keywords": _filter_group_keywords(data.get("positive", []), _ct_segment(ct), brand, city, site_type,
+                                               model=(_uname if (_multi and _uname) else brand)),
             "minus": _enabled_minus_words(),   # ЕДИНЫЙ источник минус-фраз — вкладка «Минус-слова»
             "ct": ct,                            # баг #5: нужен для _ct_segment→seg→adPrice по Марке
             "brand": brand,                      # модель/бренд группы — для adPrice из фида (#2)

@@ -16,14 +16,11 @@ def register_settings_routes(
     feed_rules_ensure: Callable,
     global_minus_places: Callable[[], list[dict]],
     minus_places_ensure: Callable,
-    slepok_minus_places: Callable[[str], list[dict]],
-    slepok_minus_places_ensure: Callable,
     place_host: Callable[[str], str],
     minus_words_slice: Callable,
     minus_words_ensure: Callable,
     global_minus_marks: Callable[[], list[dict]],
     minus_marks_ensure: Callable,
-    known_brand_canons: Callable[[], list[str]],
     global_minus_models: Callable[[], list[dict]],
     minus_models_ensure: Callable,
     load_brand_models_catalog: Callable[[], dict],
@@ -271,22 +268,17 @@ def register_settings_routes(
     @bp.route("/api/minus-places")
     @access
     def api_minus_places_get():
-        """Список минус-площадок по слепку (#21, per-слепок). ?slepok= обязателен.
-        → {places:[{url,enabled,sort}], slepok}."""
-        slepok = (request.args.get("slepok") or "").strip()
-        if not slepok:
-            return jsonify({"error": "параметр slepok обязателен"}), 400
-        return jsonify({"places": slepok_minus_places(slepok), "slepok": slepok})
+        """ОБЩИЙ список минус-площадок (единый для всех слепков, #21).
+        → {places:[{url,enabled,sort}]}. Параметр ?slepok= принимается для обратной
+        совместимости, но игнорируется — список один на всех."""
+        return jsonify({"places": global_minus_places()})
 
     @bp.route("/api/minus-places", methods=["POST"])
     @access
     def api_minus_places_post():
-        """Сохранить минус-площадки per-слепок (replace-all в рамках slepok).
-        Body: {slepok, places:[str|{url,enabled}], confirm_clear?}."""
+        """Сохранить ОБЩИЙ список минус-площадок (replace-all глобальной таблицы).
+        Body: {places:[str|{url,enabled}], confirm_clear?}. slepok в теле игнорируется."""
         body = request.json or {}
-        slepok = (body.get("slepok") or "").strip()
-        if not slepok:
-            return jsonify({"ok": False, "error": "параметр slepok обязателен"}), 400
         if "places" not in body:
             return jsonify({"ok": False, "error": "нет ключа 'places' — replace-all не выполняется"}), 400
         raw = body.get("places")
@@ -294,7 +286,7 @@ def register_settings_routes(
             return jsonify({"ok": False, "error": "places должен быть массивом"}), 400
         if not raw and not bool(body.get("confirm_clear")):
             try:
-                cur_cnt = len(slepok_minus_places(slepok))
+                cur_cnt = len(global_minus_places())
             except Exception:  # noqa: BLE001
                 cur_cnt = 0
             if cur_cnt:
@@ -302,7 +294,7 @@ def register_settings_routes(
                     "ok": False,
                     "needs_confirm": True,
                     "error": (
-                        f"список пуст — для полной очистки {cur_cnt} площадок слепка {slepok!r} "
+                        f"список пуст — для полной очистки {cur_cnt} общих минус-площадок "
                         "передай confirm_clear=true"
                     ),
                 }), 409
@@ -321,14 +313,14 @@ def register_settings_routes(
         conn = victory_conn_rw()
         try:
             cur = conn.cursor()
-            slepok_minus_places_ensure(cur)
-            cur.execute("DELETE FROM public.direct_slepok_minus_places WHERE slepok=%s", (slepok,))
+            minus_places_ensure(cur)
+            cur.execute("DELETE FROM public.direct_global_minus_places")
             for i, (url, enabled) in enumerate(items, 1):
                 cur.execute(
-                    "INSERT INTO public.direct_slepok_minus_places(slepok, url, enabled, sort, updated_at) "
-                    "VALUES(%s, %s, %s, %s, now()) ON CONFLICT(slepok, url) DO UPDATE SET "
+                    "INSERT INTO public.direct_global_minus_places(url, enabled, sort, updated_at) "
+                    "VALUES(%s, %s, %s, now()) ON CONFLICT(url) DO UPDATE SET "
                     "enabled=EXCLUDED.enabled, sort=EXCLUDED.sort, updated_at=now()",
-                    (slepok, url, enabled, i),
+                    (url, enabled, i),
                 )
             conn.commit()
         except Exception:  # noqa: BLE001
@@ -336,7 +328,7 @@ def register_settings_routes(
             raise
         finally:
             conn.close()
-        return jsonify({"ok": True, "saved": len(items), "slepok": slepok})
+        return jsonify({"ok": True, "saved": len(items)})
 
     @bp.route("/api/minus-words")
     @access
@@ -418,7 +410,9 @@ def register_settings_routes(
     @access
     def api_minus_marks_get():
         """Минус марки/модели (фид): дерево «марка → модели» + состояние галочек.
-        Марки-каталог из known_brand_canons; модели на марку — из справочника brand_models_catalog.json
+        Список марок ФИКСИРОВАН справочником brand_models_catalog.json (bm["brands"]) плюс
+        ранее сохранённые отметки — динамический known_brand_canons НЕ используется (притаскивал
+        мусор вроде market./marketingovye из имён ct-групп). Модели на марку — из того же справочника
         (парсится по кнопке «обновить»). По умолчанию всё снято (в БД строк нет → enabled=false).
         → {marks:[{mark, enabled, models:[{model, enabled}]}], models_updated_at, models_sources}."""
         try:
@@ -426,10 +420,6 @@ def register_settings_routes(
                      for r in (global_minus_marks() or [])}
         except Exception:  # noqa: BLE001
             saved = {}
-        try:
-            catalog = [str(m).strip() for m in (known_brand_canons() or []) if str(m).strip()]
-        except Exception:  # noqa: BLE001
-            catalog = []
         try:
             bm = load_brand_models_catalog() or {}
         except Exception:  # noqa: BLE001
@@ -446,10 +436,10 @@ def register_settings_routes(
         except Exception:  # noqa: BLE001
             saved_models = {}
 
-        # Полный список = марки-каталог ∪ марки справочника моделей ∪ ранее сохранённые.
+        # Полный список = марки справочника моделей ∪ ранее сохранённые отметки (фикс. по справочнику).
         seen: set[str] = set()
         marks: list[dict] = []
-        for m in catalog + list(brands_cat.keys()) + list(saved.keys()):
+        for m in list(brands_cat.keys()) + list(saved.keys()):
             key = str(m).strip().lower()
             if not key or key in seen:
                 continue

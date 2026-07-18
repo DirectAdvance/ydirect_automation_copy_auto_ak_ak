@@ -26,23 +26,43 @@ def _account_ctx(login: str):
         row = cur.fetchone()
         if not row:
             return None
+        # #ФИКС-5: город может быть списком через запятую («Краснодар, Сочи») — точный матч
+        # всей строки не находил область → geoid=225 (вся РФ). Резолвим КАЖДЫЙ город, union областей.
         oblast = None
-        if row.get("city"):
-            cur.execute('SELECT "Область" AS o FROM public.local_gsheet_yandex_direct_id_location '
-                        "WHERE \"GeoRegionType\"='City' AND lower(btrim(location))=lower(btrim(%s)) LIMIT 1",
-                        (row["city"],))
-            r = cur.fetchone()
-            oblast = (r["o"] if r else None)
+        oblasts: list[str] = []
+        _unresolved: list[str] = []
+        _raw_city = (row.get("city") or "").strip()
+        if _raw_city:
+            _cities = [c.strip() for c in re.split(r"[,;/]", _raw_city) if c.strip()]
+            for _city in _cities:
+                cur.execute('SELECT "Область" AS o FROM public.local_gsheet_yandex_direct_id_location '
+                            "WHERE \"GeoRegionType\"='City' AND lower(btrim(location))=lower(btrim(%s)) LIMIT 1",
+                            (_city,))
+                r = cur.fetchone()
+                _o = (r["o"] if r else None)
+                if _o and _o not in oblasts:
+                    oblasts.append(_o)
+                elif not _o:
+                    _unresolved.append(_city)
+            oblast = oblasts[0] if oblasts else None
     finally:
         conn.close()
-    geoid = 225                                          # таргет — geoid ОБЛАСТИ (через словарь Директа)
-    if oblast:
-        gid = _geo_load().get(oblast.strip().lower())
-        if gid:
-            geoid = int(gid)
+    # geoids — union geoid всех разрешённых областей; geoid — первый (обратная совместимость).
+    geoids: list[int] = []
+    for _ob in oblasts:
+        gid = _geo_load().get(_ob.strip().lower())
+        if gid and int(gid) not in geoids:
+            geoids.append(int(gid))
+    geoid = geoids[0] if geoids else 225                 # таргет — geoid ОБЛАСТИ (через словарь Директа)
+    _raw_city = (row.get("city") or "").strip()
+    if _raw_city and not geoids:
+        # Город задан, но НЕ разрешён ни в одну область — НЕ молчим (иначе таргет = вся РФ).
+        print(f"WARNING _account_ctx: город {_raw_city!r} (login={login}) не найден в справочнике "
+              f"локаций → geoid=225 (вся РФ). Проверьте написание города.", file=__import__("sys").stderr)
     return {"domain": (row.get("domain") or "").strip(), "site_type": (row.get("site_type") or "").strip(),
-            "agency": row.get("agency_account"), "geoid": geoid, "oblast": oblast,
-            "city": (row.get("city") or "").strip(),
+            "agency": row.get("agency_account"), "geoid": geoid, "geoids": (geoids or [geoid]),
+            "oblast": oblast, "oblasts": oblasts, "geo_unresolved": _unresolved,
+            "city": _raw_city,
             "directologist": (row.get("directologist") or "").strip()}
 
 def _templates_for(site_type: str):
@@ -289,6 +309,10 @@ def _tp67_keywords_from_real_library(slepok: str, site_type: str, tp: str, ct: s
     Приоритет точный: слепок + ст + tp + sq + ct/позиция. Разные позиции ct0000
     (Автосалон/Дилер/Общие запросы) не схлопываем, потому что в реальных аккаунтах
     у них разные keyword lists.
+
+    ⛔ ТОЛЬКО СВОЙ СЛЕПОК: чужой директолог источником ключей быть не может (см. _score).
+    Своего набора нет → ([], []) и вызывающий явно сообщает «КС без ключей», а не подменяет
+    молча чужой семантикой.
     """
     skey = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
     pos_key = _tp67_kw_position_key(position_name)
@@ -301,16 +325,24 @@ def _tp67_keywords_from_real_library(slepok: str, site_type: str, tp: str, ct: s
             return None
         if not (it.get("keywords") or []):
             return None                                  # пустой decoy-item (напр. dmp position='конкуренты' 0кл) не должен затмевать реальный набор по позиции
-        same_slepok = 1 if it.get("slepok") == skey else 0
+        if it.get("slepok") != skey:
+            # ЖЁСТКИЙ slepok-фильтр (анти-bleed, 2026-07-18). Библиотека — срез РЕАЛЬНЫХ кабинетов
+            # разных директологов; ранжирование по same_slepok (было первым элементом ранга, но БЕЗ
+            # отсечения) при отсутствии своего набора отдавало позиции набор ЧУЖОГО слепка — семантика
+            # одного дилера уезжала в кабинет другого (terehov/tp7 «Общие запросы - КС» → ключи pavlov).
+            # Своих ключей нет → возвращаем ПУСТО, а вызывающий (create_set_master_product.py:130)
+            # логирует «tp6/tp7 КС без ключей» в errors_log + per-position warning и блокирует позицию
+            # при явном keyword_source. Молчаливой подмены чужим набором быть не должно.
+            return None
+        same_slepok = 1
         site_score = 1 if (not site_type or it.get("site_type") == site_type) else 0
         sq_score = 1 if (not sq_key or it.get("sq") == sq_key) else 0
         ct_score = 1 if (ct_key and it.get("ct") == ct_key) else 0
         pos_score = 1 if (pos_key and it.get("position") == pos_key) else 0
         if not (ct_score or pos_score):
             return None
-        # Приоритет: тот же слепок/site/sq, затем позиция, затем ct.
-        # Если точного слепка нет в partial live-reference, берём лучший реальный набор
-        # по той же позиции/ct из другого слепка вместо падения "КС без ключей".
+        # Приоритет ВНУТРИ своего слепка: site/sq, затем позиция, затем ct.
+        # (same_slepok оставлен в кортеже для читаемости ранга — он теперь всегда 1.)
         return (same_slepok, site_score, sq_score, pos_score, ct_score, len(it.get("keywords") or []))
 
     best = None

@@ -394,6 +394,9 @@ def _build_tp1_adgroups(
                 _all_img_paths = [_pth for _rec in created_ad_meta
                                   for _pth in (_rec["meta"].get("image_paths") or [])]
                 _uploaded_by_name = _parallel_upload_images(_gc_img, login, _all_img_paths)
+                # Счётчик реально залитых картинок: раньше оставался 0 даже в успешных кампаниях
+                # и подставлялся в текст ошибки «tp1 не дозаполнена» → уводил диагностику.
+                rep["images_uploaded"] = len(_uploaded_by_name)
             _upd_items = []
             for _rec in created_ad_meta:
                 _meta = _rec["meta"]
@@ -419,7 +422,9 @@ def _build_tp1_adgroups(
             if _upd_items:
                 repair_items = list(_upd_items)
                 rep["ads_repaired"] = _grid_update_adaptive_ads(login, _upd_items)
-                rep["image_groups"] = len(_upd_items)
+                # Считаем группы С КАРТИНКАМИ (как в остальных путях: :2252, text/feed builders),
+                # а не все item'ы — иначе отчёт показывал 27/27 при реальных 25.
+                rep["image_groups"] = sum(1 for _it in _upd_items if _it.get("image_hashes"))
         except Exception as _e:  # noqa: BLE001
             rep.setdefault("warnings", []).append(f"tp1 repair: {str(_e)[:100]}")
 
@@ -849,8 +854,10 @@ def _build_tp1_from_pack(
             continue  # ct0000+gk = ЕПК/аудиторная группа без ключей (норма); остальные → пропускаем
         if segment and _ct_segment(ct) != segment:
             continue                           # сегментный фильтр (Марки/Модели как в боевых)
-        # не-авто (dmp): имя = leadgen(описание кодера) → структура t(выгрузка) → ct; НИКОГДА авто-фид «Авто».
-        raw_brand = ((ct_name.get(ct) or _struct_names.get(ct) or ct) if _struct_names
+        # не-авто (dmp): имя = структура t(выгрузка) → leadgen(описание кодера) → ct; НИКОГДА авто-фид «Авто».
+        # Структура ПЕРВАЯ: _ag_part1_map мёржит авто-справочник gsheet_naming, и авто-ct может
+        # совпасть с темой слепка (ct0084: авто «Faw Bestune T77» ↔ dmp «Конкуренты») → тема стала бы маркой.
+        raw_brand = ((_struct_names.get(ct) or ct_name.get(ct) or ct) if _struct_names
                      else (ct_name.get(ct) or ct_model.get(ct) or ct))
         # Минус-фильтр групп: марка/модель отмечена в «Глобальных правилах» → группа не создаётся
         if _minus_m_set or _minus_mod_by_brand:
@@ -900,8 +907,11 @@ def _build_tp1_from_pack(
             "name": group_name,
             "ct": ct,
             "brand": brand,
-            # БАГ-13: для «Марки» — убрать ключи «марка+модель»; model= защищает «Модели» от чужих моделей
-            "keywords": _filter_group_keywords(data.get("positive", []), _ct_segment(ct), brand, city, site_type, model=brand),
+            # БАГ-13: для «Марки» — убрать ключи «марка+модель»; model= защищает «Модели» от чужих моделей.
+            # В per-adgroup режиме (_multi) модель берём у САМОЙ ГРУППЫ (структурный `t`), иначе
+            # под-модели одного ct дискриминируют друг друга и группа уезжает с 0 ключей.
+            "keywords": _filter_group_keywords(data.get("positive", []), _ct_segment(ct), brand, city, site_type,
+                                               model=(_uname if (_multi and _uname) else brand)),
             "minus": [],   # v5: _build_tp1_adgroups игнорирует g["minus"] (РСЯ/поиск — без охват-режущих группов. минусов)
             "titles": g_titles or ([title, brand] if brand else [title]),
             "texts": g_texts or ([text0] if text0 else []),
@@ -1329,7 +1339,7 @@ def _create_tp1_single(
                                      grid_cookie=grid_cookie)
         slset = a.get("sitelink_set_id")
         wkl = int(budget_rub) if budget_rub else int(cpa_value_rub) * 10
-        _mp_disabled = _enabled_minus_places(slepok)      # #21 минус-площадки РСЯ (v5-путь tp1, per-слепок)
+        _mp_disabled = _enabled_minus_places(slepok)      # #21 минус-площадки РСЯ (v5-путь tp1, общий список, slepok игнорируется)
         try:
             _finalize_rsya(
                 login, campaign_id, name=name, goal_id=goal_id or 0,
@@ -1604,8 +1614,11 @@ def _struct_ct_names(slepok: str, site_type: str) -> dict:
     """{ctNNNN: имя темы из структуры слепка} — ТОЛЬКО для НЕ-авто слепков (dmp и будущих B2B).
     Имя группы у них берём из структуры (= выгрузка кабинета: «Идентификация», «Определение»…),
     а НЕ из авто-фида `feeds_ct_model` (он давал «Авто» всем ct — дубли имён групп, инцидент 2026-07-12).
-    Для авто-слепков возвращает {} → caller сохраняет прежнее поведение (ct_model)."""
-    import os as _osn
+    Для авто-слепков возвращает {} → caller сохраняет прежнее поведение (ct_model).
+
+    ⚠️ У caller'ов эта карта имеет ПРИОРИТЕТ над `_ag_part1_map()` (справочник марок): авто-ct
+    может совпасть с темой не-авто слепка (ct0084 = авто «Faw Bestune T77» и dmp «Конкуренты»), и тогда
+    справочник подменил бы B2B-тему марка-брендом. Приоритет исправлен 2026-07-18."""
     import re as _ren
     key = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
     ck = (key, site_type or "")
@@ -1613,9 +1626,8 @@ def _struct_ct_names(slepok: str, site_type: str) -> dict:
         return _STRUCT_CT_NAME_CACHE[ck]
     out: dict = {}
     try:
-        path = _osn.path.join(_osn.path.dirname(__file__), "slepki_structure.json")
-        with open(path, encoding="utf-8") as f:
-            d = json.load(f)
+        from . import slepki_store as _ss   # структура из per-slepok файлов (assemble)
+        d = _ss.assemble()
         dl = next((x for x in d.get("directologists", []) if x.get("key") == key), None)
         if dl and dl.get("auto", True) is False:          # имя из структуры — ТОЛЬКО не-авто
             st = next((s for s in dl.get("site_types", []) if s.get("name") == site_type), None)
@@ -1658,12 +1670,10 @@ def _struct_items(slepok: str, site_type: str, tp_code: str) -> list:
     """per-adgroup 1в1: по одному элементу на структурный item (БЕЗ дедупа ct).
     → [{"ct":ctNNNN, "gk":<group-slug>, "name":<имя из структуры>}]. gk — авторитетное поле
     item (``gk``) ИЛИ выведенное из ``gc`` через kp._group_slug. Формат splits (dmp) → []."""
-    import os as _osp
     key = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
     try:
-        path = _osp.path.join(_osp.path.dirname(__file__), "slepki_structure.json")
-        with open(path, encoding="utf-8") as f:
-            d = json.load(f)
+        from . import slepki_store as _ss   # структура из per-slepok файлов (assemble)
+        d = _ss.assemble()
     except Exception:  # noqa: BLE001
         return []
     dl = next((x for x in d.get("directologists", []) if x.get("key") == key), None)
@@ -1735,8 +1745,10 @@ def _tp1_pack_groups(login: str, slepok: str, site_type: str, r_code: str, href:
             continue
         if segment and _ct_segment(ct) != segment:
             continue
-        # не-авто (dmp): имя = leadgen(описание кодера) → структура t(выгрузка) → ct; НИКОГДА авто-фид «Авто».
-        raw_brand = ((ct_name.get(ct) or _struct_names.get(ct) or ct) if _struct_names
+        # не-авто (dmp): имя = структура t(выгрузка) → leadgen(описание кодера) → ct; НИКОГДА авто-фид «Авто».
+        # Структура ПЕРВАЯ: _ag_part1_map мёржит авто-справочник gsheet_naming, и авто-ct может
+        # совпасть с темой слепка (ct0084: авто «Faw Bestune T77» ↔ dmp «Конкуренты») → тема стала бы маркой.
+        raw_brand = ((_struct_names.get(ct) or ct_name.get(ct) or ct) if _struct_names
                      else (ct_name.get(ct) or ct_model.get(ct) or ct))
         # Минус-фильтр групп: марка/модель отмечена в «Глобальных правилах» → группа не создаётся
         if _minus_m_set or _minus_mod_by_brand:
@@ -1926,7 +1938,7 @@ def _create_tp1_via_cookie(
         slepok=slepok, site_type=site_type, prefer_callout_texts=callout_texts,
         prefer_callout_ids=callout_ids)
     _slset = _assets.get("sitelink_set_id")
-    _mp_disabled = _enabled_minus_places(slepok)              # #21 минус-площадки РСЯ (per-слепок, 1 раз на аккаунт)
+    _mp_disabled = _enabled_minus_places(slepok)              # #21 минус-площадки РСЯ (общий список, slepok игнорируется, 1 раз на аккаунт)
     out_campaigns = []
     for nm, _mode, pay_conv in variants:
         if job and job.get("cancel"):                        # отмена: стоп ПЕРЕД cpa-вариантом пары
@@ -2031,7 +2043,15 @@ def _create_tp1_via_cookie(
                             _default_text = (_trim_clean(texts[0] if texts else "", 81)
                                              or "Официальный дилер. Тест-драйв и выгодные условия по кредиту. Авто в наличии.")
                             _shop_filters = {}
-                            for _sid, _src in zip(_shop_ids, [s for s in _grid_shop_items]):
+                            # #ФИКС-4: адресовать фильтры через enumerate(_add_ids) параллельно
+                            # _grid_shop_items (тот же паттерн, что _name_by_shop 2023-2025).
+                            # zip(_shop_ids_без_None, _grid_shop_items_полный) при частичном
+                            # ответе давал смещение → фильтры чужой марки/модели на ShoppingAd.
+                            for _ai, _raw in enumerate(_add_ids):
+                                if not _raw or _ai >= len(_grid_shop_items):
+                                    continue
+                                _sid = int(_raw)
+                                _src = _grid_shop_items[_ai]
                                 _conds = []
                                 _bf2 = _src.get("brand_field") or "vendor"
                                 _mf2 = _src.get("model_field") or "model"

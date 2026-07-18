@@ -9,6 +9,7 @@ import concurrent.futures as _cf
 import json
 import re
 import sys
+import time
 
 from . import campaign as cmc
 from .create_set_units import is_units_exhausted
@@ -25,7 +26,27 @@ _HTTP_EXECUTOR = _cf.ThreadPoolExecutor(max_workers=32, thread_name_prefix="v5ht
 _TRANSIENT_MARKERS = (
     "timeout", "timed out", "connection", "temporar", "rate limit",
     "too many request", "429", "503", "502", "unavailable", "gateway",
+    # РУССКИЕ формулировки Директа (Accept-Language: ru) — без них «Сервис временно недоступен»
+    # не считался транзиентным и позиция падала целиком (ads.add одним чанком на 96 групп).
+    # Только реально повторяемые: ошибки валидации (4000/DefectIds/«цель не найдена») сюда НЕ попадают.
+    "временно недоступ", "сервис недоступен", "сервер недоступен",
+    "повторите", "попробуйте позже", "попробуйте ещё раз", "попробуйте еще раз",
+    "превышено количество запросов", "слишком много запросов", "сервер занят",
 )
+# Ретраи транзиентных ответов: 3 попытки, backoff 2с/5с. Держим коротким — чанк большой,
+# джоба и так идёт десятками минут; бесконечный цикл недопустим.
+_HTTP_RETRY_TRIES = 3
+_HTTP_RETRY_BACKOFF = (2, 5)
+
+
+def _creates_objects(body: dict) -> bool:
+    """True для методов, СОЗДАЮЩИХ объекты (``add``): повтор после обрыва связи даёт дубли.
+
+    Остальные методы Директа идемпотентны по Id (``get``/``update``/``delete``/``suspend``/
+    ``resume``/``archive``) — их повтор безопасен даже когда неизвестно, доехал ли запрос.
+    Метод не распознан → считаем создающим (консервативно, дубль дороже отказа)."""
+    method = str((body or {}).get("method") or "").strip().lower()
+    return not method or method.startswith("add")
 
 
 def direct_tokens() -> dict:
@@ -92,18 +113,45 @@ def v5_units(token: str, login: str) -> dict | None:
     return None
 
 
-def bounded_post(url: str, headers: dict, body: dict) -> dict:
+def bounded_post(url: str, headers: dict, body: dict, tries: int = _HTTP_RETRY_TRIES) -> dict:
+    """POST в Директ с ретраями ТОЛЬКО на транзиентные ответы (``is_transient``).
+
+    Различаем ДВА источника транзиентной ошибки:
+
+    * **Ответ Директа** — пришёл разобранный JSON с верхнеуровневым ``error``. Это отказ запроса
+      ЦЕЛИКОМ (ни одна операция чанка не применена), повтор безопасен для любого метода.
+    * **Локальный сбой** — обрыв связи или hard timeout: ответа нет, и применился ли запрос
+      НЕИЗВЕСТНО (сервер мог принять его и не успеть ответить). Здесь повторяем только
+      идемпотентные методы; ``add`` не повторяем — иначе дубли на весь чанк.
+
+    Пер-элементные ошибки лежат в ``result.AddResults`` и ретрай не вызывают. Ошибки валидации
+    (4000, DefectIds, «цель не найдена») детерминированы — маркеров не содержат и не повторяются."""
     import requests
 
     def _do():
         return requests.post(url, headers=headers, json=body, timeout=60).json()
 
-    try:
-        return _HTTP_EXECUTOR.submit(_do).result(timeout=HTTP_HARD_TIMEOUT)
-    except _cf.TimeoutError:
-        return {"error": {"error_string": f"hard timeout {HTTP_HARD_TIMEOUT}s exceeded"}}
-    except Exception as exc:  # noqa: BLE001
-        return {"error": {"error_string": str(exc)[:120]}}
+    attempts = max(1, int(tries or 1))
+    unsafe_after_local_failure = _creates_objects(body)
+    payload: dict = {}
+    for attempt in range(attempts):
+        local_failure = False
+        try:
+            payload = _HTTP_EXECUTOR.submit(_do).result(timeout=HTTP_HARD_TIMEOUT)
+        except _cf.TimeoutError:
+            local_failure = True
+            payload = {"error": {"error_string": f"hard timeout {HTTP_HARD_TIMEOUT}s exceeded"}}
+        except Exception as exc:  # noqa: BLE001
+            local_failure = True
+            payload = {"error": {"error_string": str(exc)[:120]}}
+        if not isinstance(payload, dict) or not is_transient(payload):
+            return payload
+        if local_failure and unsafe_after_local_failure:
+            return payload
+        if attempt + 1 >= attempts:
+            break
+        time.sleep(_HTTP_RETRY_BACKOFF[min(attempt, len(_HTTP_RETRY_BACKOFF) - 1)])
+    return payload
 
 
 def v5_call(svc: str, method: str, token: str, login: str, params: dict) -> dict:
