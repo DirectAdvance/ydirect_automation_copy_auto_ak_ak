@@ -304,6 +304,21 @@ def verify_grid_content(name: str, campaign_id: int | None,
                            "name": nm, "id": cid, "groups": _utm_missing,
                            "note": f"{_utm_missing} групп без UTM-метки (trackingParams пуст)"})
 
+    # ── ОХВАТ пер-групповых проверок (анти-«проверка молча ничего не проверяет») ────────
+    # trackingParams / relevanceMatch / regionsInfo приходят из фрагмента `...on GdUnifiedAdGroup`,
+    # поэтому группа ДРУГОГО типа выпадает из ВСЕХ пер-групповых проверок сразу (zero-kw,
+    # автотаргет, гео, UTM) — grid_read._enrich_group_targeting её пропускает. Пока сервис создаёт
+    # ЕПК-группы (Grid AddUnifiedAdGroups / v501 adgroups.add на UNIFIED_CAMPAIGN) счётчик = 0 и код
+    # не появляется НИКОГДА. Появился — значит часть кампании не проверяется вовсе, и это надо
+    # увидеть, а не молча пропустить. Report-only (warn, без ремонта): недобор охвата — не дефект
+    # кампании, а дефект проверки.
+    _unsup = counts.get("groups_unsupported")
+    if tp in (1, 2, 3, 4, 5) and isinstance(_unsup, int) and _unsup > 0:
+        issues.append({"severity": "warn", "code": "GROUPS_TYPE_UNSUPPORTED_LIVE",
+                       "name": nm, "id": cid, "groups": _unsup,
+                       "note": (f"{_unsup} групп не типа GdUnifiedAdGroup — пер-групповые проверки "
+                                f"(ключи/автотаргет/гео/UTM) их НЕ покрывают (report-only)")})
+
     issues.extend(_verify_campaign_spec(nm, cid, tp, counts))
     _b_issues, _b_repair = _verify_build_vs_live(nm, cid, counts, exp)
     issues.extend(_b_issues)
@@ -319,6 +334,15 @@ def verify_grid_content(name: str, campaign_id: int | None,
 # (set_campaign_invariants) этих полей НЕ переставляет, а выдумывать ремонт вслепую нельзя
 # (ложный ремонт дороже пропуска, журнал I). Ремонт — отдельным этапом.
 _DRAFT_STATUSES = {"DRAFT", "MODERATION_DRAFT"}
+# ⚠️ Флагаем НЕ «всё, что не DRAFT», а только ЯВНО известные не-черновиковые статусы. Живой Grid
+# на свежесозданной кампании 712882029 подтвердил primaryStatus='DRAFT' (Семён, 2026-07-19), но
+# словарь Grid может пополниться — незнакомое значение → МОЛЧИМ (tri-state fail-safe), иначе одна
+# смена словаря даёт шквал ложных error на каждой кампании набора. Перечень собран по фактическим
+# значениям primaryStatus, встречающимся в коде сервиса (account_service._GRID_STATE:716,
+# autorules/sensors/campaign_status.py:9) — это статусы ЗАПУЩЕННОЙ кампании, а сервис публикует
+# только черновики. ARCHIVED намеренно НЕ включён: архивный черновик — не «опубликована».
+_NON_DRAFT_STATUSES = {"ACTIVE", "ACCEPTED", "ENDED", "STOPPED", "SUSPENDED", "PAUSED",
+                       "MODERATION", "WAIT_MODERATING", "REJECTED"}
 
 
 def _verify_campaign_spec(nm: str, cid: int | None, tp: int | None,
@@ -368,7 +392,8 @@ def _verify_campaign_spec(nm: str, cid: int | None, tp: int | None,
     # (DoD §3.0 «Только ЧЕРНОВИК», launch=False). Судим по status.primaryStatus;
     # aggregatedStatusInfo.status кладём в отчёт как второй источник.
     prim = counts.get("status_primary")
-    if isinstance(prim, str) and prim.strip() and prim.strip().upper() not in _DRAFT_STATUSES:
+    _prim_u = prim.strip().upper() if isinstance(prim, str) else ""
+    if _prim_u and _prim_u not in _DRAFT_STATUSES and _prim_u in _NON_DRAFT_STATUSES:
         out.append({"severity": "error", "code": "CAMPAIGN_NOT_DRAFT_LIVE",
                     "name": nm, "id": cid, "actual": prim,
                     "aggregated": counts.get("aggregated_status"),
@@ -435,6 +460,10 @@ def _verify_build_vs_live(nm: str, cid: int | None, counts: dict[str, Any],
             continue          # измерение не прочитано → молчим (tri-state fail-safe)
         if live_key == "keywords_count" and counts.get("keywords_truncated"):
             continue          # ответ Grid обрезан по лимиту → по ключам не судим
+        if live_key == "adgroups" and counts.get("adgroups_truncated"):
+            continue          # выборка групп обрезана по лимиту → по группам не судим
+        if live_key == "ads" and counts.get("ads_truncated"):
+            continue          # выборка объявлений обрезана по лимиту → по объявлениям не судим
         live = counts.get(live_key)
         if not isinstance(live, int):
             continue
@@ -453,4 +482,43 @@ def _verify_build_vs_live(nm: str, cid: int | None, counts: dict[str, Any],
                                        else " (in-job: отложенный демон ещё доливает контент)"))})
             if phase == "delayed":
                 repair.append(_keywords_repair(nm, cid) if rkind == "keywords" else _repair(nm, cid))
+    issues.extend(_verify_build_ads_by_type(nm, cid, counts, build, phase))
     return issues, repair
+
+
+def _verify_build_ads_by_type(nm: str, cid: int | None, counts: dict[str, Any],
+                              build: dict[str, Any], phase: str) -> list[dict[str, Any]]:
+    """Недобор ТЕКСТОВЫХ объявлений, замаскированный суммой (ревью этапа 1, находка A5).
+
+    Измерение «объявления» сверяет СУММУ ``ads+shopping_ads+listing_ads`` против общего
+    live-счётчика ``ads``, поэтому частичный перекос по типам сходится: build 10 текстовых +
+    100 товарных против факта 0 + 110 даёт 110 == 110 и молчит.
+
+    Раздельная сверка ДЁШЕВА: ``adaptive_total`` — это уже посчитанное число GdAdaptiveTextAd из
+    того же ответа ``AdaptiveImages`` (``_enrich_adaptive_images`` и так разбирает ``__typename``),
+    **ноль новых запросов**. Товарку не ломает: у неё ``build.ads`` отсутствует/0 → выходим сразу.
+
+    ⚠️ ТОЛЬКО ``warn``, без repair-кандидата. Соответствие «``build.ads`` ⇒ GdAdaptiveTextAd»
+    живым прогоном НЕ подтверждено: если какой-то билдер кладёт плоский GdTextAd, ``adaptive_total``
+    будет 0 при живых объявлениях и код даст ложняк. Поднимать до ``error`` — только после того,
+    как живой прогон покажет чистый ноль этого кода на здоровом наборе (см. DOD.md §1.b).
+    """
+    if not counts.get("adaptive_images_read"):
+        return []                       # типы не прочитаны → молчим (tri-state fail-safe)
+    if counts.get("ads_truncated"):
+        return []
+    try:
+        expected_text = int(build.get("ads") or 0)
+    except (TypeError, ValueError):
+        return []
+    if "ads" not in build or expected_text <= 0:
+        return []                       # товарка (build.ads=0/нет) — легитимно, не сверяем
+    live_text = counts.get("adaptive_total")
+    if not isinstance(live_text, int) or live_text >= expected_text:
+        return []
+    return [{"severity": "warn", "code": "BUILD_LIVE_TEXT_ADS_UNDERCOUNT",
+             "name": nm, "id": cid, "dimension": "текстовые объявления",
+             "expected": expected_text, "actual": live_text, "phase": phase,
+             "note": (f"текстовые объявления: билдер создал {expected_text}, "
+                      f"в кабинете {live_text} адаптивных (общая сумма по типам могла сойтись) "
+                      f"— report-only")}]

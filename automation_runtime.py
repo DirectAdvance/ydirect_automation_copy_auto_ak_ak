@@ -3410,7 +3410,11 @@ def _run_spec_audit_and_fix(login: str, ctx: dict, *, skip_recreate: bool = Fals
     """
     csa = _configure_spec_audit()
     body = (ctx or {}).get("body") or {}
-    job_result = {"body": body, "agency": ctx.get("agency") or ""}
+    # ``results`` ОБЯЗАТЕЛЕН: campaign_spec_audit.audit_account_jobs строит из него builds_by_cid
+    # для отложенной сверки «build ⇄ кабинет» (_audit_build_vs_live). Без ключа сверка получала
+    # пустой словарь и МОЛЧАЛА во всём отложенном проходе (ревью этапа 1, находка A1).
+    job_result = {"body": body, "agency": ctx.get("agency") or "",
+                  "results": ctx.get("results") or []}
     report = csa.audit_account_jobs(login, job_result)
     out = {
         "campaigns": report.get("campaigns"),

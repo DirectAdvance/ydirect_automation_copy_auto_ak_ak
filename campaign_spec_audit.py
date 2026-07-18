@@ -1546,7 +1546,12 @@ def _audit_build_vs_live(campaign_id: int, campaign_name: str, build: dict | Non
                 seen = True
         return total if seen else None
 
-    dims = [("группы", _exp("groups", "adgroups"), len(supported), "rebuild_missing_content")]
+    dims = []
+    if not meta.get("adgroups_truncated"):
+        # Секция adGroups упёрлась в лимит _GFE_LIMIT → len(supported) недосчитан, судить по
+        # группам нельзя (ложный «live < build» → ложный rebuild). Раньше гейт стоял только
+        # на ключевом измерении (ревью этапа 1, находка A4).
+        dims.append(("группы", _exp("groups", "adgroups"), len(supported), "rebuild_missing_content"))
     if not meta.get("keywords_truncated") and not meta.get("adgroups_truncated"):
         dims.append(("ключи", _exp("keywords"),
                      sum(int(g.get("keyword_count") or 0) for g in supported), "keywords_repair"))

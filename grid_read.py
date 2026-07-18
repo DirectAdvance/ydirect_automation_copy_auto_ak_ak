@@ -258,6 +258,13 @@ class GridReadClient:
         group_rows: list[tuple[int, int, int, dict, int, list, Any]] = []
         search_cids: set[int] = set()          # только tp2/4/5 → showConditions (per-campaign запрос)
         at_by_design: set[int] = set()   # АТ-кампании: группы живут на relevanceMatch, 0 ключей — норма
+        # Группы НЕ типа GdUnifiedAdGroup: их поля живут во фрагменте `...on GdUnifiedAdGroup`
+        # (grid_finalize._GROUPS_FOR_EDIT_LITE_Q) и НЕ приходят вовсе, поэтому ВСЕ пер-групповые
+        # проверки (zero-kw / автотаргет / гео / UTM) их пропускают. Раньше это было МОЛЧА: если бы
+        # сервис начал создавать группы другого типа, проверки стали бы вакуумными и никто бы не
+        # узнал. Теперь считаем их явно → GROUPS_TYPE_UNSUPPORTED_LIVE (warn, report-only).
+        unsupported: dict[int, int] = defaultdict(int)
+        seen_any: set[int] = set()
         for grp in rows:
             cid = grp.get("campaign_id")
             if cid not in counts:
@@ -265,7 +272,11 @@ class GridReadClient:
             camp_name = str(grp.get("campaign_name") or "")
             m = _tp_re.match(camp_name)
             tp = int(m.group(1)) if m else None
-            if tp not in (1, 2, 3, 4, 5) or not grp.get("supported"):
+            if tp not in (1, 2, 3, 4, 5):
+                continue
+            seen_any.add(int(cid))
+            if not grp.get("supported"):
+                unsupported[int(cid)] += 1
                 continue
             # «… - Автотаргетинг - …» (нейминг набора): группы БЕЗ ключей по дизайну →
             # zero-kw для них не дефект (живой ложняк NO_KEYWORDS_LIVE: tp5 «Марки - Автотаргетинг»
@@ -325,8 +336,19 @@ class GridReadClient:
             if isinstance(tracking, str) and not tracking.strip():
                 utm_missing[cid] += 1
         _kw_trunc_batch = bool(_meta.get("keywords_truncated"))
+        _ag_trunc_batch = bool(_meta.get("adgroups_truncated"))
         for cid in counts:
+            if cid in seen_any:
+                # Охват пер-групповых проверок: сколько групп tp1–tp5 этой кампании выпало из
+                # разбора по типу. >0 → часть группового измерения НЕ проверена вовсе.
+                counts[cid]["groups_unsupported"] = int(unsupported.get(cid, 0))
             if cid in seen_groups:
+                # Обрезка ГРУППОВОЙ секции GroupsForEditLite (батч упёрся в _GFE_LIMIT).
+                # ⚠️ counts["adgroups"] считается НЕ отсюда, а отдельным запросом AdGroups
+                # (limit 5000) — его признак уже выставлен выше. Здесь ИЛИ-им: набор, у которого
+                # обрезалась хоть одна из групповых выборок, по числу групп не судим (ревью A4).
+                if _ag_trunc_batch:
+                    counts[cid]["adgroups_truncated"] = True
                 counts[cid]["search_zero_kw_groups"] = int(zero_kw.get(cid, 0))
                 counts[cid]["wrong_autotarget_groups"] = int(wrong_at.get(cid, 0))
                 counts[cid]["groups_edit_read"] = True
@@ -416,6 +438,11 @@ class GridReadClient:
                 # Обрезка ключевого измерения по лимиту Grid (>10000 строк) — при True по
                 # ключам НЕ судим (недосчёт дал бы ложный «live < build» и ложный ремонт).
                 "keywords_truncated": False,
+                # То же для ГРУППОВОГО измерения и для объявлений (запросы AdGroups/Ads, limit 5000).
+                "adgroups_truncated": False, "ads_truncated": False,
+                # Охват пер-групповых проверок: группы не-GdUnifiedAdGroup в разбор не попадают
+                # (их поля не приходят из фрагмента) → None=не читали, 0=все группы разобраны.
+                "groups_unsupported": None,
                 # Гео и UTM групп (тот же ответ GroupsForEditLite, 0 доп. запросов) — tri-state.
                 "campaign_region_ids": None, "geo_missing_groups": None,
                 "geo_regions_inconsistent": None, "geo_read": False,
@@ -483,9 +510,17 @@ class GridReadClient:
                     ad_counts[int(row.get("campaignId"))] += 1
                 except (TypeError, ValueError):
                     continue
+            # Обрезка ЭТИХ двух запросов (limit 5000 на чанк кампаний) — именно они дают
+            # counts["adgroups"]/counts["ads"], по которым судит сверка «build ⇄ кабинет».
+            # Ответ ровно на лимит ⇒ строки почти наверняка усечены → недосчёт → ложный
+            # BUILD_LIVE_UNDERCOUNT. Признак чисто локальный, ноль новых запросов.
+            _ag_trunc = len(ag_rows) >= 5000
+            _ad_trunc = len(ad_rows) >= 5000
             for cid in chunk:
                 counts[cid]["adgroups"] = int(ag_counts[cid])
                 counts[cid]["ads"] = int(ad_counts[cid])
+                counts[cid]["adgroups_truncated"] = _ag_trunc
+                counts[cid]["ads_truncated"] = _ad_trunc
                 counts[cid]["bad_adgroup_names"] = int(bad_ag_counts[cid])
                 counts[cid]["bad_adgroup_name_examples"] = bad_ag_examples.get(cid, [])[:5]
 

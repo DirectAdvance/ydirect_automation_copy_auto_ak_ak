@@ -822,7 +822,7 @@ def _chunks(seq: list, n: int):
         yield seq[i:i + n]
 
 
-def step_keywords(ctx: CopyCtx, grid_batch: int = 1000, v5_batch: int = 200) -> dict:
+def step_keywords(ctx: CopyCtx, grid_batch: int = 1000, v5_batch: int = 900) -> dict:
     """ФАЗА 3c п.2. Добавить ключевые фразы копии Grid-FIRST (``grid.add_keywords`` по куки, 0
     v5-баллов), v5 ``keywords.add`` — ТОЛЬКО фолбэк. Раньше базовый движок (direct_copy.phase_upload)
     слал ВСЁ через v5 (главный пожиратель баллов → 152), а Grid добирал лишь остаток. Теперь v5-путь

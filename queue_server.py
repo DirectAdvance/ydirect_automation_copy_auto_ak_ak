@@ -316,10 +316,12 @@ def _jobs_db_recover() -> None:
             time.sleep(5)                                # Grid: пауза после sweep для стабилизации
             for job_id, lg, body in interrupted_jobs:
                 try:
-                    new_jid = _requeue_missing_positions_once(job_id, lg, body)
-                    if new_jid:
+                    # Доставка может поставить ДВЕ джобы (cookie-часть + units-часть) — логируем
+                    # все, иначе в следе рестарта видна только первая (ревью ретрая, находка Б2).
+                    new_jids = _requeue_missing_positions_once(job_id, lg, body) or []
+                    if new_jids:
                         print(f"[startup-reconcile] {lg}: восстановление прерванных позиций "
-                              f"→ джоба {new_jid} (родитель {job_id})", flush=True)
+                              f"→ джобы {','.join(new_jids)} (родитель {job_id})", flush=True)
                 except Exception:  # noqa: BLE001
                     pass
         threading.Thread(target=_bg_sweep, args=(list(_interrupted_logins), _interrupted_jobs), daemon=True).start()
@@ -559,7 +561,8 @@ def _requeue_missing_positions_once(parent_job_id: str, login: str, body: dict) 
     Гейты: (1) у родителя failed>0 или created<total; (2) в result родителя ещё нет маркера
     auto_requeue_missing; (3) сама джоба-доставка (_requeue_of в body) внучек не ставит.
     Тело — то же (без runtime-ключей): RESUME-SKIP в оркестраторе пропустит уже созданные.
-    Возвращает job_id новой джобы или None."""
+    Возвращает СПИСОК job_id поставленных джоб (их может быть две — cookie-часть и units-часть,
+    см. разделение ниже) или None, если доставка не ставилась."""
     try:
         if str((body or {}).get("_requeue_of") or "").strip():
             return None                              # джоба-доставка → без внучек
@@ -619,9 +622,8 @@ def _requeue_missing_positions_once(parent_job_id: str, login: str, body: dict) 
                   f"маркер не проставлен", flush=True)
             return None
         new_jids = []
-        for _part, _via_cookie in ((_cookie_items, True), (_units_items, False)):
-            if not _part:
-                continue                             # пустой набор → лишнюю джобу не плодим
+        _parts = [(p, vc) for p, vc in ((_cookie_items, True), (_units_items, False)) if p]
+        for _part, _via_cookie in _parts:
             jbody = dict(rbody)
             jbody["items"] = _part
             if _via_cookie:
@@ -636,10 +638,18 @@ def _requeue_missing_positions_once(parent_job_id: str, login: str, body: dict) 
             print(f"[requeue-missing] {login}: джоба {_jid} — {len(_part)} позиц., "
                   f"транспорт={'кука (0 баллов)' if _via_cookie else 'прежний (баллы, сегментный tp5)'}",
                   flush=True)
+        if len(new_jids) < len(_parts):
+            # Часть джоб не создалась (_job_new_web вернул None). Маркер auto_requeue_missing
+            # ОДНОРАЗОВЫЙ (гейт :577) — проставив его сейчас, мы бы навсегда закрыли доставку
+            # непоставленной части: cookie-позиции потерялись бы, хотя units-сестра ушла (ревью
+            # ретрая, находка Б1). Не ставим → следующий финал dcr повторит попытку; уже
+            # созданные позиции к тому моменту будут живы в кабинете и из missing выпадут.
+            print(f"[requeue-missing] {login}: создано {len(new_jids)} джоб из {len(_parts)} — "
+                  f"маркер НЕ проставлен, доставка будет повторена", flush=True)
+            return None
         if not new_jids:
             return None
-        new_jid = new_jids[0]
-        p_res["auto_requeue_missing"] = {"job_id": new_jid, "job_ids": new_jids,
+        p_res["auto_requeue_missing"] = {"job_id": new_jids[0], "job_ids": new_jids,
                                          "was_created": created,
                                          "was_failed": failed, "total": total}
         pj["result"] = p_res
@@ -650,7 +660,7 @@ def _requeue_missing_positions_once(parent_job_id: str, login: str, body: dict) 
                 mem["result"]["auto_requeue_missing"] = p_res["auto_requeue_missing"]
         print(f"[requeue-missing] {login}: доставка недостающих позиций джобами {','.join(new_jids)} "
               f"(родитель {parent_job_id}: created={created}/{total}, failed={failed})", flush=True)
-        return new_jid
+        return new_jids
     except Exception:  # noqa: BLE001 — доставка best-effort
         return None
 
@@ -1052,7 +1062,12 @@ def _run_delayed_content_repair(row: dict) -> None:
     deps = _repair_deps()
 
     def _live_plan() -> tuple[dict, dict, int, dict]:
-        lv = _create_set_live_verification(login, results_tree, agency=agency, use_v5=False)
+        # phase="delayed": этот проход бежит в dcr-демоне ПОСЛЕ выдержки (180-240с) — Grid уже
+        # осел, поэтому недобор «build ⇄ кабинет» здесь дефект (error + repair-кандидат), а не
+        # «демон ещё доливает» (warn in-job). Без явного phase дефолт "in_job" глушил бы
+        # BUILD_LIVE_UNDERCOUNT до warn во ВСЕЙ отложенной ветке (ревью этапа 1, находка A1-б).
+        lv = _create_set_live_verification(login, results_tree, agency=agency, use_v5=False,
+                                           phase="delayed")
         pl = (lv or {}).get("repair_plan") or {}
         summ = rgate.summarize_repair_gate(body, results_tree, pl)
         # ВСЕ in-place действия, которые реально исполняет execute_all_in_place (keywords_repair /

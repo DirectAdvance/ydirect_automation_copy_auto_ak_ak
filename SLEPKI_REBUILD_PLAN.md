@@ -156,7 +156,9 @@
 - **F.6 two-way синк** — ✅ дизайн (pre-push rsync 101→M3 без --delete + tmp-excludes, откат=1 строка). Ждёт ОК + 3 ответа Семёна.
 - **Old-naming маппинг** ✅ (`_oldname_map.py`, ~93% автомат). **tp6/7 UAC-скан** ✅ (`_grid_tp67.py`, grid-only детект по 12).
 - ⬜ **БОЕВОЕ ПРИМЕНЕНИЕ (ждёт ОК Семёна, hard-to-reverse):** залить `_proposed_pack`→M3 per-group (без клоббера `_minus_shared`,
-  md5 M3==локальное, cron-safe) → мердж структуры в `slepki_structure.json` → деплой движка + рестарт direct-create
+  md5 M3==локальное, cron-safe) → мердж структуры в per-slepok файлы `direct/slepki/<key>.json` через
+  `slepki_store.write_directologists()` (⚠️ superseded 2026-07-17: монолита `slepki_structure.json` больше нет)
+  → деплой движка + рестарт direct-create
   (движок+файлы вместе из-за гейта) → verifier по шагам → ТОГДА видно в UI «Структура слепков».
 - Добор-шаги после: MANUAL 605, tp6/7-контент (МК-ключи через Grid), media-скачивание (сжатые).
 - Трекер/детали: `scratchpad/slepki_harvest_2026-07-14/_PROGRESS.md`.

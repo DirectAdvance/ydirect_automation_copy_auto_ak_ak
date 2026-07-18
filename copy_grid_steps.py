@@ -267,8 +267,10 @@ def _copy_make_video_resolver(job_id: str, source_grid, maps: dict, workdir: Pat
         return None
     cache_dir = Path(workdir) / "_video_cache"
 
-    def _resolver(meta: dict):
-        cid = str((meta or {}).get("creative_id") or "").strip()
+    def _fetch_one(cid: str):
+        """Скачать mp4 источника в кэш (идемпотентно). → путь | None. Потокобезопасно:
+        каждый cid пишет в свой файл, cache_dir.mkdir(exist_ok=True)."""
+        cid = str(cid or "").strip()
         info = url_map.get(cid) or {}
         url = info.get("original_url") or info.get("live_preview_url") or ""
         if not cid or not url:
@@ -302,5 +304,23 @@ def _copy_make_video_resolver(job_id: str, source_grid, maps: dict, workdir: Pat
         if dst.stat().st_size <= 0:
             return None
         return str(dst)
+
+    # #23 ускорение: prefetch всех mp4 КОНКУРЕНТНО (независимый сетевой I/O). Раньше step_videos
+    # качал по одному лениво (~17с × N ≈ 6.5 мин на 23 ролика — второй по величине хог копии).
+    # Резолвер после prefetch отдаёт из кэша мгновенно. Скачивание в разные файлы → потокобезопасно.
+    try:
+        import time as _time
+        from concurrent.futures import ThreadPoolExecutor
+        _cids = [str(c) for c in url_map.keys()]
+        if _cids:
+            _t0 = _time.monotonic()
+            with ThreadPoolExecutor(max_workers=min(8, len(_cids))) as _ex:
+                _ok = sum(1 for _r in _ex.map(_fetch_one, _cids) if _r)
+            _copy_job_log(job_id, f"видео prefetch: {_ok}/{len(_cids)} mp4 за {_time.monotonic()-_t0:.0f}s (параллельно)")
+    except Exception as _e:  # noqa: BLE001
+        _copy_job_log(job_id, f"видео prefetch пропущен ({str(_e)[:100]}) — ленивое скачивание")
+
+    def _resolver(meta: dict):
+        return _fetch_one(str((meta or {}).get("creative_id") or "").strip())
 
     return _resolver

@@ -230,8 +230,9 @@ campaign_naming; `_TITLE_PROMO_IDX`/бренд-кэши→text_gen; `_CONTENT_CA
 
 > ⚠️ **ИНВАРИАНТ (частая грабля, 2026-07-13): `targeting_profile.json` авторитетен по СОСТАВУ tp —
 > не только structure.** `_slepok_profile_excludes_tp` (`blueprint_targeting.py:218`) вырезает из UI
-> **И из создания** любой tp, которого нет в профиле, даже если он присутствует в
-> `slepki_structure.json`. Практический вывод: **tp6/tp7 должны быть в `targeting_profile.json` у
+> **И из создания** любой tp, которого нет в профиле, даже если он присутствует в структуре
+> (`direct/slepki/<key>.json`, собирается `slepki_store.assemble()`). Практический вывод:
+> **tp6/tp7 должны быть в `targeting_profile.json` у
 > тех слепков, кто реально их запускает** (Терехов реально гонит tp6/tp7, но профиль их не содержал →
 > позиции молча не показывались и не создавались — корень бага у Терехова/Щербаковой/Павлова/Караваева;
 > tp6/tp7 добавлены в профиль 2026-07-13). Profile — не декоративное зеркало structure, а жёсткий шлюз.
@@ -294,9 +295,9 @@ Strategy-варианты (cpc/cpa/crm) с одинаковым таргетин
 (Dim=3 / live=9; Dim=0 / live=5) — для tp6/tp7 ориентироваться на неё нельзя.
 Для tp1–tp5 `Dim_Campaign` по `CampaignName ~ '^tp[1-5]_'` достаточен как дешёвый аудит.
 
-**Reconciler** — отдельный слой между живым кабинетом и `slepki_structure.json`.
-Ручная правка слепков по именам/предположениям запрещена (ошибки: чужемодельные ключи
-у `scherbakova`, over-split целей у `kuderko`):
+**Reconciler** — отдельный слой между живым кабинетом и структурой слепков
+(`direct/slepki/<key>.json`). Ручная правка слепков по именам/предположениям запрещена
+(ошибки: чужемодельные ключи у `scherbakova`, over-split целей у `kuderko`):
 
 ```
 live UAC/Grid payload
@@ -304,7 +305,7 @@ live UAC/Grid payload
 нормализованные позиции
     ↓ staging-артефакты → reconciler_staging/
     ↓ ревью Семёна
-slepki_structure.json / targeting_profile.json
+direct/slepki/<key>.json / targeting_profile.json
 ```
 
 ### Бейдж таргетинга tp1-5 (механика `tgt`) — 2026-07-13
@@ -312,7 +313,8 @@ slepki_structure.json / targeting_profile.json
 > Аналог бейджа tp6/tp7 (см. выше «Метка таргетинга в имени tp6/tp7»), но для текстовых узлов.
 > tp6/tp7 берут метку из имени кампании; tp1-5 — из ЗАПЕЧЁННОГО поля `tgt`.
 
-**Где живёт.** У узлов tp1-tp5 в `slepki_structure.json` есть поле `t['tgt']` — на уровне
+**Где живёт.** У узлов tp1-tp5 в структуре слепка (`direct/slepki/<key>.json`) есть поле
+`t['tgt']` — на уровне
 tp-узла, рядом с `code`/`title`/`groups`. Это короткая метка живого таргетинга:
 `КС` · `КС+авто` · `ауд+авто` · `КС+ауд+авто` · `автотаргетинг`.
 
