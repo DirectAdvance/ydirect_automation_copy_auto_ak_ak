@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .text_norm import _trim_clean
+from .create_set_minus import _MINUS_SET_NAME_MARKER
 
 import json
 
@@ -386,7 +387,7 @@ def _create_text_via_token(
     _errs = build.get("errors") or []
     _units_hit = _is_units(build.get("error")) or any(_is_units(x) for x in _errs)
     # Недозаполнение (нет групп / пак пуст / 152) → удаляем недоделанную РК + defer (фолбэк на куку).
-    if build.get("error") or build.get("skipped") or not build.get("adgroups"):
+    if build.get("error") or build.get("skipped") or not build.get("adgroups") or not build.get("ads"):
         try:
             _delete_partial_campaign(token, login, cid)
         except Exception:  # noqa: BLE001
@@ -645,9 +646,16 @@ def _tp5_account_data(token: str, login: str, slepok: str, site_type: str, agenc
         feeds = [(int(f["id"]), f.get("name") or "", f.get("url") or "") for f in _filter_allowed_feed_rows(_grid_feeds(login, agency)) if f.get("id")]
     jp = _v5_get("promotions", token, login, ["Id"])
     promos = [p["Id"] for p in (jp.get("result") or {}).get("Promotions", [])]
-    jm = _v5_get("negativekeywordsharedsets", token, login, ["Id", "Name"])
-    msets = [(s["Id"], s.get("Name") or "") for s in (jm.get("result") or {}).get("NegativeKeywordSharedSets", [])]
-    minus_set = next((mid for mid, nm in msets if "Минуса общие" in nm), (msets[0][0] if msets else None))
+    # Библиотечный набор минусов цепляем ТОЛЬКО слепкам режима shared_set (как на пути tp2/tp4,
+    # feed_builders:435). Раньше набор резолвился безусловно, и слепку в режиме campaign (pavlov)
+    # на tp5/tp3 всё равно прикреплялся чужой «Минуса общие» в обход режима.
+    # Слепой фолбэк msets[0][0] убран: без набора с нашим маркером в имени НИЧЕГО не цепляем —
+    # иначе на кабинете директолога с собственными наборами прицепился бы ЧУЖОЙ набор.
+    minus_set = None
+    if _SLEPOK_MINUS_MODE.get(slepok) == "shared_set":
+        jm = _v5_get("negativekeywordsharedsets", token, login, ["Id", "Name"])
+        msets = [(s["Id"], s.get("Name") or "") for s in (jm.get("result") or {}).get("NegativeKeywordSharedSets", [])]
+        minus_set = next((mid for mid, nm in msets if _MINUS_SET_NAME_MARKER in nm), None)
     sitelinks, default_text = [], ""
     try:
         conn = _victory_conn()
@@ -822,7 +830,7 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
             pay_for_conversion=(pay == "cpa"),
             callout_ids=_assets["callout_ids"], sitelink_set_id=slset_grid,
             promo_id=(_assets["promos"][0] if _assets["promos"] else None),
-            minus_set_ids=[_assets["minus_set"]] if _assets["minus_set"] else None,
+            minus_set_ids=[_assets["minus_set"]] if _assets.get("minus_set") else None,
             placement_types=list(gf.PLACEMENTS_TP5))
     except Exception as _grid_exc:  # noqa: BLE001
         # Grid-докрутка не блокирует создание, но сбой ДОЛЖЕН быть виден:
@@ -1038,7 +1046,18 @@ def _create_tp3_single(data: dict, token: str, login: str, name: str, mode: str,
             ag, shop = None, None
         if not ag or not shop:
             continue
-        cl.add_listing_ad(ag, feed_id=_fid)
+        # #ФИКС-8: add_listing_ad вне try оставлял частичную tp3 (cid+ShoppingAd) при raise.
+        # Падение листинга → чистим всю недоделанную кампанию и уходим в defer (как _shops-гейт ниже).
+        try:
+            cl.add_listing_ad(ag, feed_id=_fid)
+        except Exception as _lae:  # noqa: BLE001
+            try:
+                _delete_partial_campaign(token, login, cid)
+            except Exception:  # noqa: BLE001
+                pass
+            return {"ok": False, "name": name, "feed": feed_name, "campaign_id": cid,
+                    "partial_deleted": True, "defer": True,
+                    "error": f"tp3 не дозаполнена: ListingAd упал: {str(_lae)[:160]}"}
         try:
             cl._call("adgroups", "update", {"AdGroups": [{"Id": ag, "TrackingParams": cmc.UTM_TEMPLATE}]})
         except Exception:  # noqa: BLE001
@@ -1071,7 +1090,7 @@ def _create_tp3_single(data: dict, token: str, login: str, name: str, mode: str,
             counter_ids=[counter_id] if counter_id else [], pay_for_conversion=pay_for_conv,
             callout_ids=data["callout_ids"], sitelink_set_id=slset,
             promo_id=(data["promos"][0] if data["promos"] else None),
-            minus_set_ids=[data["minus_set"]] if data["minus_set"] else None,
+            minus_set_ids=[data["minus_set"]] if data.get("minus_set") else None,
             placement_types=["ADV_GALLERY"])
     except Exception as e:  # noqa: BLE001
         warn = f"Search-докрутка упала: {str(e)[:140]}"

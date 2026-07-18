@@ -243,13 +243,45 @@ def _collect_pack_minus(slepok: str, site_type: str, tp_code: str) -> list[str]:
     Обходит все ct-папки пака по данному tp, объединяет {slepok}_minus.txt +
     {slepok}_minus_shared.txt, дедуплицирует (case-insensitive), фильтрует ≤7 слов.
     Возвращает список (не обрезанный по символам).
+
+    PACK_MINUS_PER_GROUP_LOST: у ct с per-adgroup-раскладкой (kontent_pack второй проход)
+    минуса лежат в ct["_groups"][gk]["minus"], а top-level ct["minus"] заполняется только из
+    {slepok}_minus_shared.txt. Нет _minus_shared (pavlov) → tp5 давал 0 фраз.
+
+    Per-group минуса поднимаем на кампанию ТОЛЬКО ПЕРЕСЕЧЕНИЕМ, а НЕ объединением, и считаем
+    его по ВСЕМ носителям минусов данного tp: каждой группе (ct с per-adgroup-раскладкой) И
+    каждому легаси-ct без групп (его top-level minus). Фраза, лежащая у КАЖДОГО носителя, и так
+    режет каждую группу → её подъём на кампанию эквивалентен и новых блокировок не вносит.
+    Фраза одного носителя обычно дискриминатор (чужая модель/марка) и на кампании выбила бы
+    СВОИ ключи соседей. Замер на паке (позитивы, срезаемые собственными ключами):
+      • объединение: kryuchkova/Мультибренд/tp5 блокировало 56 938 своих ключей из 60 435;
+      • пересечение только по группам: легаси-ct kryuchkova/Монобренд/tp5 терял 7 508 из 18 290;
+      • пересечение по группам И легаси-ct (этот код): прирост блокировок 0 везде,
+        при этом pavlov/tp5 = 558 фраз (цель фикса, у него все 9 per-group файлов идентичны).
     """
     key = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
-    pack = kp.gather(key, site_type, tp_code)  # {ctNNNN: {"minus":[...]}}
+    pack = kp.gather(key, site_type, tp_code)  # {ctNNNN: {"minus":[...], "_groups": {...}}}
+    _carriers: list[list[str]] = []
+    for _ct in pack.values():
+        _cg = (_ct.get("_groups") or {})
+        if _cg:
+            _carriers += [list(_g.get("minus") or []) for _g in _cg.values()]
+        else:                                  # легаси-ct без групп — тоже носитель
+            _carriers.append(list(_ct.get("minus") or []))
+    _common: set[str] = set()
+    if _carriers:
+        _common = set.intersection(*({str(w).strip().lower() for w in _c if str(w).strip()}
+                                     for _c in _carriers))
     seen: set[str] = set()
     result: list[str] = []
     for ct_data in pack.values():
-        for w in (ct_data.get("minus") or []):
+        # top-level ct["minus"] — как раньше, объединением (легаси-поведение, не трогаем);
+        # per-group — только общие для всех групп фразы.
+        _ct_words = list(ct_data.get("minus") or [])
+        for _grp in (ct_data.get("_groups") or {}).values():
+            _ct_words += [w for w in (_grp.get("minus") or [])
+                          if str(w).strip().lower() in _common]
+        for w in _ct_words:
             w = re.sub(r"\s+", " ", str(w).strip())
             if not w or len(w.split()) > 7:
                 continue
@@ -281,10 +313,11 @@ def _get_or_create_minus_set(token: str, login: str,
                               city: str = "", region: str = "") -> int | None:
     """Вернуть id shared минус-набора для tp2/tp4 (зеркалит путь tp1/tp5).
 
-    1. Берём существующий набор «Минуса общие» из аккаунта — КАК ДЕЛАЮТ tp1/tp5
-       (_tp5_account_data: next(...'Минуса общие'..., msets[0][0])).
-       Если есть — возвращаем сразу, без чтения пака.
-    2. Если аккаунт пуст (нет ни одного набора) — собираем минусы из пака M3
+    1. Берём существующий НАШ набор по маркеру имени «Минуса общие» — как _tp5_account_data.
+       Если есть — возвращаем сразу, без чтения пака. Слепого фолбэка на первый попавшийся
+       набор аккаунта (msets[0][0]) НЕТ: на кабинете директолога с собственными наборами
+       минус-слов он прицепил бы к нашей кампании ЧУЖОЙ набор и порезал показы.
+    2. Если НАШЕГО набора нет — собираем минусы из пака M3
        (все ct данного tp, объединить+дедуп), обрезаем по 20 000 симв. без пробелов,
        создаём новый набор через v5 negativekeywordsharedsets.add.
     3. None при любой ошибке (не валит создание кампании).
@@ -293,12 +326,11 @@ def _get_or_create_minus_set(token: str, login: str,
         jm = _v5_get("negativekeywordsharedsets", token, login, ["Id", "Name"])
         msets = [(s["Id"], s.get("Name") or "")
                  for s in (jm.get("result") or {}).get("NegativeKeywordSharedSets", [])]
-        # Путь tp1/tp5: берём набор с «Минуса общие» в имени, иначе первый из списка
-        minus_set = next((mid for mid, nm in msets if _MINUS_SET_NAME_MARKER in nm),
-                         (msets[0][0] if msets else None))
+        # Путь tp1/tp5: ТОЛЬКО набор с нашим маркером в имени. Чужие наборы аккаунта не берём.
+        minus_set = next((mid for mid, nm in msets if _MINUS_SET_NAME_MARKER in nm), None)
         if minus_set:
             return minus_set
-        # Аккаунт без shared-set: собираем НОВЫЙ library-набор из глоб. вкладки «Минус-слова»
+        # Нашего набора в аккаунте нет: собираем НОВЫЙ library-набор из глоб. вкладки «Минус-слова»
         # + библиотечный слепок {slepok}_minus_shared (+ per-ct _minus) из пака M3.
         # (#9 SLEPOK_MINUS_MISSING_ONLY_GLOBAL: слепковый минус должен попасть в library-набор,
         #  а не только глобальные слова — иначе снапшот слепка не долетает до кампании.)
