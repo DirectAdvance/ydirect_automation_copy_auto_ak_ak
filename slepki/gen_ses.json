@@ -1,0 +1,679 @@
+{
+ "key": "gen_ses",
+ "name": "Слепок_ГенСес",
+ "ui_group": "auto_other",
+ "source_manifest": "gen_ses_source_manifest.json",
+ "site_types": [
+  {
+   "name": "С пробегом",
+   "tp": [
+    {
+     "code": "tp1",
+     "title": "РСЯ",
+     "groups": [
+      {
+       "name": "РСЯ · Марка (по брендам)",
+       "items": [
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Audi марка",
+         "gc": "ct0312_aon_n023_r0000_ct001_ag011_g00",
+         "gk": "aon_n023_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ BAIC марка",
+         "gc": "ct0019_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ BMW марка",
+         "gc": "ct0309_aon_n024_r0000_ct001_ag011_g00",
+         "gk": "aon_n024_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Changan марка",
+         "gc": "ct0029_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Chery марка",
+         "gc": "ct0044_aon_n029_r0000_ct001_ag011_g00",
+         "gk": "aon_n029_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Chevrolet марка",
+         "gc": "ct0059_aon_n030_r0000_ct001_ag011_g00",
+         "gk": "aon_n030_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Citroen марка",
+         "gc": "ct0308_aon_n031_r0000_ct001_ag011_g00",
+         "gk": "aon_n031_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Dongfeng марка",
+         "gc": "ct0067_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ EXEED марка",
+         "gc": "ct0076_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ FAW марка",
+         "gc": "ct0081_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Ford марка",
+         "gc": "ct0259_aon_n032_r0000_ct001_ag011_g00",
+         "gk": "aon_n032_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ GAC марка",
+         "gc": "ct0089_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Geely марка",
+         "gc": "ct0097_aon_n033_r0000_ct001_ag011_g00",
+         "gk": "aon_n033_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Great Wall марка",
+         "gc": "ct0108_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Haval марка",
+         "gc": "ct0111_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Honda марка",
+         "gc": "ct0285_aon_n048_r0000_ct001_ag011_g00",
+         "gk": "aon_n048_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Hyundai марка",
+         "gc": "ct0121_aon_n026_r0000_ct001_ag011_g00",
+         "gk": "aon_n026_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ JAC марка",
+         "gc": "ct0130_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Jaecoo марка",
+         "gc": "ct0140_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Jetour марка",
+         "gc": "ct0143_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Jetta марка",
+         "gc": "ct0150_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ KAIYI марка",
+         "gc": "ct0154_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ KIA марка",
+         "gc": "ct0164_aon_n027_r0000_ct001_ag011_g00",
+         "gk": "aon_n027_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Lada марка",
+         "gc": "ct0181_aon_n025_r0000_ct001_ag011_g00",
+         "gk": "aon_n025_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Lexus марка",
+         "gc": "ct0314_aon_n038_r0000_ct001_ag011_g00",
+         "gk": "aon_n038_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Lifan марка",
+         "gc": "ct0284_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ LIVAN марка",
+         "gc": "ct0191_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Mazda марка",
+         "gc": "ct0283_aon_n039_r0000_ct001_ag011_g00",
+         "gk": "aon_n039_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Mercedes марка",
+         "gc": "ct0313_aon_n028_r0000_ct001_ag011_g00",
+         "gk": "aon_n028_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ MG марка",
+         "gc": "ct0195_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Mitsubishi марка",
+         "gc": "ct0264_aon_n041_r0000_ct001_ag011_g00",
+         "gk": "aon_n041_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Moskvich марка",
+         "gc": "ct0252_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Nissan марка",
+         "gc": "ct0199_aon_n042_r0000_ct001_ag011_g00",
+         "gk": "aon_n042_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ OMODA марка",
+         "gc": "ct0204_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Opel марка",
+         "gc": "ct0282_aon_n035_r0000_ct001_ag011_g00",
+         "gk": "aon_n035_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Peugeot марка",
+         "gc": "ct0281_aon_n043_r0000_ct001_ag011_g00",
+         "gk": "aon_n043_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Renault марка",
+         "gc": "ct0209_aon_n044_r0000_ct001_ag011_g00",
+         "gk": "aon_n044_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Skoda марка",
+         "gc": "ct0215_aon_n051_r0000_ct001_ag011_g00",
+         "gk": "aon_n051_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ SsangYong марка",
+         "gc": "ct0279_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Subaru марка",
+         "gc": "ct0278_aon_n045_r0000_ct001_ag011_g00",
+         "gk": "aon_n045_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Suzuki марка",
+         "gc": "ct0277_aon_n046_r0000_ct001_ag011_g00",
+         "gk": "aon_n046_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ SWM марка",
+         "gc": "ct0229_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Tank марка",
+         "gc": "ct0233_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Toyota марка",
+         "gc": "ct0271_aon_n047_r0000_ct001_ag011_g00",
+         "gk": "aon_n047_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Volkswagen марка",
+         "gc": "ct0238_aon_n049_r0000_ct001_ag011_g00",
+         "gk": "aon_n049_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Volvo марка",
+         "gc": "ct0276_aon_n050_r0000_ct001_ag011_g00",
+         "gk": "aon_n050_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Zotye марка",
+         "gc": "ct0249_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Acura марка",
+         "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+         "_collapsed_regions": [
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00"
+         ],
+         "_region_collapse_count": 8,
+         "gk": "aon_n000_ct001_ag011_g00"
+        }
+       ]
+      },
+      {
+       "name": "РСЯ · Общие",
+       "items": [
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Купить авто",
+         "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+         "_collapsed_regions": [
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00"
+         ],
+         "_region_collapse_count": 3,
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp1_cpc_site",
+         "t": "РСЯ Автосалон",
+         "gc": "ct0013_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "code": "tp2",
+     "title": "Поиск",
+     "groups": [
+      {
+       "name": "Поиск · Марка (по брендам)",
+       "items": [
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Audi марка",
+         "gc": "ct0312_aon_n023_r0000_ct001_ag011_g00",
+         "gk": "aon_n023_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск BAIC марка",
+         "gc": "ct0019_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск BMW марка",
+         "gc": "ct0309_aon_n024_r0000_ct001_ag011_g00",
+         "gk": "aon_n024_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Changan марка",
+         "gc": "ct0029_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Chery марка",
+         "gc": "ct0044_aon_n029_r0000_ct001_ag011_g00",
+         "gk": "aon_n029_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Chevrolet марка",
+         "gc": "ct0059_aon_n030_r0000_ct001_ag011_g00",
+         "gk": "aon_n030_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Citroen марка",
+         "gc": "ct0308_aon_n031_r0000_ct001_ag011_g00",
+         "gk": "aon_n031_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Dongfeng марка",
+         "gc": "ct0067_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск EXEED марка",
+         "gc": "ct0076_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск FAW марка",
+         "gc": "ct0081_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Ford марка",
+         "gc": "ct0259_aon_n032_r0000_ct001_ag011_g00",
+         "gk": "aon_n032_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск GAC марка",
+         "gc": "ct0089_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Geely марка",
+         "gc": "ct0097_aon_n033_r0000_ct001_ag011_g00",
+         "gk": "aon_n033_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Great Wall марка",
+         "gc": "ct0108_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Haval марка",
+         "gc": "ct0111_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Honda марка",
+         "gc": "ct0285_aon_n048_r0000_ct001_ag011_g00",
+         "gk": "aon_n048_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Hyundai марка",
+         "gc": "ct0121_aon_n026_r0000_ct001_ag011_g00",
+         "gk": "aon_n026_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск JAC марка",
+         "gc": "ct0130_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Jaecoo марка",
+         "gc": "ct0140_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Jetour марка",
+         "gc": "ct0143_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Jetta марка",
+         "gc": "ct0150_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск KAIYI марка",
+         "gc": "ct0154_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск KIA марка",
+         "gc": "ct0164_aon_n027_r0000_ct001_ag011_g00",
+         "gk": "aon_n027_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Lada марка",
+         "gc": "ct0181_aon_n025_r0000_ct001_ag011_g00",
+         "gk": "aon_n025_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Lexus марка",
+         "gc": "ct0314_aon_n038_r0000_ct001_ag011_g00",
+         "gk": "aon_n038_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Lifan марка",
+         "gc": "ct0284_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск LIVAN марка",
+         "gc": "ct0191_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Mazda марка",
+         "gc": "ct0283_aon_n039_r0000_ct001_ag011_g00",
+         "gk": "aon_n039_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Mercedes марка",
+         "gc": "ct0313_aon_n028_r0000_ct001_ag011_g00",
+         "gk": "aon_n028_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск MG марка",
+         "gc": "ct0195_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Mitsubishi марка",
+         "gc": "ct0264_aon_n041_r0000_ct001_ag011_g00",
+         "gk": "aon_n041_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Moskvich марка",
+         "gc": "ct0252_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Nissan марка",
+         "gc": "ct0199_aon_n042_r0000_ct001_ag011_g00",
+         "gk": "aon_n042_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск OMODA марка",
+         "gc": "ct0204_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Opel марка",
+         "gc": "ct0282_aon_n035_r0000_ct001_ag011_g00",
+         "gk": "aon_n035_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Peugeot марка",
+         "gc": "ct0281_aon_n043_r0000_ct001_ag011_g00",
+         "gk": "aon_n043_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Renault марка",
+         "gc": "ct0209_aon_n044_r0000_ct001_ag011_g00",
+         "gk": "aon_n044_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Skoda марка",
+         "gc": "ct0215_aon_n051_r0000_ct001_ag011_g00",
+         "gk": "aon_n051_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск SsangYong марка",
+         "gc": "ct0279_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Subaru марка",
+         "gc": "ct0278_aon_n045_r0000_ct001_ag011_g00",
+         "gk": "aon_n045_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Suzuki марка",
+         "gc": "ct0277_aon_n046_r0000_ct001_ag011_g00",
+         "gk": "aon_n046_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск SWM марка",
+         "gc": "ct0229_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Tank марка",
+         "gc": "ct0233_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Toyota марка",
+         "gc": "ct0271_aon_n047_r0000_ct001_ag011_g00",
+         "gk": "aon_n047_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Volkswagen марка",
+         "gc": "ct0238_aon_n049_r0000_ct001_ag011_g00",
+         "gk": "aon_n049_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Volvo марка",
+         "gc": "ct0276_aon_n050_r0000_ct001_ag011_g00",
+         "gk": "aon_n050_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Zotye марка",
+         "gc": "ct0249_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Acura марка",
+         "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+         "_collapsed_regions": [
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00"
+         ],
+         "_region_collapse_count": 8,
+         "gk": "aon_n000_ct001_ag011_g00"
+        }
+       ]
+      },
+      {
+       "name": "Поиск · Общие",
+       "items": [
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Купить авто",
+         "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+         "_collapsed_regions": [
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00",
+          "ct0000_aon_n000_r0000_ct001_ag011_g00"
+         ],
+         "_region_collapse_count": 3,
+         "gk": "aon_n000_ct001_ag011_g00"
+        },
+        {
+         "c": "tp2_cpc_site",
+         "t": "Поиск Автосалон",
+         "gc": "ct0013_aon_n000_r0000_ct001_ag011_g00",
+         "gk": "aon_n000_ct001_ag011_g00"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
