@@ -245,6 +245,23 @@
        ]
       },
       {
+       "sq": "competitors",
+       "label": "Конкуренты",
+       "groups": [
+        {
+         "name": "Конкуренты",
+         "items": [
+          {
+           "c": "tp2_cpc_site",
+           "t": "Конкуренты",
+           "gc": "ct0084_aon_n000_r0000_ct019_ag001_g00",
+           "gk": "aon_n000_ct019_ag001_g00"
+          }
+         ]
+        }
+       ]
+      },
+      {
        "sq": "extended_sya",
        "label": "Расширенное СЯ",
        "groups": [
