@@ -16,7 +16,8 @@ def configure(deps: dict) -> None:
 
 def _create_set_live_verification(login: str, results: list, *, agency: str = "",
                                   use_v5: bool = False,
-                                  account_has_promo_library: bool | None = None) -> dict:
+                                  account_has_promo_library: bool | None = None,
+                                  phase: str = "in_job") -> dict:
     """Read-only live check for create_set results.
 
     Default path is Grid/cookie-only: this is intentional because Direct API
@@ -68,6 +69,7 @@ def _create_set_live_verification(login: str, results: list, *, agency: str = ""
         grid_campaigns_getter=_filtered_grid_getter,
         token_getter=_token_getter,
         account_has_promo_library=account_has_promo_library,
+        phase=phase,
     )
 
 def _create_set_job_context(jid: str) -> tuple[dict, dict, dict, tuple[dict, int] | None]:

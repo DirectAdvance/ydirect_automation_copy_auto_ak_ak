@@ -557,9 +557,12 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
                 _seen_descs.add(_dk)
             _uniq_sl.append({"title": _st, "description": _sd})
     it_sitelinks = _uniq_sl[:8]
-    # Картинки: СНАЧАЛА картинки ЭТОГО слепка (read_slepok_images по канону слепка), потом
-    # общий пул по типу сайта. Иначе пул Мультибренда общий на ВСЕ слепки → Павлов брал бы
-    # картинки Кудерко (баг: read_images ключ = тип сайта, не слепок). ВИДЕО — по логину.
+    # Картинки: порядок задаёт _creative_images_for_ct (automation_runtime.py:2700-2756) —
+    # СНАЧАЛА общий пул Manual по ct (_manual/{ct}), ПОТОМ добор из пака ЭТОГО слепка
+    # (read_slepok_images по канону слепка), потом explicit-ассеты вкладки «Контент».
+    # Добор из слепка включается только если общего пула не хватило до limit.
+    # Канон слепка (_sk) обязателен: read_slepok_images фильтрует image_slepki.txt по слепку,
+    # иначе Павлов получил бы картинки Кудерко (ключ пула — тип сайта, не слепок). ВИДЕО — по логину.
     _sk = _SLEPOK_KEY.get((agent or "").lower(), (agent or "").lower())   # канон слепка
     # Per-domain картинки для не-авто слепков (dmp и будущие): нормализуем домен из ctx.
     # lower + strip + убрать схему + убрать www. + убрать trailing /

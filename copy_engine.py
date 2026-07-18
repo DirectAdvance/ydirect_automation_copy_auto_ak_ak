@@ -685,6 +685,19 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
 
 
 
+def _copy_timed(job_id: str, label: str, fn):
+    """Обёртка-таймер фазы постпроцесса: логирует `[timing] <label>: Ns`.
+
+    Замер #23 (профиль скорости копирования): постпроцесс+verify — ~76% времени копии,
+    но лог фаз без таймстампов не показывал ВНУТРЕННИЙ хог. Тайминг лёгкий (monotonic),
+    остаётся навсегда — видно, какую фазу распараллеливать/батчить."""
+    _t = time.monotonic()
+    try:
+        return fn()
+    finally:
+        _copy_job_log(job_id, f"[timing] {label}: {time.monotonic() - _t:.0f}s")
+
+
 def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                              src_dir: Path, workdir: Path, body: dict) -> dict:
     """Cookie/Grid fallback after direct_copy upload: callouts, ShoppingAd, ListingAd, verification, repair."""
@@ -886,7 +899,7 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
     # не жёг (152). step_keywords добавляет ВСЕ фразы через Grid (0 баллов), v5 — только фолбэк
     # (UserParam-фразы + не прошедшие Grid). group-remap/ставки/UserParam/done-учёт — внутри шага.
     try:
-        kw_rep = csteps.step_keywords(cstep_ctx)
+        kw_rep = _copy_timed(job_id, "keywords", lambda: csteps.step_keywords(cstep_ctx))
         rep["keywords"] = kw_rep
         rep["keywords_added"] = int(kw_rep.get("via_grid") or 0) + int(kw_rep.get("via_v5") or 0)
         if int(kw_rep.get("via_v5") or 0) > 0:
@@ -1002,7 +1015,7 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
     # Перенос Grid-only настроек (isOrganicSearchEnabled / placementTypes) 1:1 из источника.
     # v5-путь создания не трогает эти поля → они остаются на дефолтах Директа. Добавлено 2026-07-17.
     try:
-        rep["organic_placement"] = csteps.step_fix_organic_placement(cstep_ctx)
+        rep["organic_placement"] = _copy_timed(job_id, "organic_placement", lambda: csteps.step_fix_organic_placement(cstep_ctx))
         rep["errors"] += rep["organic_placement"].get("errors") or []
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"organic placement: {str(e)[:200]}")
@@ -1013,20 +1026,20 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
     # кампаний, brandSafety, временной таргетинг, contextLimit и пр.). Расхождения — в отчёт джоба;
     # автопочинка тут НЕ делается: чинит adjacent-шаг repair, а этот честно показывает факт.
     try:
-        rep["settings_diff"] = csteps.step_settings_diff(cstep_ctx)
+        rep["settings_diff"] = _copy_timed(job_id, "settings_diff", lambda: csteps.step_settings_diff(cstep_ctx))
         rep["errors"] += (rep["settings_diff"].get("errors") or [])
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"settings diff: {str(e)[:200]}")
 
     # П.14: стандартные возрастные корректировки −100% (<18, 18–24) через v5.
     try:
-        rep["age_bidmods"] = csteps.step_age_bidmods(cstep_ctx)
+        rep["age_bidmods"] = _copy_timed(job_id, "age_bidmods", lambda: csteps.step_age_bidmods(cstep_ctx))
         rep["errors"] += rep["age_bidmods"].get("errors") or []
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"age bidmods: {str(e)[:200]}")
     # П.13: наш стандартный disabledPlaces на скопированные РСЯ-кампании (Grid).
     try:
-        rep["disabled_places"] = csteps.step_disabled_places(cstep_ctx)
+        rep["disabled_places"] = _copy_timed(job_id, "disabled_places", lambda: csteps.step_disabled_places(cstep_ctx))
         rep["errors"] += rep["disabled_places"].get("errors") or []
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"disabled places: {str(e)[:200]}")
@@ -1034,14 +1047,14 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
     # гео в тексте с падежами; БЕЗ исходного CreativeId и БЕЗ v5-баллов. ДО step_prices, чтобы
     # adPrice лёг на уже приведённый 1:1 контент (RMW step_prices его сохранит).
     try:
-        rep["adaptive_creatives"] = csteps.step_adaptive_creatives(cstep_ctx)
+        rep["adaptive_creatives"] = _copy_timed(job_id, "adaptive_creatives", lambda: csteps.step_adaptive_creatives(cstep_ctx))
         rep["errors"] += rep["adaptive_creatives"].get("errors") or []
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"adaptive creatives: {str(e)[:200]}")
 
     # П.8: НОВЫЕ РЕАЛЬНЫЕ цены из ФИДА target-аккаунта на созданные адаптивные объявления (Grid adPrice).
     try:
-        rep["prices"] = csteps.step_prices(cstep_ctx)
+        rep["prices"] = _copy_timed(job_id, "prices", lambda: csteps.step_prices(cstep_ctx))
         rep["errors"] += rep["prices"].get("errors") or []
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"prices: {str(e)[:200]}")
@@ -1052,7 +1065,7 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
     # реально переносится (скачать mp4 → аплоуд по куки → RMW-привязка). Нет URL/скачивания —
     # честный report-only (внутри step_videos).
     try:
-        rep["videos"] = csteps.step_videos(cstep_ctx)
+        rep["videos"] = _copy_timed(job_id, "videos", lambda: csteps.step_videos(cstep_ctx))
         rep["errors"] += rep["videos"].get("errors") or []
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"videos: {str(e)[:200]}")
@@ -1089,6 +1102,7 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
         rep["errors"].append(f"verification/repair: {str(e)[:220]}")
 
     # Обязательная сверка source↔target после создания (REPORT-ONLY, движок copy_verify).
+    _t_verify = time.monotonic()
     try:
         from . import copy_verify as cv
         verify_result = cv.run_copy_verification(
@@ -1098,6 +1112,7 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
             geo_pairs=cstep_ctx.geo_pairs or [],
             log=(lambda m: _copy_job_log(job_id, m)),
         )
+        _copy_job_log(job_id, f"[timing] copy_verify: {time.monotonic() - _t_verify:.0f}s")
         rep["copy_verify"] = verify_result
         _s = verify_result.get("summary") or {}
         _copy_job_log(job_id, f"copy_verify: ok={_s.get('ok')}, mismatch={_s.get('mismatch')}, "
@@ -1111,6 +1126,7 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
         from . import copy_verify as cv
         _cv_report = rep.get("copy_verify") or {}
         if _cv_report.get("results"):
+            _t_repair = time.monotonic()
             _repair_result = cv.run_copy_repair(
                 _cv_report,
                 src_dir=src_dir,
@@ -1128,6 +1144,7 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                 f"copy_repair: repairs={len(_rr.get('repairs') or [])}, "
                 f"errors={len(_rr.get('errors') or [])}",
             )
+            _copy_job_log(job_id, f"[timing] copy_repair: {time.monotonic() - _t_repair:.0f}s")
             # sitelinks_present: те же под-копированные кампании иногда не получают набор быстрых
             # ссылок при первом проходе (flux во время создания). step_attach_sitelinks идемпотентен
             # (дедуп через maps["sitelinks"]) — повторный вызов дозакрывает пропущенные кампании.

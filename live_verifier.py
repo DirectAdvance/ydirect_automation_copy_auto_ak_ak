@@ -57,7 +57,8 @@ def verify_live_create_set(*, login: str, results: list[dict[str, Any]],
                            grid_content_counts: dict[int, dict[str, int]] | None = None,
                            uac_details: dict[int, dict[str, Any]] | None = None,
                            prefer_grid: bool = True,
-                           account_has_promo_library: bool | None = None) -> dict[str, Any]:
+                           account_has_promo_library: bool | None = None,
+                           phase: str = "in_job") -> dict[str, Any]:
     """Compare created result rows with read-only v5/Grid snapshots.
 
     ``v5_campaigns`` and ``grid_campaigns`` are optional. When a snapshot is not
@@ -67,6 +68,12 @@ def verify_live_create_set(*, login: str, results: list[dict[str, Any]],
     «в БИБЛИОТЕКЕ аккаунта есть промо-акции», прочитанный в штатном потоке создания
     (v5 ``promotions.get``, 0 новых запросов). ``None`` → фолбэк на прокси
     ``_account_has_promo`` (прежнее поведение).
+
+    ``phase`` — фаза проверки для сверки «build ⇄ кабинет»: ``"in_job"`` (по умолчанию) даёт
+    НЕДОБОРУ контента severity ``warn``, потому что in-job верификация структурно НЕ видит
+    контент, который доливает отложенный демон (dcr стартует через +180с ПОСЛЕ статуса done);
+    ``"delayed"`` — отложенный проход, там недобор уже ``error`` с repair-кандидатом.
+    Полное отсутствие (live==0 при build>0) — ``error`` в обеих фазах.
 
     ``prefer_grid=True`` is intentional for this project: Direct API units are
     scarce, while the service can read/create/finalize many entities through the
@@ -148,9 +155,17 @@ def verify_live_create_set(*, login: str, results: list[dict[str, Any]],
             repair.extend(state_repair)
         if kind != "uac" and grid_content_counts is not None:
             counts = content_counts.get(int(cid)) or {}
+            # build — отчёт БИЛДЕРА по ЭТОЙ кампании (уже в результате джобы, 0 новых запросов).
+            # Привязан к развёрнутой кампании, а не к позиции плана, поэтому фан-аут по фидам и
+            # тег «х3» (одна позиция плана → несколько РК) сверку не ломают.
+            _row = c.get("result") or {}
+            _build = (_row.get("build") or _row.get("tp1_build") or _row.get("tp5_build") or {})
             from .grid_content_verifier import verify_grid_content
             grid_issues, grid_repair = verify_grid_content(
-                nm, int(cid), counts, {"account_has_promo": account_promo})
+                nm, int(cid), counts,
+                {"account_has_promo": account_promo,
+                 "build": _build if isinstance(_build, dict) else {},
+                 "phase": phase})
             issues.extend(grid_issues)
             repair.extend(grid_repair)
 
@@ -161,6 +176,7 @@ def verify_live_create_set(*, login: str, results: list[dict[str, Any]],
         "status": status,
         "login": login,
         "checked": checked,
+        "phase": str(phase or "in_job"),
         "prefer_grid": bool(prefer_grid),
         "summary": {
             "created_results": len(created),

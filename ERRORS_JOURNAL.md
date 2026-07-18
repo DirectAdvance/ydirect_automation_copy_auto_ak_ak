@@ -24,6 +24,180 @@
 
 ## Активные / недавние ошибки
 
+### VERIFY_BUILD_LIVE_GAP — результат билдера не сверялся с кабинетом (ЭТАП 1 усиления проверок) (2026-07-18)
+- Симптом: кампания создана, `build` рапортует N групп/объявлений/ключей, а в кабинете их МЕНЬШЕ —
+  верификатор молчал. Сверка была только с НУЛЁМ (`local_result_verifier.py:16-28`,
+  `NO_ADGROUPS_LIVE`/`NO_ADS_LIVE`), «создал 27 групп → в кабинете 9» проходило как «pass».
+  Плюс: гео кампании, счётчик Метрики, цель, недельный бюджет, статус черновика, расписание показов
+  и UTM-на-группах (DoD #2, числился «P1 не покрыт») не проверялись ВООБЩЕ.
+- Где: `grid_content_verifier.verify_grid_content`, `live_verifier.verify_live_create_set`,
+  `grid_read._enrich_group_targeting` / `_enrich_campaign_invariants`,
+  `grid_finalize.read_campaign_invariants` / `groups_for_edit`, `campaign_spec_audit`.
+- Root-cause: два нужных запроса УЖЕ выполнялись, но их результат частично выбрасывался.
+  (1) `CampaignsEditData` извлекал ~12 полей из ~120 — `metrikaCounters` / `meaningfulGoals{goalId}` /
+  `bannerHrefParams` / `hasAddMetrikaTagToUrl` / `strategy.budget{sum,period,autoProlongation}` /
+  `status.primaryStatus` / `aggregatedStatusInfo.status` / `timeTarget{timeBoard,idTimeZone}` уже
+  лежали во фрагменте `UnifiedCampaign`. (2) `GroupsForEditLite` нормализовал гео/минуса/ключи
+  per-group, но `grid_read` писал флаги ТОЛЬКО для поисковых tp2/4/5 — группы tp1/tp3 читались тем же
+  батч-запросом и выбрасывались; `regionsInfo.regionIds` и `trackingParams` выбрасывались у всех.
+- Решение (2026-07-18, ЭТАП 1 — ТОЛЬКО детект, ремонт не реализован):
+  * `grid_finalize.read_campaign_invariants` — +12 tri-state полей спецификации, флаг `campaign_spec_read`;
+    `groups_for_edit(..., meta=)` отдаёт признаки ОБРЕЗКИ по `_GFE_LIMIT`.
+  * `grid_read._enrich_group_targeting` — охват tp2/4/5 → tp1–tp5; +`campaign_region_ids`/
+    `geo_missing_groups`/`geo_regions_inconsistent`/`utm_missing_groups`/`keywords_truncated`.
+  * `grid_content_verifier` — `BUILD_LIVE_MISSING`/`BUILD_LIVE_UNDERCOUNT`, `GEO_MISSING_LIVE`,
+    `GEO_INCONSISTENT_LIVE`, `UTM_MISSING_LIVE`, `METRIKA_COUNTER_MISSING_LIVE`,
+    `CAMPAIGN_GOAL_MISSING_LIVE`, `METRIKA_TAG_OFF_LIVE`, `WEEKLY_BUDGET_MISSING_LIVE`,
+    `BUDGET_PERIOD_UNEXPECTED_LIVE`, `CAMPAIGN_NOT_DRAFT_LIVE`, `TIME_TARGET_MISSING_LIVE`
+    (каталог — DOD.md §1.b).
+  * Фазы: in-job недобор = `warn` (dcr-демон доливает контент ПОСЛЕ статуса done, in-job проверка его
+    структурно не видит), отложенная фаза = `error` + repair.
+- ⚠️ Три ловушки, снятые ЯВНО (иначе гарантированные ложняки):
+  (1) **лимит 10000** (`_GFE_LIMIT`/`_SC_LIMIT`, пагинация за предел не работает) — ответ ровно на лимит
+  помечается `keywords_truncated=True`, и по КЛЮЧАМ такая кампания не судится вовсе;
+  (2) **tp1/tp3 автотаргет-группы** законно живут БЕЗ реальных ключей (спецключ `---autotargeting`
+  оседает как `relevanceMatch`, `create_set_tp1_builders.py:297-304`) → активный `relevanceMatch`
+  гасит zero-kw для tp1/tp3; `WRONG_AUTOTARGET` для tp1 не выдаётся (у РСЯ автотаргет широкий by design);
+  (3) **товарка** (`build.ads=0`, `shopping_ads>0`) — сверка идёт по СУММЕ `ads+shopping_ads+listing_ads`
+  против общего live-счётчика `ads`, и только в сторону НЕДОБОРА (перебор — норма, Grid считает все типы).
+- 0 новых обращений к API — ЗАМЕРЕНО (baseline `git archive HEAD` vs текущий, тот же набор кампаний):
+  **12 Grid-операций до = 12 после**, тот же per-op разрез. `_show_condition_kw_counts` (запрос НА
+  КАМПАНИЮ) намеренно оставлен только для tp2/4/5 — иначе охват tp1/tp3 стоил бы +1 запрос на РСЯ-кампанию.
+- Статус: 🟡 ждёт живого прогона. Офлайн: py_compile (Mac + прод-венв LXC101, md5 совпали),
+  70 юнит-кейсов зелёные на обоих (tri-state / расхождение / UAC / товарка / обрезка / регресс
+  `NO_IMAGES_LIVE`/`NO_ADPRICE_LIVE`/`CALLOUTS_MISSING_LIVE`/`SITELINK_SET_MISSING_LIVE`/`PROMO_MISSING`/
+  инвариант-галочки/`WRONG_AUTOTARGET` tp2).
+- ⚠️ НЕ ЗАВЕРШЕНО (заблокировано): одна строка в `automation_runtime._run_spec_audit_and_fix` —
+  прокинуть `ctx["results"]` в `job_result`, иначе отложенная сверка `_audit_build_vs_live` молчит
+  (`builds_by_cid` пуст). Файл держал file-lock другого окна, править нельзя. Патч — в отчёте.
+- НЕ помогло ранее: — (первая правка этой сигнатуры).
+
+
+### UI_STALE_SLEPKI_TREE — браузер рисует УСТАРЕВШЕЕ дерево слепков (304 на изменившуюся структуру) (2026-07-18)
+- Симптом: правка слепка сделана и лежит на диске, но страница `/direct/automation/slepki` показывает
+  старое дерево. Факт: в `slepki/dmp.json` 36 tp2-items уже с `aon_n000_ct019_ag001_g00`, а браузер
+  запрашивал старый `aon_n000_ct001_ag011_g00`; оба `ui_structure` в логе — `304`.
+- Где: `automation_runtime._ui_structure_payload` (:626), сигнатура кэша → `sig` → ETag.
+- Root-cause: сигнатура строилась как `stat()` по списку имён с фильтром `if (_HERE/name).exists()`.
+  После сплита монолита на per-slepok файлы (`direct/slepki/*.json` + `slepki_store.assemble()`,
+  коммиты `9532844`/`55a953a`) файла `slepki_structure.json` на диске НЕТ → он **молча** выпал из
+  сигнатуры (замер: в сигнатуре остались только `targeting_profile.json` и
+  `gen_ses_source_manifest.json`). Правка ЛЮБОГО слепка не меняла ETag → `304` → старое дерево.
+  ⚠️ Это возврат инцидента 2026-07-16 (tp5 kuderko с «Фидами» висел 8 часов): ETag-механизм тогда
+  и завели, а сплит структуры его тихо обесточил — `exists()`-фильтр превратил пропажу источника
+  в «нет проблем» вместо ошибки.
+- Решение (2026-07-18): сигнатура берёт `slepki_store._signature()` (mtime+size `_order.json` + всех
+  part-файлов — тот же ключ, по которому store инвалидирует свой `assemble()`-кэш) + по-прежнему
+  `targeting_profile.json` и source-манифесты. `automation_runtime.py:623-640`.
+- Проверено фактом (in-process на LXC101, `direct.main.app` test_client): неизменная структура →
+  `304`; правка одной группы в `slepki/dmp.json` → ETag `086de61e…` → `413dcf3f…`, HTTP `200`,
+  новая группа ВИДНА в ответе. До правки та же правка давала неизменный `sig` (`040c80c0…`).
+- Статус: 🟡 фикс задеплоен (рестарт `direct-create` :5020 — именно он отдаёт `/direct/api/ui_structure`,
+  см. nginx: страница на :5023, а `ui_structure`/`tags` падают в общий `/direct/` → :5020),
+  ждёт подтверждения живым открытием страницы Семёном.
+- НЕ помогло ранее: — (первая правка этой сигнатуры; сам ETag-механизм из инцидента 2026-07-16 верен,
+  сломан был только состав сигнатуры).
+- 🔒 Урок на будущее: при разбиении/переносе файла-источника — проверять, не входит ли он в
+  кэш-сигнатуру/ETag. Фильтр `if exists()` в сигнатуре ОПАСЕН: пропажа источника становится
+  «пустым местом» вместо падения.
+
+### RETRY_DELIVERY_BURNS_UNITS — доставка недостающих позиций шла за баллы, а не по куке (2026-07-18)
+- Симптом: после финала создания+добивки ретрай-джоба уходила `via_cookie=false` → жгла баллы v501.
+  Факт с прода: родитель `194c27f8c9b5` → дочерняя `9f7be1ef7fb3` с `via_cookie=false`, доставка ~11 мин
+  от завершения родителя.
+- Где: `queue_server._requeue_missing_positions_once` (:591) — ставит create-джобу через `_job_new_web`.
+  ⚠️ Это **НЕ** `repair_auto.queue_recreate_repair_job` (частая ошибка диагностики: та функция — про
+  recreate-репейр и там «баллы первичны» :652-662 живёт осознанно; путь доставки позиций отдельный).
+- Root-cause: `rbody` копировалось от родителя, фильтруясь только по префиксу `_`. `via_cookie` под
+  фильтр не попадает → наследовался родительский `false` (штатное создание = units-first) → ретрай
+  повторял units-транспорт. Явного решения о транспорте ретрая в коде НЕ было — это был наследуемый
+  дефолт, а не выбор.
+- Решение (2026-07-18, требование Семёна «ретрай по ошибкам — только по кукам через 1-2 мин»):
+  `rbody["via_cookie"]=True` для джобы-доставки. Путь значения: `_job_new_web` → body →
+  `create_set_input.py:154 bool(body.get("via_cookie"))` → `create_set_orchestrator.py:168`.
+  **ИСКЛЮЧЕНИЕ — сегментный tp5** (новый предикат `_position_needs_units`, :634): кукой он физически
+  НЕ создаётся (`_create_shopping_via_cookie` не принимает segment, лепит generic ct0000-группу на все
+  сегменты — инцидент 2026-07-06, 5 одинаковых tp5 porg-psm5h7q6), поэтому cookie-путь для него
+  захардкожен в явный `NO_BRAND_SEGMENTS_AVAILABLE` (`create_set_gallery.py:82-109`). Признак — тот же,
+  что там: `tp5_segment` | `only_gks` | `only_cts`. Есть такие позиции → куку НЕ форсим (флаг
+  set-уровневый, набор один), доставка идёт прежним транспортом + лог. tp5 «Фиды»/products_only
+  сегмента не имеет → идёт кукой штатно.
+- Интервал: `_DELAYED_CONTENT_REPAIR_DELAY_SECONDS` 180→60 в **обоих** местах — `job_repository.py:19`
+  (первый запуск: default `delay_seconds` в `_delayed_content_repair_save`, зовётся без аргумента из
+  `queue_server.py:940`) и `queue_server.py:68` (reschedule-интервал :744 + поле `run_after_seconds`).
+  Демон поллит 60с (`_DELAYED_REPAIR_POLL`) → фактическая задержка 60-120с = 1-2 мин.
+  Проходы/итерации/бюджеты НЕ трогали: `MAX_ITERATIONS=2`, `TIME_BUDGET=1200`, `MAX_RESCHEDULES=1`.
+- Не сломано: штатное создание не затронуто — `via_cookie` в `queue_server.py` присваивается только
+  :607 (эта правка), :1405 (куки-докрутка деферреда) и :1456 (явное согласие юзера через попап 152);
+  тело обычной create-джобы флага не получает.
+- Статус: 🟡 код на Mac + доехал Mutagen на LXC101 (md5 совпал), py_compile Mac+прод OK, pyflakes 0.
+  **Живьём НЕ проверено** — нужен прогон с недобором: дочерняя джоба должна уйти `via_cookie=true`,
+  баллы оператора до/после доставки не должны измениться, задержка от финала родителя 1-2 мин.
+- ⚠️ Открытый вопрос Семёну: при недоборе **сегментного tp5** весь ретрай остаётся на баллах.
+  Альтернатива — форсить куку всегда и отдать сегментный tp5 существующему деферред-механизму
+  (`create_set_gallery.py:104-119` сам планирует token-retry), но это меняет немедленную доставку на
+  ожидание сброса баллов. Выбран вариант без регрессии; развилка — за Семёном.
+- НЕ помогло ранее: (нет — первая правка этой сигнатуры)
+
+### COPY_PROMO_CSRF_COLD — первое grid-промо кампании падало «тихим null» (2026-07-18)
+- Симптом: `promo_attached` mismatch на 12 из 13 кампаний; промо (напр. 1913869 на 12 РК) не создаётся, `PromoClient.add` → (None, None): ни id, ни validation-ошибок.
+- Root-cause: первый POST на свежем `UacClient` уходит БЕЗ `x-csrf-token` (grid молча отдаёт `data:null`), `_absorb_csrf` подхватывает токен только ИЗ ответа. Промо самой массовой кампании идёт первым → всегда cold. **НЕ про RUB/amount=1000000** — опроверг live (warm-add с теми же полями создаёт промо).
+- Решение (`promo.py`, `ac68625`): `_ensure_csrf()` — тёплый `query{__typename}` до первой мутации `add`/`attach`; + retry-on-empty в `add`.
+- ✅ подтверждено run 20 (2026-07-18): promo_attached зелёный, 2 промо на 12 привязок.
+
+### COPY_CALLOUT_UNION_OVERADD — кампания с 0 уточнений у источника получала union из 8 (2026-07-18)
+- Симптом: `callout_count` mismatch src=0 tgt=8 на кампании, которой нет в `campaign_callouts.json`.
+- Root-cause: `step_attach_callouts` падал в `fallback_union` для КАЖДОЙ отсутствующей в связи кампании; но непустой файл связи = связь полная → отсутствие = реально 0 уточнений.
+- Решение (`copy_steps.py`, `deeb10b`): union только при ПУСТОМ файле связи (глоб. фолбэк); известная связь без записи → ничего не вешаем.
+- ✅ подтверждено run 20: callout зелёный, фолбэк-union 0.
+
+### COPY_GRID_TYPENAME_FLAKY — grid соврал «все Unified» → битый CopyCamp-снапшот + падение после delete_drafts (2026-07-18)
+- Симптом: `Grid CopyCamp: Invalid syntax offending token '<EOF>' at column 305`; падение на grid-снапшоте источника, цель уже очищена delete_drafts. Детерминированно, но только когда `_grid_list_campaigns` вернул все выбранные как `GdUnifiedCampaign` (реально TEXT_CAMPAIGN по v5).
+- Root-cause: grid-typename нестабилен (наблюдалось 13-Unified ↔ 0 строк). Роутинг брал grid-cookie путь если ВСЕ unified → неверно для текстовых.
+- Решение (`copy_engine.py`, `f4d9b05`): v5-кросс-чек Type перед grid-unified fast-path; TEXT/DYNAMIC/APP/SMART исключаются из `selected_unified_rows` → идут v5-pull. Настоящие ЕПК/UAC v5 не отдаёт → grid-путь сохраняется.
+- ✅ подтверждено run 19/20: прошли v5-путём, без CopyCamp-падения.
+
+### COPY_KW_SUBCOPY_NO_HEAL — крупные tp2/Поиск кампании под-копировались, auto_repair не лечил ключи/ссылки (2026-07-18)
+- Симптом: `keyword_count` src=2705 tgt=28 / src=8600 tgt=2326 + `sitelinks_present` False на 2 кампаниях; аплоад рапортует failed=0, `copy_repair: repairs=0`.
+- Root-cause: (1) v5 `keywords.add` вернул truthy Id но ключи не осели (под-копирование в момент создания кампании; перемежается). ⚠️ Диагноз «v5 фантомит на поиске» ОПРОВЕРГНУТ live — add оседает; лимит API 1000 ключей/запрос (код 9300). (2) `run_copy_repair` НЕ имел ремонтёра keyword_count/sitelinks → пропуск оставался.
+- Решение (`copy_verify.py`+`copy_engine.py`, `874dff7`): `_repair_keywords` — live `keywords.get` по кампании vs источник (та же гео-морфа), дозалив недостающего ≤900 батч; + идемпотентный sitelinks-retry `step_attach_sitelinks`.
+- ✅ подтверждено run 20: sitelinks-retry создал 3 набора / привязал 12; итог 117/117, ключи 2677/8600 live = источнику.
+
+### GRID_RMW_AD_ASSETS_WIPED — RMW `update_ad_images` стирал ad-level набор быстрых ссылок / кнопку (2026-07-18)
+- Симптом (потенциальный, найден по HAR ДО инцидента): у объявления с СОБСТВЕННЫМ набором быстрых
+  ссылок (`inheritableSitelinkSet.policy=OVERRIDE`) после любого RMW-обновления картинок привязка
+  сбрасывается на наследование от кампании; кнопка «Получить скидку» пропадает.
+- Где: cookie/Grid, `grid_finalize.GridClient.update_ad_images` (UpdateAdaptiveTextAds = full-replace),
+  RMW-чтение `grid_finalize.GridClient.adaptive_ads_for_update`.
+- Root-cause: тот же класс, что `GRID_RMW_DISPLAY_HREF_WIPED` — payload **хардкодил**
+  `inheritableCallouts/inheritableSitelinkSet = {"policy":"INHERIT"}` и вовсе не слал `button`,
+  а мутация REPLACE'ит payload целиком. Живой HAR браузера (`direct.yandex.ru.62har.har`, entry [187],
+  200) в том же вызове шлёт РЕАЛЬНОЕ состояние: `{"policy":"OVERRIDE","sitelinkSetId":"1494667558"}`,
+  `inheritableCallouts {"policy":"CLEAR"}`, `button{action,href}`. Асимметрия имён (как
+  linkTail→displayHref): читается `assetValue`, пишется `sitelinkSetId`.
+- Решение (2026-07-18): `adaptive_ads_for_update` дочитывает `inheritableCallouts{policy assetValue}`,
+  `inheritableSitelinkSet{policy assetValue}`, `permalinkWithPhone{permalinkId phoneId policy}` и
+  отдаёт их уже в WRITE-shape (`_grid_inheritable_write`); `update_ad_images` кладёт их, `button` и
+  `permalinkId/phoneId` as-is, а хардкод INHERIT остался ТОЛЬКО как fallback для вызывающих, которые
+  состояние не читают (`repair_media`) — поведение не хуже прежнего.
+- Статус: 🟡 ждёт живого прогона. Оффлайн-доказательство: реконструкция payload'а из HAR-ответа
+  чтения совпала с тем, что слал браузер, ПОЛЕ В ПОЛЕ (adPrice/button/inheritable*/imageHashes/
+  titles/bodies/href); отличие только в представлении пустой визитки (мы `permalinkId/phoneId:null`,
+  браузер `permalinkWithPhone{policy:CLEAR}` — семантически то же, поле у нас было и раньше).
+- Доработка 2026-07-18 (по ревью, тот же класс потерь — ещё 3 поля): (1) **`inheritableCallouts`
+  БОЛЬШЕ НЕ отдаётся `None`** — write-shape ПОДТВЕРЖДЕНА: интроспекция живой схемы даёт
+  `GdInheritableCalloutsInput{calloutIds:[ID] calloutsIds:[ID] policy:GdAssetInheritancePolicyInput!}`,
+  каноничное имя — **`calloutIds`** (оно есть в 20+ input-типах схемы: `GdUpdateAdaptiveTextAdInput`,
+  все `GdAdd*AdInput`/`GdUpdate*AdInput`, `GdDeleteCalloutsInput`; `calloutsIds` встречается ровно в
+  двух типах — `GdCalloutsInput` и `GdInheritableCalloutsInput` — и всегда дублем того же типа рядом
+  с `calloutIds`, т.е. легаси-алиас). Живой probe `porg-pvrbl7mh`: 102/102 адаптивных объявления несут
+  `{"policy":"OVERRIDE","assetValue":["43516097","43516099","43516104"]}`, т.е. прежний `None` стирал
+  уточнения у ВСЕХ. ⚠️ `assetValue` у уточнений — **СПИСОК** id (у набора быстрых ссылок — скаляр),
+  `_grid_inheritable_write` теперь выводит форму значения из самого значения.
+  (2) `displayHref` не слался вовсе → RMW стирал отображаемую ссылку (тот же probe: linkTail непуст
+  102/102). (3) `button.customText` не читался и не слался → обнулялся текст кастомных кнопок.
+- НЕ помогло ранее: — (неудачных попыток не было).
+
 ### IMG_SSHFS_READ_HANG — зависание на чтении картинки с sshfs без таймаута (2026-07-18)
 - Симптом: прогон создания РК стоит без прогресса, watchdog убивает джобу (`running без прогресса
   > 20 мин`), created 3/20 вместо 20/20 при том, что тот же набор до этого давал 20/20 за 21.8 мин.
@@ -377,6 +551,23 @@
   реальная запись применяется (age_18→age_25→age_18, картинки целы, socdem возвращён 1:1). НЕ задеплоено.
 - НЕ помогло ранее: — (первая правка). Гипотеза «добавить `content_ids` в `_UAC_PATCH_FULL_KEYS`» —
   ОПРОВЕРГНУТА зондом (ключа нет в detail → no-op); не повторять.
+- ⚠️ Дополнение 2026-07-18 (сверка билдера с HAR `direct.yandex.ru.61har.har`, PATCH-entries 128/248,
+  оба 200, браузер шлёт 33 ключа). Прогон РЕАЛЬНОГО `_uac_campaign_patch_payload` на РЕАЛЬНОМ detail
+  из HAR: деривация `content_ids` работает 1:1 с браузером (порядок и состав совпали) — фикс выше
+  подтверждён ещё и офлайн. Вскрылись ДВА пропущенных ключа того же класса:
+  1. **`reserve_landing_id`** — в detail ЕСТЬ (значение `None`), в whitelist не было → уходил из
+     запроса. ЗАКРЫТО: добавлен в `_UAC_PATCH_FULL_KEYS` (`routes_content_editor.py:598`); проходит
+     обычным `if k in detail`, шлётся `None` — 1:1 с браузером.
+  2. **`relevance_match` (автотаргетинг) — НЕ ЗАКРЫТ, открытый риск того же класса.** Ключ в
+     whitelist ЕСТЬ, но в detail его НЕТ: там `relevance_match_categories` (третья асимметрия имён
+     после `contents`/`content_ids`) → `if k in detail` его выбрасывает → full PATCH шлётся БЕЗ
+     автотаргетинг-категорий. Деривация НЕ сделана СОЗНАТЕЛЬНО: составы не совпадают —
+     detail даёт `EXACT_V2_MARK`/`NARROW_MARK`, браузер шлёт `EXACT_MARK`/`COMPETITOR_MARK`, плюс в
+     detail есть `brand_settings`, которых в write-форме нет. Механика перевода НЕ ДОКАЗАНА, а
+     угаданная деривация ЗАПИШЕТ НЕВЕРНЫЙ таргетинг (хуже, чем пропуск). ⚠️ Нужен зонд на черновике:
+     full PATCH → сравнить категории автотаргетинга ДО/ПОСЛЕ. Не гадать по именам enum'ов.
+  Статус дополнения: 🟡 `reserve_landing_id` — код + офлайн-сверка с HAR, живого PATCH НЕ было;
+  `relevance_match` — только диагностика, правки нет.
 
 ### GRID_RMW_DISPLAY_HREF_WIPED — отображаемая ссылка стиралась Grid full-replace (2026-07-17)
 - Симптом: 229 из 244 объявлений копии с `DisplayUrlPath=None` (в источнике `лиды-для-бизнеса`).

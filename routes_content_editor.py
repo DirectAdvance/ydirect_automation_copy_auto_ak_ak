@@ -34,6 +34,7 @@ from typing import Callable
 from flask import jsonify, render_template, request, session
 
 from .content_dashboard_routes import register_content_dashboards
+from .content_images_routes import register_image_routes
 from .content_price_check_routes import register_price_check_routes
 
 
@@ -278,6 +279,14 @@ def make_job_executor(*, victory_conn, token_for_login, direct_tokens, v5_call, 
         token, _agency = token_for_login(job["login"], "", tokens)
         if not token:
             raise RuntimeError(f"ни один агентский токен не открывает аккаунт {job['login']}")
+        # Смена изображения строит СВОЙ инвентарь (кампании+объявления+contents UAC),
+        # текстовый снимок аккаунта ей не нужен — не гоняем многоминутный _load_account.
+        if (job.get("type") or "") == "image_replace":
+            if is_cancelled():
+                return {"cancelled": True}
+            return _do_replace(token, job["login"], job["type"], job["old_text"],
+                               job["new_text"], {}, v5_call, v501_svc,
+                               mode=(job.get("mode") or "exact"))
         # campaign-level sitelinks нужны ТОЛЬКО заданиям замены набора уровня кампании
         # (sitelink_title/description). Для ad_title/ad_text/callout/ad_href не гоняем
         # лишний Grid-round-trip (см. блок 3c в _load_account).
@@ -595,6 +604,7 @@ _UAC_PATCH_FULL_KEYS = (
     "listings_feed_id", "minus_keywords", "minus_regions", "ml_banners_enabled",
     "price_recommendations_management_enabled", "pricing",
     "recommendations_management_enabled", "regions", "relevance_match",
+    "reserve_landing_id",
     "show_title_and_body", "sitelinks", "socdem", "texts", "time_target",
     "titles", "tracking_params", "use_discounts", "week_limit",
     "yandex_maps_enabled",
@@ -2117,6 +2127,21 @@ def _do_replace(token: str, login: str, typ: str, old_text: str, new_text: str,
     new = _frag_trim(new_text)
     if typ == "ad_href":
         return _replace_ad_href(token, login, old, new, content, v5_call, v501_svc)
+    if typ == "image_replace":
+        # Смена изображения: new_text — JSON {"campaign_ids": [...], "pairs": [...]}
+        # (пути к временным файлам, не байты). Реализация — content_images_routes;
+        # импорт ленивый, иначе циклическая зависимость модулей.
+        from .content_images_routes import run_image_replace
+
+        try:
+            payload = json.loads(new_text)
+        except (TypeError, ValueError):
+            return {"replaced": 0, "errors": ["не удалось разобрать задание смены изображения"]}
+        return run_image_replace(
+            token, login, payload, v5_call,
+            grid_client_factory=grid_client_factory,
+            uac_client_factory=uac_client_factory,
+        )
     if typ == "sitelink_reorder":
         # Перестановка порядка: new_text — JSON {"perm": [...], "target_set_id": ...}
         # (target_set_id=None — применить ко ВСЕМ наборам аккаунта; иначе — только к
@@ -2923,3 +2948,16 @@ def register_content_editor_routes(
             "finished_at = CASE WHEN status='queued' THEN now() ELSE finished_at END "
             "WHERE job_id=%s", (job_id,))
         return jsonify({"ok": True})
+
+    # ── Смена изображения (admin-only) ─────────────────────────────────────────
+    # Весь блок вынесен в content_images_routes.py. Регистрируется в САМОМ КОНЦЕ:
+    # ручкам нужен уже определённый замыкатель _enqueue_content_job.
+    register_image_routes(
+        bp,
+        access,
+        v5_call=v5_call,
+        _login_allowed=_login_allowed,
+        _admin_allowed=_admin_allowed,
+        _token=_token,
+        _enqueue_content_job=_enqueue_content_job,
+    )

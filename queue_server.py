@@ -62,7 +62,14 @@ _RESUME_POLL = 120
 _DEFERRED_STALE_HOURS = 3
 _DELAYED_REPAIR_DAEMON = {"started": False}
 _DELAYED_REPAIR_POLL = 60
-_DELAYED_CONTENT_REPAIR_DELAY_SECONDS = 180
+# ПОВТОРНЫЙ проход добивки (reschedule :744 + поле run_after_seconds :989) = 300с (решение Семёна
+# 2026-07-18: «повтор через 5 мин»). ⛔ НЕ «унифицировать» с job_repository.
+# _DELAYED_CONTENT_REPAIR_DELAY_SECONDS (180с) — числа РАЗНЫЕ НАМЕРЕННО: там ПЕРВЫЙ запуск, здесь
+# ПОВТОРНЫЙ (первый проход уже что-то починил, остатку нужно больше времени на оседание).
+# Почему не меньше: контент оседает в кабинете 5-10+ мин (STATE.md:155-180) — ранний проход чинит
+# то, что и так привяжется, и выносит ложный вердикт «не починилось».
+# Демон поллит раз в 60с (_DELAYED_REPAIR_POLL) → фактическая задержка = 300с + до 60с = 300-360с.
+_DELAYED_CONTENT_REPAIR_DELAY_SECONDS = 300
 _DELAYED_FULL_REPAIR_MAX_ITERATIONS = 2
 _DELAYED_REPAIR_STUCK_TIMEOUT_SECONDS = 1800
 _DELAYED_REPAIR_TIME_BUDGET_SECONDS = 1200
@@ -588,6 +595,21 @@ def _requeue_missing_positions_once(parent_job_id: str, login: str, body: dict) 
             return None                              # состав фактически полный — доставка не нужна
         rbody["items"] = missing
         rbody["_requeue_of"] = parent_job_id
+        # Требование Семёна: ретрай по ошибкам — ТОЛЬКО по кукам (0 баллов). Раньше тело копировалось
+        # от родителя как есть (via_cookie=false) → доставка жгла баллы через v501.
+        # ИСКЛЮЧЕНИЕ: сегментный tp5 кукой физически НЕ создаётся — cookie-путь не принимает segment и
+        # молча лепит generic ct0000-группу, поэтому в create_set_gallery.py:82-109 он захардкожен в
+        # явный провал NO_BRAND_SEGMENTS_AVAILABLE.
+        # РАЗДЕЛЕНИЕ (решение Семёна 2026-07-18): флаг via_cookie — SET-уровневый (create_set_input.py:154
+        # → orchestrator:168, per-item транспорта нет), поэтому один смешанный набор гнал бы за баллы
+        # ВЕСЬ состав из-за одной сегментной tp5. Ставим ДВЕ джобы: cookie-capable → via_cookie=True
+        # (0 баллов), сегментные tp5 → прежний (унаследованный от родителя) транспорт. Пустой набор —
+        # джобу не создаём. Обе несут один _requeue_of → учёт родителя мульти-child-безопасен
+        # (_resume_children — dict по child_jid, _active_children — список; родитель станет терминальным
+        # только когда закроются ОБЕ). Гонки за аккаунт нет: _CREATE_MAX_PER_AGENCY=1 + кросс-процессный
+        # _agency_gate_claim (UNIQUE по agency) → сёстры одного агентства исполняются строго по очереди.
+        _units_items = [it for it in missing if _position_needs_units(it)]
+        _cookie_items = [it for it in missing if not _position_needs_units(it)]
         # Активная джоба логина? Тогда доставку НЕ ставим и маркер НЕ сжигаем (ревью 06.07:
         # dedup_login=True возвращал ЧУЖОЙ job_id, rbody выбрасывался, а одноразовый маркер
         # auto_requeue_missing сгорал → позиции не доставлялись никогда). Доставим на следующем
@@ -596,11 +618,29 @@ def _requeue_missing_positions_once(parent_job_id: str, login: str, body: dict) 
             print(f"[requeue-missing] {login}: у логина активная джоба — доставка отложена, "
                   f"маркер не проставлен", flush=True)
             return None
-        # доставка остатка = добивка → приоритет (Семён 2026-07-06: сразу, не в конец очереди)
-        new_jid = _job_new_web(len(missing), login, rbody, {}, False, priority=True)
-        if not new_jid:
+        new_jids = []
+        for _part, _via_cookie in ((_cookie_items, True), (_units_items, False)):
+            if not _part:
+                continue                             # пустой набор → лишнюю джобу не плодим
+            jbody = dict(rbody)
+            jbody["items"] = _part
+            if _via_cookie:
+                jbody["via_cookie"] = True
+            # else: via_cookie НЕ трогаем — остаётся унаследованное от родителя значение (прежний
+            # транспорт), кука для сегментного tp5 гарантированно уронила бы позиции.
+            # доставка остатка = добивка → приоритет (Семён 2026-07-06: сразу, не в конец очереди)
+            _jid = _job_new_web(len(_part), login, jbody, {}, False, priority=True)
+            if not _jid:
+                continue
+            new_jids.append(_jid)
+            print(f"[requeue-missing] {login}: джоба {_jid} — {len(_part)} позиц., "
+                  f"транспорт={'кука (0 баллов)' if _via_cookie else 'прежний (баллы, сегментный tp5)'}",
+                  flush=True)
+        if not new_jids:
             return None
-        p_res["auto_requeue_missing"] = {"job_id": new_jid, "was_created": created,
+        new_jid = new_jids[0]
+        p_res["auto_requeue_missing"] = {"job_id": new_jid, "job_ids": new_jids,
+                                         "was_created": created,
                                          "was_failed": failed, "total": total}
         pj["result"] = p_res
         _job_db_save(parent_job_id, pj, full=True)
@@ -608,11 +648,25 @@ def _requeue_missing_positions_once(parent_job_id: str, login: str, body: dict) 
             mem = _CREATE_JOBS.get(parent_job_id)
             if mem is not None and isinstance(mem.get("result"), dict):
                 mem["result"]["auto_requeue_missing"] = p_res["auto_requeue_missing"]
-        print(f"[requeue-missing] {login}: доставка недостающих позиций джобой {new_jid} "
+        print(f"[requeue-missing] {login}: доставка недостающих позиций джобами {','.join(new_jids)} "
               f"(родитель {parent_job_id}: created={created}/{total}, failed={failed})", flush=True)
         return new_jid
     except Exception:  # noqa: BLE001 — доставка best-effort
         return None
+
+def _position_needs_units(it: dict) -> bool:
+    """Позиция, которую cookie-путь создать НЕ может → нужен API-токен/баллы.
+
+    Единственный такой класс — сегментный tp5: `_create_shopping_via_cookie` не принимает segment
+    и создаёт одну generic ct0000-группу на ВСЕ сегменты (инцидент 2026-07-06: 5 одинаковых tp5
+    porg-psm5h7q6), поэтому cookie-путь для него захардкожен в явный NO_BRAND_SEGMENTS_AVAILABLE
+    (create_set_gallery.py:82-109). Признак сегментности — тот же, что там: tp5_segment (сегментный
+    путь) либо only_gks/only_cts (camp_names-путь). tp5 «Фиды»/products_only сегмента не имеет →
+    кукой создаётся штатно."""
+    it = it or {}
+    if str(it.get("tp") or "").strip() != "tp5":
+        return False
+    return bool(it.get("tp5_segment") or it.get("only_gks") or it.get("only_cts"))
 
 def _position_live_in_names(nm: str, names: set) -> bool:
     """Позиция плана жива? already_in_direct + UAC-нормализация: tp6/tp7 при создании

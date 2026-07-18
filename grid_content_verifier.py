@@ -87,15 +87,23 @@ def verify_grid_content(name: str, campaign_id: int | None,
     # хотя бы ОДНА поисковая группа без ключей / с неверным автотаргетом (агрегат keywords_count==0
     # ловит только когда ВСЕ группы пусты). tp2/tp4/tp5 — поисковые; tp1 РСЯ сюда не попадает, т.к.
     # groups_edit_read проставляется только для search-кампаний в grid_read._enrich_group_targeting.
-    if tp in (2, 4, 5) and counts.get("groups_edit_read"):
+    # tp1/tp3 добавлены (2026-07-18): _enrich_group_targeting теперь читает их группы из ТОГО ЖЕ
+    # батч-ответа (0 новых запросов). Для tp1/tp3 группа с активным relevanceMatch и 0 ключей
+    # пуста ПО ДИЗАЙНУ (режим «полный автотаргет») и в zero-kw не попадает — см. grid_read.
+    if tp in (1, 2, 3, 4, 5) and counts.get("groups_edit_read"):
         zero_kw = counts.get("search_zero_kw_groups")
         wrong_at = counts.get("wrong_autotarget_groups")
-        if isinstance(zero_kw, int) and zero_kw > 0:
+        # Обрезка ответа Grid по лимиту (>10000 ключей/строк) → счётчик НЕДОсчитан → по ключам
+        # НЕ судим вовсе (иначе крупный набор гарантированно даёт ложный NO_KEYWORDS_LIVE).
+        _kw_trunc = bool(counts.get("keywords_truncated"))
+        if isinstance(zero_kw, int) and zero_kw > 0 and not _kw_trunc:
             issues.append({"severity": "error", "code": "NO_KEYWORDS_LIVE",
                            "name": nm, "id": cid, "actual": 0, "groups": zero_kw,
-                           "note": "поисковые группы без ключей (auto-repair: keywords_repair)"})
+                           "note": "группы без ключей (auto-repair: keywords_repair)"})
             repair.append(_keywords_repair(nm, cid))
-        if isinstance(wrong_at, int) and wrong_at > 0:
+        # WRONG_AUTOTARGET — только поисковые: профиль EXACT_V2_MARK/WITHOUT_BRAND обязателен
+        # на tp2/4/5; у tp1 РСЯ автотаргет намеренно широкий (create_set_tp1_builders.py:302).
+        if tp in (2, 4, 5) and isinstance(wrong_at, int) and wrong_at > 0:
             issues.append({"severity": "error", "code": "WRONG_AUTOTARGET",
                            "name": nm, "id": cid, "groups": wrong_at,
                            "note": "неверный профиль автотаргета (нужен EXACT_V2_MARK/WITHOUT_BRAND)"})
@@ -274,4 +282,175 @@ def verify_grid_content(name: str, campaign_id: int | None,
                                         f"ожидалось {expected_pfc} "
                                         f"(cpc→AVERAGE_CPA / cpa→PAY_FOR_CONVERSION); report-only")})
 
+    # ── Гео кампании (tp1–tp5): regionsInfo.regionIds из ТОГО ЖЕ GroupsForEditLite ──────
+    # Поле читалось и выбрасывалось. tri-state: geo_read=False → молчим.
+    if tp in (1, 2, 3, 4, 5) and counts.get("geo_read"):
+        _geo_missing = counts.get("geo_missing_groups")
+        if isinstance(_geo_missing, int) and _geo_missing > 0:
+            issues.append({"severity": "error", "code": "GEO_MISSING_LIVE",
+                           "name": nm, "id": cid, "groups": _geo_missing,
+                           "note": f"{_geo_missing} групп без регионов показа (regionIds пуст)"})
+        if counts.get("geo_regions_inconsistent") is True:
+            issues.append({"severity": "warn", "code": "GEO_INCONSISTENT_LIVE",
+                           "name": nm, "id": cid,
+                           "regions": (counts.get("campaign_region_ids") or [])[:20],
+                           "note": "у групп одной кампании РАЗНЫЕ наборы регионов (report-only)"})
+
+    # ── UTM на группах (DoD #2: у tp1–tp5 метка живёт на ГРУППЕ, TrackingParams) ────────
+    if tp in (1, 2, 3, 4, 5) and counts.get("group_utm_read"):
+        _utm_missing = counts.get("utm_missing_groups")
+        if isinstance(_utm_missing, int) and _utm_missing > 0:
+            issues.append({"severity": "error", "code": "UTM_MISSING_LIVE",
+                           "name": nm, "id": cid, "groups": _utm_missing,
+                           "note": f"{_utm_missing} групп без UTM-метки (trackingParams пуст)"})
+
+    issues.extend(_verify_campaign_spec(nm, cid, tp, counts))
+    _b_issues, _b_repair = _verify_build_vs_live(nm, cid, counts, exp)
+    issues.extend(_b_issues)
+    repair.extend(_b_repair)
+    return issues, repair
+
+
+# ── Кампанийная СПЕЦИФИКАЦИЯ (счётчик/цель/бюджет/статус/расписание) ───────────────────
+# Все поля приходят из того же ответа CampaignsEditData, что и инвариант-галочки
+# (grid_finalize.read_campaign_invariants) → НОЛЬ новых запросов и баллов.
+# Контракт tri-state: поле не прочитано (None / campaign_spec_read=False) → МОЛЧИМ.
+# Все коды — ДЕТЕКТ без repair-кандидата: существующий campaign_invariant_repair
+# (set_campaign_invariants) этих полей НЕ переставляет, а выдумывать ремонт вслепую нельзя
+# (ложный ремонт дороже пропуска, журнал I). Ремонт — отдельным этапом.
+_DRAFT_STATUSES = {"DRAFT", "MODERATION_DRAFT"}
+
+
+def _verify_campaign_spec(nm: str, cid: int | None, tp: int | None,
+                          counts: dict[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if tp not in (1, 2, 3, 4, 5) or not counts.get("campaign_spec_read"):
+        return out
+
+    # #1 Метрика: счётчик обязателен ВСЕГДА (DoD §3.0; гейт api_create_set отдаёт 400 без него).
+    ctrs = counts.get("metrika_counters")
+    if isinstance(ctrs, list) and len(ctrs) == 0:
+        out.append({"severity": "error", "code": "METRIKA_COUNTER_MISSING_LIVE",
+                    "name": nm, "id": cid,
+                    "note": "у кампании не привязан счётчик Метрики (metrikaCounters пуст)"})
+
+    # #1 Цель: считается заданной, если есть ЛЮБОЙ источник — ключевая цель кампании
+    # (meaningfulGoals) ИЛИ цель стратегии (strategy.goalId). Флагаем только когда ОБА
+    # прочитаны и ОБА пусты (иначе стратегия без goalId, напр. ручная, дала бы ложняк).
+    goals = counts.get("meaningful_goal_ids")
+    strat_goal = counts.get("strategy_goal_id")
+    if isinstance(goals, list) and isinstance(strat_goal, str) and not goals and not strat_goal.strip():
+        out.append({"severity": "error", "code": "CAMPAIGN_GOAL_MISSING_LIVE",
+                    "name": nm, "id": cid,
+                    "note": "нет цели ни в meaningfulGoals, ни в стратегии (strategy.goalId)"})
+
+    # Разметка ссылок Метрикой (hasAddMetrikaTagToUrl) — тумблер кампании, tri-state.
+    # ⚠️ bannerHrefParams НЕ проверяем: по DoD #2 UTM у tp1–tp5 живёт на ГРУППАХ
+    # (UTM_MISSING_LIVE выше), пустой параметр кампании там — норма, а не дефект.
+    if counts.get("has_add_metrika_tag_to_url") is False:
+        out.append({"severity": "error", "code": "METRIKA_TAG_OFF_LIVE",
+                    "name": nm, "id": cid,
+                    "note": "разметка ссылок для Метрики выключена (hasAddMetrikaTagToUrl=False)"})
+
+    # Недельный бюджет: сумма должна быть > 0, период — WEEK.
+    bsum = counts.get("budget_sum")
+    if isinstance(bsum, (int, float)) and float(bsum) <= 0:
+        out.append({"severity": "error", "code": "WEEKLY_BUDGET_MISSING_LIVE",
+                    "name": nm, "id": cid, "actual": float(bsum),
+                    "note": "недельный бюджет стратегии ≤ 0 (strategy.budget.sum)"})
+    bper = counts.get("budget_period")
+    if isinstance(bper, str) and bper.strip() and bper.strip().upper() != "WEEK":
+        out.append({"severity": "warn", "code": "BUDGET_PERIOD_UNEXPECTED_LIVE",
+                    "name": nm, "id": cid, "actual": bper,
+                    "note": "период бюджета не WEEK (report-only)"})
+
+    # Статус: сервис НИКОГДА не публикует — созданная кампания обязана быть черновиком
+    # (DoD §3.0 «Только ЧЕРНОВИК», launch=False). Судим по status.primaryStatus;
+    # aggregatedStatusInfo.status кладём в отчёт как второй источник.
+    prim = counts.get("status_primary")
+    if isinstance(prim, str) and prim.strip() and prim.strip().upper() not in _DRAFT_STATUSES:
+        out.append({"severity": "error", "code": "CAMPAIGN_NOT_DRAFT_LIVE",
+                    "name": nm, "id": cid, "actual": prim,
+                    "aggregated": counts.get("aggregated_status"),
+                    "note": "кампания не в статусе черновика (сервис публикует только черновики)"})
+
+    # Расписание показов: timeBoard пуст → круглосуточный дефолт не выставлен.
+    tb = counts.get("time_board")
+    if isinstance(tb, list) and len(tb) == 0:
+        out.append({"severity": "error", "code": "TIME_TARGET_MISSING_LIVE",
+                    "name": nm, "id": cid,
+                    "note": "не задано расписание показов (timeTarget.timeBoard пуст)"})
+    return out
+
+
+# ── Сверка «build ⇄ кабинет» ───────────────────────────────────────────────────────────
+# ``build`` — то, что БИЛДЕР отчитался созданным (result["build"]/tp1_build/tp5_build); он уже
+# лежит в результате джобы, поэтому сверка бесплатна (0 новых запросов). Сравниваем ТОЛЬКО
+# одноимённые измерения и ТОЛЬКО в сторону НЕДОБОРА (live < build):
+#   * live == 0 при build > 0 → error + rebuild_missing_content (существующий ремонтёр);
+#   * 0 < live < build        → warn в in-job фазе (отложенный демон ещё доливает контент)
+#                               и error в отложенной фазе (phase="delayed").
+# Перебор (live > build) НЕ флагаем: Grid-счётчик ``ads`` считает ВСЕ типы объявлений, а
+# build.ads — только текстовые, поэтому «больше» — нормальная форма, а не дефект.
+# Ловушки (проверено): товарная кампания c build.ads=0/shopping_ads>0 сравнивается по СУММЕ
+# ads+shopping_ads+listing_ads против общего live-счётчика ads (одноимённое измерение),
+# поэтому «нет текстовых объявлений» ложным недобором не становится; UAC (tp6/tp7) сюда не
+# доходит — вызывающий (live_verifier) зовёт verify_grid_content только для kind != "uac".
+_BUILD_DIMS = (
+    # (ярлык, ключи build (суммируются), ключ live-счётчика, read-гейт, repair)
+    ("группы", ("groups", "adgroups"), "adgroups", None, "rebuild"),
+    ("объявления", ("ads", "shopping_ads", "listing_ads"), "ads", None, "rebuild"),
+    ("ключи", ("keywords",), "keywords_count", "keywords_read", "keywords"),
+)
+
+
+def _build_expected(build: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+    """Сумма одноимённых build-счётчиков; None если НИ ОДИН ключ не отчитан (→ молчим)."""
+    total = 0
+    seen = False
+    for k in keys:
+        if k in build:
+            try:
+                total += int(build.get(k) or 0)
+            except (TypeError, ValueError):
+                continue
+            seen = True
+    return total if seen else None
+
+
+def _verify_build_vs_live(nm: str, cid: int | None, counts: dict[str, Any],
+                          exp: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    build = exp.get("build")
+    if not isinstance(build, dict) or not build:
+        return [], []
+    phase = str(exp.get("phase") or "in_job")
+    under_sev = "error" if phase == "delayed" else "warn"
+    issues: list[dict[str, Any]] = []
+    repair: list[dict[str, Any]] = []
+    for label, bkeys, live_key, read_flag, rkind in _BUILD_DIMS:
+        expected = _build_expected(build, bkeys)
+        if expected is None or expected <= 0:
+            continue
+        if read_flag and not counts.get(read_flag):
+            continue          # измерение не прочитано → молчим (tri-state fail-safe)
+        if live_key == "keywords_count" and counts.get("keywords_truncated"):
+            continue          # ответ Grid обрезан по лимиту → по ключам не судим
+        live = counts.get(live_key)
+        if not isinstance(live, int):
+            continue
+        if live <= 0:
+            issues.append({"severity": "error", "code": "BUILD_LIVE_MISSING",
+                           "name": nm, "id": cid, "dimension": label,
+                           "expected": expected, "actual": live, "phase": phase,
+                           "note": f"{label}: билдер создал {expected}, в кабинете 0"})
+            repair.append(_keywords_repair(nm, cid) if rkind == "keywords" else _repair(nm, cid))
+        elif live < expected:
+            issues.append({"severity": under_sev, "code": "BUILD_LIVE_UNDERCOUNT",
+                           "name": nm, "id": cid, "dimension": label,
+                           "expected": expected, "actual": live, "phase": phase,
+                           "note": (f"{label}: билдер создал {expected}, в кабинете {live}"
+                                    + ("" if phase == "delayed"
+                                       else " (in-job: отложенный демон ещё доливает контент)"))})
+            if phase == "delayed":
+                repair.append(_keywords_repair(nm, cid) if rkind == "keywords" else _repair(nm, cid))
     return issues, repair

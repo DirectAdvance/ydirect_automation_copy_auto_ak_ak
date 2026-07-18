@@ -1082,12 +1082,54 @@ def _norm_ct(ct: str | None) -> str:
     return m.group(0) if m else ""
 
 
-def _read_lines(path: str) -> list:
-    """Чтение текстового файла пака. Если путь под sshfs-монтом — читаем через
-    `timeout cat` (FUSE-чтение прерываемо → процесс убивается по таймауту, НЕ виснет вечно).
-    Иначе (локальный кэш/индекс) — обычный open."""
+_PACK_MOUNT_IS_FUSE: bool | None = None
+
+
+def _pack_mount_is_fuse() -> bool:
+    """Является ли PACK_MOUNT РЕАЛЬНЫМ fuse/sshfs-монтом (→ нужен `timeout cat`-предохранитель).
+
+    Гейт `_read_lines` смотрел только на ПРЕФИКС пути, а в проде PACK_MOUNT — это ЛОКАЛЬНОЕ
+    зеркало (`/opt/neuro_content_local`, ext4, ночной синк с M3). Из-за этого на локальном
+    диске форкался `timeout cat` на каждый файл (7 форков на один вызов read_keywords).
+    Здесь определяем тип ФС монта, накрывающего PACK_MOUNT, ОДИН раз на процесс.
+
+    FAIL-CLOSED: если тип ФС определить НЕ удалось (нет /proc/mounts — не-Linux, ошибка чтения)
+    → True, т.е. остаёмся на безопасном subprocess-пути. Ошибочно решить «локально» на настоящем
+    sshfs = потерять защиту от вечного зависания FUSE-чтения, это дороже лишних форков.
+
+    Замечание: на Linux накрывающий монт находится ВСЕГДА (в пределе — `/`), поэтому
+    несуществующий PACK_MOUNT даёт False (ext4). Это безопасно: такого файла нет ни для open(),
+    ни для `cat` — оба дают [], зависать нечему.
+    """
+    global _PACK_MOUNT_IS_FUSE
+    if _PACK_MOUNT_IS_FUSE is not None:
+        return _PACK_MOUNT_IS_FUSE
+    verdict = True
     try:
-        if path.startswith(PACK_MOUNT + os.sep):
+        target = os.path.realpath(PACK_MOUNT)
+        best_len, best_type = -1, None
+        with open("/proc/mounts", encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                mnt = parts[1].replace("\\040", " ")
+                if (target == mnt or target.startswith(mnt.rstrip(os.sep) + os.sep)) and len(mnt) > best_len:
+                    best_len, best_type = len(mnt), parts[2]
+        if best_type is not None:
+            verdict = best_type.startswith("fuse")
+    except Exception:  # noqa: BLE001 — не смогли определить → безопасный путь
+        verdict = True
+    _PACK_MOUNT_IS_FUSE = verdict
+    return verdict
+
+
+def _read_lines(path: str) -> list:
+    """Чтение текстового файла пака. Если путь под НАСТОЯЩИМ sshfs/fuse-монтом — читаем через
+    `timeout cat` (FUSE-чтение прерываемо → процесс убивается по таймауту, НЕ виснет вечно).
+    Иначе (локальное зеркало/кэш/индекс) — обычный open."""
+    try:
+        if path.startswith(PACK_MOUNT + os.sep) and _pack_mount_is_fuse():
             r = subprocess.run(["timeout", "12", "cat", path], capture_output=True, text=True, timeout=15)
             if r.returncode != 0:
                 return []

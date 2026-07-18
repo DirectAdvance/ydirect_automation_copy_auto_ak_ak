@@ -189,6 +189,43 @@ def register_tags_routes(bp, access: Callable) -> None:
             "hidden_auto": [r["auto_label"] for r in hidden],
         })
 
+    @bp.route("/api/tags/campaign/bulk", methods=["GET"])
+    @access
+    def tags_campaign_bulk():
+        """ВСЕ привязки/скрытые авто-теги слепка+типа сайта ОДНИМ запросом.
+
+        Раньше UI дёргал /api/tags/campaign по запросу НА КАЖДУЮ кампанию (замер: 131 запрос
+        на одно открытие страницы слепков, каждый — своё соединение к БД). Кампаний у слепка
+        сотни, а строк тегов — единицы: тянем весь скоуп двумя запросами и раскладываем по
+        ключу `tp|camp_key` (ровно ключ клиентского _SL_CAMPTAG_CACHE).
+        """
+        slepok = (request.args.get("slepok") or "").strip()
+        site_type = (request.args.get("site_type") or "").strip()
+        if not (slepok and site_type):
+            return jsonify({"error": "нужны slepok/site_type"}), 400
+        items: dict = {}
+
+        def _slot(tp: str, camp_key: str) -> dict:
+            return items.setdefault(f"{tp}|{camp_key}", {"assigned": [], "hidden_auto": []})
+
+        assigned = _tags_exec(
+            f"SELECT ct.tp, ct.camp_key, r.id, r.label, r.color FROM {_CAMPAIGN_TAGS} ct "
+            f"JOIN {_TAG_REGISTRY} r ON r.id=ct.tag_id "
+            f"WHERE ct.slepok=%s AND ct.site_type=%s ORDER BY ct.tp, ct.camp_key, r.label",
+            (slepok, site_type), fetch="all",
+        ) or []
+        for r in assigned:
+            _slot(r["tp"], r["camp_key"])["assigned"].append(
+                {"id": r["id"], "label": r["label"], "color": r["color"]})
+        hidden = _tags_exec(
+            f"SELECT tp, camp_key, auto_label FROM {_HIDDEN_AUTO} "
+            f"WHERE slepok=%s AND site_type=%s ORDER BY tp, camp_key, auto_label",
+            (slepok, site_type), fetch="all",
+        ) or []
+        for r in hidden:
+            _slot(r["tp"], r["camp_key"])["hidden_auto"].append(r["auto_label"])
+        return jsonify({"items": items})
+
     @bp.route("/api/tags/campaign/assign", methods=["POST"])
     @access
     def tags_campaign_assign():

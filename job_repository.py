@@ -14,6 +14,12 @@ from .direct_repository import victory_conn as _victory_conn, victory_conn_rw as
 _JOB_DB_LAST: dict = {}
 _JOB_TERMINAL = ("done", "error", "cancelled", "interrupted")
 _CREATE_RUNNING_TIMEOUT = 1200
+# ПЕРВЫЙ запуск добивки контента = 180с (решение Семёна 2026-07-18: «первая добивка через 3 мин»).
+# ⛔ НЕ «унифицировать» с queue_server._DELAYED_CONTENT_REPAIR_DELAY_SECONDS (300с) — числа РАЗНЫЕ
+# НАМЕРЕННО: здесь первый проход, там повторный. Почему не меньше: контент (объявления/ключи/
+# картинки) оседает в кабинете 5-10+ мин (STATE.md:155-180) — слишком ранний проход «чинит» то,
+# что и так привяжется само, и выносит ложный вердикт «не починилось».
+# Демон поллит раз в 60с (_DELAYED_REPAIR_POLL) → фактическая задержка = 180с + до 60с = 180-240с.
 _DELAYED_CONTENT_REPAIR_DELAY_SECONDS = 180
 
 

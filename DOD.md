@@ -142,6 +142,41 @@
 | `MAPS_ENABLED_LIVE` | error | tp1–tp5: площадка «Карты» (yandexMaps) ВКЛ | grid_content_verifier.py (кампания) | ✅ `campaign_invariant_repair` |
 | `ORG_LIST_ENABLED_LIVE` | error | tp1–tp5: список организаций (serpGeoWizard) ВКЛ | grid_content_verifier.py (кампания) | ✅ `campaign_invariant_repair` |
 | `STRATEGY_MISMATCH_LIVE` | warn | tp1–tp5: payForConversion ≠ pay-mode (cpc→False/cpa→True) | grid_content_verifier.py (кампания) | ⬜ (report-only; recreate, не in-place) |
+| `BUILD_LIVE_MISSING` | error | **сверка build⇄кабинет:** билдер отчитался о N>0 (группы/объявления/ключи), а в кабинете **0**. Severity error в ОБЕИХ фазах | `_verify_build_vs_live` | 🟡 (rebuild/keywords_repair — совпадает с `NO_*_LIVE`, дедуп в планировщике) |
+| `BUILD_LIVE_UNDERCOUNT` | warn (in-job) / error (delayed) | **сверка build⇄кабинет:** `0 < live < build`. In-job = **warn** (dcr-демон ещё доливает контент, in-job проверка его структурно не видит), отложенная фаза (`phase="delayed"`) = error + repair | `_verify_build_vs_live` | 🟡 (только в delayed) |
+| `GEO_MISSING_LIVE` | error | tp1–tp5: у групп пуст `regionsInfo.regionIds` (нет регионов показа) | grid_content_verifier.py (гео) | ⬜ (детект) |
+| `GEO_INCONSISTENT_LIVE` | warn | tp1–tp5: у групп ОДНОЙ кампании разные наборы регионов | grid_content_verifier.py (гео) | ⬜ (report-only) |
+| `UTM_MISSING_LIVE` | error | tp1–tp5: группа без UTM-метки (`trackingParams` пуст) — **DoD #2** (у tp1–tp5 метка живёт на ГРУППЕ, не на кампании) | grid_content_verifier.py (UTM) | ⬜ (детект; закрывает пробел P1 «UTM-на-группах») |
+| `METRIKA_COUNTER_MISSING_LIVE` | error | tp1–tp5: не привязан счётчик Метрики (`metrikaCounters` пуст) — инвариант #1 | `_verify_campaign_spec` | ⬜ (детект) |
+| `CAMPAIGN_GOAL_MISSING_LIVE` | error | tp1–tp5: нет цели НИ в `meaningfulGoals`, НИ в `strategy.goalId` (флагается только когда пусты ОБА) — инвариант #1 | `_verify_campaign_spec` | ⬜ (детект) |
+| `METRIKA_TAG_OFF_LIVE` | error | tp1–tp5: разметка ссылок для Метрики выключена (`hasAddMetrikaTagToUrl=False`) | `_verify_campaign_spec` | ⬜ (детект) |
+| `WEEKLY_BUDGET_MISSING_LIVE` | error | tp1–tp5: недельный бюджет стратегии ≤0 (`strategy.budget.sum`) | `_verify_campaign_spec` | ⬜ (детект) |
+| `BUDGET_PERIOD_UNEXPECTED_LIVE` | warn | tp1–tp5: период бюджета ≠ `WEEK` | `_verify_campaign_spec` | ⬜ (report-only) |
+| `CAMPAIGN_NOT_DRAFT_LIVE` | error | tp1–tp5: `status.primaryStatus` не DRAFT — сервис публикует ТОЛЬКО черновики (DoD §3.0) | `_verify_campaign_spec` | ⬜ (детект) |
+| `TIME_TARGET_MISSING_LIVE` | error | tp1–tp5: не задано расписание показов (`timeTarget.timeBoard` пуст) | `_verify_campaign_spec` | ⬜ (детект) |
+
+> **ЭТАП 1 усиления проверок, 2026-07-18 — 0 новых обращений к API (замерено).** Все коды выше
+> от `BUILD_LIVE_MISSING` до `TIME_TARGET_MISSING_LIVE` читаются из ДВУХ уже выполнявшихся запросов,
+> результат которых частично выбрасывался:
+> * `CampaignsEditData` (`grid_finalize.read_campaign_invariants`) — счётчик/цель/UTM-параметры/
+>   бюджет/статус/расписание уже во фрагменте `UnifiedCampaign`; флаг чтения `campaign_spec_read`.
+> * `GroupsForEditLite` (`grid_finalize.groups_for_edit` → `grid_read._enrich_group_targeting`) —
+>   гео (`regionsInfo.regionIds`) и UTM групп (`trackingParams`); флаги `geo_read`/`group_utm_read`.
+> **Охват per-group детекта расширен с tp2/4/5 на tp1/tp3** — кампании и так читались тем же
+> батч-запросом, их группы просто выбрасывались. `_show_condition_kw_counts` (запрос НА КАМПАНИЮ)
+> по-прежнему зовётся ТОЛЬКО для tp2/4/5, иначе охват стоил бы +1 запрос на каждую РСЯ-кампанию.
+> Замер (тот же набор кампаний, baseline `git archive HEAD` vs текущий): **12 Grid-операций до = 12 после**,
+> побайтово тот же per-op разрез (`KwCount` 2 = только поисковые).
+> **⚠️ ЛИМИТ 10000** (`_GFE_LIMIT`, `_SC_LIMIT`): Grid отдаёт максимум 10000 строк на секцию,
+> offset-пагинация за предел НЕ работает → у крупного набора `keyword_count` недосчитан. Ответ ровно
+> на лимит помечается `keywords_truncated=True`, и по КЛЮЧЕВОМУ измерению такая кампания **не судится
+> вовсе** (ни `NO_KEYWORDS_LIVE`, ни `BUILD_LIVE_*`) — иначе недосчёт дал бы гарантированный ложный
+> «live < build» и ложный ремонт.
+> **⚠️ tp1/tp3 zero-kw:** группа в режиме «полный автотаргет» создаётся БЕЗ реальных ключей
+> (спецключ `---autotargeting` оседает как `relevanceMatch`, а не как `GdKeyword`,
+> `create_set_tp1_builders.py:297-304`). Поэтому для tp1/tp3 активный `relevanceMatch` ГАСИТ zero-kw
+> (по дизайну), а `WRONG_AUTOTARGET` для tp1 не выдаётся вовсе — у РСЯ автотаргет намеренно широкий.
+> Семантика tp2/4/5 не изменена (регресс проверен).
 
 > **Кампанийные АССЕТЫ (`CALLOUTS_MISSING_LIVE` / `SITELINK_SET_MISSING_LIVE` / `PROMO_MISSING`),
 > 2026-07-18 — 0 новых обращений к API.** Источник — тот же ответ `CampaignsEditData`, которым уже

@@ -37,11 +37,14 @@ def verify_create_set_live(login: str, results: list[dict[str, Any]], *,
                            agency: str = "", use_v5: bool = False,
                            grid_campaigns_getter: Optional[GridCampaignsGetter] = None,
                            token_getter: Optional[TokenGetter] = None,
-                           account_has_promo_library: Optional[bool] = None) -> dict[str, Any]:
+                           account_has_promo_library: Optional[bool] = None,
+                           phase: str = "in_job") -> dict[str, Any]:
     """Run Grid-first live verification for create_set results.
 
     ``account_has_promo_library`` пробрасывается как есть в ``verify_live_create_set``
     (ступень 1 гейта ``PROMO_MISSING``); ``None`` = признак не передан → фолбэк на прокси.
+
+    ``phase`` — фаза сверки «build ⇄ кабинет» (``in_job`` → недобор = warn, ``delayed`` → error).
     """
     login = (login or "").strip()
     if not login:
@@ -105,6 +108,7 @@ def verify_create_set_live(login: str, results: list[dict[str, Any]], *,
             uac_details=uac_details,
             prefer_grid=True,
             account_has_promo_library=account_has_promo_library,
+            phase=phase,
         )
         if live_errors:
             live_report.setdefault("issues", []).append(

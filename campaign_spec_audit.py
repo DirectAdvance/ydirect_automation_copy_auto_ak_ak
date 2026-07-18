@@ -1497,6 +1497,76 @@ def _audit_global_minus_campaign(grid: gf.GridClient, login: str, campaign_id: i
     }]
 
 
+def _builds_by_cid(results: list) -> dict[int, dict]:
+    """``{campaign_id: build}`` из результатов создания — что БИЛДЕР отчитался созданным.
+
+    Источник — ``campaign_result.created_campaigns`` (тот же обход, что у live-верификатора),
+    поэтому build привязан к РЕАЛЬНО развёрнутой кампании, а не к позиции плана: фан-аут по
+    фидам и тег «х3» (одна позиция → несколько РК) сверку не ломают. UAC (tp6/tp7) исключены —
+    их контент живёт не в Grid-группах.
+    """
+    from .campaign_result import created_campaigns as _cc
+    out: dict[int, dict] = {}
+    for c in _cc(results or []):
+        cid = c.get("id")
+        if cid is None or c.get("kind") == "uac":
+            continue
+        row = c.get("result") or {}
+        build = row.get("build") or row.get("tp1_build") or row.get("tp5_build") or {}
+        if isinstance(build, dict) and build:
+            out[int(cid)] = build
+    return out
+
+
+def _audit_build_vs_live(campaign_id: int, campaign_name: str, build: dict | None,
+                         groups: list, meta: dict) -> list[dict]:
+    """Отложенная (dcr, +180с) сверка «build ⇄ кабинет» по УЖЕ прочитанным группам.
+
+    Считает группы и ключи из того же ``groups_for_edit``-ответа, который аудит и так получил
+    для этой кампании → **ноль новых запросов** к Grid/Direct API. В отличие от in-job сверки
+    (там недобор = warn, демон ещё доливает) здесь Grid уже осел, поэтому недобор — ``error``
+    с ремонт-кандидатом существующих ремонтёров.
+
+    Обрезка ответа по лимиту Grid (``meta["keywords_truncated"]``) → по КЛЮЧАМ не судим вовсе:
+    недосчёт дал бы гарантированный ложный «live < build» на крупном наборе.
+    """
+    if not isinstance(build, dict) or not build:
+        return []
+    out: list[dict] = []
+    supported = [g for g in (groups or []) if g.get("supported")]
+
+    def _exp(*keys) -> int | None:
+        total, seen = 0, False
+        for k in keys:
+            if k in build:
+                try:
+                    total += int(build.get(k) or 0)
+                except (TypeError, ValueError):
+                    continue
+                seen = True
+        return total if seen else None
+
+    dims = [("группы", _exp("groups", "adgroups"), len(supported), "rebuild_missing_content")]
+    if not meta.get("keywords_truncated") and not meta.get("adgroups_truncated"):
+        dims.append(("ключи", _exp("keywords"),
+                     sum(int(g.get("keyword_count") or 0) for g in supported), "keywords_repair"))
+    for label, expected, live, kind in dims:
+        if expected is None or expected <= 0:
+            continue
+        if live <= 0:
+            code, sev = "BUILD_LIVE_MISSING", "error"
+        elif live < expected:
+            code, sev = "BUILD_LIVE_UNDERCOUNT", "error"
+        else:
+            continue
+        out.append({"severity": sev, "code": code, "id": campaign_id,
+                    "campaign_id": campaign_id, "name": campaign_name,
+                    "dimension": label, "expected": expected, "actual": live,
+                    "phase": "delayed", "repair_kind": kind,
+                    "note": f"{label}: билдер создал {expected}, в кабинете {live} (отложенная сверка)"})
+    return out
+
+
 def audit_campaign(login: str, campaign_id: int, tp: int, ctx: dict,
                    *, grid: gf.GridClient | None = None,
                    read_client: gr.GridReadClient | None = None) -> list[dict]:
@@ -1520,14 +1590,18 @@ def audit_campaign(login: str, campaign_id: int, tp: int, ctx: dict,
     agency = (ctx.get("agency") or body.get("agency") or acc.get("agency") or "").strip() or None
     tp_code = f"tp{tp}"
     issues: list[dict] = []
+    _build = (ctx or {}).get("builds_by_cid", {}).get(int(campaign_id))
     if tp in _SEARCH_TPS:
         g = grid or gf.GridClient(login)
+        _gmeta: dict = {}
         try:
-            groups = g.groups_for_edit(int(campaign_id))
+            groups = g.groups_for_edit(int(campaign_id), meta=_gmeta)
         except Exception:  # noqa: BLE001
             groups = []
         if groups:
             camp_name = next((x.get("campaign_name") for x in groups if x.get("campaign_name")), "")
+            # Отложенная сверка build⇄кабинет по уже прочитанным группам (0 новых запросов)
+            issues += _audit_build_vs_live(int(campaign_id), camp_name, _build, groups, _gmeta)
             issues += _audit_search_keywords(groups, login, slepok, site_type, city, tp_code)
             rc = read_client or gr.GridReadClient(login)
             issues += _audit_search_images(rc, login, int(campaign_id), camp_name)
@@ -1563,12 +1637,15 @@ def audit_campaign(login: str, campaign_id: int, tp: int, ctx: dict,
                 issues += _audit_brand_not_first(rc, login, int(campaign_id), camp_name, groups)
     elif tp == 1:
         g = grid or gf.GridClient(login)
+        _gmeta = {}
         try:
-            groups = g.groups_for_edit(int(campaign_id))
+            groups = g.groups_for_edit(int(campaign_id), meta=_gmeta)
         except Exception:  # noqa: BLE001
             groups = []
         rc = read_client or gr.GridReadClient(login)
         camp_name = str((ctx or {}).get("campaign_name") or "")
+        # Отложенная сверка build⇄кабинет по уже прочитанным группам (0 новых запросов)
+        issues += _audit_build_vs_live(int(campaign_id), camp_name, _build, groups, _gmeta)
         issues += _audit_product_feed_filters(rc, login, int(campaign_id), camp_name, groups)
         issues += _audit_tp1_adaptive(rc, login, int(campaign_id), camp_name, groups=groups)
         issues += _audit_brand_not_first(rc, login, int(campaign_id), camp_name, groups)
@@ -1614,7 +1691,10 @@ def audit_account_jobs(login: str, job_result: dict) -> dict:
         acc = {}
     site_type = (body.get("site_type") or acc.get("site_type") or "").strip()
     agency = (result.get("agency") or body.get("agency") or acc.get("agency") or "").strip()
-    ctx = {"login": login, "agency": agency, "body": {**body, "site_type": site_type}}
+    ctx = {"login": login, "agency": agency, "body": {**body, "site_type": site_type},
+           # build-отчёты билдера по кампаниям набора → отложенная сверка «build ⇄ кабинет»
+           # (пусто, если вызывающий результаты не передал → сверка просто молчит).
+           "builds_by_cid": _builds_by_cid(result.get("results") or [])}
     try:
         campaigns = _grid_list(login) if _grid_list else []
     except Exception as e:  # noqa: BLE001

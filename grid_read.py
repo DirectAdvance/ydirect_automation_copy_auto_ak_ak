@@ -95,7 +95,10 @@ class GridReadClient:
         "orderBy:[{order:DESC,field:GROUP_ID}]})"
         "{rowset{__typename ...on GdKeyword{id adGroupId}}}}}")
 
-    def _show_condition_kw_counts(self, campaign_ids) -> dict[int, int] | None:
+    _SC_LIMIT = 10000   # потолок showConditions на запрос (см. docstring ниже)
+
+    def _show_condition_kw_counts(self, campaign_ids,
+                                  truncated: set[int] | None = None) -> dict[int, int] | None:
         """{adgroup_id: keyword_count} по showConditions (реальные ключи). Возвращает dict при
         успехе (0 у групп без ключей — их просто нет в ответе) или None при сбое Grid → вызывающий
         откатывается на edit-view keyword_count.
@@ -105,8 +108,9 @@ class GridReadClient:
         одним запросом (campaignIdIn=список) combined-ответ обрезался на 10000, orderBy GROUP_ID DESC
         оставлял в окне только поздние РК (больший group_id), а раньше созданные выпадали целиком →
         их группы читались как 0 → ложный NO_KEYWORDS_LIVE (напр. tp2 «Марки» при живых 9677 ключей).
-        Одна РК ≤10000 ключей влезает в окно. TODO: РК с >10000 ключей потребует пагинации по
-        диапазонам GROUP_ID (пока усечётся — отдельная задача)."""
+        Одна РК ≤10000 ключей влезает в окно. РК с >10000 ключей усекается — такая кампания
+        попадает в ``truncated`` (если множество передано), и вызывающий обязан НЕ судить по
+        ключевому измерению (недосчёт → ложный «live < build» → ложный ремонт)."""
         cids = [int(c) for c in (campaign_ids or [])]
         if not cids:
             return {}
@@ -120,6 +124,8 @@ class GridReadClient:
                 return None
             rows = ((((j.get("data") or {}).get("client") or {})
                      .get("showConditions") or {}).get("rowset") or [])
+            if truncated is not None and len(rows) >= self._SC_LIMIT:
+                truncated.add(int(cid))
             for r in rows:
                 if (r.get("__typename") or "") != "GdKeyword":
                     continue
@@ -204,6 +210,14 @@ class GridReadClient:
             for key in ("callout_ids", "sitelink_set_id", "promo_extension_id"):
                 counts[cid][key] = row.get(key)
             counts[cid]["campaign_assets_read"] = bool(row.get("campaign_assets_read"))
+            # Кампанийная СПЕЦИФИКАЦИЯ из того же ответа (0 доп. запросов): счётчик/цель/UTM-
+            # параметры/бюджет/статус/расписание. Все — tri-state (None → verifier молчит).
+            for key in ("metrika_counters", "meaningful_goal_ids", "strategy_goal_id",
+                        "banner_href_params", "has_add_metrika_tag_to_url",
+                        "budget_sum", "budget_period", "budget_auto_prolongation",
+                        "status_primary", "aggregated_status", "time_board", "time_zone_id"):
+                counts[cid][key] = row.get(key)
+            counts[cid]["campaign_spec_read"] = bool(row.get("campaign_spec_read"))
 
     def _enrich_keyword_counts(self, id_strings: list[str], counts: dict[int, dict[str, Any]]) -> None:
         """keywords_count вычисляется в _enrich_group_targeting (из groups_for_edit).
@@ -211,21 +225,38 @@ class GridReadClient:
         Этот метод — no-op; оставлен чтобы не ломать позиции в enrichment-цикле."""
 
     def _enrich_group_targeting(self, id_strings: list[str], counts: dict[int, dict[str, Any]]) -> None:
-        """Fill search_zero_kw_groups / wrong_autotarget_groups per SEARCH campaign (tp2/tp4/tp5).
+        """Fill per-group targeting flags for tp1–tp5 (ключи / автотаргет / гео / UTM).
 
-        Reuses GridClient.groups_for_edit (grid_finalize) with the SAME validated cookie. Per group
-        the campaign's tp is taken from the read campaign name; only tp2/tp4/tp5 (search) campaigns
-        get the two flags, so tp1 RSYA autotarget-only groups are never falsely flagged. Guarded like
-        the other enrichments — any failure records an ``enrich_errors`` note and leaves flags None."""
+        Reuses GridClient.groups_for_edit (grid_finalize) with the SAME validated cookie — ОДИН
+        батч-запрос на чанк кампаний, как и раньше: расширение охвата с tp2/4/5 на tp1/tp3 НЕ
+        добавляет ни одного обращения (кампании всё равно читались этим же запросом, их группы
+        просто выбрасывались).
+
+        Что заполняется на КАЖДУЮ прочитанную кампанию (tp1–tp5):
+        * ``search_zero_kw_groups`` / ``wrong_autotarget_groups`` — как раньше;
+        * ``keywords_count`` / ``keywords_read`` — как раньше;
+        * ``keywords_truncated`` — ответ обрезан по лимиту → по ключам судить НЕЛЬЗЯ;
+        * ``campaign_region_ids`` / ``geo_missing_groups`` / ``geo_regions_inconsistent`` — гео
+          (``regionsInfo.regionIds`` уже читался и выбрасывался);
+        * ``utm_missing_groups`` — DoD #2: UTM у tp1–tp5 живёт на ГРУППАХ (``trackingParams``).
+
+        ⚠️ ``_show_condition_kw_counts`` (по запросу НА КАМПАНИЮ) по-прежнему зовётся ТОЛЬКО для
+        поисковых tp2/4/5 — иначе охват tp1/tp3 стоил бы +1 запрос на каждую РСЯ-кампанию. Для
+        tp1/tp3 источник счётчика ключей — edit-view ``keyword_count`` из уже полученного ответа.
+
+        Guarded like the other enrichments — any failure records an ``enrich_errors`` note and
+        leaves flags None."""
         from .grid_finalize import GridClient
 
         import re as _re
         _tp_re = _re.compile(r"^\s*tp(\d+)_", _re.IGNORECASE)
         grid = GridClient(self.login, cookie=self.cookie)
-        rows = grid.groups_for_edit([int(s) for s in id_strings])
-        # 1-й проход: отобрать поисковые группы (tp2/4/5, supported) и их кампании
-        search_groups: list[tuple[int, int, int, dict]] = []   # (cid, gid, edit_kw, rm)
-        search_cids: set[int] = set()
+        _meta: dict[str, Any] = {}
+        rows = grid.groups_for_edit([int(s) for s in id_strings], meta=_meta)
+        # 1-й проход: отобрать поддерживаемые группы tp1–tp5 и их кампании
+        # (cid, gid, edit_kw, rm, tp, region_ids, tracking)
+        group_rows: list[tuple[int, int, int, dict, int, list, Any]] = []
+        search_cids: set[int] = set()          # только tp2/4/5 → showConditions (per-campaign запрос)
         at_by_design: set[int] = set()   # АТ-кампании: группы живут на relevanceMatch, 0 ключей — норма
         for grp in rows:
             cid = grp.get("campaign_id")
@@ -234,7 +265,7 @@ class GridReadClient:
             camp_name = str(grp.get("campaign_name") or "")
             m = _tp_re.match(camp_name)
             tp = int(m.group(1)) if m else None
-            if tp not in (2, 4, 5) or not grp.get("supported"):
+            if tp not in (1, 2, 3, 4, 5) or not grp.get("supported"):
                 continue
             # «… - Автотаргетинг - …» (нейминг набора): группы БЕЗ ключей по дизайну →
             # zero-kw для них не дефект (живой ложняк NO_KEYWORDS_LIVE: tp5 «Марки - Автотаргетинг»
@@ -242,37 +273,76 @@ class GridReadClient:
             if "автотаргетинг" in camp_name.lower():
                 at_by_design.add(int(cid))
             gid = int(grp.get("adgroup_id") or 0)
-            search_groups.append((int(cid), gid, int(grp.get("keyword_count") or 0),
-                                  grp.get("relevance_match") or {}))
-            search_cids.add(int(cid))
+            group_rows.append((int(cid), gid, int(grp.get("keyword_count") or 0),
+                               grp.get("relevance_match") or {}, int(tp),
+                               list(grp.get("region_ids") or []), grp.get("tracking_params")))
+            if tp in (2, 4, 5):
+                search_cids.add(int(cid))
         # Авторитетный счётчик ключей (showConditions). None → откат на edit-view keyword_count.
-        real_kw = self._show_condition_kw_counts(search_cids)
+        # Обрезка по лимиту (>10000 ключей на РК) собирается в _kw_trunc — такие кампании
+        # по ключевому измерению НЕ судим.
+        _kw_trunc: set[int] = set()
+        real_kw = self._show_condition_kw_counts(search_cids, truncated=_kw_trunc)
         zero_kw: dict[int, int] = defaultdict(int)
         wrong_at: dict[int, int] = defaultdict(int)
         kw_total: dict[int, int] = defaultdict(int)   # для keywords_count
-        seen_search: set[int] = set()
-        for cid, gid, edit_kw, rm in search_groups:
-            seen_search.add(cid)
+        geo_missing: dict[int, int] = defaultdict(int)
+        utm_missing: dict[int, int] = defaultdict(int)
+        regions_seen: dict[int, set[tuple[int, ...]]] = defaultdict(set)
+        seen_groups: set[int] = set()
+        for cid, gid, edit_kw, rm, tp, region_ids, tracking in group_rows:
+            seen_groups.add(cid)
             # max(showConditions, edit-view): группа считается пустой только если ОБА источника дали 0.
             # showConditions авторитетен (живые GdKeyword), но при пустом/частичном/лаг-ответе edit-view
             # страхует от ложного zero → ложного NO_KEYWORDS_LIVE. Оба источника только недосчитывают
-            # (лаг), поэтому max безопасен.
+            # (лаг), поэтому max безопасен. Для tp1/tp3 real_kw по этой кампании не читался → .get()==0
+            # и max() естественно вырождается в edit-view счётчик.
             grp_kw = max(int(real_kw.get(gid, 0)), int(edit_kw)) if real_kw is not None else int(edit_kw)
             kw_total[cid] += grp_kw
-            if grp_kw == 0 and cid not in at_by_design:
+            _rm_active = bool(rm.get("isActive"))
+            if tp in (1, 3):
+                # tp1 РСЯ / tp3: режим «полный автотаргет» создаёт группу БЕЗ реальных ключей
+                # (спецключ "---autotargeting" оседает как relevanceMatch, а не как GdKeyword —
+                # create_set_tp1_builders.py:297-304). Такая группа пуста ПО ДИЗАЙНУ → активный
+                # relevanceMatch гасит zero-kw. Fail-safe: молчание дороже ложного keywords_repair.
+                if grp_kw == 0 and cid not in at_by_design and not _rm_active:
+                    zero_kw[cid] += 1
+            elif grp_kw == 0 and cid not in at_by_design:
                 zero_kw[cid] += 1
             cats = {str(x).upper() for x in (rm.get("relevanceMatchCategories") or [])}
             brands = {str(x).upper() for x in (rm.get("autotargetingBrandSettings") or [])}
-            if not (rm.get("isActive") and cats == {"EXACT_V2_MARK"} and brands == {"WITHOUT_BRAND"}):
+            if not (_rm_active and cats == {"EXACT_V2_MARK"} and brands == {"WITHOUT_BRAND"}):
                 wrong_at[cid] += 1
+            # Гео: пустой regionIds = группа без таргетинга (build_update_item дефолтит на [225],
+            # так что пусто здесь — реальный дефект, а не форма записи).
+            _regs = tuple(sorted(int(r) for r in region_ids))
+            if not _regs:
+                geo_missing[cid] += 1
+            else:
+                regions_seen[cid].add(_regs)
+            # UTM (DoD #2): у tp1–tp5 метка живёт на ГРУППЕ (trackingParams). tri-state: None =
+            # поле не пришло → НЕ считаем дефектом (fail-safe), пустая строка = реально пусто.
+            if isinstance(tracking, str) and not tracking.strip():
+                utm_missing[cid] += 1
+        _kw_trunc_batch = bool(_meta.get("keywords_truncated"))
         for cid in counts:
-            if cid in seen_search:
+            if cid in seen_groups:
                 counts[cid]["search_zero_kw_groups"] = int(zero_kw.get(cid, 0))
                 counts[cid]["wrong_autotarget_groups"] = int(wrong_at.get(cid, 0))
                 counts[cid]["groups_edit_read"] = True
                 # keywords_count заполняется здесь (GdKeywordsContainerInput FieldUndefined)
                 counts[cid]["keywords_count"] = int(kw_total.get(cid, 0))
                 counts[cid]["keywords_read"] = True
+                # Обрезка: либо батч GroupsForEditLite упёрся в лимит (страдают ВСЕ кампании чанка),
+                # либо per-campaign showConditions вернул ровно лимит.
+                counts[cid]["keywords_truncated"] = bool(_kw_trunc_batch or cid in _kw_trunc)
+                _regs_set = regions_seen.get(cid) or set()
+                counts[cid]["campaign_region_ids"] = sorted({r for t in _regs_set for r in t})
+                counts[cid]["geo_missing_groups"] = int(geo_missing.get(cid, 0))
+                counts[cid]["geo_regions_inconsistent"] = bool(len(_regs_set) > 1)
+                counts[cid]["geo_read"] = True
+                counts[cid]["utm_missing_groups"] = int(utm_missing.get(cid, 0))
+                counts[cid]["group_utm_read"] = True
 
     def _enrich_ad_price(self, id_strings: list[str], counts: dict[int, dict[str, Any]]) -> None:
         """Fill has_ad_price / ad_price_count for adaptive text ads with bannerPrice set.
@@ -343,6 +413,13 @@ class GridReadClient:
                 "has_ad_price": None, "ad_price_count": None, "ad_price_read": False,
                 "search_zero_kw_groups": None, "wrong_autotarget_groups": None,
                 "groups_edit_read": False,
+                # Обрезка ключевого измерения по лимиту Grid (>10000 строк) — при True по
+                # ключам НЕ судим (недосчёт дал бы ложный «live < build» и ложный ремонт).
+                "keywords_truncated": False,
+                # Гео и UTM групп (тот же ответ GroupsForEditLite, 0 доп. запросов) — tri-state.
+                "campaign_region_ids": None, "geo_missing_groups": None,
+                "geo_regions_inconsistent": None, "geo_read": False,
+                "utm_missing_groups": None, "group_utm_read": False,
                 # Adaptive images enrichment (NO_IMAGES_LIVE detect)
                 "adaptive_total": None, "no_images_ads": None, "adaptive_images_read": False,
                 # Shopping bodies enrichment (EMPTY_DEFAULT_TEXT_LIVE detect)
@@ -358,6 +435,12 @@ class GridReadClient:
                 # Всего в группе 4 поля: callout_ids, sitelink_set_id, campaign_assets_read
                 # и promo_extension_id (объявлен выше, рядом с settings_read — исторически).
                 "callout_ids": None, "sitelink_set_id": None, "campaign_assets_read": False,
+                # Кампанийная спецификация (тот же edit-view ответ, 0 доп. запросов) — tri-state.
+                "metrika_counters": None, "meaningful_goal_ids": None, "strategy_goal_id": None,
+                "banner_href_params": None, "has_add_metrika_tag_to_url": None,
+                "budget_sum": None, "budget_period": None, "budget_auto_prolongation": None,
+                "status_primary": None, "aggregated_status": None,
+                "time_board": None, "time_zone_id": None, "campaign_spec_read": False,
                 "enrich_errors": [],
             }
 

@@ -320,7 +320,11 @@ def _slepki_structure_for_ui() -> dict:
 # _slCountKeywords): строка «---autotargeting» = псевдо-ключ автотаргетинга, НЕ реальный ключ.
 _PACK_AUTO_RE = re.compile(r"-{2,}\s*autotargeting", re.I)
 # tp, у которых бейдж таргетинга считается по ФАКТУ ключей пака (kwRecompute в slepki_ui.js).
-_PACK_FACT_TPS = ("tp1", "tp2", "tp4", "tp5")
+# tp3/tp6/tp7 ДОБАВЛЕНЫ осознанно: клиентский _slCountKeywords обходил ВСЕ tp (в т.ч. МК-кампании
+# tp6 и товарку tp7) и сам засеивал ими _SL_PACK_CACHE. Раз счётчик ключей и бейджи больше НЕ
+# ходят по HTTP, а сидят этим предрасчётом, без них молча пропали бы и счётчик, и факт-бейдж.
+# Список = ровно те tp, что встречаются в структуре, т.е. ровно то, что клиент считал раньше.
+_PACK_FACT_TPS = ("tp1", "tp2", "tp3", "tp4", "tp5", "tp6", "tp7")
 
 
 def _pack_read_local(path: str) -> tuple[list, bool]:
@@ -361,6 +365,7 @@ def _pack_group_fact(slepok: str, site_type: str, tp: str, ct: str, gk: str) -> 
         pos, _ = _pack_read_local(os.path.join(kd, f"{slepok}.txt"))
     real = 0
     auto = False
+    reals: list = []
     for line in pos:
         s = (line or "").strip()
         if not s:
@@ -369,7 +374,12 @@ def _pack_group_fact(slepok: str, site_type: str, tp: str, ct: str, gk: str) -> 
             auto = True
         else:
             real += 1
-    return {"real": real, "auto": auto}
+            reals.append(s)
+    # sig — подпись СОДЕРЖИМОГО пака (кол-во + первый/последний реальный ключ), 1:1 с клиентским
+    # `_sig` в _slCountKeywords. Нужна для дедупа счётчика: группы без своего per-group файла
+    # падают на ОДИН ct-агрегат и должны быть посчитаны один раз. Наружу (в pack_facts) НЕ уходит.
+    sig = f"{real}:" + (f"{reals[0]}…{reals[-1]}" if reals else "")
+    return {"real": real, "auto": auto, "sig": sig}
 
 
 def _slepki_pack_facts(struct: dict) -> dict:
@@ -383,8 +393,17 @@ def _slepki_pack_facts(struct: dict) -> dict:
     ветка обычных tp (source_campaigns/архив бейджей по ключам не считает). Пара (ct,gk) берётся
     из it.gc/it.gk item'а — ровно то, из чего клиент строит data-kwgrps (ct~gk). Каждую пару
     считаем ОДИН раз и эмитим ВСЕГДА (даже при пустом/отсутствующем файле → real:0,auto:false),
-    иначе allLoaded не станет true и кампания осталась бы на fallback-эвристике."""
+    иначе allLoaded не станет true и кампания осталась бы на fallback-эвристике.
+
+    Возвращает ``{"facts": {...}, "kw_totals": {"{slepok}|{site}": N}}``. ``kw_totals`` — счётчик
+    «≈N ключевых слов» карточки обзора, посчитанный ЗДЕСЬ вместо клиента: раньше UI ради одной
+    цифры дёргал /direct/api/slepki/keywords ПО ЗАПРОСУ НА ГРУППУ (замер: 522 запроса / ~21 МБ
+    на одно открытие страницы), при том что все нужные файлы этот предрасчёт и так читает.
+    Дедуп — по подписи СОДЕРЖИМОГО пака в пределах (slepok,site,tp,ct), 1:1 с клиентским
+    `_ctSeen`: группы, упавшие на общий ct-агрегат, считаются один раз."""
     facts: dict = {}
+    totals: dict = {}
+    seen_sigs: dict = {}
     for d in (struct.get("directologists") or []):
         slepok = d.get("key") or ""
         if not slepok:
@@ -408,8 +427,15 @@ def _slepki_pack_facts(struct: dict) -> dict:
                             key = f"{slepok}|{site}|{code}|{ct}|{gk}"
                             if key in facts:
                                 continue
-                            facts[key] = _pack_group_fact(slepok, site, code, ct, gk)
-    return facts
+                            fact = _pack_group_fact(slepok, site, code, ct, gk)
+                            facts[key] = {"real": fact["real"], "auto": fact["auto"]}
+                            # счётчик обзора: суммируем только НОВУЮ подпись пака внутри (tp,ct)
+                            seen = seen_sigs.setdefault(f"{slepok}|{site}|{code}|{ct}", set())
+                            if fact["sig"] not in seen:
+                                seen.add(fact["sig"])
+                                tkey = f"{slepok}|{site}"
+                                totals[tkey] = totals.get(tkey, 0) + fact["real"]
+    return {"facts": facts, "kw_totals": totals}
 
 
 def _donor_tp4_models_map() -> dict:

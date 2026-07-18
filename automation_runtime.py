@@ -622,13 +622,19 @@ _UI_STRUCTURE_CACHE_LOCK = threading.Lock()
 
 def _ui_structure_payload() -> dict:
     """Heavy structure data loaded only by UI panels that actually need it."""
+    from . import slepki_store as _sstore  # noqa: PLC0415
     struct = _json("slepki_structure.json")
-    names = ["slepki_structure.json", "targeting_profile.json"]
+    # Структура слепков живёт в per-slepok файлах (direct/slepki/*.json) — монолита
+    # slepki_structure.json на диске НЕТ. Брать его stat() нельзя: `if exists()` молча
+    # выбрасывал структуру из сигнатуры → правка ЛЮБОГО слепка не меняла ETag → браузер
+    # получал 304 и рисовал старое дерево (регрессия инцидента 2026-07-16). Сигнатуру частей
+    # даёт сам store — тот же ключ, по которому он инвалидирует свой кэш assemble().
+    names = ["targeting_profile.json"]
     names.extend(
         d.get("source_manifest") for d in (struct.get("directologists") or [])
         if d.get("source_manifest")
     )
-    signature = tuple(
+    signature = (("slepki_parts", _sstore._signature()),) + tuple(
         (name, (_HERE / name).stat().st_mtime_ns, (_HERE / name).stat().st_size)
         for name in names if (_HERE / name).exists()
     )
@@ -636,13 +642,17 @@ def _ui_structure_payload() -> dict:
         if _UI_STRUCTURE_CACHE.get("signature") == signature:
             return _UI_STRUCTURE_CACHE["data"]
     struct_ui = _slepki_structure_for_ui()
+    packs = _slepki_pack_facts(struct_ui)
     data = {
         "slepki_structure": struct_ui,
-        # Пер-групповой факт ключей (real/auto) для бейджей таргетинга tp1/2/4/5, посчитанный
+        # Пер-групповой факт ключей (real/auto) для бейджей таргетинга tp1/2/4/5/6/7, посчитанный
         # на СЕРВЕРЕ по тем же пер-групповым пакам (ct~gk), что раньше UI тянул лениво через
         # /direct/api/slepki/keywords. Клиент сидит этим _SL_PACK_CACHE ДО первого рендера →
         # бейдж сразу верный, без «прыжка» эвристики. Кэшируется той же signature, что и структура.
-        "pack_facts": _slepki_pack_facts(struct_ui),
+        "pack_facts": packs["facts"],
+        # Счётчик «≈N ключевых слов» карточки обзора — тоже с сервера (тот же обход, 0 доп. чтений).
+        # Раньше клиент ради него слал по запросу НА ГРУППУ (522 запроса / 21 МБ на открытие).
+        "kw_totals": packs["kw_totals"],
         "model_cts": _model_cts(),
         "ct_segments": _ct_segment_map(),
         "non_auto_slepki": _non_auto_slepki(),

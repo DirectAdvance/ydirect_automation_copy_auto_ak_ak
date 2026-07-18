@@ -56,6 +56,9 @@ def _is_transient_data_error(errs) -> bool:
 # READ: облегчённый GroupsForEdit (реверс HAR GroupsForEdit) — только поля, нужные для round-trip
 # UpdateUnifiedAdGroups + идемпотентность (kw-count/relevanceMatch) + safety (bidModifiers/retargetings).
 # Фильтр по campaignIdIn (как в grid_read.campaign_content_counts) — можно читать пачкой кампаний.
+# ⚠️ Жёсткий потолок строк на секцию (Grid: offset-пагинация ЗА этот предел не работает). Ответ
+# ровно на лимит = усечён → см. ``groups_for_edit(meta=...)``: по ключам такой набор судить нельзя.
+_GFE_LIMIT = 10000
 _GROUPS_FOR_EDIT_LITE_Q = (
     "query GroupsForEditLite($login:String!,$agInp:GdAdGroupsContainerInput!,"
     "$scInp:GdShowConditionsContainerInput!,$rtInp:GdRetargetingsContainerInput!){"
@@ -104,6 +107,103 @@ def _strip_graphql_typenames(value):
     if isinstance(value, list):
         return [_strip_graphql_typenames(v) for v in value]
     return value
+
+
+# ── Картинки Grid: превью и write-shape наследуемых наборов ─────────────────────────────────
+# Живой HAR браузера (direct.yandex.ru.62har.har, entry [55] BannersQueryForEdit + GET'ы картинок):
+# у GdImage есть formats[]{imageSize{height width} path}, а превью отдаётся по
+# https://direct.yandex.ru/images + path (подтверждено 200 image/webp на /x300, /y484, /x600).
+_GRID_IMAGE_BASE = "https://direct.yandex.ru/images"
+_GRID_IMAGE_PREVIEW_W = 300   # средний размер: браузер грузит именно /x300 в списке объявлений
+
+# Пагинация чтения объявлений Grid (client.ads): страница + потолок числа страниц.
+# 5000 — предел, который Grid отдаёт за один limitOffset; 200 страниц = 1 000 000 объявлений,
+# заведомо больше любого аккаунта, и при этом сервис не виснет на кривом ответе API.
+_ADS_PAGE_LIMIT = 5000
+_ADS_PAGE_MAX_PAGES = 200
+
+
+def _safe_int(value) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _grid_image_preview_url(formats) -> str:
+    """URL превью картинки по её formats[]: берём формат с шириной ближе всего к 300px.
+    Форматов нет / нет path → "" (вызывающий покажет плейсхолдер)."""
+    best_path, best_delta = "", None
+    for fmt in formats or []:
+        path = str((fmt or {}).get("path") or "").strip()
+        if not path:
+            continue
+        width = _safe_int(((fmt or {}).get("imageSize") or {}).get("width"))
+        delta = abs(width - _GRID_IMAGE_PREVIEW_W) if width else 10 ** 6
+        if best_delta is None or delta < best_delta:
+            best_path, best_delta = path, delta
+    return (_GRID_IMAGE_BASE + best_path) if best_path else ""
+
+
+def _grid_images_rich(raw_images) -> list[dict]:
+    """images{} из Grid → [{imageHash, name, mdsGroupId, width, height, preview_url}, …]."""
+    out: list[dict] = []
+    for img in raw_images or []:
+        if not isinstance(img, dict):
+            continue
+        image_hash = str(img.get("imageHash") or "").strip()
+        if not image_hash:
+            continue
+        size = img.get("imageSize") or {}
+        out.append({
+            "imageHash": image_hash,
+            "name": img.get("name") or "",
+            "mdsGroupId": str(img.get("mdsGroupId") or ""),
+            "width": _safe_int(size.get("width")),
+            "height": _safe_int(size.get("height")),
+            "preview_url": _grid_image_preview_url(img.get("formats")),
+        })
+    return out
+
+
+def _grid_inheritable_write(raw, value_key: str | None) -> dict | None:
+    """Прочитанный ``{policy, assetValue}`` → write-shape для UpdateAdaptiveTextAds.
+
+    Асимметрия имён (как linkTail→displayHref): читается ``assetValue``, пишется ``sitelinkSetId``
+    (HAR entry [187]: ``{"policy":"OVERRIDE","sitelinkSetId":"1494667558"}``) либо ``calloutIds``
+    (интроспекция 2026-07-18: ``GdInheritableCalloutsInput{calloutIds:[ID] calloutsIds:[ID]
+    policy:GdAssetInheritancePolicyInput!}``; каноничное имя — ``calloutIds``: оно есть в 20+ input-
+    типах схемы, а ``calloutsIds`` — ровно в двух и всегда дублем рядом с ним, т.е. легаси-алиас).
+
+    ``assetValue`` бывает СКАЛЯРОМ (набор быстрых ссылок — один id) и СПИСКОМ (уточнения — список
+    id, живой probe porg-pvrbl7mh: ``{"policy":"OVERRIDE","assetValue":["43516097",…]}``), поэтому
+    форма значения выводится из самого значения, а не задаётся вызывающим.
+    ``value_key=None`` = write-shape значения для этого набора НЕ подтверждена → при ``OVERRIDE``
+    возвращаем None, чтобы вызывающий взял свой fallback, а не слал догадку.
+    """
+    if not isinstance(raw, dict):
+        return None
+    policy = str(raw.get("policy") or "").strip().upper()
+    if not policy:
+        return None
+    if policy == "OVERRIDE":
+        value = raw.get("assetValue")
+        if not value_key:
+            # write-shape значения не подтверждена → не гадаем, вызывающий берёт свой fallback
+            return None
+        if value in (None, "", [], {}):
+            # OVERRIDE с ПУСТЫМ значением = «у объявления набора нет, кампанийный не наследуем».
+            # Возврат None давал fallback INHERIT (update_ad_images:2283) → объявление получало
+            # уточнения/ссылки КАМПАНИИ, которых у него не было. Семантически это CLEAR
+            # (то же значение шлёт браузер в HAR entry [187] для пустых уточнений).
+            return {"policy": "CLEAR"}
+        if isinstance(value, (list, tuple)):
+            ids = [str(v) for v in value if v not in (None, "")]
+            if not ids:
+                return {"policy": "CLEAR"}
+            return {"policy": "OVERRIDE", value_key: ids}
+        return {"policy": "OVERRIDE", value_key: str(value)}
+    return {"policy": policy}
 
 
 class GridFinalizeError(RuntimeError):
@@ -959,6 +1059,15 @@ class GridClient:
         def _tri(v):
             return bool(v) if isinstance(v, bool) else None
 
+        def _num(v):
+            """Числовое поле tri-state: не число / не пришло → None (верификатор молчит)."""
+            if isinstance(v, bool) or v in (None, ""):
+                return None
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
         out: dict[int, dict] = {}
         for chunk in [ids[i:i + 50] for i in range(0, len(ids), 50)]:
             inp = {
@@ -1005,6 +1114,25 @@ class GridClient:
                 _co_raw = (row.get("inheritableCallouts") or {}).get("assetValue") or []
                 _sl_raw = (row.get("inheritableSitelinkSet") or {}).get("assetValue")
                 _pr_raw = (row.get("promoExtension") or {}).get("id")
+                # ── Кампанийная СПЕЦИФИКАЦИЯ из ТОГО ЖЕ ответа CampaignsEditData ───────────
+                # Счётчик Метрики / цель / UTM-параметры кампании / недельный бюджет / статус
+                # черновика / расписание показов. Поля уже присутствуют в
+                # grid_campaigns_edit_data.graphql (metrikaCounters, meaningfulGoals{goalId},
+                # bannerHrefParams, hasAddMetrikaTagToUrl, strategy.budget{sum,period,
+                # autoProlongation}, status{primaryStatus}, aggregatedStatusInfo{status},
+                # timeTarget{timeBoard,idTimeZone}) → НОЛЬ дополнительных запросов и баллов.
+                # Read-гейт тот же, что у ассетов: ПРИСУТСТВИЕ ключа в row (GraphQL всегда вернёт
+                # запрошенный ключ, пусть и null; отсутствие = схема поменялась) → иначе None и
+                # верификатор МОЛЧИТ (tri-state fail-safe, журнал I).
+                _bud = strat.get("budget") if isinstance(strat.get("budget"), dict) else {}
+                _st = row.get("status") if isinstance(row.get("status"), dict) else {}
+                _agg = (row.get("aggregatedStatusInfo")
+                        if isinstance(row.get("aggregatedStatusInfo"), dict) else {})
+                _tt = row.get("timeTarget") if isinstance(row.get("timeTarget"), dict) else {}
+                _spec_read = any(k in row for k in
+                                 ("metrikaCounters", "meaningfulGoals", "bannerHrefParams",
+                                  "status", "aggregatedStatusInfo", "timeTarget"))
+                _mg_raw = row.get("meaningfulGoals")
                 out[cid] = {
                     "is_alternative_texts_enabled": _tri(row.get("isAlternativeTextsEnabled")),
                     "has_extended_geo_targeting": _tri(row.get("hasExtendedGeoTargeting")),
@@ -1022,6 +1150,32 @@ class GridClient:
                                         if "inheritableSitelinkSet" in row else None),
                     "promo_extension_id": ((str(_pr_raw) if _pr_raw else "")
                                            if "promoExtension" in row else None),
+                    # ── спецификация кампании (tri-state, тот же ответ) ────────────────
+                    "campaign_spec_read": bool(_spec_read),
+                    "metrika_counters": ([str(x) for x in (row.get("metrikaCounters") or [])]
+                                         if "metrikaCounters" in row else None),
+                    "meaningful_goal_ids": ([str(g.get("goalId")) for g in (_mg_raw or [])
+                                             if isinstance(g, dict) and g.get("goalId")]
+                                            if "meaningfulGoals" in row else None),
+                    "strategy_goal_id": ((str(strat.get("goalId"))
+                                          if strat.get("goalId") not in (None, "") else "")
+                                         if isinstance(row.get("strategy"), dict) else None),
+                    "banner_href_params": (str(row.get("bannerHrefParams") or "")
+                                           if "bannerHrefParams" in row else None),
+                    "has_add_metrika_tag_to_url": _tri(row.get("hasAddMetrikaTagToUrl")),
+                    "budget_sum": _num(_bud.get("sum")) if "budget" in strat else None,
+                    "budget_period": ((str(_bud.get("period") or ""))
+                                      if "budget" in strat else None),
+                    "budget_auto_prolongation": _tri(_bud.get("autoProlongation")),
+                    "status_primary": (str(_st.get("primaryStatus") or "")
+                                       if "status" in row else None),
+                    "aggregated_status": (str(_agg.get("status") or "")
+                                          if "aggregatedStatusInfo" in row else None),
+                    "time_board": (list(_tt.get("timeBoard") or [])
+                                   if "timeTarget" in row else None),
+                    "time_zone_id": ((str(_tt.get("idTimeZone"))
+                                      if _tt.get("idTimeZone") not in (None, "") else "")
+                                     if "timeTarget" in row else None),
                 }
         return out
 
@@ -2187,15 +2341,43 @@ class GridClient:
                 # видео-креативы вызывающего (напр. из adaptive_ads_for_update.creativeIds) —
                 # раньше жёсткий [] стирал видео при чистке картинок (ревью 03.07 #13)
                 "creativeIds": [str(c) for c in (it.get("creativeIds") or []) if c],
-                "permalinkId": None,
-                "phoneId": None,
+                # визитка: as-is из RMW-чтения (adaptive_ads_for_update), None = прежнее поведение
+                # для вызывающих, которые состояние объявления не читают
+                "permalinkId": it.get("permalinkId") or None,
+                "phoneId": it.get("phoneId") or None,
                 "erirAdDescription": None,
-                "inheritableCallouts": {"policy": "INHERIT"},
-                "inheritableSitelinkSet": {"policy": "INHERIT"},
+                # ad-level наборы: мутация REPLACE'ит payload целиком, поэтому хардкод INHERIT
+                # СТИРАЛ ad-level набор быстрых ссылок (policy OVERRIDE) — браузер в том же вызове
+                # шлёт РЕАЛЬНОЕ состояние (HAR entry [187]: OVERRIDE+sitelinkSetId, callouts CLEAR).
+                # INHERIT остаётся ТОЛЬКО как fallback для вызывающих, которые состояние не читают.
+                "inheritableCallouts": (it.get("inheritableCallouts")
+                                        if isinstance(it.get("inheritableCallouts"), dict)
+                                        else {"policy": "INHERIT"}),
+                "inheritableSitelinkSet": (it.get("inheritableSitelinkSet")
+                                           if isinstance(it.get("inheritableSitelinkSet"), dict)
+                                           else {"policy": "INHERIT"}),
                 "id": str(it["id"]),
             }
             if it.get("adPrice"):
-                item["adPrice"] = it["adPrice"]
+                # сырой bannerPrice из adaptive_ads_for_update несёт __typename (Grid его на входе
+                # не ждёт) — снимаем. У вызывающих, дающих уже нормализованный adPrice, это no-op.
+                item["adPrice"] = _strip_graphql_typenames(it["adPrice"])
+            # кнопка: full-replace без неё СТИРАЕТ кнопку (доказано live 2026-07-06 — именно поэтому
+            # create_set_feeds._apply_combo_button переставляет её после ценового апдейта).
+            # Ключа нет → не шлём вообще (прежнее поведение, отказ на кнопке не роняет батч).
+            btn = it.get("button")
+            if isinstance(btn, dict) and btn.get("action"):
+                item["button"] = {"action": btn["action"], "href": btn.get("href") or ""}
+                # кастомная надпись кнопки: ключа нет → прежнее поведение (браузер в HAR его тоже
+                # не шлёт, когда customText=null), есть → без него full-replace обнулял текст
+                if btn.get("customText"):
+                    item["button"]["customText"] = btn["customText"]
+            # отображаемая ссылка: тот же класс потери, что inheritable* — мутация REPLACE'ит
+            # payload, а displayHref в нём не было → linkTail стирался у всех объявлений, где он
+            # задан (живой probe porg-pvrbl7mh: 102/102 непустых). Ключа нет → не шлём (прежнее
+            # поведение для вызывающих, которые состояние не читают, напр. repair_media).
+            if it.get("displayHref"):
+                item["displayHref"] = str(it["displayHref"])
             upd.append(item)
         if not upd:
             return 0
@@ -2215,6 +2397,40 @@ class GridClient:
             return len(res.get("updatedAds") or [])
         except Exception:  # noqa: BLE001
             return 0
+
+    def _ads_rows_paginated(self, op_name: str, query: str, chunk_cids: list[int]) -> list[dict]:
+        """Все строки ``client.ads.rowset`` по чанку кампаний — с ПАГИНАЦИЕЙ по limitOffset.
+
+        Grid отдаёт максимум ``_ADS_PAGE_LIMIT`` строк за запрос, а один аккаунт легко даёт больше:
+        живой probe porg-pvrbl7mh (80 кампаний, ОДИН чанк) = 5588 объявлений, т.е. одностраничное
+        чтение молча теряло 588 (~336 адаптивных). Тихая потеря особенно опасна для вкладки замены
+        картинок: невидимое объявление не попадает в инвентарь и остаётся со старой картинкой,
+        а UI рапортует успех. Бюджет страницы делят ВСЕ типы объявлений (Shopping/Listing/Text),
+        не только адаптивные, поэтому переполнение наступает раньше, чем кажется по числу адаптивов.
+
+        Выход из цикла: страница короче лимита. Страховка от бесконечного цикла на кривом ответе
+        API — жёсткий потолок ``_ADS_PAGE_MAX_PAGES`` итераций (с логом, дальше отдаём что набрали).
+        """
+        rows_all: list[dict] = []
+        offset = 0
+        for _ in range(_ADS_PAGE_MAX_PAGES):
+            inp = {
+                "filter": {"campaignIdIn": [str(cid) for cid in chunk_cids]},
+                "statRequirements": {"preset": "LAST_30DAYS", "goalIds": [], "useCampaignGoalIds": True},
+                "limitOffset": {"limit": _ADS_PAGE_LIMIT, "offset": offset},
+                "orderBy": [{"order": "ASC", "field": "ID"}],
+            }
+            data = self._post_json_retry(op_name, query, {"login": self.login, "inp": inp})
+            rows = ((((data.get("data") or {}).get("client") or {})
+                     .get("ads") or {}).get("rowset") or [])
+            rows_all.extend(rows)
+            if len(rows) < _ADS_PAGE_LIMIT:
+                return rows_all
+            offset += len(rows)
+        print(f"[grid] {op_name} {self.login}: достигнут потолок пагинации "
+              f"{_ADS_PAGE_MAX_PAGES} страниц (offset={offset}), инвентарь может быть неполным",
+              flush=True)
+        return rows_all
 
     def adaptive_ads_for_update(self, campaign_ids: list[int], ad_ids: list[int]) -> dict[int, dict]:
         """Read full adaptive ads needed for safe ``UpdateAdaptiveTextAds`` round-trip.
@@ -2245,28 +2461,26 @@ class GridClient:
         # typedCreatives{creativeId} — ЧИТАЕМЫЙ источник видео-креативов (подтверждено live
         # 03.07.2026, интроспекция): закрывает давнюю дыру «creativeIds нечитаем → RMW стирает
         # видео». hasButton/button — для детекта и добивки кнопки «Получить скидку».
+        # inheritable*/permalinkWithPhone — ad-level состояние, которое мутация REPLACE'ит: без него
+        # RMW стирал набор быстрых ссылок объявления и визитку (HAR entry [55] BannersQueryForEdit,
+        # те же поля у GdAdaptiveTextAd). images{} расширены до полей превью (name/mdsGroupId/
+        # imageSize/formats) — вкладка массовой замены картинок показывает их без доп. запроса.
         q = ("query AdaptiveAdsForUpdate($login:String!,$inp:GdAdsContainerInput!){"
              "client(searchBy:{login:$login}){ads(input:$inp){rowset{id campaignId "
-             "...on GdAdaptiveTextAd{href linkTail titles bodies images{imageHash} "
+             "...on GdAdaptiveTextAd{href linkTail titles bodies "
+             "images{imageHash name mdsGroupId namespace imageSize{height width} "
+             "formats{imageSize{height width} path}} "
              "bannerPrice{price priceOld prefix currency} "
-             "hasVideo hasButton button{action href} "
+             # customText — кастомная надпись кнопки; без неё RMW обнулял текст у кнопок,
+             # где он задан (GdBannerButtonInput{action customText href}, интроспекция 2026-07-18)
+             "hasVideo hasButton button{action customText href} "
+             "inheritableCallouts{policy assetValue} inheritableSitelinkSet{policy assetValue} "
+             "permalinkWithPhone{permalinkId phoneId policy} "
              "typedCreatives{creativeId creativeType}}"
              "}}}}")
         out: dict[int, dict] = {}
         for chunk in [cids[i:i + 100] for i in range(0, len(cids), 100)]:
-            inp = {
-                "filter": {"campaignIdIn": [str(cid) for cid in chunk]},
-                "statRequirements": {"preset": "LAST_30DAYS", "goalIds": [], "useCampaignGoalIds": True},
-                "limitOffset": {"limit": 5000, "offset": 0},
-                "orderBy": [{"order": "ASC", "field": "ID"}],
-            }
-            data = self._post_json_retry(
-                "AdaptiveAdsForUpdate",
-                q,
-                {"login": self.login, "inp": inp},
-            )
-            rows = ((((data.get("data") or {}).get("client") or {})
-                     .get("ads") or {}).get("rowset") or [])
+            rows = self._ads_rows_paginated("AdaptiveAdsForUpdate", q, chunk)
             for row in rows:
                 try:
                     aid = int(row.get("id"))
@@ -2274,11 +2488,9 @@ class GridClient:
                     continue
                 if aid not in wanted:
                     continue
-                image_hashes = []
-                for image in row.get("images") or []:
-                    image_hash = (image or {}).get("imageHash")
-                    if image_hash:
-                        image_hashes.append(image_hash)
+                images_rich = _grid_images_rich(row.get("images"))
+                image_hashes = [im["imageHash"] for im in images_rich]
+                pwp = row.get("permalinkWithPhone") or {}
                 # видео-креативы: только VIDEO_ADDITION (другие типы в creativeIds Grid не ждёт)
                 creative_ids = [str(c.get("creativeId")) for c in (row.get("typedCreatives") or [])
                                 if c and c.get("creativeId")
@@ -2292,11 +2504,25 @@ class GridClient:
                     "titles": list(row.get("titles") or []),
                     "bodies": list(row.get("bodies") or []),
                     "imageHashes": image_hashes,
+                    # полные данные картинок для превью (вкладка массовой замены):
+                    # [{imageHash, name, mdsGroupId, width, height, preview_url}, …]
+                    "images": images_rich,
                     "adPrice": row.get("bannerPrice"),
                     "creativeIds": creative_ids,
                     "hasVideo": bool(row.get("hasVideo")),
                     "hasButton": bool(row.get("hasButton")),
                     "button": row.get("button"),
+                    # ad-level наборы уже в WRITE-shape (assetValue→sitelinkSetId) — вызывающий
+                    # кладёт их в update_ad_images as-is. None = состояние не пришло → fallback.
+                    "inheritableSitelinkSet": _grid_inheritable_write(
+                        row.get("inheritableSitelinkSet"), "sitelinkSetId"),
+                    # уточнения: assetValue — СПИСОК id, пишется как calloutIds (интроспекция
+                    # GdInheritableCalloutsInput 2026-07-18 + живой probe 102/102 OVERRIDE).
+                    # Раньше здесь стоял None → fallback INHERIT стирал уточнения объявления.
+                    "inheritableCallouts": _grid_inheritable_write(
+                        row.get("inheritableCallouts"), "calloutIds"),
+                    "permalinkId": pwp.get("permalinkId"),
+                    "phoneId": pwp.get("phoneId"),
                 }
         return out
 
@@ -2522,7 +2748,8 @@ class GridClient:
             return j
         raise GridFinalizeError(f"{op}: транзиент Яндекса не ушёл за 3 попытки: {last_transient}")
 
-    def groups_for_edit(self, campaign_id: int | list[int]) -> list[dict]:
+    def groups_for_edit(self, campaign_id: int | list[int], *,
+                        meta: dict | None = None) -> list[dict]:
         """Прочитать группы кампании(й) для read-modify-write UpdateUnifiedAdGroups.
 
         Возвращает список нормализованных групп со всеми полями, нужными для полного
@@ -2531,7 +2758,15 @@ class GridClient:
         (bid_modifiers_present/retargetings_present). Только GdUnifiedAdGroup — остальные
         типы отдаём с ``supported=False`` (их этот путь не трогает).
 
-        campaign_id может быть int или списком int (читаем пачкой одним запросом)."""
+        campaign_id может быть int или списком int (читаем пачкой одним запросом).
+
+        ``meta`` (опционально, для вызывающих, которые СУДЯТ по счётчикам): словарь заполняется
+        признаками ОБРЕЗКИ ответа по лимиту ``_GFE_LIMIT`` — ``adgroups_truncated`` /
+        ``keywords_truncated`` (ровно лимит строк = список почти наверняка усечён). Grid отдаёт
+        максимум ``_GFE_LIMIT`` строк на секцию, offset-пагинация за этот предел не работает →
+        у крупного набора ``keyword_count`` НЕДОсчитан. Вызывающий обязан при ``keywords_truncated``
+        НЕ судить по ключам (иначе ложный «live < build» → ложный ремонт). Параметр опционален:
+        существующие вызовы (RMW-докрутка, spec-audit) поведения не меняют."""
         if isinstance(campaign_id, (list, tuple, set)):
             ids = [int(c) for c in campaign_id if str(c).strip().lstrip("-").isdigit()]
         else:
@@ -2545,15 +2780,15 @@ class GridClient:
             "login": self.login,
             "agInp": {"filter": {"campaignIdIn": id_strings},
                       "statRequirements": {"preset": "TODAY"},
-                      "limitOffset": {"offset": 0, "limit": 10000},
+                      "limitOffset": {"offset": 0, "limit": _GFE_LIMIT},
                       "orderBy": [{"field": "ID", "order": "ASC"}]},
             "scInp": {"filter": {"typeIn": ["KEYWORD"], "campaignIdIn": id_strings},
                       "statRequirements": {"preset": "TODAY"},
-                      "limitOffset": {"offset": 0, "limit": 10000},
+                      "limitOffset": {"offset": 0, "limit": _GFE_LIMIT},
                       "orderBy": [{"order": "DESC", "field": "GROUP_ID"}]},
             "rtInp": {"filter": {"campaignIdIn": id_strings, "typeNotIn": ["INTERESTS"]},
                       "statRequirements": {"preset": "TODAY"},
-                      "limitOffset": {"offset": 0, "limit": 10000},
+                      "limitOffset": {"offset": 0, "limit": _GFE_LIMIT},
                       "orderBy": [{"order": "DESC", "field": "GROUP_ID"}]},
         }
         j = self._post_json_retry("GroupsForEditLite", _GROUPS_FOR_EDIT_LITE_Q, variables)
@@ -2561,6 +2796,12 @@ class GridClient:
         ag_rows = ((client.get("adGroups") or {}).get("rowset") or [])
         sc_rows = ((client.get("showConditions") or {}).get("rowset") or [])
         rt_rows = ((client.get("retargetings") or {}).get("rowset") or [])
+        if meta is not None:
+            # Ровно лимит строк ⇒ ответ почти наверняка обрезан (пагинация за лимит не работает).
+            meta["adgroup_rows"] = len(ag_rows)
+            meta["keyword_rows"] = len(sc_rows)
+            meta["adgroups_truncated"] = len(ag_rows) >= _GFE_LIMIT
+            meta["keywords_truncated"] = len(sc_rows) >= _GFE_LIMIT
 
         kw_by_group: dict[str, list[str]] = {}
         for row in sc_rows:
