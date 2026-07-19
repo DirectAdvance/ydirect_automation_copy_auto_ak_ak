@@ -657,15 +657,25 @@ def _asset_rel(kind: str, site_type: str, tp: str, ct: str, slepok: str) -> str:
     return _pack_rel(site_type, tp, ct, f"{slepok}_minus_shared.txt")
 
 
-def _asset_pair_values(kind: str, slepok: str, site_type: str, tp: str, ct: str) -> list[str]:
+def _asset_pair_values(kind: str, slepok: str, site_type: str, tp: str, ct: str,
+                       strict: bool = False) -> list[str]:
     """Текущий набор ассета в ОДНОМ (tp,ct). Нет файла → []. Читаем теми же примитивами,
-    что и движок создания (kp), чтобы редактор не разошёлся с ним в трактовке файла."""
+    что и движок создания (kp), чтобы редактор не разошёлся с ним в трактовке файла.
+
+    ⚠️ ``strict`` разводит ДВА смысла пустого результата, которые нельзя путать на ЗАПИСИ:
+    «файла нет» (ct правда пуст) и «файл есть, но не прочитался» (права/гонка/битая кодировка).
+    На чтении панели (``strict=False``) сбой глушится — панель не должна падать из-за одного
+    битого файла. На записи (``strict=True``) сбой ОБЯЗАН всплыть: принять живой ct за пустой
+    значит записать в него одну лишь дельту и молча стереть прежний набор.
+    """
     try:
         if kind == "callouts":
             return list(kp.read_callouts(site_type, tp, ct, slepok))
         kd = os.path.join(kp._ct_dir(site_type, tp, ct), "keywords")
         return kp._dedup(kp._read_lines(os.path.join(kd, f"{slepok}_minus_shared.txt")))
     except Exception:  # noqa: BLE001 — отсутствующий/битый файл не должен ронять чтение всей панели
+        if strict:
+            raise
         return []
 
 
@@ -771,7 +781,13 @@ def apply_save_assets(spec: dict, actor: str = "") -> dict:
             rem_l = {x.lower() for x in rem}
             changed: dict = {}                 # rel → новый текст (у каждого ct свой)
             for tp, ct in pairs:
-                cur = _asset_pair_values(kind, slepok, site_type, tp, ct)
+                # strict: нечитаемый файл здесь НЕ считается пустым ct (иначе дельта затрёт набор).
+                try:
+                    cur = _asset_pair_values(kind, slepok, site_type, tp, ct, strict=True)
+                except Exception as e:  # noqa: BLE001 — отменяем правку целиком, не гадаем
+                    return {"ok": False,
+                            "error": f"не прочитан текущий набор {kind} в {tp}/{ct} "
+                                     f"({type(e).__name__}: {e}) — запись отменена"}
                 new = [x for x in cur if x.lower() not in rem_l]
                 have = {x.lower() for x in new}
                 for a in add:
