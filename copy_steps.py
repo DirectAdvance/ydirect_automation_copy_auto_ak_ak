@@ -644,6 +644,138 @@ def step_fix_organic_placement(ctx: CopyCtx) -> dict:
     return rep
 
 
+# ── Инвариант-форсинг Grid-only полей tp2/TEXT_CAMPAIGN ДО live_verification ─────
+
+def _search_at_ok(rm: dict | None) -> bool:
+    """Профиль автотаргета корректен: активен + EXACT_V2_MARK + WITHOUT_BRAND (без лишних).
+    Инлайн-копия repair_keywords._autotarget_ok — чтобы не тянуть внешний импорт."""
+    if not isinstance(rm, dict) or not rm.get("isActive"):
+        return False
+    cats = {str(x).upper() for x in (rm.get("relevanceMatchCategories") or [])}
+    brands = {str(x).upper() for x in (rm.get("autotargetingBrandSettings") or [])}
+    return cats == {"EXACT_V2_MARK"} and brands == {"WITHOUT_BRAND"}
+
+
+def step_fix_search_campaign_invariants(ctx: CopyCtx) -> dict:
+    """Форсировать Grid-only инварианты tp2/TEXT_CAMPAIGN ДО live_verification.
+
+    v5 adgroups.add не пишет два Grid-only поля → Яндекс ставит дефолты:
+      * enableCompanyInfo=True  → live_verification даёт COMPANY_INFO_ENABLED_LIVE
+      * автотаргет — все 5 категорий + 3 бренда → WRONG_AUTOTARGET
+
+    Что делает шаг (только TEXT_CAMPAIGN, UAC/товарка не трогаем):
+      1. set_campaign_invariants(target_ids)  — ставит enableCompanyInfo=False через
+         Grid UpdateCampaigns (переиспользует готовый мутатор grid_finalize; идемпотентно).
+      2. groups_for_edit(cid) + build_update_item(..., relevance_match=EXACT_V2_MARK/WITHOUT_BRAND)
+         + update_unified_adgroups(items) — профиль автотаргета через Grid UpdateUnifiedAdGroups
+         (тот же мутатор, что repair_keywords.execute_keywords_repair; идемпотентно: пропускает
+         группы, где профиль уже корректен или есть retargetings/bid_modifiers).
+
+    Порядок: вызывается ПОСЛЕ videos и ДО live_verification в _copy_cookie_postprocess.
+    Добавлено 2026-07-19 для устранения WRONG_AUTOTARGET×4 + COMPANY_INFO_ENABLED_LIVE×4 на tp2.
+    """
+    rep: dict = {
+        "camps_found": 0,
+        "invariants_updated": 0,
+        "at_groups_fixed": 0,
+        "at_groups_already_ok": 0,
+        "at_groups_skipped": 0,
+        "errors": [],
+    }
+    if ctx.grid is None:
+        rep["errors"].append("нет grid-клиента — search invariants пропущен")
+        return rep
+
+    camp_map = ctx.maps.get("campaigns") or {}
+    # Читаем snapshot-кампании источника, отбираем TEXT_CAMPAIGN → target id.
+    target_text_ids: list[int] = []
+    for c in _rj(ctx.src_dir / "campaigns.json"):
+        if not isinstance(c, dict):
+            continue
+        ctype = str(c.get("Type") or "").strip()
+        if ctype != "TEXT_CAMPAIGN":
+            continue
+        tgt = camp_map.get(str(c.get("Id") or ""))
+        if tgt is None:
+            continue
+        try:
+            target_text_ids.append(int(tgt))
+        except (TypeError, ValueError):
+            continue
+    rep["camps_found"] = len(target_text_ids)
+    if not target_text_ids:
+        ctx.log("search-invariants: нет TEXT_CAMPAIGN в snapshot — пропущено")
+        return rep
+
+    # 1) enableCompanyInfo=False — через set_campaign_invariants (идемпотентный UpdateCampaigns).
+    try:
+        updated = ctx.grid.set_campaign_invariants(target_text_ids)
+        rep["invariants_updated"] = len(updated or [])
+        ctx.log(f"search-invariants: set_campaign_invariants → {rep['invariants_updated']} кампаний")
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"set_campaign_invariants: {str(e)[:220]}")
+
+    # 2) Профиль автотаргета EXACT_V2_MARK+WITHOUT_BRAND через UpdateUnifiedAdGroups.
+    #    Читаем группы ПО ОДНОЙ КАМПАНИИ (per-cid): ошибка одной кампании не рубит остальные.
+    _target_rm = {
+        "isActive": True,
+        "id": None,
+        "relevanceMatchCategories": ["EXACT_V2_MARK"],
+        "autotargetingBrandSettings": ["WITHOUT_BRAND"],
+    }
+    for cid in target_text_ids:
+        try:
+            groups = ctx.grid.groups_for_edit(cid)
+        except Exception as e:  # noqa: BLE001
+            rep["errors"].append(f"groups_for_edit cid={cid}: {str(e)[:200]}")
+            continue
+        write_items: list[dict] = []
+        for grp in groups:
+            if not grp.get("supported"):
+                rep["at_groups_skipped"] += 1
+                continue
+            if grp.get("retargetings_present") or grp.get("bid_modifiers_present"):
+                rep["at_groups_skipped"] += 1
+                continue
+            rm = grp.get("relevance_match")
+            if _search_at_ok(rm):
+                rep["at_groups_already_ok"] += 1
+                continue
+            # Preserve existing rm.id so Яндекс не создаёт дублирующую запись relevanceMatch.
+            effective_rm = dict(_target_rm)
+            if isinstance(rm, dict) and rm.get("id"):
+                effective_rm["id"] = rm["id"]
+            try:
+                # Передаём РЕАЛЬНЫЕ ключи группы (replace-семантика: keywords=[] → 0 ключей,
+                # live-проба 2026-07-19 группа 5774526683: было 62 → стало 0). grp["keywords"]
+                # содержит полный текущий набор фраз (кэш groups_for_edit, лимит 10000 на
+                # кампанию; для типичного tp2 ~30 групп × ~80 ключей ≪ 10000). build_update_item
+                # режет до [:200]/группа — для tp2 60-80 ключей/группа это без потерь.
+                item = ctx.grid.build_update_item(
+                    grp, keywords=grp.get("keywords", []), relevance_match=effective_rm)
+            except Exception as e:  # noqa: BLE001
+                rep["errors"].append(f"build_update_item gid={grp.get('adgroup_id')}: {str(e)[:180]}")
+                continue
+            write_items.append(item)
+        if not write_items:
+            continue
+        try:
+            updated_gids = ctx.grid.update_unified_adgroups(write_items)
+            rep["at_groups_fixed"] += len(updated_gids or [])
+        except Exception as e:  # noqa: BLE001
+            rep["errors"].append(f"update_unified_adgroups cid={cid}: {str(e)[:220]}")
+
+    ctx.log(
+        f"search-invariants: кампаний {rep['camps_found']}, "
+        f"enableCompanyInfo обновлено {rep['invariants_updated']}, "
+        f"автотаргет исправлено {rep['at_groups_fixed']} групп, "
+        f"уже верных {rep['at_groups_already_ok']}, "
+        f"пропущено {rep['at_groups_skipped']}, "
+        f"ошибок {len(rep['errors'])}"
+    )
+    return rep
+
+
 # ── П.8: adPrice из ФИДА TARGET-аккаунта на созданные адаптивные объявления ─────
 
 def _merge_cheaper(prev: tuple | None, new: tuple) -> tuple:

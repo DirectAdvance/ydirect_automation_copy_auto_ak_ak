@@ -69,6 +69,33 @@ def _copy_filter_snapshot(src_dir: Path, selected_campaign_ids: set[int]) -> dic
         if payload.get("RetargetingConditionId"):
             retargeting_ids.add(int(payload["RetargetingConditionId"]))
 
+    # Добавляем campaign-level уточнения (inheritableCallouts) в callout_ids.
+    # campaign_callouts.json создаётся pull_source_campaign_assets ДО вызова этой функции.
+    # Без этого кампании, у которых уточнения только на уровне кампании (ad-level=0),
+    # давали пустой callouts.json → callout_texts=[] → step_attach_callouts не запускался.
+    _camp_co_path = src_dir / "campaign_callouts.json"
+    if _camp_co_path.exists():
+        _camp_co = _copy_read_json(_camp_co_path)
+        if isinstance(_camp_co, dict):
+            for _co_list in _camp_co.values():
+                for _co_id in (_co_list or []):
+                    try:
+                        callout_ids.add(int(_co_id))
+                    except (TypeError, ValueError):
+                        pass
+    # Добавляем campaign-level быстрые ссылки (inheritableSitelinkSet) в sitelink_ids.
+    # На будущее: если phase_pull начнёт скачивать campaign-level наборы, они попадут в sitelinks.json.
+    _camp_sl_path = src_dir / "campaign_sitelinks.json"
+    if _camp_sl_path.exists():
+        _camp_sl = _copy_read_json(_camp_sl_path)
+        if isinstance(_camp_sl, dict):
+            for _sl_val in _camp_sl.values():
+                try:
+                    if _sl_val:
+                        sitelink_ids.add(int(_sl_val))
+                except (TypeError, ValueError):
+                    pass
+
     sitelinks = [s for s in _copy_read_json(src_dir / "sitelinks.json") if int(s.get("Id") or 0) in sitelink_ids]
     callouts = [c for c in _copy_read_json(src_dir / "callouts.json") if int(c.get("Id") or 0) in callout_ids]
     vcards = [v for v in _copy_read_json(src_dir / "vcards.json") if int(v.get("Id") or 0) in vcard_ids]
