@@ -67,12 +67,16 @@ def test_gen_ses_plan_stops_before_drafts_and_keeps_six_source_campaigns(monkeyp
     monkeypatch.setattr(create_set_plan, "_token_for_login", lambda *_args: (None, None), raising=False)
     monkeypatch.setattr(create_set_plan, "_direct_tokens", lambda: [], raising=False)
     monkeypatch.setattr(create_set_plan, "_SLEPOK_KEY", {}, raising=False)
-    monkeypatch.setattr(
-        create_set_plan,
-        "_json",
-        lambda name: json.loads((DIRECT_DIR / name).read_text(encoding="utf-8")),
-        raising=False,
-    )
+    # Монолита slepki_structure.json на диске больше НЕТ (55a953a — структура разбита на
+    # direct/slepki/<key>.json). Прод-шим `automation_runtime._json` для этого имени отдаёт
+    # `slepki_store.assemble()`; повторяем ровно это, иначе тест падал FileNotFoundError.
+    # mutable=True — приватная копия: `assemble()` без флага отдаёт ЖИВОЙ кэш-объект.
+    def _json_stub(name):
+        if name == "slepki_structure.json":
+            return slepki_store.assemble(mutable=True)
+        return json.loads((DIRECT_DIR / name).read_text(encoding="utf-8"))
+
+    monkeypatch.setattr(create_set_plan, "_json", _json_stub, raising=False)
 
     app = Flask(__name__)
     with app.test_request_context("/", method="POST", json={

@@ -284,26 +284,35 @@ def _ssh_write_m3(remote_abs: str, text: str) -> tuple[bool, str]:
         return False, str(e)[:200]
 
 
-def _ssh_write_m3_many(remote_abs_list: list[str], text: str) -> tuple[bool, str]:
-    """Записать ОДИН И ТОТ ЖЕ text во МНОЖЕСТВО файлов M3 за ОДНУ ssh-сессию (батч).
-    Пишем text во временный файл, затем cp→временный per-файл + атомарный mv в цель
-    (читатель create-РК видит либо старое, либо новое целое). Пустой список → no-op."""
-    if not remote_abs_list:
+# ВЕЕРНАЯ запись одного текста во все файлы (`_ssh_write_m3_many`/`_dual_write_pack_files_same`)
+# удалена 2026-07-19 вместе с веерной семантикой save_assets — она и стирала per-ct различия.
+
+
+# Запись РАЗНОГО текста в разные файлы M3 одной ssh-сессией. Скрипт уходит аргументом `python3 -c`
+# (мал), полезная нагрузка — через stdin (объём не упирается в ARG_MAX). Атомарность на удалённой
+# стороне: временный файл рядом + os.replace (читатель create-РК видит либо старое, либо новое целое).
+_M3_WRITE_MAP_PY = (
+    "import io,json,os,sys\n"
+    "data=json.load(sys.stdin)\n"
+    "for path,text in data.items():\n"
+    "    d=os.path.dirname(path)\n"
+    "    if d: os.makedirs(d,exist_ok=True)\n"
+    "    tmp=path+'.tmpasset'\n"
+    "    f=io.open(tmp,'w',encoding='utf-8');f.write(text);f.close()\n"
+    "    os.replace(tmp,path)\n"
+)
+
+
+def _ssh_write_m3_map(mapping: dict) -> tuple[bool, str]:
+    """Записать {абсолютный_путь_M3: текст} за ОДНУ ssh-сессию. Пустая карта → no-op."""
+    if not mapping:
         return True, ""
-    tmp = f"/tmp/.slepki_asset.{int(time.time()*1000)}.{os.getpid()}"
-    parts = [f"cat > {shlex.quote(tmp)}"]
-    for ra in remote_abs_list:
-        rdir = posixpath.dirname(ra)
-        dtmp = f"{ra}.tmpasset"
-        parts.append(
-            f"mkdir -p {shlex.quote(rdir)} && cp {shlex.quote(tmp)} {shlex.quote(dtmp)} "
-            f"&& mv -f {shlex.quote(dtmp)} {shlex.quote(ra)}")
-    parts.append(f"rm -f {shlex.quote(tmp)}")
-    cmd = " && ".join(parts)
+    remote = "python3 -c " + shlex.quote(_M3_WRITE_MAP_PY)
     try:
         r = subprocess.run(
-            kp._M3_SSH + [cmd],
-            input=text, text=True, capture_output=True, timeout=300,
+            kp._M3_SSH + [remote],
+            input=json.dumps(mapping, ensure_ascii=False), text=True,
+            capture_output=True, timeout=300,
         )
         if r.returncode != 0:
             return False, (r.stderr or "")[-300:]
@@ -312,19 +321,19 @@ def _ssh_write_m3_many(remote_abs_list: list[str], text: str) -> tuple[bool, str
         return False, str(e)[:200]
 
 
-def _dual_write_pack_files_same(rels: list[str], text: str) -> dict:
-    """Записать один и тот же text во МНОЖЕСТВО пак-файлов: DST (локально, атомарно, по одному —
-    быстро) + M3 (одна батч-ssh-сессия). Возвращает сводный отчёт. Оба назначения обязательны:
-    только DST → orphan-cleanup синка сотрёт; только M3 → следующая джоба увидит после ночного синка."""
+def _dual_write_pack_files_map(mapping: dict) -> dict:
+    """Записать {rel: text} (у каждого файла СВОЙ текст) в DST (локально, атомарно) + M3 (батч-ssh).
+    Отличие от `_dual_write_pack_files_same`: тот веером льёт один текст во все файлы и потому
+    стирает per-ct различия; этот пишет ровно то, что посчитано для конкретного (tp,ct)."""
     dst_fail: list[dict] = []
-    for rel in rels:
+    for rel, text in mapping.items():
         try:
             _atomic_write_local(_dst_abs(rel), text)
         except Exception as e:  # noqa: BLE001
             dst_fail.append({"rel": rel, "error": str(e)[:120]})
-    m3_ok, m3_err = _ssh_write_m3_many([_m3_abs(r) for r in rels], text)
+    m3_ok, m3_err = _ssh_write_m3_map({_m3_abs(r): t for r, t in mapping.items()})
     return {"ok": (not dst_fail) and m3_ok,
-            "count": len(rels), "dst_ok": len(rels) - len(dst_fail),
+            "count": len(mapping), "dst_ok": len(mapping) - len(dst_fail),
             "m3_ok": m3_ok, "m3_error": (m3_err or None), "dst_fail": dst_fail[:20]}
 
 
@@ -538,8 +547,12 @@ def read_group_keywords(site_type: str, tp: str, ct: str, slepok: str, group: st
 
 # ── ПРАВКА 1: ключи группы ───────────────────────────────────────────────────
 def apply_edit_keywords(spec: dict, actor: str = "") -> dict:
-    """spec: {slepok, site_type, tp, ct, positive:[...], minus:[...], minus_shared?:[...]}.
+    """spec: {slepok, site_type, tp, ct, positive?:[...], minus?:[...], minus_shared?:[...]}.
     Переписывает <slepok>.txt (positive) и <slepok>_minus.txt (per-slepok minus) в DST+M3.
+
+    КАЖДЫЙ из трёх наборов пишется ТОЛЬКО если его ключ есть в spec (2026-07-19: раньше
+    positive/minus писались всегда, и правка одного minus_shared зануляла бы соседние файлы).
+    Карточка КАМПАНИИ шлёт ровно один ключ — ``minus_shared``.
 
     Библиотечные («общие») минусы <slepok>_minus_shared.txt редактируются ТОЛЬКО если ключ
     ``minus_shared`` присутствует в spec (иначе файл НЕ трогаем — обратная совместимость).
@@ -557,6 +570,8 @@ def apply_edit_keywords(spec: dict, actor: str = "") -> dict:
     group = (spec.get("group") or "").strip()   # per-adgroup (опц.): непустой → {slepok}__{slug}...
     if not (slepok and site_type and tp and ct):
         return {"ok": False, "error": "нужны slepok/site_type/tp/ct"}
+    has_pos = "positive" in spec              # ключ отсутствует → файл НЕ трогаем (не зануляем)
+    has_neg = "minus" in spec
     pos, e1 = _clean_kw_lines(spec.get("positive"), minus=False)
     neg, e2 = _clean_kw_lines(spec.get("minus"), minus=True)
     errs = e1 + e2
@@ -567,12 +582,19 @@ def apply_edit_keywords(spec: dict, actor: str = "") -> dict:
         errs += e3
     if errs:
         return {"ok": False, "error": "валидация ключей: " + "; ".join(errs[:10])}
+    if not (has_pos or has_neg or has_shared):
+        return {"ok": False, "error": "нечего сохранять (нет positive/minus/minus_shared)"}
     with _EDIT_LOCK:
-        rel_pos = _pack_rel(site_type, tp, ct, f"{slepok}.txt", group=group)
-        rel_neg = _pack_rel(site_type, tp, ct, f"{slepok}_minus.txt", group=group)
-        r_pos = _dual_write_pack_file(rel_pos, "\n".join(pos) + ("\n" if pos else ""))
-        r_neg = _dual_write_pack_file(rel_neg, "\n".join(neg) + ("\n" if neg else ""))
-        writes_ok = bool(r_pos["ok"] and r_neg["ok"])
+        r_pos = r_neg = None
+        writes_ok = True
+        if has_pos:
+            rel_pos = _pack_rel(site_type, tp, ct, f"{slepok}.txt", group=group)
+            r_pos = _dual_write_pack_file(rel_pos, "\n".join(pos) + ("\n" if pos else ""))
+            writes_ok = writes_ok and bool(r_pos["ok"])
+        if has_neg:
+            rel_neg = _pack_rel(site_type, tp, ct, f"{slepok}_minus.txt", group=group)
+            r_neg = _dual_write_pack_file(rel_neg, "\n".join(neg) + ("\n" if neg else ""))
+            writes_ok = writes_ok and bool(r_neg["ok"])
         r_shared = None
         if has_shared:
             # shared-минус — ОБЩИЙ пер-ct (без слага): group здесь НЕ применяем.
@@ -581,12 +603,14 @@ def apply_edit_keywords(spec: dict, actor: str = "") -> dict:
                 rel_shared, "\n".join(neg_shared) + ("\n" if neg_shared else ""))
             writes_ok = writes_ok and bool(r_shared["ok"])
         result = {"ok": writes_ok,
-                  "positive_rows": len(pos), "minus_rows": len(neg),
+                  "positive_rows": (len(pos) if has_pos else None),
+                  "minus_rows": (len(neg) if has_neg else None),
                   "minus_shared_rows": (len(neg_shared) if has_shared else None),
                   "write": {"positive": r_pos, "minus": r_neg, "minus_shared": r_shared}}
     _audit("edit_keywords", actor,
            {"slepok": slepok, "site_type": site_type, "tp": tp, "ct": ct,
-            "positive_rows": len(pos), "minus_rows": len(neg),
+            "positive_rows": (len(pos) if has_pos else None),
+            "minus_rows": (len(neg) if has_neg else None),
             "minus_shared_rows": (len(neg_shared) if has_shared else None)}, result)
     return result
 
@@ -623,91 +647,160 @@ def _iter_tp_ct(slepok: str, site_type: str) -> list[tuple[str, str]]:
     return out
 
 
+_ASSET_KINDS = ("callouts", "minus_shared")
+
+
+def _asset_rel(kind: str, site_type: str, tp: str, ct: str, slepok: str) -> str:
+    """Пак-файл ассета для одного (tp,ct): callouts/{slepok}.txt | keywords/{slepok}_minus_shared.txt."""
+    if kind == "callouts":
+        return _pack_rel_callouts(site_type, tp, ct, f"{slepok}.txt")
+    return _pack_rel(site_type, tp, ct, f"{slepok}_minus_shared.txt")
+
+
+def _asset_pair_values(kind: str, slepok: str, site_type: str, tp: str, ct: str) -> list[str]:
+    """Текущий набор ассета в ОДНОМ (tp,ct). Нет файла → []. Читаем теми же примитивами,
+    что и движок создания (kp), чтобы редактор не разошёлся с ним в трактовке файла."""
+    try:
+        if kind == "callouts":
+            return list(kp.read_callouts(site_type, tp, ct, slepok))
+        kd = os.path.join(kp._ct_dir(site_type, tp, ct), "keywords")
+        return kp._dedup(kp._read_lines(os.path.join(kd, f"{slepok}_minus_shared.txt")))
+    except Exception:  # noqa: BLE001 — отсутствующий/битый файл не должен ронять чтение всей панели
+        return []
+
+
 def read_assets(slepok: str, site_type: str) -> dict:
     """Агрегат УНИКАЛЬНЫХ уточнений (callouts) и библиотечных минус-слов (minus_shared) по ВСЕМ
-    (tp,ct) слепка × тип сайта. Read-only (вызывается синхронно из web). Не падает без файлов."""
+    (tp,ct) слепка × тип сайта. Read-only (вызывается синхронно из web). Не падает без файлов.
+
+    Наборы по ct РЕАЛЬНО различаются (замер 2026-07-19: scherbakova — 81 разный набор callouts на
+    646 пар), поэтому кроме объединения отдаём и КАРТИНУ различий, иначе директолог их не видит:
+      • ``coverage[kind][значение]`` — в скольких (tp,ct) значение присутствует (``< pairs`` = не везде);
+      • ``variants[kind]`` — сколько РАЗНЫХ наборов по ct (1 = все ct одинаковы).
+
+    ⚠️ Контракт: ``slepok``/``site_type`` проходят `_safe_token` → ПУСТАЯ строка даёт ``ValueError``,
+    а не ``{}`` (до 2026-07-19 пустой ввод возвращал пустой результат). Единственный вызывающий —
+    роут `/api/slepki/assets`, который отсекает пустые значения раньше (400)."""
     slepok = _safe_token(slepok, "slepok")       # компоненты идут в путь → анти-traversal
     site_type = _safe_token(site_type, "site_type")
-    calls: list[str] = []
-    minus_shared: list[str] = []
     try:
         pairs = _iter_tp_ct(slepok, site_type)
     except Exception:  # noqa: BLE001
         pairs = []
+    cov: dict = {k: {} for k in _ASSET_KINDS}
+    variants: dict = {k: set() for k in _ASSET_KINDS}
     for tp, ct in pairs:
-        try:
-            calls.extend(kp.read_callouts(site_type, tp, ct, slepok))
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            kd = os.path.join(kp._ct_dir(site_type, tp, ct), "keywords")
-            minus_shared.extend(kp._read_lines(os.path.join(kd, f"{slepok}_minus_shared.txt")))
-        except Exception:  # noqa: BLE001
-            pass
-    return {"callouts": kp._dedup(calls), "minus_shared": kp._dedup(minus_shared), "pairs": len(pairs)}
+        for kind in _ASSET_KINDS:
+            vals = _asset_pair_values(kind, slepok, site_type, tp, ct)
+            for v in dict.fromkeys(vals):        # значение из одного ct считаем один раз
+                cov[kind][v] = cov[kind].get(v, 0) + 1
+            variants[kind].add(frozenset(x.lower() for x in vals))
+    return {"callouts": list(cov["callouts"]),          # порядок = первое вхождение (как было)
+            "minus_shared": list(cov["minus_shared"]),
+            "pairs": len(pairs),
+            "coverage": {k: cov[k] for k in _ASSET_KINDS},
+            "variants": {k: len(variants[k]) for k in _ASSET_KINDS}}
+
+
+def _asset_delta(kind: str, spec: dict, slepok: str, site_type: str,
+                 pairs: list) -> tuple[list[str], list[str], list[str]] | None:
+    """Дельта правки ассета → (add, remove, ошибки). None = этот вид ассета не правился.
+
+    Основной путь — КЛИЕНТСКАЯ дельта ``{kind}_add`` / ``{kind}_remove``: она устойчива к гонке
+    (значение, добавленное кем-то другим после загрузки панели, не удаляется).
+    Легаси-путь — прислан ФИНАЛЬНЫЙ список ``{kind}`` (старый клиент / джоба, уже стоящая в
+    очереди): дельту выводим относительно ТЕКУЩЕГО объединения, а не пишем список веером."""
+    is_minus = (kind == "minus_shared")
+    if f"{kind}_add" in spec or f"{kind}_remove" in spec:
+        add, e1 = _clean_kw_lines(spec.get(f"{kind}_add"), minus=is_minus)
+        rem, e2 = _clean_kw_lines(spec.get(f"{kind}_remove"), minus=is_minus)
+        return add, rem, e1 + e2
+    if kind in spec:
+        final, e1 = _clean_kw_lines(spec.get(kind), minus=is_minus)
+        union: list[str] = []
+        for tp, ct in pairs:
+            union.extend(_asset_pair_values(kind, slepok, site_type, tp, ct))
+        union = kp._dedup(union)
+        fin_l = {x.lower() for x in final}
+        uni_l = {x.lower() for x in union}
+        return ([x for x in final if x.lower() not in uni_l],
+                [x for x in union if x.lower() not in fin_l], e1)
+    return None
 
 
 def apply_save_assets(spec: dict, actor: str = "") -> dict:
-    """spec: {slepok, site_type, callouts?:[...], minus_shared?:[...]}.
-    ВЕЕРОМ пишет переданный набор во ВСЕ (tp,ct) слепка × тип сайта (dual-write DST+M3):
-      • callouts    → callouts/{slepok}.txt   (уровень слепок×тип, продублирован по ct);
-      • minus_shared → keywords/{slepok}_minus_shared.txt (библиотека, тоже по ct).
-    Пишутся ТОЛЬКО ключи, присланные в spec (отсутствует callouts → уточнения не трогаем;
-    отсутствует minus_shared → библиотеку не трогаем → не затираем пустым)."""
+    """spec: {slepok, site_type, callouts_add?/callouts_remove?, minus_shared_add?/…_remove?}.
+
+    МОДЕЛЬ ЗАПИСИ (2026-07-19, решение Семёна «редактор обязан НЕ терять per-ct специфику»):
+      • читаем — ОБЪЕДИНЕНИЕ по всем (tp,ct) + карта различий (`read_assets`);
+      • пишем — только ДЕЛЬТУ («добавил X», «удалил Y»), применяя её к КАЖДОМУ (tp,ct)
+        поверх его СОБСТВЕННОГО набора: ``новый = текущий − remove + add``;
+      • (tp,ct), у которого от этого ничего не меняется, НЕ переписывается вовсе — ни DST, ни M3.
+    До этой правки веером писался финальный union во ВСЕ ct → 81 разный набор callouts у
+    scherbakova схлопывался в один необратимо (замер 2026-07-19).
+
+    Файлы: callouts → callouts/{slepok}.txt, minus_shared → keywords/{slepok}_minus_shared.txt.
+    Вид ассета, которого нет в spec, не трогаем совсем (не затираем библиотеку пустым)."""
     slepok = (spec.get("slepok") or "").strip()
     site_type = (spec.get("site_type") or "").strip()
     if not (slepok and site_type):
         return {"ok": False, "error": "нужны slepok/site_type"}
-    has_callouts = "callouts" in spec
-    has_minus = "minus_shared" in spec
-    if not (has_callouts or has_minus):
-        return {"ok": False, "error": "нечего сохранять (нет callouts/minus_shared)"}
-    calls: list[str] = []
-    minus_shared: list[str] = []
-    errs: list[str] = []
-    if has_callouts:
-        calls, e1 = _clean_kw_lines(spec.get("callouts"), minus=False)
-        errs += e1
-    if has_minus:
-        minus_shared, e2 = _clean_kw_lines(spec.get("minus_shared"), minus=True)
-        errs += e2
-    if errs:
-        return {"ok": False, "error": "валидация: " + "; ".join(errs[:10])}
     with _EDIT_LOCK:
         pairs = _iter_tp_ct(slepok, site_type)
         if not pairs:
             return {"ok": False, "error": f"нет (tp,ct) в структуре для {slepok}/{site_type}"}
+        deltas: dict = {}
+        errs: list[str] = []
+        for kind in _ASSET_KINDS:
+            d = _asset_delta(kind, spec, slepok, site_type, pairs)
+            if d is None:
+                continue
+            deltas[kind] = (d[0], d[1])
+            errs += d[2]
+        if not deltas:
+            return {"ok": False, "error": "нечего сохранять (нет callouts/minus_shared)"}
+        if errs:
+            return {"ok": False, "error": "валидация: " + "; ".join(errs[:10])}
         write: dict = {}
         backups: dict = {}
+        changed_cnt: dict = {}
+        delta_rep: dict = {}
         ok = True
-        # Веер необратим (тем же кликом перезаписывается и M3-источник) → снимок ДО записи.
-        # Бэкап не удался → НЕ пишем: молча потерять прежний набор дороже, чем отменить правку.
-        if has_callouts:
-            rels = [_pack_rel_callouts(site_type, tp, ct, f"{slepok}.txt") for tp, ct in pairs]
-            bak = _backup_pack_files(rels, f"callouts_{slepok}_{site_type}")
-            backups["callouts"] = bak
+        for kind, (add, rem) in deltas.items():
+            delta_rep[kind] = {"add": len(add), "remove": len(rem)}
+            rem_l = {x.lower() for x in rem}
+            changed: dict = {}                 # rel → новый текст (у каждого ct свой)
+            for tp, ct in pairs:
+                cur = _asset_pair_values(kind, slepok, site_type, tp, ct)
+                new = [x for x in cur if x.lower() not in rem_l]
+                have = {x.lower() for x in new}
+                for a in add:
+                    if a.lower() not in have:
+                        new.append(a)
+                        have.add(a.lower())
+                if new == cur:                 # этот ct правка не касается → файл не трогаем
+                    continue
+                changed[_asset_rel(kind, site_type, tp, ct, slepok)] = (
+                    "\n".join(new) + ("\n" if new else ""))
+            changed_cnt[kind] = len(changed)
+            if not changed:
+                write[kind] = {"ok": True, "count": 0, "skipped": len(pairs)}
+                continue
+            # Запись необратима (тем же кликом перезаписывается и M3-источник) → снимок ДО.
+            # Бэкап не удался → НЕ пишем: молча потерять прежний набор дороже, чем отменить правку.
+            bak = _backup_pack_files(list(changed), f"{kind}_{slepok}_{site_type}")
+            backups[kind] = bak
             if not bak:
-                return {"ok": False, "error": "бэкап пак-файлов (callouts) не создан — запись отменена"}
-            r = _dual_write_pack_files_same(rels, "\n".join(calls) + ("\n" if calls else ""))
-            write["callouts"] = r
+                return {"ok": False,
+                        "error": f"бэкап пак-файлов ({kind}) не создан — запись отменена"}
+            r = _dual_write_pack_files_map(changed)
+            write[kind] = r
             ok = ok and bool(r["ok"])
-        if has_minus:
-            rels = [_pack_rel(site_type, tp, ct, f"{slepok}_minus_shared.txt") for tp, ct in pairs]
-            bak = _backup_pack_files(rels, f"minus_shared_{slepok}_{site_type}")
-            backups["minus_shared"] = bak
-            if not bak:
-                return {"ok": False, "error": "бэкап пак-файлов (minus_shared) не создан — запись отменена"}
-            r = _dual_write_pack_files_same(rels, "\n".join(minus_shared) + ("\n" if minus_shared else ""))
-            write["minus_shared"] = r
-            ok = ok and bool(r["ok"])
-        result = {"ok": ok, "pairs": len(pairs),
-                  "callouts_rows": (len(calls) if has_callouts else None),
-                  "minus_shared_rows": (len(minus_shared) if has_minus else None),
-                  "backups": backups, "write": write}
+        result = {"ok": ok, "pairs": len(pairs), "delta": delta_rep,
+                  "changed_files": changed_cnt, "backups": backups, "write": write}
     _audit("save_assets", actor,
            {"slepok": slepok, "site_type": site_type, "pairs": len(pairs),
-            "callouts_rows": (len(calls) if has_callouts else None),
-            "minus_shared_rows": (len(minus_shared) if has_minus else None)}, result)
+            "delta": delta_rep, "changed_files": changed_cnt}, result)
     return result
 
 

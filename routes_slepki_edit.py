@@ -430,13 +430,15 @@ def register_slepki_edit_routes(
         if bad:
             return bad
         spec = {"slepok": b.get("slepok"), "site_type": b.get("site_type")}
-        # Только присланные ключи веером пишутся во ВСЕ (tp,ct); отсутствующий ключ —
-        # соответствующие файлы НЕ трогаются (не затираем библиотеку/уточнения пустым).
-        if "callouts" in b:
-            spec["callouts"] = b.get("callouts") or []
-        if "minus_shared" in b:
-            spec["minus_shared"] = b.get("minus_shared") or []
-        if "callouts" not in spec and "minus_shared" not in spec:
+        # Основной путь — ДЕЛЬТА (`{kind}_add` / `{kind}_remove`): применяется к каждому (tp,ct)
+        # поверх его собственного набора, ct без изменений не переписываются (per-ct различия целы).
+        # Легаси финальный список `{kind}` тоже принимаем — сервер выведет из него дельту сам.
+        for kind in ("callouts", "minus_shared"):
+            for k in (f"{kind}_add", f"{kind}_remove", kind):
+                if k in b:
+                    spec[k] = b.get(k) or []
+        if not any(k in spec for k in ("callouts", "callouts_add", "callouts_remove",
+                                       "minus_shared", "minus_shared_add", "minus_shared_remove")):
             return jsonify({"error": "нечего сохранять (нет callouts/minus_shared)"}), 400
         return _enqueue("save_assets", spec)
 
@@ -469,8 +471,12 @@ def register_slepki_edit_routes(
             # group (=gk) → правка пишет per-group файл {slepok}__{gk}.txt (apply_edit_keywords поддерживает).
             # Пусто → легаси ct-агрегат (обратная совместимость для групп без gk).
             "group": (b.get("group") or b.get("gk") or ""),
-            "positive": b.get("positive") or [], "minus": b.get("minus") or [],
         }
+        # positive/minus — тоже ТОЛЬКО по присутствию ключа: карточка КАМПАНИИ шлёт один
+        # minus_shared и не должна занулять легаси-файлы группы/ct, которых не редактировала.
+        for k in ("positive", "minus"):
+            if k in b:
+                spec[k] = b.get(k) or []
         # Библиотечные минусы — редактируются, только если ключ прислан (иначе файл не трогаем).
         # SCOPE строго этот (slepok, site_type, tp, ct); имя файла с префиксом {slepok}_ →
         # чужие слепки физически недостижимы (см. slepki_editor.apply_edit_keywords).
