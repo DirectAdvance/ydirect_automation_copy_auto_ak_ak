@@ -22,6 +22,9 @@ _COOKIE_FIRST_CODES = {
 # → предпочитаем keywords_repair, recreate только если in-place попытка не помогла
 # (repair_attempts > 0 в issue). Набор оставлен для возможных будущих кодов.
 _SEARCH_RECREATE_CODES: set = set()
+# ⛔ Автоочистка картинок в поисковых кампаниях (IMAGES_FORBIDDEN → images_forbidden_repair)
+# ОТМЕНЕНА решением Семёна 2026-07-19 — см. campaign_spec_audit.SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED.
+SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED = False
 _RECREATE_CODES = {
     "RESULT_FAILED",
     "CAMPAIGN_NOT_FOUND_IN_GRID",
@@ -191,6 +194,10 @@ def _action_for_issue(issue: dict[str, Any]) -> dict[str, Any] | None:
         }
 
     if code == "IMAGES_FORBIDDEN":
+        # ⛔ Правило отменено Семёном 2026-07-19 (картинки в поиске допустимы, вкладка «Смена
+        # изображения» их ставит) → действие не планируем даже если issue пришёл из старого отчёта.
+        if not SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED:
+            return None
         return {
             "action": "images_forbidden_repair",
             "transport": "grid",

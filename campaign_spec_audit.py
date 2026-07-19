@@ -21,8 +21,9 @@ cannot see:
   The reference keyword set per ct is recomputed with the SAME code path as creation
   (M3 pack → ``_filter_group_keywords``); ct discrimination is done by unique tokens,
   so a rotation/offset of keywords across groups is caught by counting, not heuristics.
-* ``IMAGES_FORBIDDEN`` — a search (tp2/tp4) ad that carries ``imageHashes`` (search
-  ResponsiveAds must have empty images in this project).
+* ``IMAGES_FORBIDDEN`` — ⛔ ОТКЛЮЧЁН 2026-07-19 (решение Семёна: картинки в поисковых
+  кампаниях допустимы, их ставит вкладка «Смена изображения»). Детект и репейр сохранены,
+  но погашены флагом ``SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED`` (см. ниже).
 * ``FEED_FILTER_WRONG_CT`` — a tp1 shopping / tp7 UAC group whose feed filter does not
   positively scope to its ct's brand/model, or a general/service ct missing the global
   minus-marks.
@@ -72,13 +73,13 @@ def configure(deps: dict) -> None:
 SPEC: dict[str, dict[str, Any]] = {
     "tp2": {  # Поиск
         "keywords_match_group": "каждая КС-группа: ключи ⊆ эталон её ct (пак); чужой ct → shift",
-        "images_forbidden": "объявления: imageHashes = []",
+        "images_forbidden": "⛔ ОТМЕНЕНО 2026-07-19 (Семён): картинки в поиске допустимы, детект off",
         "sitelinks_present": "быстрые ссылки присутствуют (покрыто общим верификатором)",
         "callouts_present": "уточнения присутствуют (покрыто общим верификатором)",
     },
     "tp4": {  # Поиск + Динамика — те же поисковые инварианты, что tp2
         "keywords_match_group": "как tp2 (динамические группы без своего ct не проверяются)",
-        "images_forbidden": "объявления: imageHashes = []",
+        "images_forbidden": "⛔ ОТМЕНЕНО 2026-07-19 (Семён): картинки в поиске допустимы, детект off",
     },
     "tp5": {  # Поиск + Динамика + ТГ — поисковые группы = как tp2
         "keywords_match_group": "как tp2 для поисковых групп",
@@ -401,9 +402,27 @@ def _audit_search_keywords(groups: list[dict], login: str, slepok: str, site_typ
 
 
 # ── search images-forbidden audit (IMAGES_FORBIDDEN) ─────────────────────────────
+# ⛔ ПРАВИЛО ОТМЕНЕНО решением Семёна 2026-07-19: картинки в поисковых кампаниях (tp2/tp4/tp5)
+# допустимы, автоочистка не нужна. Причина: админ-вкладка «Смена изображения»
+# (/direct/automation/content) показывает и заменяет картинки ВО ВСЕХ кампаниях, включая
+# поисковые — автоочистка зацикливалась бы с ней (заменили картинку → репейр снёс).
+# Флаг ниже гасит ВЕСЬ детект: нет issue IMAGES_FORBIDDEN → нет action в repair_plan →
+# нет вызова репейра. Парные гейты (на случай СТАРЫХ сохранённых планов и прямых вызовов):
+#   repair_planner.SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED
+#   repair_gate.SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED
+#   repair_media.SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED
+# Вернуть правило = поставить True во всех четырёх (код детекта и репейра сохранён целиком).
+SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED = False
+
+
 def _audit_search_images(rc: gr.GridReadClient, login: str, campaign_id: int,
                          campaign_name: str) -> list[dict]:
-    """Search ResponsiveAds must not carry imageHashes. Flag any tp2/tp4 ad with images."""
+    """Search ResponsiveAds must not carry imageHashes. Flag any tp2/tp4 ad with images.
+
+    ⛔ Отключено (SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED=False, решение Семёна 2026-07-19) —
+    возвращает пустой список, не делая Grid-запроса."""
+    if not SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED:
+        return []
     q = ("query SpecImg($login:String!,$inp:GdAdsContainerInput!){"
          "client(searchBy:{login:$login}){ads(input:$inp){rowset{id campaignId "
          "...on GdAdaptiveTextAd{images{imageHash}}}}}}")

@@ -29,6 +29,10 @@ _UAC_REPLACE_CODES = {
     "UAC_PRODUCT_MODEL_FILTER_MISSING",
 }
 
+# ⛔ Автоочистка картинок в поисковых кампаниях (images_forbidden_repair) ОТМЕНЕНА решением
+# Семёна 2026-07-19 — см. campaign_spec_audit.SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED.
+SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED = False
+
 
 def truthy(value: Any) -> bool:
     """Return true only for explicit true-ish values.
@@ -395,7 +399,19 @@ def executable_campaign_invariant_repairs(plan: dict[str, Any]) -> tuple[list[in
 
 
 def executable_images_forbidden_repairs(plan: dict[str, Any]) -> tuple[list[int], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Pick campaign ids for images_forbidden_repair actions (search tp2/tp4 ads with imageHashes)."""
+    """Pick campaign ids for images_forbidden_repair actions (search tp2/tp4 ads with imageHashes).
+
+    ⛔ ПРАВИЛО ОТМЕНЕНО решением Семёна 2026-07-19: картинки в поисковых кампаниях допустимы
+    (их ставит админ-вкладка «Смена изображения»), автоочистка запрещена. Детект погашен в
+    `campaign_spec_audit.SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED`, но СОХРАНЁННЫЕ планы прошлых
+    джоб уже несут action `images_forbidden_repair` — этот гейт не даёт исполнить и их:
+    ни одного executable id, все такие действия → unsupported (тот же приём, что у
+    `executable_adprice_repairs` выше). Вернуть = поставить флаг True.
+    """
+    actions = [a for a in (plan or {}).get("actions") or [] if isinstance(a, dict)]
+    matched = [a for a in actions if a.get("action") == "images_forbidden_repair"]
+    if not SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED:
+        return [], [], matched
     return _executable_cid_actions(plan, "images_forbidden_repair")
 
 

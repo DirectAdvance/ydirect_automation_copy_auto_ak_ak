@@ -141,6 +141,15 @@ def execute_campaign_invariant_repair(login: str, ctx: dict, campaign_ids: list[
 
 
 # ── IMAGES_FORBIDDEN: очистка imageHashes у поисковых объявлений ────────────────
+# ⛔ ОТКЛЮЧЕНО решением Семёна 2026-07-19. Правило «в поиске (tp2/tp4) картинок быть не должно»
+# ОТМЕНЕНО: админ-вкладка «Смена изображения» (/direct/automation/content) показывает и заменяет
+# картинки во ВСЕХ кампаниях, включая поисковые, — автоочистка зацикливалась бы с ней.
+# Флаг ниже делает executor НЕ-МУТИРУЮЩИМ no-op'ом (последний рубеж: гасит и прямые вызовы —
+# CLI `campaign_spec_audit --fix`). Код RMW-очистки сохранён целиком; вернуть = флаг True здесь
+# и в campaign_spec_audit / repair_planner / repair_gate.
+# ⚠️ НЕ путать с `execute_images_repair` выше — это добивка ПУСТЫХ картинок tp1, она работает.
+SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED = False
+
 # Поисковые tp2/tp4 не должны нести imageHashes. RMW: читаем текущее состояние
 # (href/titles/bodies/adPrice), ставим imageHashes=[], пишем через UpdateAdaptiveTextAds.
 _ADS_FOR_IMG_CLEAR_Q = (
@@ -184,7 +193,24 @@ def execute_images_forbidden_repair(login: str, ctx: dict, campaign_ids: list[in
 
     RMW: читает текущее состояние объявлений (href/titles/bodies/adPrice), обнуляет
     imageHashes=[], пишет обратно с allow_empty_images=True. Read-back: должно остаться
-    0 объявлений с imageHashes. No Direct API units."""
+    0 объявлений с imageHashes. No Direct API units.
+
+    ⛔ ОТКЛЮЧЕНО (SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED=False, решение Семёна 2026-07-19):
+    возвращает не-мутирующий no-op ДО чтения куки и любых Grid-запросов."""
+    if not SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED:
+        return {
+            "ok": True,
+            "execute": False,
+            "disabled": True,
+            "login": login,
+            "repaired_campaign_ids": [],
+            "repaired": 0,
+            "total_cleared": 0,
+            "note": ("images_forbidden_repair отключён: правило «в поиске картинок быть не должно» "
+                     "отменено решением Семёна 2026-07-19 (картинки ставит вкладка «Смена изображения»)"),
+            "transport": "grid",
+            "uses_direct_units": False,
+        }, 200
     campaign_ids = _unique_positive_ints(campaign_ids)
     if not campaign_ids:
         return {"error": "нет campaign_id для images_forbidden_repair", "uses_direct_units": False}, 422
