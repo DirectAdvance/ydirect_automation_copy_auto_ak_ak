@@ -13034,7 +13034,7 @@
               "items": [
                 {
                   "c": "tp6_cpc_site",
-                  "t": "МК - Общие запросы - Автотаргетинг - Самарская область — master_obshaya_avtotargeting",
+                  "t": "МК - Общая - Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "мастер_кампаний_общие_запросы_автотаргетинг_самарская_область_master_obshaya_avtotargeting",
                   "camps": [
@@ -13118,47 +13118,12 @@
             },
             {
               "name": "МК - Общие запросы - Автотаргетинг - Кемеровская область (Кузбасс) — master_obshaya_avtotargeting",
-              "items": [
-                {
-                  "c": "tp6_cpc_site",
-                  "t": "МК - Общие запросы - Автотаргетинг - (Кузбасс) — master_obshaya_avtotargeting",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "мастер_кампаний_мк_общие_запросы_автотаргетинг_кемеровская_область_кузбасс_master_obshaya_avtotargeting",
-                  "camps": [
-                    "tp6_cpc_kviz — Мастер кампаний/МК - Общие запросы - Автотаргетинг - Кемеровская область (Кузбасс) — master_obshaya_avtotargeting",
-                    "tp6_cpc_kviz — Мастер кампаний/МК - Общие запросы - Автотаргетинг - Кемеровская область (Кузбасс) — master_obshaya_avtotargeting_2",
-                    "tp6_cpc_site — Мастер кампаний/МК - Общие запросы - Автотаргетинг - Кемеровская область (Кузбасс) — master_obshaya_avtotargeting"
-                  ],
-                  "camp_names": [
-                    "Мастер кампаний/МК - Общие запросы - Автотаргетинг"
-                  ],
-                  "autotarget_cats": [
-                    "ACCESSORY_MARK",
-                    "ALTERNATIVE_MARK",
-                    "BROADER_MARK",
-                    "EXACT_V2_MARK",
-                    "NARROW_MARK"
-                  ]
-                }
-              ],
+              "items": [],
               "groups": []
             },
             {
               "name": "МК - Общие запросы - Автотаргетинг - Новосибирская Область — master_obshaya_avtotargeting",
-              "items": [
-                {
-                  "c": "tp6_cpc_site",
-                  "t": "МК - Общие запросы - Автотаргетинг - Новосибирская Область — master_obshaya_avtotargeting",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "мастер_кампаний_мк_общие_запросы_автотаргетинг_новосибирская_область_master_obshaya_avtotargeting",
-                  "camps": [
-                    "tp6_cpc_site — Мастер кампаний/МК - Общие запросы - Автотаргетинг - Новосибирская Область — master_obshaya_avtotargeting"
-                  ],
-                  "camp_names": [
-                    "Мастер кампаний/МК - Общие запросы - Автотаргетинг"
-                  ]
-                }
-              ],
+              "items": [],
               "groups": []
             },
             {
