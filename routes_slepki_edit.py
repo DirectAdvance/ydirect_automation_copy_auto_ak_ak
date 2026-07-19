@@ -220,7 +220,7 @@ def _build_export_rows(slepki_editor, slepok: str, site_type: str) -> list:
     (index.html _campaignize / slepkiTpTree). Возвращает список списков (7 колонок)."""
     from . import blueprint_targeting as _btg  # ct→сегмент (leaf-модуль, без цикла)
 
-    struct = slepki_editor._load_struct()
+    struct = slepki_editor._load_struct(mutable=False)   # read-only обход → копия не нужна
     d = slepki_editor._find_dir(struct, slepok)
     s = slepki_editor._find_site(d, site_type) if d else None
     if not s:
@@ -312,6 +312,15 @@ def register_slepki_edit_routes(
     def _admin() -> bool:
         return bool(session.get("is_admin"))
 
+    def _bad_scope(slepok: str, site_type: str = "", tp: str = ""):
+        """Белый список slepok/site_type/tp по реальной структуре ДО того, как значения попадут
+        в путь пак-файла (иначе `?site_type=../../../..` читал/писал любой файл на хосте —
+        процессы слепков идут без `User=`, т.е. от root). → None если ок, иначе (json, 400)."""
+        err = slepki_editor.validate_scope(slepok, site_type, tp)
+        if err:
+            return jsonify({"error": err}), 400
+        return None
+
     def _enqueue(kind: str, spec: dict):
         """Поставить edit-джобу в ОБЩУЮ очередь (web-роль: уходит в БД, воркер применит серийно)."""
         body = {"_kind": kind, "spec": spec,
@@ -336,6 +345,9 @@ def register_slepki_edit_routes(
         position = (request.args.get("position") or "").strip()
         if not (slepok and site_type and tp and ct):
             return jsonify({"error": "нужны slepok/site_type/tp/ct"}), 400
+        bad = _bad_scope(slepok, site_type, tp)
+        if bad:
+            return bad
         data = slepki_editor.read_group_keywords(site_type, tp, ct, slepok, group=group, position=position)
         return jsonify({"slepok": slepok, "site_type": site_type, "tp": tp, "ct": ct, "group": group, **data})
 
@@ -347,6 +359,9 @@ def register_slepki_edit_routes(
         site_type = (request.args.get("site_type") or "").strip()
         if not (slepok and site_type):
             return jsonify({"error": "нужны slepok/site_type"}), 400
+        bad = _bad_scope(slepok, site_type)
+        if bad:
+            return bad
         data = slepki_editor.read_assets(slepok, site_type)
         return jsonify({"slepok": slepok, "site_type": site_type, **data})
 
@@ -358,6 +373,9 @@ def register_slepki_edit_routes(
         site_type = (request.args.get("site_type") or "").strip()
         if not (slepok and site_type):
             return jsonify({"error": "нужны slepok/site_type"}), 400
+        bad = _bad_scope(slepok, site_type)
+        if bad:
+            return bad
         data = slepki_editor.read_minus_sets(slepok, site_type)
         return jsonify({"slepok": slepok, "site_type": site_type, **data})
 
@@ -373,6 +391,9 @@ def register_slepki_edit_routes(
             return jsonify({"error": "нужны slepok/site_type"}), 400
         if not isinstance(b.get("sets"), list):
             return jsonify({"error": "нужен список sets"}), 400
+        bad = _bad_scope(slepok, site_type)
+        if bad:
+            return bad
         spec = {"slepok": slepok, "site_type": site_type, "sets": b.get("sets")}
         return _enqueue("save_minus_sets", spec)
 
@@ -384,6 +405,9 @@ def register_slepki_edit_routes(
         site_type = (request.args.get("site_type") or "").strip()
         if not (slepok and site_type):
             return jsonify({"error": "нужны slepok/site_type"}), 400
+        bad = _bad_scope(slepok, site_type)
+        if bad:
+            return bad
         rows = _build_export_rows(slepki_editor, slepok, site_type)
         headers = ["Тип сайта", "tp (код)", "Тип кампании", "Кампания",
                    "Группа", "Таргетинг", "Кодер (gc)"]
@@ -402,6 +426,9 @@ def register_slepki_edit_routes(
         if not _admin():
             return jsonify({"error": "только администратор"}), 403
         b = request.get_json(silent=True) or {}
+        bad = _bad_scope((b.get("slepok") or "").strip(), (b.get("site_type") or "").strip())
+        if bad:
+            return bad
         spec = {"slepok": b.get("slepok"), "site_type": b.get("site_type")}
         # Только присланные ключи веером пишутся во ВСЕ (tp,ct); отсутствующий ключ —
         # соответствующие файлы НЕ трогаются (не затираем библиотеку/уточнения пустым).
@@ -432,6 +459,10 @@ def register_slepki_edit_routes(
         if not _admin():
             return jsonify({"error": "только администратор"}), 403
         b = request.get_json(silent=True) or {}
+        bad = _bad_scope((b.get("slepok") or "").strip(), (b.get("site_type") or "").strip(),
+                         (b.get("tp") or "").strip())
+        if bad:
+            return bad
         spec = {
             "slepok": b.get("slepok"), "site_type": b.get("site_type"),
             "tp": b.get("tp"), "ct": b.get("ct"),
@@ -447,19 +478,8 @@ def register_slepki_edit_routes(
             spec["minus_shared"] = b.get("minus_shared") or []
         return _enqueue("edit_keywords", spec)
 
-    @bp.route("/api/slepki/edit_callouts", methods=["POST"])
-    @access
-    def slepki_edit_callouts():
-        if not _admin():
-            return jsonify({"error": "только администратор"}), 403
-        b = request.get_json(silent=True) or {}
-        # Уточнения (callouts) кампании — durable dual-write (DST + M3) через edit-джобу.
-        # ct = репрезентативный ct кампании (UI). Файл callouts/{slepok}.txt.
-        return _enqueue("edit_callouts", {
-            "slepok": b.get("slepok"), "site_type": b.get("site_type"),
-            "tp": b.get("tp"), "ct": b.get("ct"),
-            "callouts": b.get("callouts") or [],
-        })
+    # POST /api/slepki/edit_callouts удалён 2026-07-19 как мёртвый: вызывающих не осталось —
+    # уточнения сохраняются веером через save_assets (slepki_ui.js `_slAssetsSave`).
 
     @bp.route("/api/slepki/toggle_aon_aoff", methods=["POST"])
     @access
@@ -467,6 +487,10 @@ def register_slepki_edit_routes(
         if not _admin():
             return jsonify({"error": "только администратор"}), 403
         b = request.get_json(silent=True) or {}
+        bad = _bad_scope((b.get("slepok") or "").strip(), (b.get("site_type") or "").strip(),
+                         (b.get("tp") or "").strip())
+        if bad:
+            return bad
         return _enqueue("toggle_aon_aoff", {
             "slepok": b.get("slepok"), "site_type": b.get("site_type"),
             "tp": b.get("tp"), "segment": b.get("segment"), "mode": b.get("mode"),
@@ -478,6 +502,10 @@ def register_slepki_edit_routes(
         if not _admin():
             return jsonify({"error": "только администратор"}), 403
         b = request.get_json(silent=True) or {}
+        bad = _bad_scope((b.get("slepok") or "").strip(), (b.get("site_type") or "").strip(),
+                         (b.get("tp") or "").strip())
+        if bad:
+            return bad
         return _enqueue("add_ct_group", {
             "slepok": b.get("slepok"), "site_type": b.get("site_type"), "tp": b.get("tp"),
             "ct": b.get("ct"), "mode": b.get("mode") or "aon",
@@ -492,6 +520,10 @@ def register_slepki_edit_routes(
         if not _admin():
             return jsonify({"error": "только администратор"}), 403
         b = request.get_json(silent=True) or {}
+        bad = _bad_scope((b.get("slepok") or "").strip(), (b.get("site_type") or "").strip(),
+                         (b.get("tp") or "").strip())
+        if bad:
+            return bad
         return _enqueue("remove_ct_group", {
             "slepok": b.get("slepok"), "site_type": b.get("site_type"),
             "tp": b.get("tp"), "gc": b.get("gc"),
@@ -503,6 +535,10 @@ def register_slepki_edit_routes(
         if not _admin():
             return jsonify({"error": "только администратор"}), 403
         b = request.get_json(silent=True) or {}
+        bad = _bad_scope((b.get("slepok") or "").strip(), (b.get("site_type") or "").strip(),
+                         (b.get("tp") or "").strip())
+        if bad:
+            return bad
         return _enqueue("set_name_override", {
             "slepok": b.get("slepok"), "site_type": b.get("site_type"),
             "tp": b.get("tp"), "segment": b.get("segment"), "mode": b.get("mode") or "",

@@ -1175,9 +1175,13 @@ def _read_lines_opt(path: str) -> tuple[list, bool]:
 
     Флаг «найден» отличает ПУСТОЙ файл (found=True, []) от ОТСУТСТВУЮЩЕГО (found=False) →
     корректный фолбэк per-group → легаси. Работает и под sshfs-монтом (FUSE через `timeout cat`:
-    rc!=0 = нет файла/недоступен → found=False), и для локального зеркала (os.path.isfile)."""
+    rc!=0 = нет файла/недоступен → found=False), и для локального зеркала (os.path.isfile).
+
+    Гейт `_pack_mount_is_fuse()` — тот же, что у `_read_lines`: без него на ЛОКАЛЬНОМ зеркале
+    (прод: NEURO_PACK_MOUNT=/opt/neuro_content_local, ext4) форкался `timeout cat` на каждый
+    файл — 3 лишних процесса на каждый /api/slepki/keywords с непустым group."""
     try:
-        if path.startswith(PACK_MOUNT + os.sep):
+        if path.startswith(PACK_MOUNT + os.sep) and _pack_mount_is_fuse():
             r = subprocess.run(["timeout", "12", "cat", path], capture_output=True, text=True, timeout=15)
             if r.returncode != 0:
                 return [], False

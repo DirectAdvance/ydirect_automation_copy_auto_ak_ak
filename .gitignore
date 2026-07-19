@@ -68,3 +68,6 @@ _tone_baseline_result.json
 # рантайм-журнал edit-очереди и staging-структура
 slepki_edits_audit.jsonl
 slepki_structure.staging.json
+
+# Снимки пак-файлов перед веерной записью save_assets (slepki_editor._backup_pack_files)
+slepki_pack_backups/

@@ -16,6 +16,7 @@ per-slepok файлы `direct/slepki/<key>.json` + порядок в `direct/sle
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import threading
@@ -82,16 +83,24 @@ def _signature() -> tuple:
     return tuple(sig)
 
 
-def assemble() -> dict:
+def assemble(*, mutable: bool = False) -> dict:
     """Единый словарь `{"directologists":[...]}`, собранный из part-файлов в порядке `_order`.
 
     Кэшируется по сигнатуре — пересборка только при реальном изменении части/порядка.
+
+    ⚠️ По умолчанию возвращается ОБЩИЙ КЭШИРОВАННЫЙ объект — он READ-ONLY. Мутировать его
+    нельзя: правка переживёт вызов и уедет на диск следующей записью структуры (была реальная
+    дыра — редактор мутировал кэш ДО preflight, и отклонённая правка оседала в памяти процесса).
+    Кому нужно МЕНЯТЬ структуру — зовите `assemble(mutable=True)`: вернётся приватная глубокая
+    копия. Копию не делаем по умолчанию намеренно: замер на реальной структуре (19.8 MiB JSON,
+    17 директологов) — `copy.deepcopy` 92 мс против 0.3 мс отдачи кэша, а `assemble()` стоит на
+    горячем пути чтения (`automation_runtime._json` при создании РК, ui_structure, pack_facts).
     """
     global _CACHE_SIG, _CACHE_VAL
     with _LOCK:                       # сигнатуру считаем под локом — иначе гонка кэша с записью
         sig = _signature()
         if _CACHE_SIG == sig and _CACHE_VAL is not None:
-            return _CACHE_VAL
+            return copy.deepcopy(_CACHE_VAL) if mutable else _CACHE_VAL
     dirs = []
     for key in _order():
         try:
@@ -102,7 +111,8 @@ def assemble() -> dict:
     with _LOCK:
         _CACHE_SIG = sig
         _CACHE_VAL = val
-    return val
+    # свежесобранный val уже лежит в кэше → отдавать его наружу мутатору тоже нельзя
+    return copy.deepcopy(val) if mutable else val
 
 
 def invalidate() -> None:

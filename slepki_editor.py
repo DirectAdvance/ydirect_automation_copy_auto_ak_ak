@@ -54,7 +54,7 @@ _AUDIT_JSONL = _HERE / "slepki_edits_audit.jsonl"
 # Сериализует правки между собой в пределах процесса (доп. к бакет-гейту "" в воркере).
 _EDIT_LOCK = threading.RLock()
 
-_EDIT_KINDS = {"edit_keywords", "edit_callouts", "save_assets", "save_minus_sets",
+_EDIT_KINDS = {"edit_keywords", "save_assets", "save_minus_sets",
                "toggle_aon_aoff", "add_ct_group", "remove_ct_group", "set_name_override"}
 
 # gc-формат (кодер группы): ct0019_aon_n000_r0000_ct001_ag011_g00
@@ -151,6 +151,56 @@ def _clean_kw_lines(rows, *, minus: bool) -> tuple[list[str], list[str]]:
     return out, errs
 
 
+# ── валидация компонентов пути пака (анти-traversal) ─────────────────────────
+# slepok / site_type / tp попадают в путь пак-файла как есть (`_ct_dir`, `_pack_rel*`). Раньше их
+# никто не проверял: `?site_type=../../../..` уводил чтение/запись за пределы PACK_ROOT (процессы
+# слепков идут без `User=` → от root). Два рубежа: СИНТАКСИЧЕСКИЙ (здесь, у самих построителей
+# путей — ловит любой источник спеки, включая уже стоящую в очереди джобу) и БЕЛЫЙ СПИСОК по
+# реальной структуре (`validate_scope`, зовётся роутами до постановки в очередь).
+_PATH_TOKEN_BAD = ("/", "\\", "\x00")
+
+
+def _safe_token(value: str, what: str) -> str:
+    """Компонент пути: непустой, без сепараторов/NUL, не «.»/«..». Иначе ValueError."""
+    s = (str(value) if value is not None else "").strip()
+    if not s:
+        raise ValueError(f"{what}: пустое значение")
+    if s in (".", ".."):
+        raise ValueError(f"{what}: недопустимое значение {s!r}")
+    for bad in _PATH_TOKEN_BAD:
+        if bad in s:
+            raise ValueError(f"{what}: недопустимый символ в {s[:40]!r}")
+    return s
+
+
+def validate_scope(slepok: str, site_type: str = "", tp: str = "") -> str | None:
+    """Белый список по РЕАЛЬНОЙ структуре. → None если ок, иначе текст ошибки.
+
+    slepok обязан быть ключом директолога, site_type — именем его типа сайта, tp — кодом tp
+    внутри этого типа. Пустые site_type/tp не проверяются (не все роуты их принимают).
+    Синтаксическая проверка идёт первой — до любого обращения к структуре.
+    """
+    try:
+        _safe_token(slepok, "slepok")
+        if site_type:
+            _safe_token(site_type, "site_type")
+        if tp:
+            _safe_token(tp, "tp")
+    except ValueError as e:
+        return str(e)
+    struct = _load_struct(mutable=False)
+    d = _find_dir(struct, slepok)
+    if d is None:
+        return f"неизвестный слепок: {slepok[:40]!r}"
+    if site_type:
+        s = _find_site(d, site_type)
+        if s is None:
+            return f"неизвестный тип сайта: {site_type[:40]!r}"
+        if tp and _find_tp(s, tp) is None:
+            return f"неизвестный tp: {tp[:40]!r}"
+    return None
+
+
 # ── пути пака (DST + M3) ─────────────────────────────────────────────────────
 def _group_fname(fname: str, slug: str) -> str:
     """Вставить per-adgroup слаг в имя пак-файла по контракту:
@@ -168,6 +218,9 @@ def _group_fname(fname: str, slug: str) -> str:
 def _pack_rel(site_type: str, tp: str, ct: str, fname: str, group: str = "") -> str:
     """Относительный путь файла пака внутри kontent_oktyabr (подпапка keywords).
     group непустой → имя файла с per-adgroup слагом (см. _group_fname); shared остаётся общим."""
+    site_type = _safe_token(site_type, "site_type")
+    tp = _safe_token(tp, "tp")
+    fname = _safe_token(fname, "fname")
     ctn = kp._norm_ct(ct) or kp.GENERAL_CT
     return posixpath.join(site_type, tp, ctn, "keywords", _group_fname(fname, kp._group_slug(group)))
 
@@ -175,6 +228,9 @@ def _pack_rel(site_type: str, tp: str, ct: str, fname: str, group: str = "") -> 
 def _pack_rel_callouts(site_type: str, tp: str, ct: str, fname: str, group: str = "") -> str:
     """Относительный путь файла уточнений (callouts) внутри kontent_oktyabr.
     Зеркалит kontent_pack.read_callouts: {site_type}/{tp}/{ct}/callouts/{slepok}[__{slug}].txt."""
+    site_type = _safe_token(site_type, "site_type")
+    tp = _safe_token(tp, "tp")
+    fname = _safe_token(fname, "fname")
     ctn = kp._norm_ct(ct) or kp.GENERAL_CT
     return posixpath.join(site_type, tp, ctn, "callouts", _group_fname(fname, kp._group_slug(group)))
 
@@ -184,6 +240,8 @@ def _pack_rel_minus_sets(site_type: str, slepok: str) -> str:
     Уровень (слепок × тип сайта): {site_type}/_minus_sets/{slepok}.json.
     НЕ per-(tp,ct) (в отличие от keywords/callouts): наборы — свойство кабинета целиком.
     Отдельно от {slepok}_minus_shared.txt (тот читает движок создания — не трогаем)."""
+    site_type = _safe_token(site_type, "site_type")
+    slepok = _safe_token(slepok, "slepok")
     return posixpath.join(site_type, "_minus_sets", f"{slepok}.json")
 
 
@@ -288,6 +346,42 @@ def _dual_write_pack_file(rel: str, text: str) -> dict:
     return res
 
 
+# ── бэкап пак-файлов перед ВЕЕРНОЙ записью ───────────────────────────────────
+# Структура/профиль бэкапятся (_write_struct/_write_profile), а пак-файлы — НЕ бэкапились совсем,
+# хотя save_assets переписывает до 773 файлов ОДНИМ кликом и той же операцией затирает M3-источник
+# → откатить было нечем. Пишем ОДИН json-снимок {rel: прежний_текст|null} на операцию.
+_PACK_BAK_DIR = _HERE / "slepki_pack_backups"
+_PACK_BAK_KEEP = 20                    # ротация: бэкапы синкаются Mutagen-ом, расти без предела нельзя
+
+
+def _backup_pack_files(rels: list[str], tag: str) -> str | None:
+    """Снимок текущего содержимого DST-копий `rels` в один json. → путь бэкапа (или None)."""
+    if not rels:
+        return None
+    snap: dict[str, str | None] = {}
+    for rel in rels:
+        try:
+            with open(_dst_abs(rel), encoding="utf-8") as f:
+                snap[rel] = f.read()
+        except OSError:
+            snap[rel] = None           # файла не было — при откате его надо удалить, не создать
+    try:
+        _PACK_BAK_DIR.mkdir(exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        dst = _PACK_BAK_DIR / f"{ts}_{tag}.json"
+        _atomic_write_local(str(dst), json.dumps(
+            {"ts": ts, "tag": tag, "files": snap}, ensure_ascii=False, indent=1))
+        old = sorted(_PACK_BAK_DIR.glob("*.json"))
+        for p in old[:-_PACK_BAK_KEEP]:            # ротация: держим только последние N
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        return str(dst)
+    except Exception:  # noqa: BLE001 — бэкап best-effort, но его отсутствие обязано быть видно
+        return None
+
+
 # ── бэкап структурных файлов ─────────────────────────────────────────────────
 def _backup(path: Path) -> str:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -336,10 +430,18 @@ def _audit(action: str, actor: str, spec: dict, result: dict) -> None:
 
 
 # ── чтение json структурных файлов ───────────────────────────────────────────
-def _load_struct() -> dict:
-    # Структура разбита на per-slepok файлы (direct/slepki/) — собираем единый словарь.
+def _load_struct(*, mutable: bool = True) -> dict:
+    """Структура разбита на per-slepok файлы (direct/slepki/) — собираем единый словарь.
+
+    По умолчанию отдаём ПРИВАТНУЮ глубокую копию: все структурные правки (aon/aoff, add/remove
+    ct, name_override) мутируют возвращённый объект ДО preflight, а при отказе просто делают
+    `return` — без копии отклонённая правка оставалась в общем кэше `slepki_store` и уезжала на
+    диск следующей УСПЕШНОЙ правкой (`_write_struct` пишет все part-файлы из своего снимка).
+    Копия стоит ~92 мс (замер, 19.8 MiB) — на правку это ничто; для READ-ONLY обходов
+    (`_iter_tp_ct`, экспорт xlsx) зовите `mutable=False`, там копия не нужна.
+    """
     from . import slepki_store as _sstore
-    return _sstore.assemble()
+    return _sstore.assemble(mutable=mutable)
 
 
 def _load_profile() -> dict:
@@ -386,6 +488,10 @@ def read_group_keywords(site_type: str, tp: str, ct: str, slepok: str, group: st
 
     ``kw_source``: ``"pack"`` — ключи из M3-пака; ``"real_library"`` — пак пуст и ключи взяты
     ТЕМ ЖЕ фолбэком, которым их берёт СОЗДАНИЕ кампании (см. ниже)."""
+    # компоненты идут прямо в путь (kp._ct_dir / имя файла) → анти-traversal рубеж
+    site_type = _safe_token(site_type, "site_type")
+    tp = _safe_token(tp, "tp")
+    slepok = _safe_token(slepok, "slepok")
     ctn = kp._norm_ct(ct) or kp.GENERAL_CT
     kd = os.path.join(kp._ct_dir(site_type, tp, ctn), "keywords")
     slug = kp._group_slug(group)
@@ -485,30 +591,8 @@ def apply_edit_keywords(spec: dict, actor: str = "") -> dict:
     return result
 
 
-# ── ПРАВКА 1b: уточнения (callouts) кампании ──────────────────────────────────
-def apply_edit_callouts(spec: dict, actor: str = "") -> dict:
-    """spec: {slepok, site_type, tp, ct, callouts:[...]}.
-    Переписывает callouts/<slepok>.txt в DST+M3 (dual-write durable, переживает ночной синк
-    sync_content_m3.py — callouts/ НЕ в его excludes). Читается kontent_pack.read_callouts.
-    Уточнения — уровень КАМПАНИИ; ct = репрезентативный ct кампании (передаёт UI)."""
-    slepok = (spec.get("slepok") or "").strip()
-    site_type = (spec.get("site_type") or "").strip()
-    tp = (spec.get("tp") or "").strip()
-    ct = (spec.get("ct") or "").strip()
-    if not (slepok and site_type and tp and ct):
-        return {"ok": False, "error": "нужны slepok/site_type/tp/ct"}
-    # callouts — короткие фразы уточнений (не минус): trim + дедуп + контроль-символы + длина.
-    calls, errs = _clean_kw_lines(spec.get("callouts"), minus=False)
-    if errs:
-        return {"ok": False, "error": "валидация уточнений: " + "; ".join(errs[:10])}
-    with _EDIT_LOCK:
-        rel = _pack_rel_callouts(site_type, tp, ct, f"{slepok}.txt")
-        r = _dual_write_pack_file(rel, "\n".join(calls) + ("\n" if calls else ""))
-        result = {"ok": bool(r["ok"]), "callouts_rows": len(calls), "write": {"callouts": r}}
-    _audit("edit_callouts", actor,
-           {"slepok": slepok, "site_type": site_type, "tp": tp, "ct": ct,
-            "callouts_rows": len(calls)}, result)
-    return result
+# ПРАВКА 1b `apply_edit_callouts` удалена 2026-07-19 как мёртвая (роут /api/slepki/edit_callouts
+# снят, вызывающих нет). `_pack_rel_callouts` ОСТАЁТСЯ — им пользуется apply_save_assets.
 
 
 # ── ассеты слепка (агрегат уточнений + библиотечных минусов по слепку × тип сайта) ──
@@ -516,7 +600,7 @@ def _iter_tp_ct(slepok: str, site_type: str) -> list[tuple[str, str]]:
     """Уникальные (tp_code, ct) пары структуры для (слепок, тип сайта).
     ct = ct#### из gc элемента (нормализованный); gc без ct → GENERAL_CT (ct0000).
     Порядок стабилен (первое вхождение). Не найден слепок/тип → []."""
-    struct = _load_struct()
+    struct = _load_struct(mutable=False)      # read-only обход → копия не нужна
     d = _find_dir(struct, slepok)
     s = _find_site(d, site_type) if d else None
     if not s:
@@ -542,8 +626,8 @@ def _iter_tp_ct(slepok: str, site_type: str) -> list[tuple[str, str]]:
 def read_assets(slepok: str, site_type: str) -> dict:
     """Агрегат УНИКАЛЬНЫХ уточнений (callouts) и библиотечных минус-слов (minus_shared) по ВСЕМ
     (tp,ct) слепка × тип сайта. Read-only (вызывается синхронно из web). Не падает без файлов."""
-    slepok = (slepok or "").strip()
-    site_type = (site_type or "").strip()
+    slepok = _safe_token(slepok, "slepok")       # компоненты идут в путь → анти-traversal
+    site_type = _safe_token(site_type, "site_type")
     calls: list[str] = []
     minus_shared: list[str] = []
     try:
@@ -594,21 +678,32 @@ def apply_save_assets(spec: dict, actor: str = "") -> dict:
         if not pairs:
             return {"ok": False, "error": f"нет (tp,ct) в структуре для {slepok}/{site_type}"}
         write: dict = {}
+        backups: dict = {}
         ok = True
+        # Веер необратим (тем же кликом перезаписывается и M3-источник) → снимок ДО записи.
+        # Бэкап не удался → НЕ пишем: молча потерять прежний набор дороже, чем отменить правку.
         if has_callouts:
             rels = [_pack_rel_callouts(site_type, tp, ct, f"{slepok}.txt") for tp, ct in pairs]
+            bak = _backup_pack_files(rels, f"callouts_{slepok}_{site_type}")
+            backups["callouts"] = bak
+            if not bak:
+                return {"ok": False, "error": "бэкап пак-файлов (callouts) не создан — запись отменена"}
             r = _dual_write_pack_files_same(rels, "\n".join(calls) + ("\n" if calls else ""))
             write["callouts"] = r
             ok = ok and bool(r["ok"])
         if has_minus:
             rels = [_pack_rel(site_type, tp, ct, f"{slepok}_minus_shared.txt") for tp, ct in pairs]
+            bak = _backup_pack_files(rels, f"minus_shared_{slepok}_{site_type}")
+            backups["minus_shared"] = bak
+            if not bak:
+                return {"ok": False, "error": "бэкап пак-файлов (minus_shared) не создан — запись отменена"}
             r = _dual_write_pack_files_same(rels, "\n".join(minus_shared) + ("\n" if minus_shared else ""))
             write["minus_shared"] = r
             ok = ok and bool(r["ok"])
         result = {"ok": ok, "pairs": len(pairs),
                   "callouts_rows": (len(calls) if has_callouts else None),
                   "minus_shared_rows": (len(minus_shared) if has_minus else None),
-                  "write": write}
+                  "backups": backups, "write": write}
     _audit("save_assets", actor,
            {"slepok": slepok, "site_type": site_type, "pairs": len(pairs),
             "callouts_rows": (len(calls) if has_callouts else None),
@@ -969,7 +1064,6 @@ def handle_job(body: dict) -> dict:
     actor = (body or {}).get("_actor") or (body or {}).get("actor") or ""
     fn = {
         "edit_keywords": apply_edit_keywords,
-        "edit_callouts": apply_edit_callouts,
         "save_assets": apply_save_assets,
         "save_minus_sets": apply_save_minus_sets,
         "toggle_aon_aoff": apply_toggle_aon_aoff,
