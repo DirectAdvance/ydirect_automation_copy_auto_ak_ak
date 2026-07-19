@@ -1,5 +1,15 @@
 # Slepki audit (2026-07-12)
 
+> 🕓 **ИСТОРИЧЕСКИЙ СНАПШОТ на 2026-07-12. Не описывает текущее состояние — не использовать
+> как источник правды.** Что изменилось с тех пор:
+> - слепков не 13, а **17** (`direct/slepki/*.json`, порядок в `_order.json`);
+> - монолита `slepki_structure.json` **больше нет** — структура разбита по файлам 2026-07-17,
+>   читается через `slepki_store.assemble()`;
+> - редактор слепков вынесен в свой процесс `direct-slepki.service` (:5023) + `direct-slepki-worker.service`.
+>
+> Текущее состояние — `CLAUDE.md` §«Структура слепков», `ARCHITECTURE.md`, `CODER.md`.
+> Ниже — содержимое снапшота **как было на 12.07**, оно намеренно не переписывалось.
+
 Scope: all 13 `slepki_structure.json` directologists, targeting profile, referenced source
 manifests and live M3 segment-count endpoint on LXC 101. No campaigns or drafts were created.
 

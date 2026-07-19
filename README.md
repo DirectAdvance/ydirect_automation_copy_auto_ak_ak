@@ -7,17 +7,26 @@
 > граф импортов, план разбиения `blueprint.py`. Смотреть ПЕРЕД правкой незнакомого места
 > и для impact-анализа.
 
-- **Маршруты:** `https://seoadvanced.ru/direct/automation` и
-  `https://seoadvanced.ru/direct/automation/content`.
-- **Сервисы:** отдельные Flask-процессы на **LXC 101** (`192.168.0.202`):
-  `direct.service` на `127.0.0.1:5020` обслуживает создание/управление РК,
-  `direct-content.service` на `127.0.0.1:5021` обслуживает только редактор контента.
+- **Маршруты:** `https://seoadvanced.ru/direct/automation`,
+  `https://seoadvanced.ru/direct/automation/content` и
+  `https://seoadvanced.ru/direct/automation/slepki` (структура слепков — **своя страница
+  своего процесса**, не вкладка внутри `/direct/automation`).
+- **Сервисы:** отдельные Flask-процессы на **LXC 101** (`192.168.0.202`), юниты — в `deploy/`:
+  `direct-create.service` на `127.0.0.1:5020` обслуживает создание/управление РК
+  (+ `direct-create-worker.service` — исполнитель очереди создания, без порта),
+  `direct-content.service` на `127.0.0.1:5021` обслуживает только редактор контента,
+  `direct-slepki.service` на `127.0.0.1:5023` — редактор структуры слепков
+  (страница `/direct/automation/slepki` + 13 эндпоинтов `/direct/api/slepki/*`),
+  `direct-slepki-worker.service` — исполнитель edit-очереди слепков (без порта).
 - **Главный сайт:** `digest.service` остаётся на `5010`; `/direct/*` он больше не обслуживает.
 - **Деплой Direct:** Mutagen синкает Mac↔LXC101 автоматически. После правок общего
-  Direct — `systemctl restart direct.service`; после правок редактора контента —
-  `systemctl restart direct-content.service`. Команды:
-  `ssh proxmox-ts "pct exec 101 -- systemctl restart direct.service"` и
-  `ssh proxmox-ts "pct exec 101 -- systemctl restart direct-content.service"`.
+  Direct — `systemctl restart direct-create.service`; после правок редактора контента —
+  `systemctl restart direct-content.service`; после правок редактора слепков
+  (`slepki_editor.py` / `routes_slepki_edit.py` / `slepki_ui.js`) —
+  `systemctl restart direct-slepki.service` и `direct-slepki-worker.service`. Команды:
+  `ssh proxmox-ts "pct exec 101 -- systemctl restart direct-create.service"`,
+  `ssh proxmox-ts "pct exec 101 -- systemctl restart direct-content.service"`,
+  `ssh proxmox-ts "pct exec 101 -- systemctl restart direct-slepki.service direct-slepki-worker.service"`.
 
 Папка **самодостаточна**: `blueprint + campaign.py + promo.py + ai_agents.py + *.json`.
 Нужен доступ к `.secret/loader.py` выше по дереву (куки главпотока, токены Директа/Метрики, БД).
@@ -260,12 +269,17 @@ python3 scripts/m3_content_filter_smoke.py
 
 ## Создание набора РК по структуре слепка (Нейродиректолог)
 
-Кампании создаются **по структуре выбранного слепка** (Терехов/Павлов/Щербакова/Крючкова).
-Слепок «Кудерко» **удалён** из выбора — его тексты оставлены только как эталон
-**полноты/длины** контента (кол-во символов), НЕ как источник содержания.
+Кампании создаются **по структуре выбранного слепка** — на диске **17 слепков**
+(`direct/slepki/*.json`, порядок в `_order.json`), включая `dmp` / `gen_ses` / `avto_sk` /
+`avtolajt_bu` / `sk_krs`. Слепок «Кудерко» **удалён** из выбора — его тексты оставлены
+только как эталон **полноты/длины** контента (кол-во символов), НЕ как источник содержания.
 
-### Вкладка «Структура слепков»
-- Дерево кодеров `tp{1-11}_{cpc|cpa}_{site|kviz}`; каждый `tp` **разбит по типу сайта**
+### Страница «Структура слепков» (`/direct/automation/slepki`)
+Отдельная страница отдельного процесса `direct-slepki.service` (:5023):
+`templates/direct/slepki.html` + `static/direct/slepki_ui.js` + `static/direct/slepki_ui.css`.
+`templates/direct/index.html` только ссылается на неё и подключает тот же JS/CSS.
+
+- Дерево кодеров `tp{1-7}_{cpc|cpa}_{site|kviz}`; каждый `tp` **разбит по типу сайта**
   (`site` / `kviz`) — отдельные секции (`t.splits` в part-файле слепка `direct/slepki/<key>.json`).
 - «Прочее (без tp-схемы)» из структуры удалено.
 

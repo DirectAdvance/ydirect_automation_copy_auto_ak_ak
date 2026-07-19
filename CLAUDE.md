@@ -16,7 +16,7 @@
 
 - Независимые задачи (разные файлы / разные слепки / нет общего результата) → запускать **одновременно** несколькими агентами/тулами в одном сообщении.
 - Зависимые (B нужен результат A) или **правки одного и того же файла** → строго последовательно (иначе конфликт записи).
-- Типовая раскладка без коллизий: структура (`direct/slepki/<key>.json` — по файлу на слепок) ‖ движок (`create_set_*.py`) ‖ шаблон (`templates/direct/index.html`) ‖ доки (`*.md`) — это РАЗНЫЕ файлы, можно параллелить. Бонус разбиения: правки РАЗНЫХ слепков теперь тоже не конфликтуют (разные part-файлы).
+- Типовая раскладка без коллизий: структура (`direct/slepki/<key>.json` — по файлу на слепок) ‖ движок (`create_set_*.py`) ‖ шаблон создания РК (`templates/direct/index.html`) ‖ UI слепков (`templates/direct/slepki.html` + `static/direct/slepki_ui.js`/`slepki_ui.css` — вынесены из index.html 2026-07-17) ‖ доки (`*.md`) — это РАЗНЫЕ файлы, можно параллелить. Бонус разбиения: правки РАЗНЫХ слепков теперь тоже не конфликтуют (разные part-файлы).
 - Живой харвест по многим слепкам/аккаунтам → фан-аут по слепкам (каждый агент — свой слепок, свой файл вывода), потом слить.
 - **После параллельного прогона — ОБЯЗАТЕЛЬНО верифицировать каждый результат самому** (diff/compile/факт), не считать «раз параллельно — всё ок».
 
@@ -81,4 +81,9 @@
 
 ## 🖥 Деплой
 
-Код на Mac → Mutagen → LXC101 `/opt/scripts/home/seoadvanced/direct/`. Сервис `direct-create.service` (:5020) + `direct-create-worker.service`. Части структуры (`direct/slepki/`) и профиль синкаются Mutagen (не крон). Контент-пак — на M3, ночной синк `sync_content_m3.py` (00:00/12:00) M3→local (M3 = источник правды; писать контент в M3, иначе перезатрёт).
+Код на Mac → Mutagen → LXC101 `/opt/scripts/home/seoadvanced/direct/`. Сервис `direct-create.service` (:5020) + `direct-create-worker.service`.
+
+**Правки слепков рестартуют СВОИ юниты, не `direct-create`:** `slepki_editor.py` / `routes_slepki_edit.py` / `slepki_main.py` / `slepki_ui.js` → `systemctl restart direct-slepki.service` (:5023); edit-джобы применяет `direct-slepki-worker.service` → его тоже. Одной командой:
+`ssh proxmox-ts "pct exec 101 -- systemctl restart direct-slepki.service direct-slepki-worker.service"`.
+
+Части структуры (`direct/slepki/`) и профиль синкаются Mutagen (не крон). Контент-пак — на M3, ночной синк `sync_content_m3.py` (00:00/12:00) M3→local (M3 = источник правды; писать контент в M3, иначе перезатрёт).

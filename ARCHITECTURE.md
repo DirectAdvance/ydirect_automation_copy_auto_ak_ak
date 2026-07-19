@@ -54,16 +54,33 @@ HTTP-роуты (тонкие) routes_*.py ×18  ── регистрируют
 ### Процессы / воркеры
 | Модуль | Строк | Роль |
 |--------|------:|------|
-| `main.py` | 86 | entrypoint веб (direct.service) |
-| `worker_main.py` | 93 | воркер очереди создания (direct-worker.service) |
-| `content_main.py` / `content_worker.py` | 122 / 190 | редактор контента (direct-content.service) |
-| `copy_main.py` | 103 | копировщик кабинетов (direct-copy.service) |
+| `main.py` | 86 | entrypoint веб (direct-create.service, :5020) |
+| `worker_main.py` | 93 | воркер очереди создания (direct-create-worker.service) |
+| `content_main.py` / `content_worker.py` | 122 / 190 | редактор контента (direct-content.service, :5021) |
+| `copy_main.py` | 103 | копировщик кабинетов (direct-copy.service, :5022) |
+| `slepki_main.py` | 134 | entrypoint веб редактора структуры слепков (direct-slepki.service, :5023) |
+| `slepki_worker_main.py` | 108 | воркер edit-очереди слепков (direct-slepki-worker.service, `DIRECT_WORKER_SCOPE=slepki`) |
 
 ### HTTP-роуты (тонкие, регистрируются `blueprint.py`)
 `routes_pages · routes_overview · routes_accounts · routes_reference · routes_settings ·
 routes_content · routes_content_editor(1711) · routes_ai · routes_copy · routes_jobs ·
 routes_create_set · routes_deferred · routes_pack · routes_campaigns · routes_set_plan`
 — тонкие обёртки над ядром/сервисами. Крупный только `routes_content_editor` (свой домен).
+
+⚠️ **Слепки — отдельный контур, мимо `blueprint.py`.** `routes_slepki_edit.py` (510) регистрируется
+не через `blueprint.py`, а вызовом `register_slepki_edit_routes(...)` из `slepki_main.py:115` —
+13 эндпоинтов `/direct/api/slepki/*` + страница `/direct/automation/slepki` (`slepki_main.py:107`).
+Искать роуты слепков в списке выше бесполезно.
+
+### Фронтенд слепков
+| Файл | Роль |
+|------|------|
+| `templates/direct/slepki.html` | шаблон страницы `/direct/automation/slepki` (~36 КБ) |
+| `static/direct/slepki_ui.js` | вся клиентская логика панели (~132 КБ): `renderSlepki`, `_slRenderDetailCard` (:1224), `_slDetailKwView` (:1133), `slepkiOpenCampDetail`, `_slRenderMinusSets` |
+| `static/direct/slepki_ui.css` | стили дерева и detail-панели (~21 КБ) |
+
+Вынесены 1:1 из `templates/direct/index.html` 2026-07-17. `index.html` теперь только ссылается на
+страницу и подключает тот же `slepki_ui.js` / `slepki_ui.css`.
 
 ### Ядро
 | Модуль | Строк | Роль |
