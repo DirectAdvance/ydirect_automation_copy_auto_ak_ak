@@ -89,11 +89,11 @@ def _build_name(is_master: bool, is_autotarget: bool, pay: str, r_code: str, obl
     # рассинхрон с age_lower в create_set_master_product.py, который чинился той же логикой.
     age = "ag001" if (not is_master or is_autotarget) else "ag011"
     codes = f"{tp}_{paycode}_{sqcode}_{ct or 'ct0000'}_aon_n000_{r_code}_{fmt}_{age}_g00"
-    tp_label = "Мастер кампаний" if is_master else "ТК"  # #6: канон CODER.md (было МК_AT_tcpa); ТК=было Товарка 2026-07-19
+    tp_label = "МК" if is_master else "ТК"  # #6: канон CODER.md (было «Мастер кампаний»/«Товарка», 2026-07-19)
     cat_part = f" - {cat}" if cat else ""                 # категория аудитории в человекочитаемое имя (как в слепках)
     # Дедуп метки типа: имя позиции слепка (cat) уже может НАЧИНАТЬСЯ с неё
     # (create_set_context._slepok_positions: display = f"{gname} - {label}", где gname =
-    # «Мастер кампаний») → без дедупа получалось «Мастер кампаний - Мастер кампаний - …».
+    # «МК») → без дедупа получалось «МК - МК - …».
     _cat_s = (cat or "").strip()
     if _cat_s and _cat_s.lower().startswith(tp_label.lower()):
         return f"{codes} — {_cat_s} - {oblast}"
@@ -1117,12 +1117,8 @@ def _set_plan_response():
                     base_nm = _build_name(is_master, is_autotarget_name, pay, r_code, oblast, g["sq"], cat, ct=cat_ct)
                     # Bug D fix: используем URL фида (без https://) вместо короткого имени из кабинета.
                     import re as _re_plan
-                    from .model_urls import _strip_site_domain_label as _strip_dom_plan
-                    # Гард — по реально подставляемой метке (label), с срезкой домен-префикса.
-                    _f_lbl = _strip_dom_plan(
-                        (_re_plan.sub(r'^https?://', '', f_url) if f_url else f_name),
-                        row.get("domain") or "")
-                    if _f_lbl:
+                    _f_lbl = (_re_plan.sub(r'^https?://', '', f_url) if f_url else f_name)
+                    if _f_lbl and not _is_site_domain_name(f_name, row.get("domain") or ""):
                         base_nm = f"{base_nm} — {_f_lbl}"
                     payload_sig = (
                         "master" if is_master else "product",
