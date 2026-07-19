@@ -12921,11 +12921,11 @@
               "groups": []
             },
             {
-              "name": "МК без слов Трейд-ин.",
+              "name": "МК - Трейд-ин - Автотаргетинг",
               "items": [
                 {
                   "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag001_g00",
-                  "t": "МК без слов Трейд-ин",
+                  "t": "МК - Трейд-ин - Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "мк_без_слов_трейд_ин",
                   "camps": [
@@ -12948,11 +12948,11 @@
               "groups": []
             },
             {
-              "name": "МК со словами Трейд-ин.",
+              "name": "МК - Трейд-ин - КС",
               "items": [
                 {
                   "c": "tp6_cpc_site_ct0007_aon_n000_r0000_ct001_ag011_g00",
-                  "t": "МК со словами Трейд-ин",
+                  "t": "МК - Трейд-ин - КС",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "мк_со_словами_трейд_ин",
                   "camps": [
@@ -13144,34 +13144,6 @@
               "groups": []
             },
             {
-              "name": "Мастер без слов Трейд-ин",
-              "items": [
-                {
-                  "c": "tp6_cpc_site_ct0007_aon_n000_r0000_ct001_ag001_g00",
-                  "t": "Мастер без слов Трейд-ин",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "мастер_без_слов_трейд_ин",
-                  "camps": [
-                    "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag001_g00 — Мастер без слов трейд-ин",
-                    "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag001_g00 — Мастер без слов Трейд-ин.",
-                    "tp6_cpc_site_ct0007_aon_n000_r0000_ct001_ag001_g00 — Мастер без слов Трейд-ин"
-                  ],
-                  "camp_names": [
-                    "Мастер без слов Трейд-ин",
-                    "Мастер без слов Трейд-ин"
-                  ],
-                  "autotarget_cats": [
-                    "ACCESSORY_MARK",
-                    "ALTERNATIVE_MARK",
-                    "BROADER_MARK",
-                    "EXACT_V2_MARK",
-                    "NARROW_MARK"
-                  ]
-                }
-              ],
-              "groups": []
-            },
-            {
               "name": "МК - Общие запросы - Автотаргетинг - Новосибирская Область — master_obshaya_avtotargeting",
               "items": [
                 {
@@ -13184,32 +13156,6 @@
                   ],
                   "camp_names": [
                     "Мастер кампаний/МК - Общие запросы - Автотаргетинг"
-                  ]
-                }
-              ],
-              "groups": []
-            },
-            {
-              "name": "Мастер со словами Трейд-ин.",
-              "items": [
-                {
-                  "c": "tp6_cpc_site_ct0007_aon_n000_r0000_ct001_ag011_g00",
-                  "t": "Мастер со словами Трейд-ин",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "мастер_со_словами_трейд_ин",
-                  "camps": [
-                    "tp6_cpc_site_ct0007_aon_n000_r0000_ct001_ag011_g00 — Мастер со словами Трейд-ин.",
-                    "tp6_cpc_site_ct0007_aon_n000_r0000_ct001_ag011_g00 — Мастер со словами Трейд-ин."
-                  ],
-                  "camp_names": [
-                    "Мастер со словами Трейд-ин"
-                  ],
-                  "autotarget_cats": [
-                    "ACCESSORY_MARK",
-                    "ALTERNATIVE_MARK",
-                    "BROADER_MARK",
-                    "EXACT_V2_MARK",
-                    "NARROW_MARK"
                   ]
                 }
               ],
@@ -13272,11 +13218,11 @@
           "title": "ТК",
           "groups": [
             {
-              "name": "Vse Marki",
+              "name": "ТК - Общая - КС",
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "Vse Marki",
+                  "t": "ТК - Общая - КС",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "vse_marki",
                   "camps": [
@@ -13986,26 +13932,6 @@
                   ],
                   "camp_names": [
                     "acav_autodrive-samara_isa_product_cpc_victory_multi_sv5"
-                  ]
-                }
-              ],
-              "groups": []
-            },
-            {
-              "name": "All Aon N000 Samaro Fid A25 54 Genders",
-              "items": [
-                {
-                  "c": "tp7_cpc_site",
-                  "t": "All Aon N000 Samaro Fid A25 54 Genders",
-                  "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
-                  "gk": "all_aon_n000_samaro_fid_a25_54_genders",
-                  "camps": [
-                    "acav_autodrive-samara_isa_product_cpa_victory_multi_sv5 111",
-                    "acav_autodrive-samara_isa_product_cpa_victory_multi_sv5 111 (2)",
-                    "acav_autodrive-samara_isa_product_cpa_victory_multi_sv5 111 (3)"
-                  ],
-                  "camp_names": [
-                    "acav_autodrive-samara_isa_product_cpa_victory_multi_sv5"
                   ]
                 }
               ],
@@ -20946,11 +20872,11 @@
           "title": "ТК",
           "groups": [
             {
-              "name": "ТМК без слов общие запросы",
+              "name": "ТК - Общая - Автотаргетинг",
               "items": [
                 {
                   "c": "tp7_cpc_site_ct0000_aon_n000_r0000_ct001_ag001_g00",
-                  "t": "ТМК без слов общие запросы",
+                  "t": "ТК - Общая - Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "тмк_без_слов_общие_запросы",
                   "camps": [
@@ -21012,24 +20938,6 @@
                   ],
                   "camp_names": [
                     "Товарка (мастер / фид +каталог) - Модели - автотаргетинг"
-                  ]
-                }
-              ],
-              "groups": []
-            },
-            {
-              "name": "ТМК со словами общие запросы",
-              "items": [
-                {
-                  "c": "tp7_cpc_site_ct0001_aon_n000_r0000_ct001_ag001_g00",
-                  "t": "ТМК со словами общие запросы",
-                  "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
-                  "gk": "тмк_со_словами_общие_запросы",
-                  "camps": [
-                    "tp7_cpc_site_ct0001_aon_n000_r0000_ct001_ag001_g00 — ТМК со словами общие запросы"
-                  ],
-                  "camp_names": [
-                    "ТМК со словами общие запросы"
                   ]
                 }
               ],
