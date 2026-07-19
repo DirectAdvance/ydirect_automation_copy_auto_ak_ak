@@ -1013,7 +1013,7 @@ def apply_toggle_aon_aoff(spec: dict, actor: str = "") -> dict:
 def _gen_item_desc(tp: str, brand: str, segment: str) -> str:
     """Описание элемента (поле t), как в реальной структуре: «РСЯ {Бренд} марка» / «Поиск …»."""
     surf = {"tp1": "РСЯ", "tp2": "Поиск", "tp3": "ТГ РСЯ", "tp4": "Поиск",
-            "tp5": "Поиск", "tp6": "МК", "tp7": "Товарка"}.get(tp, tp)
+            "tp5": "Поиск", "tp6": "МК", "tp7": "ТК"}.get(tp, tp)
     seg_word = {"Марки": "марка", "Модели": "модель", "Общее": "общая"}.get(segment, "")
     return f"{surf} {brand} {seg_word}".strip()
 
