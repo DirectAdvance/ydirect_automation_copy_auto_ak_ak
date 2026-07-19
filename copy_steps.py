@@ -822,7 +822,7 @@ def _chunks(seq: list, n: int):
         yield seq[i:i + n]
 
 
-def step_keywords(ctx: CopyCtx, grid_batch: int = 1000, v5_batch: int = 900) -> dict:
+def step_keywords(ctx: CopyCtx, grid_batch: int = 1000, v5_batch: int = 200) -> dict:
     """ФАЗА 3c п.2. Добавить ключевые фразы копии Grid-FIRST (``grid.add_keywords`` по куки, 0
     v5-баллов), v5 ``keywords.add`` — ТОЛЬКО фолбэк. Раньше базовый движок (direct_copy.phase_upload)
     слал ВСЁ через v5 (главный пожиратель баллов → 152), а Grid добирал лишь остаток. Теперь v5-путь
@@ -1406,6 +1406,14 @@ def _fix_v5_settings(ctx: CopyCtx, pairs: list, src_rows: dict, tgt_rows: dict, 
 
 def step_settings_diff(ctx: CopyCtx) -> dict:
     """Сверка настроек источник ↔ копия по кукам + автопочинка того, что умеем.
+
+    Зона ответственности (vs copy_verify.diff_profiles):
+    - step_settings_diff — сырые Grid edit_rows поля (Strategy, TimeTarget, BrandSafety, ContextLimit,
+      уведомления, disabledPlaces и т.д.); работает IN-COPY с кукой; ремонтирует 3 опции Settings.
+    - diff_profiles (copy_verify.py) — структурные измерения контента (ключи, объявления, ассеты);
+      работает POST-COPY, REPORT-ONLY.
+    Пересечений нет: минус-слова в raw edit_rows (step_settings_diff) vs кол-во библиотечных наборов
+    D3 (diff_profiles); стратегия в raw rows vs strategyName D12 (diff_profiles). Разные данные.
 
     Чиним ТОЛЬКО 3 опции v5 Settings (`_DIFF_V5_SETTINGS_FIX`) — ставим значение источника 1:1.
     Остальное — по-прежнему report-only (organic/placement чинит step_fix_organic_placement,

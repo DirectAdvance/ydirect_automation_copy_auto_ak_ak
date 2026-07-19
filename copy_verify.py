@@ -1,8 +1,18 @@
 """copy_verify — движок сверки source↔target при копировании РК (REPORT-ONLY).
 
-Строит нормализованные профили источника и цели, диффует по 19 измерениям,
+Строит нормализованные профили источника и цели, диффует по 20+ измерениям
+(D1–D19, D2b условная при наличии campaign-level минус-слов, + 2 гео-измерения),
 возвращает структурный отчёт. Авто-ремонт НЕ реализован — каждая строка
 несёт repairable:bool + repair_hint «где чинить».
+
+Реально сравниваемые (источник↔цель): D1 adgroup_count, D2 keyword_count,
+D3 shared_set_count, D4 promo_attached, D5 adaptive_titles_count, D6 adaptive_bodies_count,
+D7 callout_count, D8 sitelinks_present, D9 ads_with_images, D12 strategy_name,
+D16 utm_tracking, D19 shopping_filter_count (при наличии шоппинга).
+Честно-unreadable (нельзя прочитать target-поле): D2b campaign_neg_count,
+D10 audiences (v5 403), D13 ads_with_video, D14 button_cta.
+Excluded-intentional (наш стандарт): D11 bid_modifiers, D15 ad_price, D18 minus_places.
+Unreadable-always: D17 site_monitoring (поле hasSiteMonitoring отсутствует в Grid read-схеме).
 
 Точка входа:
     run_copy_verification(src_dir, workdir, target_login, target_agency, *, grid=None,
@@ -448,12 +458,12 @@ def build_target_profile(target_login: str,
     except Exception as e:
         _log(f"copy_verify: read_campaign_invariants error: {str(e)[:200]}")
 
-    # ── adaptive_ads_for_update (цель) ───────────────────────────────────────
-    # В v1 campaign_content_counts (adaptive_total / no_images_ads) достаточно для D5/D6/D9.
-    # cached_adaptive принимается для совместимости API и будет использоваться в v2
-    # (per-ad сравнение titles/bodies/imageHashes — требует ad→campaign маппинга через src_dir).
-    # В v1 данные не агрегируются по кампании здесь; v2 TODO: передавать ad→camp dict отдельно.
-    del cached_adaptive  # явно помечаем как неиспользуемый в v1; del убирает pyflakes warning
+    # ── adaptive_ads_for_update (цель) — REPORT_ONLY для D13/D14 ────────────
+    # D13 (ads_with_video) и D14 (ads_with_button): для target нужен adaptive_ads_for_update
+    # с ad_ids цели, которые не известны без доп. ads.get. Это второй Grid-запрос сверх уже
+    # сделанных — добавлять нецелесообразно. D13 остаётся UNREADABLE (честно), D14 — UNREADABLE
+    # + нет мутатора кнопки (repair=False). cached_adaptive не используется здесь.
+    del cached_adaptive  # explicit: не используется в v1; del убирает pyflakes warning
 
     # ── v5 fallback для черновиков (Draft/State=OFF) ─────────────────────────
     # Grid entity-запросы фильтруют по statRequirements (LAST_30DAYS): свежие черновики
@@ -514,17 +524,29 @@ def build_target_profile(target_login: str,
                     if _cid2 in counts:
                         counts[_cid2]["keywords_count"] = _n
                         counts[_cid2]["keywords_read"] = True
-                # ads → adaptive_total (приближение: все объявления считаем адаптивными)
+                # ads → adaptive_total + shopping_count_v5 (только SMART_AD — так же как
+                # источник считает из shopping_ads.json, fetched с Types=["SMART_AD"]).
+                # Добавляем Type в FieldNames — тот же запрос, 0 доп. обращений.
                 _ads_cnt: Dict[int, int] = {}
-                for _ad in _v5_paged("ads", "Ads", ["Id", "CampaignId"]):
+                _shop_cnt: Dict[int, int] = {}
+                for _ad in _v5_paged("ads", "Ads", ["Id", "CampaignId", "Type"]):
                     try:
-                        _ads_cnt[int(_ad.get("CampaignId") or 0)] = _ads_cnt.get(int(_ad.get("CampaignId") or 0), 0) + 1
+                        _ad_cid = int(_ad.get("CampaignId") or 0)
                     except (TypeError, ValueError):
-                        pass
+                        continue
+                    if _ad_cid <= 0:
+                        continue
+                    _ads_cnt[_ad_cid] = _ads_cnt.get(_ad_cid, 0) + 1
+                    if (_ad.get("Type") or "") == "SMART_AD":
+                        _shop_cnt[_ad_cid] = _shop_cnt.get(_ad_cid, 0) + 1
                 for _cid2, _n in _ads_cnt.items():
                     if _cid2 in counts and counts[_cid2].get("adaptive_total") in (None, 0):
                         counts[_cid2]["adaptive_total"] = _n
-                _log(f"copy_verify: v5 fallback завершён — групп/ключей/объявл добрано для {len(_draft_cids)} кампаний")
+                for _cid2, _n in _shop_cnt.items():
+                    if _cid2 in counts:
+                        counts[_cid2]["shopping_count_v5"] = _n
+                _log(f"copy_verify: v5 fallback завершён — групп/ключей/объявл добрано; "
+                     f"шоппинг-объявл: {sum(_shop_cnt.values())} по {len(_shop_cnt)} кампаниям")
         except Exception as _v5e:
             _log(f"copy_verify: v5 fallback error: {str(_v5e)[:200]}")
 
@@ -632,14 +654,17 @@ def build_target_profile(target_login: str,
         strategy_name = (strat_data.get("strategyName") or
                          edit_c.get("strategyName") or "")
 
-        # D13/D14: video and button — не читаются в campaign_content_counts;
-        # требуют adaptive_ads_for_update с aggregation по кампании (отдельный вызов).
-        # В v1 помечаем unreadable — в cached_adaptive нет campaignId.
+        # D13/D14: video (hasVideo) и button (hasButton) — REPORT_ONLY / UNREADABLE.
+        # Требуют adaptive_ads_for_update с ad_ids цели (не известны без доп. ads.get).
+        # D14: мутатора кнопки нет вообще → repair=False.
         ads_with_video = None
         ads_with_button = None
 
-        # D16: tracking — не читается напрямую из campaigns_edit_rows в текущем формате
-        tracking_norm = None
+        # D16: UTM tracking через bannerHrefParams из read_campaign_invariants (CampaignsEditData,
+        # 0 доп. запросов). bannerHrefParams ≡ v5 TrackingParams. _strip_domain нормализует домены.
+        # Tri-state: None если поле не пришло → diff выдаст UNREADABLE (fail-safe, не ложный OK).
+        _bhp = inv_c.get("banner_href_params")   # None = поле не в ответе Grid
+        tracking_norm = _strip_domain(_bhp or "") if _bhp is not None else None
 
         profile[str(tgt_id)] = {
             # D1
@@ -655,16 +680,19 @@ def build_target_profile(target_login: str,
             "promo_id": str(promo_ext_id) if has_promo else None,
             # D5
             "ads_with_titles": ads_with_titles,
-            # D6 — покрыто adaptive_total
+            # D6: прокси — adaptive_total (адаптивное объявление всегда имеет и заголовки, и тексты;
+            # отдельного счётчика bodies в campaign_content_counts нет).
+            "ads_with_texts": adaptive_total,
             # D7
             "callout_count": callout_count,
             # D8
             "has_sitelinks": has_sitelinks,
             # D9
             "ads_with_images": ads_with_images,
-            # D10: audiences — unreadable
+            # D10: audiences — REPORT_ONLY/UNREADABLE.
+            # v5 ADGROUPS_FIELDS не содержит audience-таргетинга; interest_ids возвращает 403.
             "audiences": None,
-            # D11: bidmods — excluded
+            # D11: bidmods — EXCLUDED (наш стандарт поверх источника).
             "bid_modifier_types": None,
             # D12
             "strategy_name": strategy_name,
@@ -674,8 +702,9 @@ def build_target_profile(target_login: str,
             "ads_with_button": ads_with_button,
             # D16
             "tracking_norm": tracking_norm,
-            # D19: shopping filters — _enrich_shopping_bodies проверяет только тексты
-            "shopping_count": None,
+            # D19: shopping filters — количество SMART_AD на цели (v5 fallback, тот же запрос ads,
+            # тот же SMART_AD тип что и в shopping_ads.json источника). None если fallback не отработал.
+            "shopping_count": counts_c.get("shopping_count_v5"),
             "shopping_op_types": None,
             # Мета
             "_adaptive_total": adaptive_total,
@@ -695,7 +724,7 @@ def build_target_profile(target_login: str,
 def diff_profiles(src_profile: Dict[str, dict],
                   tgt_profile: Dict[str, dict],
                   id_maps: dict) -> List[dict]:
-    """Структурный diff профилей по 19 измерениям.
+    """Структурный diff профилей по 20+ измерениям (D1–D19, D2b условная, + 2 гео отдельно).
 
     Args:
         src_profile: Профиль источника {str(src_camp_id): {...}}.
@@ -763,12 +792,12 @@ def diff_profiles(src_profile: Dict[str, dict],
         if t2 is None:
             results.append(_row(scope, "keyword_count", _UNREADABLE, s2, None,
                                 repairable=True,
-                                repair_hint="step_keywords copy_steps.py:807 — Grid-first, 0 баллов"))
+                                repair_hint="step_keywords copy_steps.py:825 — Grid-first, 0 баллов"))
         else:
             results.append(_row(scope, "keyword_count",
                                 _OK if s2 == t2 else _MISMATCH, s2, t2,
                                 repairable=True,
-                                repair_hint="step_keywords copy_steps.py:807"))
+                                repair_hint="step_keywords copy_steps.py:825"))
 
         # D2b: campaign negatives (report; ремонта нет — только settings_diff)
         s2b = src_c["camp_neg_count"]
@@ -777,31 +806,31 @@ def diff_profiles(src_profile: Dict[str, dict],
                                 repairable=False,
                                 repair_hint="step_settings_diff report-only; "
                                             "отдельного шага ремонта кампанийных минус-слов нет "
-                                            "(copy_steps.py:1244 _DIFF_SKIP_KEYS — не ремонтируется)"))
+                                            "(copy_steps.py:1284 _DIFF_SKIP_KEYS — не ремонтируется)"))
 
         # D3: shared set count (ремап через maps["shared_sets"] → сравниваем COUNT)
         s3, t3 = src_c["shared_set_count"], tgt_c["shared_set_count"]
         if not reads_ok.get("invariants"):
             results.append(_row(scope, "shared_set_count", _UNREADABLE, s3, None,
                                 repairable=True,
-                                repair_hint="read_campaign_invariants grid_finalize.py:933 не прочитал; "
+                                repair_hint="read_campaign_invariants grid_finalize.py:1107 не прочитал; "
                                             "привязка: UpdateCampaigns libraryMinusKeywordsIds "
-                                            "(grid_finalize.py:277)"))
+                                            "(grid_finalize.py finalize:408)"))
         else:
             results.append(_row(scope, "shared_set_count",
                                 _OK if s3 == t3 else _MISMATCH, s3, t3,
                                 repairable=True,
                                 repair_hint="UAC tp6/7: writer НЕТ (MasterCampaignSpec нет shared_sets); "
                                             "v5-путь: UpdateCampaigns libraryMinusKeywordsIds "
-                                            "(grid_finalize.py:277)"))
+                                            "(grid_finalize.py finalize:408)"))
 
         # D4: promo
         s4, t4 = src_c["has_promo"], tgt_c["has_promo"]
         results.append(_row(scope, "promo_attached",
                             _OK if s4 == t4 else _MISMATCH, src_c["promo_id"], tgt_c["promo_id"],
                             repairable=True,
-                            repair_hint="step_attach_promos copy_steps.py:487; "
-                                        "PromoClient.add copy_engine.py:2025"))
+                            repair_hint="step_attach_promos copy_steps.py:497; "
+                                        "PromoClient copy_engine.py:830"))
 
         # D5: adaptive titles (ads_with_titles vs adaptive_total)
         s5 = src_c["ads_with_titles"]
@@ -809,21 +838,29 @@ def diff_profiles(src_profile: Dict[str, dict],
         if t5 is None:
             results.append(_row(scope, "adaptive_titles_count", _UNREADABLE, s5, None,
                                 repairable=True,
-                                repair_hint="step_adaptive_creatives copy_steps.py:982 — titles/bodies RMW; "
-                                            "adaptive_ads_for_update grid_finalize.py:2186"))
+                                repair_hint="step_adaptive_creatives copy_steps.py:1049 — titles/bodies RMW; "
+                                            "adaptive_ads_for_update grid_finalize.py:2537"))
         else:
             results.append(_row(scope, "adaptive_titles_count",
                                 _OK if s5 == t5 else _MISMATCH, s5, t5,
                                 repairable=True,
-                                repair_hint="step_adaptive_creatives copy_steps.py:982 — "
+                                repair_hint="step_adaptive_creatives copy_steps.py:1049 — "
                                             "UpdateAdaptiveTextAds RMW titles/bodies"))
 
-        # D6: texts (covered by same adaptive_total block as D5; отдельная строка для явности)
+        # D6: texts — target прокси = adaptive_total (адаптивное объявление имеет и bodies, и titles;
+        # отдельного счётчика bodies в campaign_content_counts нет, поэтому target использует тот же
+        # proxy, что и D5). t6 берётся из явного поля ads_with_texts target-профиля, а не из t5.
         s6 = src_c["ads_with_texts"]
-        results.append(_row(scope, "adaptive_bodies_count",
-                            _OK if s6 == (t5 or 0) else _MISMATCH, s6, t5,
-                            repairable=True,
-                            repair_hint="step_adaptive_creatives copy_steps.py:982 — bodies RMW"))
+        t6 = tgt_c.get("ads_with_texts")   # = adaptive_total (proxy); None если не читалось
+        if t6 is None:
+            results.append(_row(scope, "adaptive_bodies_count", _UNREADABLE, s6, None,
+                                repairable=True,
+                                repair_hint="step_adaptive_creatives copy_steps.py:1049 — bodies RMW"))
+        else:
+            results.append(_row(scope, "adaptive_bodies_count",
+                                _OK if s6 == t6 else _MISMATCH, s6, t6,
+                                repairable=True,
+                                repair_hint="step_adaptive_creatives copy_steps.py:1049 — bodies RMW"))
 
         # D7: callouts (edit_rows — campaign-level, но Grid может не вернуть черновик)
         s7, t7 = src_c["callout_count"], tgt_c["callout_count"]
@@ -837,7 +874,7 @@ def diff_profiles(src_profile: Dict[str, dict],
                                 _OK if s7 == t7 else _MISMATCH, s7, t7,
                                 repairable=True,
                                 repair_hint="step_attach_callouts copy_steps.py:332; "
-                                            "grid.add_callouts copy_engine.py:1987"))
+                                            "grid.add_callouts grid_finalize.py:492"))
 
         # D8: sitelinks (аналогично D7 — campaign-level, зависит от edit_rows)
         s8, t8 = src_c["has_sitelinks"], tgt_c["has_sitelinks"]
@@ -845,12 +882,12 @@ def diff_profiles(src_profile: Dict[str, dict],
             results.append(_row(scope, "sitelinks_present", _UNREADABLE, s8, None,
                                 repairable=True,
                                 repair_hint="campaigns_edit_rows не вернул кампанию (возможно черновик); "
-                                            "step_attach_sitelinks copy_steps.py:377"))
+                                            "step_attach_sitelinks copy_steps.py:387"))
         else:
             results.append(_row(scope, "sitelinks_present",
                                 _OK if s8 == t8 else _MISMATCH, s8, t8,
                                 repairable=True,
-                                repair_hint="step_attach_sitelinks copy_steps.py:377 (с гео-морфом)"))
+                                repair_hint="step_attach_sitelinks copy_steps.py:387 (с гео-морфом)"))
 
         # D9: images
         s9 = src_c["ads_with_images"]
@@ -880,7 +917,7 @@ def diff_profiles(src_profile: Dict[str, dict],
         results.append(_row(scope, "bid_modifiers", _EXCLUDED,
                             src_c.get("bid_modifier_types"), "our_standard",
                             repairable=False,
-                            repair_hint="В _DIFF_SKIP_KEYS (copy_steps.py:1232); "
+                            repair_hint="В _DIFF_SKIP_KEYS (copy_steps.py:1284); "
                                         "step_age_bidmods ставит −100% <18/18-24 (copy_steps.py:186)"))
 
         # D12: strategy name
@@ -888,17 +925,17 @@ def diff_profiles(src_profile: Dict[str, dict],
         if not reads_ok.get("edit_rows"):
             results.append(_row(scope, "strategy_name", _UNREADABLE, s12, None,
                                 repairable=True,
-                                repair_hint="campaigns_edit_rows не прочитан (grid_finalize.py:897)"))
+                                repair_hint="campaigns_edit_rows не прочитан (grid_finalize.py:1071)"))
         elif not t12:
             results.append(_row(scope, "strategy_name", _UNREADABLE, s12, None,
                                 repairable=True,
                                 repair_hint="strategyName не в campaigns_edit_rows ответе; "
-                                            "PFCMG-восстановление copy_engine.py:2118"))
+                                            "PFCMG-восстановление copy_engine.py:969"))
         else:
             results.append(_row(scope, "strategy_name",
                                 _OK if s12 == t12 else _MISMATCH, s12, t12,
                                 repairable=True,
-                                repair_hint="PFCMG-восстановление copy_engine.py:2118; "
+                                repair_hint="PFCMG-восстановление copy_engine.py:969; "
                                             "strategy_fallback при создании direct_copy.py:437"))
 
         # D13: video
@@ -908,9 +945,9 @@ def diff_profiles(src_profile: Dict[str, dict],
         if t13 is None:
             results.append(_row(scope, "ads_with_video", _UNREADABLE, s13, None,
                                 repairable=True,
-                                repair_hint="step_videos copy_steps.py:1110 — скачать→аплоуд→RMW; "
-                                            "hasVideo из adaptive_ads_for_update (grid_finalize.py:2219); "
-                                            "нужен отдельный per-campaign агрегат для сверки"))
+                                repair_hint="step_videos copy_steps.py:1177 — скачать→аплоуд→RMW; "
+                                            "hasVideo из adaptive_ads_for_update (grid_finalize.py:2537); "
+                                            "REPORT_ONLY: per-campaign агрегат hasVideo не читается без доп. запроса"))
         else:
             results.append(_row(scope, "ads_with_video",
                                 _OK if s13 == t13 else _MISMATCH, s13, t13,
@@ -929,54 +966,62 @@ def diff_profiles(src_profile: Dict[str, dict],
         results.append(_row(scope, "ad_price", _EXCLUDED, None, None,
                             repairable=False,
                             repair_hint="Берётся из фида ЦЕЛИ, не источника "
-                                        "(step_prices copy_steps.py:671; copy-fix-spec.md §УТОЧНЕНИЯ)"))
+                                        "(step_prices copy_steps.py:689; copy-fix-spec.md §УТОЧНЕНИЯ)"))
 
-        # D16: UTM tracking (без домена)
+        # D16: UTM tracking (без домена). Target читается из bannerHrefParams (Grid CampaignsEditData,
+        # 0 доп. запросов) через read_campaign_invariants → tri-state (None = поле не пришло).
         s16 = src_c["tracking_norm"]
-        t16 = tgt_c["tracking_norm"]   # None в v1
+        t16 = tgt_c["tracking_norm"]   # None если bannerHrefParams не в ответе Grid (tri-state)
         if t16 is None:
             results.append(_row(scope, "utm_tracking", _UNREADABLE, s16, None,
                                 repairable=False,
-                                repair_hint="TODO: читать из campaigns_edit_rows.trackingParams "
-                                            "или v5 campaigns.get; domain-замена в direct_copy.py:916"))
+                                repair_hint="bannerHrefParams не в ответе Grid (CampaignsEditData); "
+                                            "domain-замена при копировании в direct_copy.py do_replace"))
         else:
             results.append(_row(scope, "utm_tracking",
                                 _OK if s16 == t16 else _MISMATCH, s16, t16,
                                 repairable=True,
-                                repair_hint="Tracking с заменой домена (direct_copy.py:916 do_replace)"))
+                                repair_hint="Tracking с заменой домена (direct_copy.py do_replace); "
+                                            "target читается из bannerHrefParams (grid_finalize.py:1237)"))
 
         # D17: site_monitoring — Grid не читает hasSiteMonitoring
         results.append(_row(scope, "site_monitoring", _UNREADABLE, True, None,
                             repairable=False,
                             repair_hint="hasSiteMonitoring НЕ в read-схеме Grid "
-                                        "(grid_finalize.py:942, комментарий read_campaign_invariants); "
+                                        "(см. комментарий read_campaign_invariants grid_finalize.py:1107); "
                                         "set_campaign_invariants форсит True при любом ремонте"))
 
         # D18: minus_places — excluded intentional
         results.append(_row(scope, "minus_places", _EXCLUDED, None, None,
                             repairable=False,
-                            repair_hint="В _DIFF_SKIP_KEYS (copy_steps.py:1232); "
+                            repair_hint="В _DIFF_SKIP_KEYS (copy_steps.py:1284); "
                                         "step_disabled_places ставит baseline "
-                                        "(copy_engine.py:1929 _enabled_baseline_minus_places)"))
+                                        "(copy_steps.py:285, _enabled_baseline_minus_places copy_engine.py:36)"))
 
-        # D19: shopping filters
+        # D19: shopping filters. Source = len(shopping_ads.json) = кол-во SMART_AD записей.
+        # Target = shopping_count_v5 = кол-во v5 SMART_AD на цели (тот же тип, счёт совместим).
         s19 = src_c["shopping_count"]
-        t19 = tgt_c["shopping_count"]   # None: нет чтения фильтров в Grid
+        t19 = tgt_c["shopping_count"]   # None если v5 fallback не отработал
         if s19 > 0:
             if t19 is None:
                 results.append(_row(scope, "shopping_filter_count", _UNREADABLE, s19, None,
                                     repairable=True,
                                     repair_hint="_enrich_shopping_bodies проверяет только пустые тексты, "
-                                                "не фильтры (grid_read.py:456); "
-                                                "writer: grid.add_shopping_ads grid_finalize.py:1503; "
-                                                "copy_engine.py:2084 усекает до 3 операндов — "
-                                                "нужен полный перенос conditions"))
+                                                "не фильтры (grid_read.py:591); "
+                                                "writer: grid.add_shopping_ads grid_finalize.py:1801"))
             else:
                 results.append(_row(scope, "shopping_filter_count",
                                     _OK if s19 == t19 else _MISMATCH, s19, t19,
                                     repairable=True,
-                                    repair_hint="copy_engine.py:2084 усекает до 3 операндов; "
-                                                "grid.add_shopping_ads grid_finalize.py:1503"))
+                                    repair_hint="grid.add_shopping_ads grid_finalize.py:1801"))
+        elif t19 is not None and t19 > 0:
+            # Источник без шоппинга, но на цели появились SMART_AD — явный рассинхрон.
+            # t19 is None → пропускаем (fallback не отработал, нельзя отличить от «нет шоппинга»).
+            results.append(_row(scope, "shopping_filter_count",
+                                _MISMATCH, 0, t19,
+                                repairable=False,
+                                repair_hint="На цели SMART_AD без источника — лишние объявления; "
+                                            "ручная проверка / удаление через Grid"))
 
     return results
 

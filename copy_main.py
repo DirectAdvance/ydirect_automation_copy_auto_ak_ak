@@ -75,6 +75,35 @@ def _parse_number(value, default=0):
         return default
 
 
+def _copy_repair_pending(job_id: str) -> bool:
+    """True если для copy-job есть незавершённая запись в public.direct_delayed_repairs.
+
+    Persistent добивка (kind='content_repair') создаётся queue_server после done copy-job
+    (_schedule_delayed_content_repair_after_done) и выполняется демоном direct-create-worker.
+    Пока статус не в (done/failed/cancelled/superseded) — добивка ещё идёт.
+    Best-effort: при недоступности БД (Victory) возвращает False, не подвешивает поллинг.
+    """
+    if not job_id:
+        return False
+    try:
+        from direct.direct_repository import victory_conn_rw
+        conn = victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT 1 FROM public.direct_delayed_repairs "
+                "WHERE parent_job_id = %s "
+                "  AND status IN ('waiting', 'running') "
+                "LIMIT 1",
+                (job_id,),
+            )
+            return cur.fetchone() is not None
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 — Victory недоступна или схема ещё не создана
+        return False
+
+
 def create_app() -> Flask:
     app = Flask(
         __name__,
@@ -132,6 +161,7 @@ def create_app() -> Flask:
         geo_validate_id_func=metrika._geo_is_valid_id,       # валидация id от клиента
         images_upload_func=copy_engine._copy_images_upload,
         target_campaigns_info_func=copy_engine._copy_target_campaigns_info,  # кол-во кампаний на цели
+        repair_pending_func=_copy_repair_pending,  # persistent добивка direct_delayed_repairs
     )
     # Программный API /api/v1/copy для внешних клиентов (auth по X-API-Key, fail-closed).
     register_copy_api(

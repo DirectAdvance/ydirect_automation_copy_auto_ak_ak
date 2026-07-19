@@ -79,6 +79,7 @@ def register_copy_routes(
     geo_validate_id_func: Callable | None = None,      # abs(id) → bool (валидный id из справочника)
     images_upload_func: Callable | None = None,
     target_campaigns_info_func: Callable | None = None,  # кол-во кампаний на цели (read-only, для UI очистки)
+    repair_pending_func: Callable | None = None,  # job_id → bool: есть ли незакрытая запись в direct_delayed_repairs
 ) -> None:
     @bp.route("/api/copy_campaigns")
     @access
@@ -367,6 +368,14 @@ def register_copy_routes(
             job = dict(copy_jobs.get(job_id) or {})
         if not job:
             return jsonify({"error": "job не найден"}), 404
+        # repair_pending: persistent добивка в direct_delayed_repairs (content_repair).
+        # Проверяем только для done-статуса — в остальных случаях основная работа ещё идёт.
+        # Best-effort: Victory недоступна → False (не подвешиваем поллинг).
+        if job.get("status") == "done" and repair_pending_func is not None:
+            try:
+                job["repair_pending"] = bool(repair_pending_func(job_id))
+            except Exception:  # noqa: BLE001
+                job["repair_pending"] = False
         return jsonify(job)
 
     @bp.route("/api/copy_feeds_preview", methods=["POST"])
