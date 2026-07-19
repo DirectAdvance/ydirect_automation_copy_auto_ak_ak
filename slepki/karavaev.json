@@ -17794,11 +17794,11 @@
           "title": "МК",
           "groups": [
             {
-              "name": "МК - Общие запросы - Ключевики/КС - Нижегородская область — masterc_obshaya_slova",
+              "name": "МК - Общая - КС — masterc_obshaya_slova",
               "items": [
                 {
                   "c": "tp6_cpc_site",
-                  "t": "МК - Общие запросы - Ключевики/КС — masterc_obshaya_slova",
+                  "t": "МК - Общая - КС",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "мастер_кампаний_общие_запросы_ключевики_кс_нижегородская_область_masterc_obshaya_slova",
                   "camps": [
@@ -17825,31 +17825,6 @@
                   ],
                   "camp_names": [
                     "Мастер кампаний - Общие запросы - Автотаргетинг"
-                  ]
-                }
-              ],
-              "groups": []
-            },
-            {
-              "name": "МК - Общие запросы - Ключевики - Самарская область — master_obshaya_slova",
-              "items": [
-                {
-                  "c": "tp6_cpc_site",
-                  "t": "МК - Общие запросы - Ключевики — master_obshaya_slova",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "мастер_кампаний_общие_запросы_ключевики_самарская_область_master_obshaya_slova",
-                  "camps": [
-                    "tp6_cpc_site — Мастер кампаний - Общие запросы - Ключевики - Самарская область — master_obshaya_slova"
-                  ],
-                  "camp_names": [
-                    "Мастер кампаний - Общие запросы - Ключевики"
-                  ],
-                  "autotarget_cats": [
-                    "ACCESSORY_MARK",
-                    "ALTERNATIVE_MARK",
-                    "BROADER_MARK",
-                    "EXACT_V2_MARK",
-                    "NARROW_MARK"
                   ]
                 }
               ],
