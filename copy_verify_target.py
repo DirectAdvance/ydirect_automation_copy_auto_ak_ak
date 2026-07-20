@@ -213,7 +213,7 @@ def build_target_profile(target_login: str,
             continue
         if cid <= 0:
             continue
-        rec = adaptive_by_campaign.setdefault(cid, {"video": 0, "button": 0, "titles": 0, "bodies": 0, "images": 0})
+        rec = adaptive_by_campaign.setdefault(cid, {"video": 0, "button": 0, "titles": 0, "bodies": 0})
         if comp.get("creativeIds") or comp.get("hasVideo"):
             rec["video"] += 1
         if comp.get("hasButton"):
@@ -222,8 +222,6 @@ def build_target_profile(target_login: str,
             rec["titles"] += 1
         if comp.get("bodies"):
             rec["bodies"] += 1
-        if comp.get("imageHashes"):
-            rec["images"] += 1
 
     target_campaign_v5: Dict[int, dict] = {}
 
