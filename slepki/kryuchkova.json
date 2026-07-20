@@ -20763,6 +20763,9 @@
                     "tp7_cpc_site_ct0000_aon_n000_r0000_ct010_ag011_g00",
                     "tp7_cpc_site_ct0000_aon_n000_r0000_ct010_ag011_g00",
                     "tp7_cpc_site_ct0000_aon_n000_r0000_ct010_ag011_g00"
+                  ],
+                  "camp_names": [
+                    "ТК - Товарная - Автотаргетинг"
                   ]
                 }
               ],
@@ -27145,6 +27148,9 @@
                   "gk": "tk",
                   "camps": [
                     "tp7_cpc_site_ct0000_aon_n000_r0000_ct010_ag011_g00"
+                  ],
+                  "camp_names": [
+                    "ТК - Общая - Автотаргетинг"
                   ]
                 }
               ],

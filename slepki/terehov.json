@@ -9137,7 +9137,10 @@
                   "c": "tp4_cpa_site",
                   "t": "Kaiyi",
                   "gc": "ct0154_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "kaiyi"
+                  "gk": "kaiyi",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9148,7 +9151,10 @@
                   "c": "tp4_cpa_site",
                   "t": "Changan",
                   "gc": "ct0029_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "changan"
+                  "gk": "changan",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9159,7 +9165,10 @@
                   "c": "tp4_cpc_site",
                   "t": "Renault",
                   "gc": "ct0209_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "renault"
+                  "gk": "renault",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9170,7 +9179,10 @@
                   "c": "tp4_cpa_site",
                   "t": "Jetour",
                   "gc": "ct0143_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "jetour"
+                  "gk": "jetour",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9181,7 +9193,10 @@
                   "c": "tp4_cpc_site",
                   "t": "Lada",
                   "gc": "ct0181_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lada"
+                  "gk": "lada",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9192,7 +9207,10 @@
                   "c": "tp4_cpc_site",
                   "t": "Haval",
                   "gc": "ct0111_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "haval"
+                  "gk": "haval",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9203,7 +9221,10 @@
                   "c": "tp4_cpa_site",
                   "t": "Knewstar",
                   "gc": "ct0179_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "knewstar"
+                  "gk": "knewstar",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9214,7 +9235,10 @@
                   "c": "tp4_cpa_site",
                   "t": "Moskvich",
                   "gc": "ct0252_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "moskvich"
+                  "gk": "moskvich",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9225,7 +9249,10 @@
                   "c": "tp4_cpa_site",
                   "t": "BAIC",
                   "gc": "ct0019_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "baic"
+                  "gk": "baic",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9236,7 +9263,10 @@
                   "c": "tp4_cpc_site",
                   "t": "Geely",
                   "gc": "ct0097_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "geely"
+                  "gk": "geely",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9247,7 +9277,10 @@
                   "c": "tp4_cpa_site",
                   "t": "FAW",
                   "gc": "ct0081_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "faw"
+                  "gk": "faw",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9258,7 +9291,10 @@
                   "c": "tp4_cpa_site",
                   "t": "Belgee",
                   "gc": "ct0026_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "belgee"
+                  "gk": "belgee",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9269,7 +9305,10 @@
                   "c": "tp4_cpa_site",
                   "t": "KIA",
                   "gc": "ct0164_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "kia"
+                  "gk": "kia",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9280,7 +9319,10 @@
                   "c": "tp4_cpc_site",
                   "t": "Hyundai",
                   "gc": "ct0121_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "hyundai"
+                  "gk": "hyundai",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9291,7 +9333,10 @@
                   "c": "tp4_cpa_site",
                   "t": "SWM",
                   "gc": "ct0229_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "swm"
+                  "gk": "swm",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9302,7 +9347,10 @@
                   "c": "tp4_cpc_site",
                   "t": "Chery",
                   "gc": "ct0044_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "chery"
+                  "gk": "chery",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9313,7 +9361,10 @@
                   "c": "tp4_cpa_site",
                   "t": "GAC",
                   "gc": "ct0089_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "gac"
+                  "gk": "gac",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9324,7 +9375,10 @@
                   "c": "tp4_cpa_site",
                   "t": "Omoda",
                   "gc": "ct0204_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "omoda"
+                  "gk": "omoda",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9335,7 +9389,10 @@
                   "c": "tp4_cpa_site",
                   "t": "Exeed",
                   "gc": "ct0076_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "exeed"
+                  "gk": "exeed",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9346,7 +9403,10 @@
                   "c": "tp4_cpa_site",
                   "t": "Skoda",
                   "gc": "ct0215_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "skoda"
+                  "gk": "skoda",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9357,7 +9417,10 @@
                   "c": "tp4_cpa_site",
                   "t": "Dongfeng",
                   "gc": "ct0067_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "dongfeng"
+                  "gk": "dongfeng",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9368,7 +9431,10 @@
                   "c": "tp4_cpa_site",
                   "t": "Jac",
                   "gc": "ct0130_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "jac"
+                  "gk": "jac",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9379,7 +9445,10 @@
                   "c": "tp4_cpa_site",
                   "t": "Jaecoo",
                   "gc": "ct0140_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "jaecoo"
+                  "gk": "jaecoo",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9390,7 +9459,10 @@
                   "c": "tp4_cpc_site",
                   "t": "Nissan",
                   "gc": "ct0199_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "nissan"
+                  "gk": "nissan",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9401,7 +9473,10 @@
                   "c": "tp4_cpa_site",
                   "t": "Livan",
                   "gc": "ct0191_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "livan"
+                  "gk": "livan",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9412,7 +9487,10 @@
                   "c": "tp4_cpa_site",
                   "t": "Volkswagen",
                   "gc": "ct0238_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "volkswagen"
+                  "gk": "volkswagen",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9423,7 +9501,10 @@
                   "c": "tp4_cpa_site",
                   "t": "Tenet",
                   "gc": "ct0300_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "tenet"
+                  "gk": "tenet",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9434,7 +9515,10 @@
                   "c": "tp4_cpa_site",
                   "t": "KGM",
                   "gc": "ct0159_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "kgm"
+                  "gk": "kgm",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9445,7 +9529,10 @@
                   "c": "tp4_cpa_site",
                   "t": "UAZ",
                   "gc": "ct0256_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "uaz"
+                  "gk": "uaz",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9456,7 +9543,10 @@
                   "c": "tp4_cpa_site",
                   "t": "MG",
                   "gc": "ct0195_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "mg"
+                  "gk": "mg",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9467,7 +9557,10 @@
                   "c": "tp4_cpa_site",
                   "t": "Tank",
                   "gc": "ct0233_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "tank"
+                  "gk": "tank",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             },
@@ -9478,7 +9571,10 @@
                   "c": "tp4_cpa_site",
                   "t": "Soueast",
                   "gc": "ct0226_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "soueast"
+                  "gk": "soueast",
+                  "camp_names": [
+                    "Поиск + Динамика - Марка - КС"
+                  ]
                 }
               ]
             }
@@ -40324,7 +40420,9 @@
                     "avceci_bucars-72-nkz_ete_product-search_cpc_victory_bu_sv2 — ДО name",
                     "avceci_bucars-72-nkz_ete_product-search_cpc_victory_bu_sv2 — ДО used"
                   ],
-                  "camp_names": []
+                  "camp_names": [
+                    "Поиск + Динамика - Общая - КС"
+                  ]
                 }
               ]
             },
