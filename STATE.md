@@ -3,7 +3,626 @@
 > Читать ПЕРВЫМ в начале каждой сессии. Обновлять ПОСЛЕДНИМ перед выходом.
 > Ошибки создания РК: сигнатуры/решения/что-помогло — **ERRORS_JOURNAL.md** (обязателен к заполнению при фиксах).
 
-> Архив сессий старше 3 дней — **STATE_ARCHIVE.md** (ротация 2026-07-19: перенесены сессии 07-15, 07-14, 07-13). Правило ротации — см. CLAUDE.md.
+> Архив сессий старше 3 дней — **STATE_ARCHIVE.md** (ротация 2026-07-19 (2): перенесены сессии 07-16 и старше). Правило ротации — см. CLAUDE.md.
+
+## Сессия 2026-07-20 — безымянные кампании + счётчик «Создание РК» tp3/tp7 — ЗАВЕРШЕНО
+
+**Задача 1 (данные):** 7 кампаний имели пустой `camp_names` → UI рисовал заглушку «Кампания «Марки»».
+В гугл-таблице их не было (в исходнике пришли без имени). Заполнил по конвенции слепка, режим (КС/АТ)
+определён по РЕАЛЬНОМУ контенту пака (имя группы врало: terehov-пробел 176 ключей→КС; karavaev — ключей
+нет→Аудитории+АТ). Правки: terehov(32 tp4 Марка+1), karavaev(1), kryuchkova(2), piterkina(2).
+Коммиты `84245e5` (nested) / `c80147f` (parent), md5 LXC101 ✅. dmp/gen_ses не трогал (спец/шаблон).
+
+**Задача 2 (счётчик создания):** «Создание РК» показывал tp3=108 камп. Root-cause (direct_investigator,
+отчёт `.claude/sdd/creation-vs-slepki-divergence-report.md`): **единый планировщик уже есть —
+`create_set_structure.py:137 structure_to_campaigns`**, его зовут и `/set_plan`, и реальное создание →
+создаётся ВСЕГДА верно (доказал на LXC101: terehov/Мультибренд tp3=2, tp4=«Поиск+Динамика-Марка-КС»).
+Врал только preview-бейдж: tp3 падал в generic-else (группы×стратегии). Фикс `bf8d567`: tp3 считает
+по camp_names + убран ×фиды (backend: 1 РК на camp_name, фиды группами внутри). Проверил `direct_verifier`
+✅, backend 0 строк diff.
+**ОТКАТ tp7 `1a74e87`:** ошибочно схлопнул tp7; backend реально ×оплата×фиды (`create_set_plan.py:1072`
+«1 камп на группа×оплата»; `:438-462` fan-out по профильным фидам) — зависит от «под стиль сайта»(no_cpa)
+и профильных фидов. Вернул пару cpc+cpa. Итог: tp3=camp_names без ×фиды; tp7=группы×оплата×фиды; md5 ✅.
+automation.js — статика, рестарт не нужен (Ctrl+F5 на странице).
+
+## Сессия 2026-07-20 — content-editor rename bulk + HAR parity — ЗАДЕПЛОЕНО
+
+**Контекст:** сервис `/direct/automation/content`, вкладки для дневных массовых правок:
+заголовки, тексты, быстрые ссылки, уточнения, ссылки, изображения, названия кампаний/групп.
+Пользователь попросил добавить массовую замену фрагмента во вкладку «Смена названий» как во
+вкладке «Заголовки» и проверить HAR `direct.yandex.ru.68har.har`/`69har.har` по Grid rename.
+
+**Сделано:** `direct/content_jobs.py` вынес общие helpers очереди из `routes_content_editor.py`
+без смены публичных API. Rename frontend вынесен из монолитного `content_editor.js` в
+`static/direct/content_renames.js`; шаблон подключает новый script перед core JS. Во вкладке
+«Смена названий» добавлены «Показать превью» и «Заменить всё»: строится preview `было → стало`
+по активному подразделу (кампании или группы), затем одним `campaign_rename` job отправляется
+batch payload в общую `direct_automation.content_jobs` очередь. После завершения job UI обновляет
+локальные имена и сбрасывает preview.
+
+**HAR-фикс:** `GridClient.set_campaign_names` больше не использует `_narrow_campaign_base`;
+по HAR веб-морда Директа делает full-object RMW через `CampaignsEditData` → `UpdateCampaigns`,
+поэтому теперь читаем полный unifiedCampaign payload, меняем только `name` и сохраняем
+`biddingStategyWithPlatforms`/strategy/platforms/minus/bidModifiers и остальные поля. Это меняет
+диагноз старой ошибки: стабильная `Внутренняя ошибка сервера, reqId=...` при rename была
+похожа не на чистый баг Яндекса, а на непаритетный payload нашего narrow writer.
+Для групп `GroupsForEditLite` теперь читает `retargetingConditionId`/`retargetingId`, а
+`build_update_item` сохраняет `retargetings: [{retCondId, id}]` и `retargetingCondition: null`;
+группы с ретаргетингами больше не пропускаются. Стоп остаётся только на `bidModifiers`.
+
+**Code review:** остаточный монолит есть: `static/direct/content_editor.js` всё ещё ~4.4k строк,
+`routes_content_editor.py` содержит крупные `_load_account`, `_do_replace`,
+`register_content_editor_routes`, а `content_images_routes.py::_rsya_inventory` тоже большой.
+Сегодня безопасно отделены job helpers и rename JS. Следующий распил без смены поведения:
+`content_loaders.py` для `_load_account`/v5 pagination, `content_replace.py` для `_do_replace`,
+`content_queue_routes.py` для job endpoints, затем отдельные JS-модули по links/sitelinks/images.
+
+**Проверено локально:** `.venv/bin/python -m py_compile` по изменённым Python-модулям,
+`node --check` для `content_editor.js` и `content_renames.js`, `git diff --check`,
+pytest `direct/tests/test_routes.py direct/tests/test_content_images_transport_split.py
+direct/tests/test_architecture_boundaries.py` — `78 passed`.
+
+**Deploy/evidence:** Mac↔LXC101 md5 совпал для 7 изменённых runtime-файлов; remote
+`py_compile` и remote `node --check` OK. 2026-07-20 16:02 +05 перезапущены и active:
+`direct-content.service` PID `1334175`, `direct-content-worker.service` PID `1334174`.
+HTTP-smoke: локально `:5021/direct/automation/content` → `302 /login`,
+публично `https://seoadvanced.ru/direct/automation/content` → `302 /login`,
+`/static/direct/content_renames.js` → `200` size `13490`; `/direct/api/content-editor/jobs`
+без сессии → `401`.
+
+**UI-fix 16:13 +05:** панель массовой замены названий сначала была под `cern-list`, поэтому
+на вкладке «Группы» уезжала ниже тысяч строк. Перенесена сразу под toolbar, перед списком.
+Mac↔LXC md5 шаблона совпал, `node --check` OK, `direct-content.service` перезапущен и active;
+public smoke после короткого окна рестарта: `/direct/automation/content` → `302 /login`.
+
+**UI-fix 16:19 +05:** во вкладку «Смена названий» добавлен выбор кампаний как во вкладке
+«Смена изображений»: левая колонка `ceimg-side` с поиском, чекбоксами, «Выбрать всё»,
+«Снять всё», «Применить фильтр», «Сбросить». Пустой выбор = весь аккаунт. Фильтр ограничивает
+список кампаний, перечитывает группы только по выбранным campaign_ids и ограничивает массовую
+замену активным фильтром. Mac↔LXC md5 для `content_editor.html` и `content_renames.js`
+совпал; local+remote `node --check` OK; `direct-content.service` перезапущен и active.
+**UI-fix 16:21 +05:** выбор кампаний теперь виден сразу до загрузки аккаунта, как в «Смена
+изображений», а не скрывается до клика «Загрузить кампании». Правая колонка показывает пустое
+состояние «Введите аккаунт...». `direct-content.service` active; public smoke
+`/direct/automation/content?section=renames` → `302 /login`, `content_renames.js` → `200`.
+**UI-fix 16:32 +05:** во вкладке «Смена названий» заменён отдельный простой input логина на
+такой же визуальный блок выбора аккаунта, как во «Смене изображений»: умный поиск, 5 фильтров,
+bulk-кнопки, счётчик и grid чекбоксов внутри `panel-renames`. `ceRenamesLoad()` берёт логин из
+этого picker (точный логин в поиске или первый отмеченный аккаунт), старый `#cern-login` удалён.
+Mac↔LXC md5 совпал, local+remote `node --check` OK, `direct-content.service` перезапущен и active;
+Семён визуально проверил вкладку — стало верно.
+**UI-fix 16:35 +05:** нижняя часть вкладки «Смена названий» возвращена к прежней одно-card
+структуре: боковая колонка фильтра кампаний (`cern-workspace`/`cern-filter-wrap`/`cern-camps-*`)
+убрана из HTML. Верхний picker аккаунтов оставлен. Mac↔LXC md5 совпал; local+remote
+`node --check` OK; `direct-content.service` restarted/active, повторный public smoke после
+прогрева `/direct/automation/content?section=renames` → `302 /login`.
+**Queue/UI-fix 17:15 +05:** правый mini-stack теперь восстанавливает активные copy-job с сервера
+через `/direct/api/copy_queue`, а не только из локального `CECOPY_JOB_ID`; `claimed` отображается
+как активный запуск, copy-карточки учитываются в заголовке/очистке stack, подключён cache-bust
+`20260720_queue_copy_v3`. Copy-card получил прогресс `created/total`, таймер, лог и чеклист.
+Счётчик `в очереди — перед вами N` для content-job теперь считает global write lock и
+`direct_automation_jobs` со статусами `queued/claimed`, а не только локальные content_jobs.
+Mac↔LXC md5 по 5 runtime-файлам совпал; local+remote `py_compile`/`node --check` OK; pytest
+`direct/tests/test_routes.py -k 'rename or set_campaign_names or copy'` — `4 passed`.
+Перезапущен только `direct-content.service` (copy-worker не трогался), `direct-content.service` и
+`direct-copy.service` active; static `content_copy.js?v=20260720_queue_copy_v3` → `200`.
+Отдельный `direct_verifier` принял правку. На момент проверки active copy не было (`copy_active=0`),
+поэтому reload active-copy визуально не воспроизводился.
+**Live rename check 17:15 +05:** по последним зелёным job из скрина проверено не UI, а Direct API:
+`ce_5694d3711f25` — 5/5 кампаний совпали с payload; `ce_c178da697364` — 150/150 групп совпали,
+mismatch=0, api_errors=0. Старые job 16:37 и раньше были с архивными объектами/старым кодом и
+остались ошибочными в истории, но к двум зелёным карточкам не относятся.
+**UI-fix 17:27 +05:** на вкладке «Смена ссылки» убрана тихая автозагрузка `/links` при входе
+в section: `ceLinksTabOpen()` теперь показывает кэш/пустое состояние, а чтение ссылок запускает
+только явный клик «Показать» (`ceShowClick -> ceLinksLoad`). Во вкладке «Смена названий» picker
+аккаунтов теперь подхватывает уже выбранный/загруженный общий аккаунт (`ceExactLoginMatch`,
+`ceTargetLogins`, `CE.login`), если в rename-picker ещё ничего не введено; строка поиска и кнопка
+«Загрузить кампании» выровнены через `cern-account-line`. Cache-bust:
+`20260720_renames_account_v1`. Проверено: local+remote `node --check`, `git diff --check`,
+Mac↔LXC md5 по JS/CSS/HTML совпал, static JS/CSS отдаются 200 и содержат маркеры, page smoke
+`/direct/automation/content?section=renames` → `302 /login`, `direct-content.service` и
+`direct-copy.service` active. Browser-control недоступен в этой среде (`agent.browsers.list()=[]`),
+поэтому визуальный скрин в браузере не снят.
+
+## Сессия 2026-07-20 — общий Direct write-gate content/copy — ЗАДЕПЛОЕНО
+
+**Контекст:** дневное копирование аккаунта и массовые правки контента
+(`/direct/automation/content`: заголовки, тексты, быстрые ссылки, уточнения, ссылки,
+изображения, названия) дергают общий Direct API/куки-слой и могли идти параллельно из разных
+очередей. Ночную сверку цен оставляем отдельной.
+
+**Сделано:** добавлен `direct/write_gate.py` с lease-таблицей Victory
+`public.direct_api_write_locks` и TTL `DIRECT_WRITE_GATE_TTL_SECONDS` (default 4h).
+`content_worker.py` теперь перед переводом content-job в `running` берет общий lock по агентству,
+пропускает занятое агентство и пробует следующие queued jobs; lock снимается в `finally` и при
+ошибках claim. `queue_server.py` сохранил старый `direct_agency_active`, но после него берет тот же
+`write_gate` для `copy_campaigns` и create/delete/edit jobs, поэтому content и copy/create больше
+не стартуют одновременно на одном агентстве; разные агентства параллелятся. Повторный acquire
+того же `job_id` запрещён до истечения lease, чтобы watchdog не запустил второй поток поверх
+живого зависшего. Для copy/create/slepki добавлена чистка `direct_api_write_locks` по
+`direct_automation_jobs.status NOT IN ('running','claimed','queued')`, чтобы после crash/recover
+не ждать TTL 4h.
+
+**Документация:** `CONTENT_EDITOR.md` уточняет новый gate и то, что `direct_price_check_jobs`
+ночной сверки цен им не ограничивается.
+
+**Проверено локально:** `py_compile` на Python 3.12 для `write_gate.py`, `content_worker.py`,
+`queue_server.py`; `git diff --check` для затронутых файлов; `.venv/bin/python -m pytest`
+`direct/tests/test_architecture_boundaries.py direct/tests/test_copy_integration_guards.py` —
+`19 passed`.
+
+**Deploy/evidence:** перед рестартом активных очередей не было:
+`content_jobs=[]`, `direct_automation_jobs=[]`, `direct_deferred_creates=[]`,
+`direct_delayed_repairs=[]`. Mac↔LXC101 sha256 совпал для `write_gate.py`,
+`content_worker.py`, `queue_server.py`, `CONTENT_EDITOR.md`, `STATE.md`; remote
+`py_compile` OK. 2026-07-20 15:39 +05 перезапущены и active:
+`direct-content.service` PID `1313622`, `direct-content-worker.service` PID `1313623`,
+`direct-copy.service` PID `1313624`, `direct-create.service` PID `1313625`,
+`direct-create-worker.service` PID `1313644`, `direct-slepki-worker.service` PID `1313641`.
+Nginx smoke: `/direct/automation/content`, `/direct/automation/copy`,
+`/direct/automation` → `302 /login`. `public.direct_api_write_locks` создана; DB-only smoke:
+первый acquire `True`, второй по тому же agency `False`, после release снова `True`;
+после smoke `write_locks_count=0`. После рестарта активные очереди всё ещё пустые.
+
+**Fix 16:52 +05 (инцидент очереди content/copy):** выяснилось, что per-agency lock недостаточен:
+copy держал `agency:victorylotsofads1`, а content-rename шел под `agency:y-direct-victory`,
+поэтому копирование и переименование могли одновременно дергать один Direct/Grid слой. Gate
+переведён на единый ресурс `direct-write:global`; старые `agency:*` locks учитываются при
+acquire и освобождаются при release для мягкого перехода. Smoke на Victory: первый acquire
+`True`, второй с другой agency `False`, после release третий `True`; после smoke locks=0.
+
+**Fix 16:52 +05 (архивные названия):** архивные кампании/группы не редактируем и даже не
+пытаемся отправлять в Grid. `/renames/campaigns` запрашивает только `States=[ON,OFF,SUSPENDED]`,
+`/renames/apply_async` повторно проверяет `campaigns.get(FieldNames=[Id,State])` по выбранным
+campaign_ids и отсекает `ARCHIVED`; нижний guard в `GridClient._narrow_bases` пропускает payload
+с `_archived_campaign`. Добавлен pytest `test_grid_set_campaign_names_skips_archived_campaign`.
+
+**Fix 16:52 +05 (очередь, колонка пользователь):** copy-задачи теперь пишут `created_by` в
+body (`session.username` для UI, `api` для внешнего API), `/direct/api/copy_queue` возвращает
+`username`, а общий список `ceQueueLoad()` больше не ставит для copy жесткий `—`. Старые copy rows
+пользователя восстановить нельзя: в их `body` нет ни `created_by`, ни `_session_snapshot`.
+Mac↔LXC md5 совпал; local+remote `py_compile` OK; `node --check` OK; pytest
+`direct/tests/test_routes.py -k 'rename or set_campaign_names or copy'` — `4 passed`.
+Перезапущены `direct-copy.service` и `direct-content.service`; все 6 direct write/content
+сервисов active, active queues=0, active locks=0.
+
+## Сессия 2026-07-20 — tone-voice low score по всем слепкам — ЗАДЕПЛОЕНО
+
+**Контекст:** `/direct/automation?tab=create` показывал низкий тон-войс не только для
+`Гордеева/Монобренд`, а для разных слепков на общем логине `porg-ozge4ntu`.
+
+**Сделано:** `check_tone_of_voice.py` больше не читает весь аккаунт при пустом `campaign_ids`;
+ids рекурсивно берутся из result и child jobs (`_resume_of`/`_requeue_of`), а no-id job возвращает
+`no content`. В prompt/corpus-фильтре и общих fallback-пулах генерации (`ai_agents.py`,
+`create_content.py`, `create_set_assets.py`, `text_gen.py`, `automation_runtime.py`,
+`create_set_feed_builders.py`, `create_set_master_product.py`) убраны/фильтруются generic-маркеры
+`Кредит от 15 банков`, любой `15 банков`, `Купить новое авто в кредит`, `Новые авто в кредит`,
+`Рассрочка`.
+
+**Проверено:** локальный и remote `py_compile` OK; Mac↔LXC101 sha256 совпали по 8 изменённым
+Python-файлам; `direct-create.service`, `direct-create-worker.service`,
+`tone-of-voice-watcher.service` перезапущены и active. Dry-run `30f980bbb63b` теперь даёт
+`no content` с note `не проверяю весь аккаунт`; dry-run `37fd8ad1c62f` проверяет 22 кампании
+из child jobs, не весь аккаунт. Отдельный `direct_verifier` после доработок принял правку:
+exact generic-маркеры отсутствуют в исполняемых fallback-строках локально и на LXC101.
+
+**Осталось:** старые live-кампании, где generic-тексты уже созданы в Direct, кодовая правка не
+переписывает автоматически: пример `37fd8ad1c62f` всё ещё `score 30/100 (mixed)` по фактическому
+старому контенту. Для них нужен отдельный repair/пересоздание контента.
+
+## Сессия 2026-07-20 — Direct copy API/HAR review для интеграции — ЗАДЕПЛОЕНО
+
+**Контекст:** проверка сервиса `https://seoadvanced.ru/direct/automation/copy` под внешнюю
+интеграцию и HAR `direct.yandex.ru.67har.har` для 1:1 Grid-формы. Живой проблемный кейс —
+job `4c0c992cf213`, target `porg-lzjk6p5m`, 7 draft РК с weekly `OPTIMIZE_CLICKS`.
+
+**Сделано:**
+- `copy_request.py`: общие парсеры `parse_feed_map`/`parse_image_hashes`; строгий public API
+  режим для `geo_region_ids` (`400 INVALID_GEO` на mixed/non-integer при `geo_mode=change`).
+- `copy_api.py`: внешний `/api/v1/copy/start` нормализует `feed_map`, `image_hashes`,
+  `geo_region_ids` до постановки job и до idempotency hash; `geo_region_ids` при `keep` не
+  попадает в job; `diff_count` считает `copy_verify.results`.
+- `copy_engine.py`/`copy_feeds.py`: явный `feed_map` для `mode=other` имеет приоритет над
+  auto-match; target feed ownership валидируется до skip/preflight/upload; cleanup перенесён
+  после source pull/preflight/geo/feed validation, но до upload.
+- `copy_verify_source.py`: Direct dict/list shape для `ExcludedSites*` нормализован; пустая
+  Grid adaptive-row больше не маскирует v5 `TextAd` fallback.
+- `grid_finalize.py`: HAR-backed weekly `OPTIMIZE_CLICKS` пишется как
+  `AUTOBUDGET_AVG_CLICK` + `avgBid` + `sum` + `budgetType=WEEKLY`; если Grid read отдаёт
+  `avgBid=None`, используется UI-дефолт `100`. `_unsupported_strategy` оставлен только для
+  clicks без лимита/avgBid/бюджета.
+
+**API-вызовы/маршруты:** сверены все frontend fetch-вызовы copy-страницы: 14/16 имеют роуты
+в `direct-copy.service` (`/direct/api/copy_*`), 2 исключения намеренные и уходят в основной
+Direct service (`/direct/api/accounts`, `/direct/api/goal_for_counter`). Public API:
+`/api/v1/copy/{start,status,health,campaigns}` зарегистрирован в `copy_main.py`.
+
+**Проверено:** локально `py_compile` OK по изменённым модулям; pytest
+`direct/tests/test_copy_integration_guards.py` — `15 passed`; `git diff --check` OK.
+Mac↔LXC101 sha256 совпали по `copy_api.py`, `copy_request.py`, `grid_finalize.py`,
+`tests/test_copy_integration_guards.py`; remote `py_compile` OK. `direct-copy.service`
+перезапущен и active/running (`MainPID=1291432`). nginx smoke:
+`/direct/automation/copy` → 302 `/login`; `/api/v1/copy/health` без ключа →
+`401 AUTH_FAILED`; OPTIONS `/api/v1/copy/start` → 200. Read-only live probe по 7 weekly
+campaign ids показал `unsupported=-`, `strategyName=AUTOBUDGET_AVG_CLICK`, `avgBid=100`,
+`sum=300`, `budgetType=WEEKLY`. Отдельные verifier-субагенты приняли правки; найденный
+ими `geo_region_ids` defect закрыт.
+
+**Осталось:** live `UpdateCampaigns` на текущие 7 draft РК и/или новый copy-run НЕ запускались.
+Перед массовым ремонтом безопасный шаг — controlled write на 1 draft РК, read-after-write
+стратегии, затем остальные 6/новый прогон. Remote pytest на LXC не запускается: в `/root/venv`
+нет `pytest`.
+
+## Сессия 2026-07-19/20 — content images: Grid archive shortfall — ЗАДЕПЛОЕНО
+
+**Контекст:** job `ce_1809d73d5dd9` на `/direct/automation/content` корректно заменила UAC-картинки,
+но Grid `TextAd` выглядел как недозамена: из 450 отправленных обновились 45, старый хэш остался
+на 405 объявлениях. Live-retry показал: 361 были в архивных кампаниях, оставшиеся 44 в
+`705785854`/`705785910` — ad-level архив (`BannerDefectIds.Gen.CANNOT_UPDATE_ARCHIVED_AD`), а не
+дефект STOPPED/товарных кампаний.
+
+**Сделано:** `_rsya_inventory` исключает архивные кампании из write-set; `UpdateTextAds` и
+`UpdateAdaptiveTextAds` режутся на чанки `_GRID_MUTATION_CHUNK=50` и пишут полный
+`failed_ad_ids`; чистый `CANNOT_UPDATE_ARCHIVED_AD` в `_replace_rsya_images` считается
+`ads_archived`, а не `errors`. В `CONTENT_EDITOR.md`, `DOD.md`, `ERRORS_JOURNAL.md` закреплено:
+архивные кампании/объявления не изменяем, старый хэш в архиве после замены — ожидаемый остаток.
+
+**Проверено:** локальный `py_compile` OK по `content_images_routes.py`, `grid_finalize.py`,
+`tests/test_content_images_transport_split.py`; локальный pytest
+`tests/test_content_images_transport_split.py` — `28 passed` (включая mixed
+`CANNOT_UPDATE_ARCHIVED_AD` + другая Grid-ошибка: не прячется как архив). Mac↔LXC sha256 совпал
+по изменённым коду/тесту/докам; remote `py_compile` OK; `direct-content.service` и
+`direct-content-worker.service` active/running после restart (`MainPID=1061196/1061197`).
+Remote pytest не запускался: в `/root/venv` нет модуля `pytest`. Отдельный read-only
+`direct_verifier` был запущен; найденный им mixed-error риск исправлен и покрыт тестом.
+
+## Сессия 2026-07-19/20 — site-type voice overrides + Павлов/Мультибренд — ЗАДЕПЛОЕНО
+
+**Сделано:** проверены БУ-конфликты по слепкам; общий generation/tone-check путь теперь `site_type`-aware
+для всех слепков через `system_for_site()`, `signature_for()`, `filtered_ads_for_site()`,
+`filtered_promo_for_site()`. Отдельные overrides добавлены для найденных конфликтных пар:
+`gordeeva/С пробегом`, `kuderko/С пробегом`, `tumashenko/С пробегом`; `terehov` без system override,
+но promo-фильтр чистит `Гос. поддержка`. Ранее добавленный `pavlov/С пробегом` сохранён.
+
+**Павлов/Мультибренд:** live job `34524e13b18a` со score 40 прочитан: 163/175 заголовков были generic
+`Кредит от 15 банков`, 42 `Рассрочка`, 27 `Господдержка`; причина — weak/duplicated
+`direct_slepok_content` + generic tp6/tp7 fallback. Добавлен сильный `pavlov/Мультибренд` signature
+override и pavlov-specific tp6/tp7 fallback-пулы (`убрали наценку`, выгода в рублях, `одобрение 98%`,
+`КАСКО`, `3 платежа`).
+
+**Проверено:** локальный и remote `py_compile` OK по `ai_agents.py`, `create_set_master_product.py`,
+`tools/check_tone_of_voice.py`; Mac↔LXC sha совпали по коду и `ERRORS_JOURNAL.md`; remote smoke:
+для `gordeeva/kuderko/pavlov/tumashenko/terehov` на `С пробегом` `system_conflict=False`,
+`promo_conflict=False`; `pavlov/Мультибренд` override есть в prompt и tone-reference. Сервисы
+`direct-create`, `direct-create-worker`, `direct-content`, `direct-content-worker` active/running
+после restart. Read-only verifier: PASS, findings нет.
+
+**Ограничение:** новый LLM score не подтверждён новым созданием: старый job показывает старый контент,
+а локальный OpenRouter-судья недоступен. Нужен следующий live tone-check после новой генерации.
+
+## Сессия 2026-07-19/20 — copy-service: честный чеклист Проверки + fastlinks/CTA — ЗАДЕПЛОЕНО
+
+**Контекст:** живой copy-прогон `ed2bbb3f67a6` (`porg-mjyh6hjv → porg-lzjk6p5m`, 23 кампании)
+в UI показывал зелёную общую проверку, но чеклист содержал `?`/`—`; быстрые ссылки должны
+копироваться/проверяться 1в1 независимо от уровня привязки (campaign или ad).
+
+**Фиксы verify/UI:**
+- `copy_verify_source.py`/`copy_verify_target.py`/`copy_verify_diff.py`: быстрые ссылки проверяются
+  как общий факт + отдельно campaign-level и ad-level count; target v5 читает `TextAd` и
+  `DynamicTextAd` `SitelinkSetId`.
+- `copy_verify_target.py`: при отсутствии кэша сам дочитывает target `adaptive_ads_for_update` по
+  `id_maps["ads"]`, поэтому `Видео` и `Кнопки (CTA)` больше не висят `?`, если Grid реально читается.
+- `copy_common.js`: строка `Проверка` в карточке очереди теперь берёт приоритет из детального
+`copy_verify` (`mismatch/missing/error` → не зелёная), а не только из `live_verification`.
+- `copy_engine.py`: ожидание оседания быстрых ссылок учитывает `DynamicTextAd`, не только `TextAd`.
+- `copy_verify_utils.py`/`copy_verify_source.py`/`copy_verify_target.py`/`copy_verify_diff.py`:
+  добавлена 1в1-сверка `FeedFilterConditions/feedFilter` для товарных и каталожных объявлений:
+  `shopping_filter_count`, `listing_filter_count`, `shopping_filter_signature`,
+  `listing_filter_signature`. Target читает сами фильтры через Grid `GdShoppingAd/GdListingAd`,
+  v5 остаётся только count fallback.
+- `copy_verify_utils.py`/`copy_verify_source.py`/`copy_verify_target.py`/`copy_verify_diff.py`:
+  закрыт D10 `audiences`: source и target читают Grid `GdRetargeting.retargetingCondition`
+  по группам, `GdGridOfferRetargeting` фида игнорируется, diff сравнивает signatures через
+  `id_maps["adgroups"]`. При сбое Grid чтения остаётся fail-safe `UNREADABLE`, а не ложный OK.
+
+**Фиксы будущего copy-пайплайна CTA:**
+- `create_set_feeds._grid_update_adaptive_ads/_grid_set_ad_prices`: добавлены флаги
+  `apply_combo_button`/`preserve_button` с прежним default для create-set.
+- `copy_creative_steps.py`/`copy_price_steps.py`: copy отключает авто-добавление стандартной
+  create-set кнопки; source CTA переносится через RMW, href берётся из target-объявления, чтобы
+  не тащить source-домен. Если source CTA нет, target CTA не должна добавляться.
+
+**Документация:** `docs/UI_MAP.md` уточнён: при изменении `copy_verify`/postprocess обновлять
+`_COPY_CHECKLIST`, `_COPY_CHANGELIST`, `_CV_ITEM_DIM`. `COPY_INDEX.md` обновлён: site monitoring
+и minus places сверяются, disabledPlaces копируются 1в1, baseline-описание удалено; D13/D14 теперь
+сверяемые при доступном Grid. Пункт UI `Фильтры товарных и каталожных объявлений` теперь покрывает
+и количество объявлений, и сигнатуры фильтров D19c/D19d.
+
+**Проверка текущей job `ed2bbb3f67a6` после live-ремонта:** `done`, `created=23/23`, `failed=0`.
+Исправлено в целевом аккаунте `porg-lzjk6p5m`: очищены лишние CTA у 86 adaptive ads, добавлены
+70 недостающих `ListingAd`, удалены 2 лишних `ShoppingAd`, проставлены 68 непустых
+`ShoppingAd.feedFilter` из source. Финальная `copy_verify` записана в БД:
+`ok=490, mismatch=0, missing=0, unreadable=0`; `button_cta=23/23 ok`,
+`shopping_filter_count=19/19 ok`, `listing_filter_count=19/19 ok`,
+`shopping_filter_signature=19/19 ok`, `listing_filter_signature=19/19 ok`.
+`audiences=23/23 ok` (в этом прогоне реальных `GdRetargeting`-аудиторий нет с обеих сторон;
+оферный ретаргетинг фида не считается аудиторией).
+
+**Deploy/evidence:** LXC101 `/opt/scripts`; remote `py_compile` OK по изменённым Python-модулям,
+remote `node --check home/seoadvanced/static/direct/copy_common.js` OK; `direct-copy.service`
+active после restart, PID `1061267`. `templates/direct/copy.html` получил cache-bust
+`?v=20260720_copy_filter_verify` для обновления `copy_common.js` в браузере. Mac↔LXC sha256 совпал
+для изменённых verify/JS/docs/direct_copy/STATE файлов. Post-review guard в `copy_common.js`: строка
+создания `created/expected` читает `live_verification` только если он есть.
+
+## Сессия 2026-07-19/20 — Павлов/С пробегом: низкий tone-score из-за site_type mismatch — ЗАДЕПЛОЕНО
+
+**Симптом:** `porg-ozge4ntu` jobs `b90561eebb92`/`58e889fc0c02`/`5f890155b968` (`pavlov`, `С пробегом`)
+получали tone-score 35/45/25; контент выглядел шаблонным.
+**Корень:** Павлов был описан как new-auto слепок без `С пробегом` в `site_fit`; БУ-генерация запрещала
+new-auto лексику, но no-brand подсказка всё ещё говорила «новые авто», а tone-check сравнивал БУ-контент
+с общим new-auto эталоном Павлова.
+**Фикс:** `ai_agents_data.py` + `ai_agents.py` + `tools/check_tone_of_voice.py` + `tools/tone_baseline.py`:
+site-type-aware `signature_for`/`filtered_ads_for_site`, БУ-safe голос Павлова, БУ-продуктовая подсказка,
+tone-check строит эталон с `site_type`.
+**Проверено:** Mac↔LXC sha256 совпал по 4 файлам; remote `py_compile` OK; remote sanity:
+`site_fit_has_bu=True`, `voice_ref_has_override=True`, `positive_new_auto_instruction=False`,
+`positive_bu_instruction=True`. Сервисы `direct-create`, `direct-create-worker`, `direct-content`,
+`direct-content-worker` active; активная job `34524e13b18a` завершилась `done created=24 failed=0`.
+**Ограничение:** новый LLM score не посчитан локально — OpenRouter с Mac недоступен; старые 3 job сейчас
+не перечитываются (`v5=0, grid=0`, черновики удалены/недоступны). Нужен следующий live tone-check.
+
+## Сессия 2026-07-19/20 — цель Семёна «живой прогон по всем слепкам до 0 ошибок» — В РАБОТЕ
+
+**Задача:** создавать кампании через сервис на `porg-ozge4ntu` (метрика `109986170`) по слепку pavlov
+по всем типам сайта; каждый прогон — снос черновиков → создание → проверка ошибок живьём → если
+дефект, чинить КОД (не кампании) → повторять, пока не будет ошибок. Один фид, без CPA-набора.
+
+**Дефекты Семёна на живых черновиках (Павлов/«С пробегом», джоба `9b2e040edf67`) — все закрыты,
+подтверждено ЖИВЫМ чтением кабинета (не только отчётом верификатора), 3 прогона до чистоты:**
+- якорь `#slN` в Href sitelinks → снимается перед отправкой в Grid/v5, не в сборке (риск дублей href
+  проверен живьём — Grid принял одинаковые href, отказа нет);
+- лексика «новые авто» на Б/У-сайте (было и в tp6/tp7, и в tp1-tp5 адаптивах, и «Новые {brand}» в
+  шаблоне заголовка) — парный `_drop_new_car`/`_NEW_RE`, `site_type`-aware `_title_from_template`;
+- домен фида и дубль суффикса в имени (`carsklad-126.site`) — план кладёт `feed_label`, билд
+  ПОТРЕБЛЯЕТ его вместо пересчёта (`ecd1ae8`); tp3/tp5-cookie путь отдельно (`b956084`);
+- дубль сегмента в имени (`Мастер кампаний - Мастер кампаний`, потом `ТК - Автосалон - ТК -
+  Автосалон`) — не частные литералы, а ОБЩИЙ `dedup_name_segments` на склейке `group.name`+`item.t`
+  (root-cause: два независимых ярлыка одной позиции пересекаются в 220+ позициях по 11 слепкам);
+- **режим таргетинга tp6/tp7 выводился РЕГУЛЯРКОЙ ПО ИМЕНИ позиции** → «МК - Автотаргетинг» терял
+  416 ключей / 9 аудиторий молча. Решение Семёна: режим по СОДЕРЖИМОМУ структуры, имя не влияет,
+  нет ключей/аудиторий → `---autotargeting` по умолчанию. Задето 249 позиций (не 166 из первой
+  диагностики — нашёлся 3-й обрыв: чтение пака без `group=`-слага брало легаси-файл);
+- сверка `already_in_direct`-skip была ИНЕРТНА (id пропущенных кампаний не собирались) — оживлена,
+  но **первая попытка её оживить открывала ловушку авто-удаления живых кампаний** (`UAC_NOT_DRAFT`
+  → `_UAC_REPLACE_CODES` → `delete_uac` без гарда) — закрыто 3 независимых рубежа + report-only;
+- транспорт LLM: reasoning-модель (`deepseek-v4-flash`) писала ответ в `delta.reasoning`, код читал
+  только `delta.content` → ~50-67% пустых ответов на боевом промпте → тихий откат на статические
+  шаблоны (ИСТИННАЯ причина «шаблонности контента», не архитектура — путь уже был LLM-first). Фикс —
+  смена дефолтной модели на `deepseek-chat`, НЕ фан-аут на 3×14B (инстансов физически нет на M3,
+  `#OFF14B` в `ka_mlx.sh` — задание было ошибочным, исполнитель обоснованно отказался).
+
+**Регресс МЕЖДУ прогонами (важный урок):** параллельная сессия (`b35caf3`, легитимная задача
+переименования «Мастер кампаний»→«МК») заодно откатила несвязанную строку (`_strip_dom_plan`) в
+том же файле, приняв её за случайно попавший чужой код — домен вернулся в имена tp7. Найдено ТОЛЬКО
+живой проверкой кабинета между 2-м и 3-м прогонами (детект-скрипты на плановых/старых данных этого
+не ловят). Фикс `b864ee3` точечно вернул срез домена, переименование не тронул.
+
+**Урок процесса:** из 10 отправленных на ревью правок круга — 8 вернулись с `❌` минимум раз,
+некоторые по 2-3 круга. Ни одна не прошла с первого раза при этом верификатор джобы ВСЕГДА давал
+`0 errors` — зелёный отчёт джобы НЕ означает чистый кабинет, нужна независимая живая проверка.
+
+**Статус на паузу (Семён снял `/goal`):** Павлов/«С пробегом» — 3/3 прогона чисто, ЖИВЬЁМ по 9
+пунктам ✅. Павлов/«Мультибренд» — прогон идёт (см. job ниже). Дальше по плану: Павлов/«Монобренд»,
+затем остальные 16 слепков по очереди `_order.json`, тем же циклом.
+
+**Открытые вопросы Семёну (не блокируют прогон):** кап 200 ключей из 416 в tp6/7 — поднимать? метка
+«Автотаргетинг» в имени при реальном режиме «КС» после фикса режима — переименовывать ~249 живых
+кампаний (сломает `already_in_direct`, review-first) или оставить как исторический ярлык? приоритет
+«уникальность контента» vs «оценка on-voice» (судья давал 100 баллов за ДОСЛОВНОЕ совпадение с
+корпусом — конфликтует с задачей уникализации, не начата).
+
+**Известные некритичные хвосты:** `_count_audiences` в `uac_read.summarize_uac_detail` читает не то
+поле payload (`ca_retargeting_condition.goals` вместо `.condition_rules[].goals`) → недосчитывает
+интересы МК, на создание/верификатор не влияет; `NO_IMAGES_LIVE` не проверяет tp5 (гейт `tp==1`);
+`kryuchkova` Мультибренд/tp1 (204) и «С пробегом»/tp2 (146) — потолок `_v99` суффикса `_uniq`
+теоретически исчерпаем на очень больших бакетах (не введено этой сессией, не блокирует).
+
+## Сессия 2026-07-19 — slepki: страница вечно висела на лоадере (SyntaxError) — ЗАДЕПЛОЕНО
+
+**Симптом (жалоба Семёна):** `/direct/automation/slepki` вечно на «Загружаю структуру слепков…».
+Это было **не «долго», а насмерть**: не сменялся спиннер.
+**Причина:** в `templates/direct/slepki.html`, функция `_revalidateUiStructure`, `const sel` объявлен
+ДВАЖДЫ в одной области видимости (стр. 304 и 311) → `SyntaxError: Identifier 'sel' has already been
+declared`. Ошибка парсинга роняет ВЕСЬ inline-`<script>` (219–483), а там `ensureUiStructure` → функция
+не определяется → boot `ensureUiStructure(false,…).then(initSlepki)` падает ReferenceError → спиннер
+никогда не сменяется. **Проскочило потому, что прошлые сессии гоняли `node --check` только на внешнем
+`slepki_ui.js`, а не на inline-скрипте Jinja-шаблона.**
+**Фикс:** убрал второе `const sel` (`sel` уже объявлен выше в той же функции). Коммит `c1c53b4`.
+**Проверено:** `node --check` обоих inline-блоков шаблона = RC 0 (до фикса первый блок падал); md5
+Mac==LXC (`ccd1d713…`); `direct-slepki.service` restart → active. HTML отдаётся `no-store` → браузер
+берёт свежий сразу, версия-bump не нужен.
+
+## Сессия 2026-07-19 — copy speed-up: selected pull/cache/parallel fallback — ЗАДЕПЛОЕНО
+
+**Сделано:** ускорен `/direct/automation/copy` без изменения бизнес-семантики. `step_keywords`
+теперь шлёт v5 `keywords.add` batch=900 вместо 200. `direct_copy.phase_pull()` получил
+`selected_campaign_ids`: основной сервис передаёт выбранные кампании сразу в `campaigns.get`, а картинки
+для selected-only читаются по использованным `AdImageHashes` вместо всего аккаунта. Старый CLI-вызов
+`phase_pull(src_dir, auth, login)` сохранён.
+
+**Параллелизм:** `copy_verify_target` добирает v5 fallback по кампаниям в 2 потока и не смешивает разные
+типы кампаний в одном запросе. UAC копируется с fan-out=2: сначала параллельное чтение detail отдельными
+`UacReadClient`, затем осторожное создание отдельными target-клиентами.
+
+**Кэш:** в `CopyCtx` добавлен общий `cached_source_edit_rows/cached_target_edit_rows`.
+`organic_placement`, `settings_diff`, `disabled_places`, `promos` и финальный verify переиспользуют
+`campaigns_edit_rows`; target-кэш инвалидируется после мутаций. `search_invariants` сначала читает
+`groups_for_edit` одним batch по списку кампаний, при truncation/error откатывается на прежний
+per-campaign режим; записи остались ограниченными per-campaign. Code review перед деплоем поймал риск
+частичных `campaigns_edit_rows`: helper теперь дочитывает только missing-id и не выбрасывает уже
+полученные строки.
+
+**Проверено:** локально `py_compile` по 10 затронутым py-файлам, `git diff --check` в обоих nested repo,
+smoke-тест кэша `_source_edit_rows/_target_edit_rows/_invalidate_target_edit_rows`, включая partial read.
+На LXC101 файлы синхронизированы, remote `py_compile` OK, `direct-copy.service` перезапущен и active PID `1031724`,
+маркеры изменений найдены на сервере, активных `copy_campaigns` в `public.direct_automation_jobs` нет.
+Live-copy не запускался: это реальные мутации кампаний.
+
+**Повторный деплой по команде Семёна:** 2026-07-19 22:31 +05 — те же copy-файлы и `STATE.md`
+повторно синхронизированы на LXC101, remote `py_compile` OK, `direct-copy.service` restart,
+active PID `1032227`; `/direct/automation/copy` отвечает `302` на login без сессии, активных
+`copy_campaigns` нет.
+
+**Фикс UI-счётчика удаления черновиков:** модалка copy показывала только v5 DRAFT (`4`) и не считала
+МК/tp7, которые удаляются cookie/Grid-слоем. `copy_cleanup._copy_target_campaigns_info()` теперь
+добавляет unseen Grid UAC/tp6/tp7 DRAFT в `draft_count` и отдаёт `v5_draft_count/cookie_draft_count`.
+Проверено read-only на `porg-lzjk6p5m`: `total=10`, `draft_count=10`, `v5_draft_count=4`,
+`cookie_draft_count=6`, breakdown `OFF/DRAFT=4`, `GRID/DRAFT=6`. Деплой LXC101, remote
+`py_compile copy_cleanup.py` OK, `direct-copy.service` active PID `1033058`, активных copy-job нет.
+
+## Сессия 2026-07-19 — copy job 2863fa0ebca3 verify + speed audit — LXC direct-copy RESTART
+
+**Проверено:** job `2863fa0ebca3` (`porg-asfbs7qe → porg-lzjk6p5m`) в Victory DB: `done`, 10/10 создано,
+`failed=0`, `elapsed_seconds=637`, cleanup удалил 172 черновика, `keywords=11280 total / 11168 via_v5 /
+0 failed / 112 skipped_no_group`. Повторная live `copy_verify` после инициализации `automation_runtime`
+(важно: с v5 fallback, Grid-счётчик ключей для свежих черновиков даёт ложные 2792) показала
+`ok=44 mismatch=0 missing=0 unreadable=23`; ключи на 4 search-кампаниях 2820→2820. UAC часть:
+6/6 кампаний созданы, `uac_copy.errors=[]`. Активных copy-job нет.
+
+**Факт по "долго":** основной прогон занял ~10.6 мин; главный объём — 11168 ключей через v5 (TEXT_AD_GROUP
+не шлём через Grid, потому что Grid ложно подтверждает addKeywords), плюс 172 удаления черновиков и
+postprocess/verify. Скрин "идёт добивка" был post-done фазой: отложенная reverify стартует через 240с,
+а сервис был перезапущен в 21:40:53 +05 до её первого круга. Старый `direct_delayed_repairs`
+`9d5c2d534bfd` упал с note `у job нет сохранённого результата для проверки`; это не ошибка копирования,
+а лишняя persistent-добивка, для новых чистых copy-job уже пропускается (`copy_no_inplace_repairs`).
+
+**Правка:** `copy_engine._copy_delayed_reverify()` теперь получает и передаёт те же `geo_pairs`, что
+использовал основной `copy_postprocess`; раньше delayed verify/repair шёл с `geo_pairs=[]`, и при
+позднем keyword mismatch мог долить исходные гео-фразы вместо целевых. Локально и на LXC101:
+`py_compile copy_engine.py`, `direct-copy.service` restart, active PID `1023223`; remote-файл перечитан
+(`geo_pairs=_geo_pairs` в verify/repair).
+
+## Сессия 2026-07-19 — slepki UI keyword/audience preview — ЗАДЕПЛОЕНО
+
+**Сделано:** поправлена правая панель `/direct/automation/slepki`: `slepki_ui.js` разделяет display-имя строки и `position` для backend-матчинга tp6/tp7; аудитории ищутся по `groups`/`splits.groups` и всем `items`, не только `items[0]`; `slepki_editor.read_group_keywords()` больше не гейтит fallback по regex имени и передаёт `group` в тот же `_tp67_keywords_for`, что использует создание.
+**Follow-up fast refresh:** `direct-slepki` JSON теперь отдаётся UTF-8 без `\uXXXX` (`app.json.ensure_ascii=False`, compact=True), `/api/slepki/ui_structure` на LXC уменьшен с 22.7 MB до 11.5 MB; версия API/JS в `slepki.html` bump `20260719_slepki_fastload`, чтобы браузер не держал старый `slepki_ui.js`.
+**Follow-up lazy refresh:** `/direct/api/slepki/ui_structure` для отдельной страницы теперь вызывается как `light=1`: отдаёт полный только выбранный слепок + shell-записи остальных для dropdown; при выборе другого слепка UI догружает его отдельно и merge-ит в память. Для light-режима добавлены локальные `ct_segments_cache.json` и `donor_tp4_models_cache.json`, чтобы cold refresh не зависел от Victory DB; JSON API gzip-ится при `Accept-Encoding:gzip`. Замер LXC101: light first selected plain 1.52 MB / ~0.35s, gzip 92 KB / ~0.12s; `pavlov` plain 574 KB / ~0.14s, gzip 29 KB / ~0.10s. До этого страница тянула полный JSON 11.5 MB (ранее 22.7 MB до UTF-8 compact).
+**Follow-up light-default:** после жалобы на hard reload в журнале LXC найден реальный старый запрос `...?v=20260719_slepki_fastload` без `light=1`, который мог снова тянуть полный JSON. `direct.slepki_main` теперь default-ит `/direct/api/slepki/ui_structure` в light-режим; full-доступ оставлен только явным `full=1`. Версия HTML/JS bump `20260719_slepki_lightdefault`. LXC smoke: старый `fastload` URL = 1 full-dir, gzip 92 KB; `full=1` = 17 dirs / 11.5 MB.
+**Follow-up stuck loader:** скрин 22:36 показал зависание на "Загружаю структуру слепков..." и в journal был только `GET /direct/automation/slepki`, без последующего `/ui_structure` — проблема до/вокруг initial fetch. Первый light payload (`pavlov`) теперь встраивается прямо в HTML (`window.__SLEPKI_INITIAL__`), `ensureUiStructure()` применяет его синхронно без отдельного стартового API. HTML gzip включён: LXC page plain ~613 KB, gzip ~42 KB, API для последующих lazy-switch остаётся gzip ~29 KB. Версия bump `20260719_slepki_inlineinitial`.
+**Проверено:** локально `node --check`, `py_compile`, `pytest home/seoadvanced/direct/tests` = 78 passed, `git diff --check`. На LXC101 md5 Mac==LXC для 4 файлов, `direct-slepki.service` restart, active. Flask smoke: страница 200/no-store, helper `_slepkiPositionName` есть, `pavlov/Мультибренд/tp6/мк_общие_запросы` отдаёт 69 ключей как на UI; найдены live-позиции Терехова, которые старый name-gate считал `autotarget/audience`, а новый endpoint отдаёт pack/real_library ключи.
+**Проверено для lazy refresh:** локально `py_compile automation_runtime/slepki_main/slepki_store`, `node --check slepki_ui.js`, `pytest direct/tests` = 78 passed, `git diff --check`; LXC101 md5 Mac==LXC для 7 файлов (`automation_runtime.py`, `slepki_main.py`, `slepki_store.py`, `ct_segments_cache.json`, `donor_tp4_models_cache.json`, `slepki.html`, `slepki_ui.js`), `direct-slepki.service` restart, `direct-slepki/direct-slepki-worker/direct-create` active. LXC smoke с env systemd (`NEURO_PACK_MOUNT=/opt/neuro_content_local`, `DIRECT_ROLE=web`): page 200/no-store/lazyload=true; API light/gzip timings выше; `/direct/api/slepki/keywords` smoke 200.
+**Ограничение:** реальный браузер Codex недоступен в этой сессии (`agent.browsers.list()=[]`), визуальный click-smoke делался через API/Flask test client, не через открытую вкладку.
+
+## Сессия 2026-07-19 — «Смена изображений» доведена: динамический заголовок, точный логин, фид tp7 — ЗАДЕПЛОЕНО
+
+**Продолжение сессии «Вкладка «Смена изображения»» (см. ниже) по follow-up правкам Семёна:**
+- Вкладка переименована «Смена изображения» → «Смена изображений» (сайдбар, заголовок панели, JS).
+- Замена изображений расширена на ВСЕ типы кампаний (включая tp2/tp4 поиск), кроме фидовых объявлений
+  (`GdShoppingAd`/`GdListingAd`) — по явному исключению Семёна.
+- **Отключён `execute_images_forbidden_repair`** — авто-ремонт считал картинки в поисковых кампаниях
+  дефектом и вычищал их; Семён подтвердил, что это неверно. Флаг `SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED = False`
+  в 4 точках (`repair_media.py`, `repair_gate.py`, `repair_planner.py`, `campaign_spec_audit.py`) —
+  код не удалён, обратимо.
+- Фикс бага выбора аккаунта: чек-бокс на аккаунте, ушедшем из-под текущего фильтра поиска, становился
+  невидимым и неснимаемым (счётчик «Аккаунтов: N» и «выбрано: N» показывали разные множества). Отмеченные-но-отфильтрованные
+  аккаунты теперь закреплены сверху списка с бейджем «вне фильтра», чекбокс остаётся кликабельным.
+- Левая колонка фильтра кампаний расширена ~2.5× (почти до половины ширины интерфейса), адаптивная
+  (`clamp`), не фиксированные 720px.
+- UI вкладки картинок собран в одну кнопку «Показать изображения» (было два шага «выбрать → показать»):
+  клик грузит ТОЛЬКО инвентарь изображений, не весь контент вкладки — на остальных вкладках (Заголовки/
+  Тексты/…) поведение общей кнопки «Показать» не менялось.
+- Точный логин в поиске аккаунтов на вкладке изображений теперь переключает цель без клика по чекбоксу,
+  если введённая строка **точно** (`===`, не подстрока) совпадает с реальным `login_key` — фикс
+  сценария из скриншота (ввели `porg-3h236hpp`, целью оставался ранее отмеченный `porg-bzti5ud7`).
+- Динамический заголовок по шаблону «Редактор контента - <раздел>» (H1 + `document.title`) —
+  **только внутри Редактора контента** (по решению Семёна, не по всей платформе), меняется при
+  переключении вкладки, эмодзи-иконка вкладки вырезается из текста заголовка.
+- **Фикс tp7/товарных (ecom) кампаний в UAC PATCH:** `_uac_campaign_patch_payload` стриппинг
+  «пустых» полей был завязан на `keywords is None`, что истинно и для ecom-кампаний → терялись
+  `feed_id`/`listings_feed_id`/`feed_filters`/`listings_feed_filters`. Фикс — дополнительный гейт
+  `not detail.get("ecom")`. Проверено СВЕРКОЙ ПОЛЕЗНОЙ НАГРУЗКИ против HAR-66 (было 35 ключей/4 пропущено
+  → стало 39/0 пропущено, значения фида совпадают 1:1) — **живой записью НЕ проверено**, нужен отдельный probe.
+
+**Проверено:** `direct_verifier`/`ui_verifier` по обеим JS-правкам (динамический заголовок, точный
+логин) — ✅ принято (структурная сверка регэкспа и логики совпадения, живого скриншота не делали —
+чистый JS-дифф без шаблона/CSS). Сервисы `direct-content.service`+`direct-content-worker.service`
+перезапущены, оба `active`.
+
+**Не закрыто / решение за Семёном:**
+1. Живая проверка замены картинок на товарных (tp7/ecom) кампаниях — фикс есть, probe не делали.
+2. `porg-pvrbl7mh`: `inheritableCallouts` CLEAR→INHERIT на объявлении `1915248839254163593` — команда
+   восстановления в `ERRORS_JOURNAL.md`, ждёт решения; `organic_search_enabled` null→true на кампании
+   `712714472` — вероятно необратимо, только информационно.
+3. Комментарий в коде «нет пересечения Grid/UAC путей для TextAd» неточен — на 42 ключах, где хеш
+   TextAd-картинки присутствует в UAC `contents`, пишут ОБА транспорта (не портит данные, один и тот
+   же файл, но тратит место в двух библиотеках) — правка комментария/дедуп записи не сделаны.
+4. `_grid_ads_index` падает `RemoteDisconnected` при чанке 100 на аккаунтах с ~157 кампаниями (задача #11).
+5. `legs_reconcile` не покрывает UAC-only ключи (задача #12, низкий приоритет).
+6. `routes_content_editor.py` — весь этот раунд правок жил в рабочем дереве вперемешку с параллельным
+   рефакторингом pricecheck; закоммичен только вместе с массовым коммитом остальных изменений проекта.
+
+## Сессия 2026-07-19 — copy-service распил + verify cache + UI buttons — LXC direct-copy RESTART
+
+**Сделано:** безопасный code-motion copy-сервиса без смены публичных входов:
+- `copy_request.py`: общий `campaign_ids` parser + `geo_mode` default + `other/change` validation для `routes_copy.py` и `copy_api.py`.
+- `copy_context.py`: вынесен `CopyCtx`; `copy_steps.py` стал фасадом.
+- `copy_*_steps.py`: steps разделены на `asset/keyword/creative/price/settings`.
+- `copy_postprocess.py`: вынесен `_copy_cookie_postprocess` и `_copy_timed`, старые имена в `copy_engine.py` оставлены фасадами.
+- `copy_grid_unified.py`: вынесен `_copy_grid_unified_campaigns` + локальные geo-helper'ы, старый вход в `copy_engine.py` оставлен фасадом.
+- `copy_verify_*.py`: source/target/diff/geo/repair разнесены; `run_copy_verification()` и `run_copy_repair()` остались фасадами в `copy_verify.py`.
+
+**Производительность:** `CopyCtx` получил `cached_adaptive_src/cached_adaptive_tgt`. `step_adaptive_creatives`,
+`step_videos` и `copy_verify` используют один source adaptive snapshot. Перед `copy_verify` параллельно
+читаются target Grid `counts/edit_rows/invariants/adaptive` отдельными Grid-клиентами; кэши передаются
+в `run_copy_verification`. Source Grid assets (`campaign_callouts/promos/sitelinks`) теперь читаются
+параллельно с v5 `phase_pull`, но с обязательным `join()` до `_copy_filter_snapshot`.
+
+**UI:** в `copy.html` и `copy_other.html` добавлена кнопка `Что меняется` рядом с `Что проверяется`.
+Модалка использует тот же механизм в `static/direct/copy_common.js`. В `docs/UI_MAP.md` добавлен
+maintenance-note: `_COPY_CHECKLIST` и `_COPY_CHANGELIST` обновлять вместе с изменениями copy-кода.
+
+**Проверено:** `py_compile` на Python 3.12 для `automation_runtime.py`, `copy_main.py`, всех новых
+`copy_*` модулей и `grid_finalize.py`; `node --check static/direct/copy_common.js`; `git diff --check`;
+import-smoke фасадов на системном Python с установленными зависимостями; отдельный read-only review агент.
+На LXC101 файлы синхронизированы в `/opt/scripts`; `direct-copy.service` перезапущен в 21:13 +05,
+активен с новым PID, `/static/direct/copy_common.js` отдаёт `showCopyChanges()` и текст
+`Что меняется при копировании`.
+Правка follow-up: текст `Что меняется` переведён полностью на русский (`keep/change/baseline` убраны);
+`disabledPlaces` больше не baseline-override — шаг копирует площадки источника 1в1 в target, а
+`copy_verify` теперь сверяет D18 `minus_places` как обычное source↔target поле.
+Правка API/интеграции: public `/api/v1/copy/*` получил строгую валидацию `campaign_ids`
+(JSON-массив положительных ID без дублей, max 500), `Idempotency-Key` + payload hash, `status_url`,
+машинные `error_code`, DB-fallback `/status` после рестарта, `schema_version/public_status/terminal/
+settling/repair_pending` и безопасный `result_summary` вместо сырого `result`. В public API
+`target_feed_url` принимает только путь от `/`; абсолютные URL запрещены. CORS preflight разрешает
+`Idempotency-Key`. Nginx live `/api/v1/copy/` на LXC101 получил `client_max_body_size 1m` и
+`client_body_timeout 30s`; `nginx -t` и reload OK.
+Правка UI очереди: в карточке job добавлена раскрываемая вкладка-кнопка `Проверки` рядом с
+`Лог копирования`; внутри чеклист из `_COPY_CHECKLIST` с фактами `copy_verify` (ожидает/совпадает/
+расхождение/не прочитано/отремонтировано). Модалка `Что проверяется` снова статичный справочник:
+значки в ней не меняются от последнего прогона. Промоакции вынесены отдельным пунктом проверки
+`Промоакции (созданы до кампаний и привязаны)`; в `Что меняется` указано, что библиотеки минус-слов
+и промоакции заранее создаются в целевом аккаунте и потом привязываются к новым кампаниям.
+Правка UI-status: `settling` и `repair_pending` теперь имеют разные тексты — `сверка и лечение
+ключей` vs `постпроверка и ремонт контента`.
+Правка performance/false-wait: `repair_auto.delayed_content_repair_request()` для `copy_campaigns`
+больше не планирует persistent `content_repair`, если `inplace_actions=0`; это убирает лишнюю
+post-done добивку/ожидание при чистом repair-plan. Внутренний `/direct/api/copy_status/<job_id>`
+получил DB-fallback из `direct_automation_jobs`, чтобы карточка очереди могла показать финальные
+проверки после рестарта `direct-copy.service`.
+Факт по долгому прогону `2863fa0ebca3`: `porg-asfbs7qe→porg-lzjk6p5m`, 10 кампаний, started
+21:22:04 +05, DB `done` 21:39:53 +05, `elapsed_seconds=637`, cleanup удалил 172 черновика,
+keywords `11280 total / 11168 added / 112 skipped_no_group`, `copy_verify` summary
+`ok=48 mismatch=0 unreadable=19`, `copy_repair.repairs=[]`. Скрин “идёт добивка” был post-done
+фазой `settling/repair_pending`; `direct_delayed_repairs` для этого job ушёл в `error` с note
+`у job нет сохранённого результата для проверки`. Активных `copy_campaigns` после проверки нет;
+`direct-copy.service` перезапущен в 21:50 +05 и active.
+
+**Ограничения:** живое копирование через Яндекс/куки не запускалось. `pytest test_routes.py` локально
+не завершён: системный Python 3.9 падает на project syntax `dict[...] | None`, а локальный Python 3.12
+не имеет `pytest/requests`. Новые `copy_*` файлы распила должны попасть в deploy/commit одним набором
+с изменёнными фасадами, иначе сервис упадёт на import.
 
 ## Сессия 2026-07-19 — Ревью+фиксы сервиса slepki + массовые правки структуры (6 пунктов) — ЗАДЕПЛОЕНО (частично)
 
@@ -412,92 +1031,3 @@ Ledger сессии: `.claude/sdd/progress.md`. Отчёты: `.claude/sdd/creat
 
 ### Осталось убрать
 - Temp-файлы LXC101: probe_avto_sk.py, verify_tp5_groups.py, probe_avtolajt.py, probe_sk_krs.py, verify_avto_sk.py, verify_avtolajt.py, verify_avtolajt2.py, verify_grid_tp7.py, check_sk_krs.py, verify_sk_krs.py — можно удалить в любое время.
-
-## Сессия 2026-07-16 — Унификация имён кампаний+групп ПРИМЕНЕНА (чистый срез), задача закрыта
-- Источник: Google-таблица `1oGuvI…` — столбцы «финальное название» (кампании, Лист1) и «Новое (по шаблону)» (вкладка «Группы (кодер→имя)»).
-- **Кампании: применено 980** без коллизий → 814 пар old→final, 6414 вхождений camp_names/tp6-7 `t`. Пропущено 3: kuderko smart-banner (нет в структуре) + 2 pavlov (создали бы новую коллизию).
-- **Группы: применено 103** без коллизий (104 точных матча − 1 гард от новой коллизии; 21 chepelev tp2 = no-op, имя уже без кодера).
-- Новых коллизий: **0** (дельта дублей 0 и по кампаниям, и по группам). Структура цела: 17 дир / 14617 групп / 14825 items. JSON валиден. md5 Mac==LXC101.
-- Бэкапы: `slepki_structure.json.bak.names_apply_20260716_181907` (камп), `.bak.groups_apply_*` (группы).
-- **Коллизийный остаток НЕ применяли** (решение Семёна «остаток закрываем»): 1119 кампаний (307 уник. дублей) + 41 группа + 3 edge — оставлены со старыми именами.
-- Скрипты: scratchpad/read_sheet.py, analyze_sheet.py, apply_safety.py, apply_names.py, apply_groups*.py, verify_apply.py.
-
-## Сессия 2026-07-16 — COPY минус-площадки: baseline-таблица + аудит интересов tp6/7
-- **Регрессия copy (починена):** после per-слепок правки `_enabled_minus_places(slepok="")` при пустом slepok → `[]`. copy зовёт `enabled_minus_places()` без аргумента (`copy_steps.py:297`) → стал класть 0 площадок (тихо, `step_disabled_places` пропускает при пустом). Раньше copy читал глобальную таблицу.
-- **Решение Семёна:** copy (клон 1:1, слепка нет) → ОТДЕЛЬНАЯ явная baseline-таблица `public.direct_baseline_minus_places`, сид = 122 URL из `direct_slepok_minus_places WHERE slepok='sk_krs'`.
-- **Природа 122:** это НЕ бизнес-площадки sk_krs, а стандартный «мусорный РСЯ»-список (игры/VPN/чистилки/маркетплейсы: com.miui.cleaner, com.freevpnplanet, com.allgoritm.youla…). Универсален → глобальный baseline не нарушает «нельзя смешивать слепки».
-- Движок: добавлены `_baseline_minus_places*` + `_enabled_baseline_minus_places()`; copy DI (`copy_engine.py` ~1397/1778) → baseline. create-путь НЕ тронут (per-слепок). **[in-progress: fixer + verify]**
-- **⚠️ ИСПРАВЛЕНИЕ прошлой пометки:** «рестарт не нужен — статическая задача» (секция per-слепок ниже) БЫЛА НЕВЕРНОЙ — движковые правки требуют рестарта воркера (иначе стейл-модули → 8 ошибок `_enabled_minus_places() takes 0 positional`). Copy-джобы крутятся в **direct-copy.service** (:5022, in-process worker), не в direct-create-worker — фикс copy требует рестарта direct-copy.
-- **Аудит tp6/7 интересы/аудитории по 7 слепкам (read-only, live-сверка):** гапы —
-  - `scherbakova`: **40 ACTIVE tp7-кампаний с интересом n055 (Автокредит), ct0006 — ЗЕРО в структуре.** Крупнейший гап. + ct-паттерны tp7 (ct0001/0026/0044/0111/0181) в структуре отсутствуют.
-  - `pavlov`: 2 живые tp7 interest-кампании (ТК-Интересы, ТК-Конкуренты-Интересы, Ставрополь) — в структуре нет. tp6 «Интересы» camp_names есть, но n000 (без ID).
-  - `salamahin`: n-коды все n000 (совпадает с кабинетом, гапа нет), НО 35/77 tp6-кампаний имеют ретаргет/LAL audience-условия — структура не имеет поля audience_ids (системный гап всех слепков).
-  - `piterkina`: tp6 Монобренд 3 «Интересы» camp_names, n000, кабинет не доступен агенту.
-  - `kryuchkova`: интересов нет ни в структуре, ни в кабинете (все автотаргет) — чисто, гапа нет.
-  - `karavaev`: интересов в структуре нет; по последнему харвесту в кабинете тоже нет.
-  - `tumashenko`: [ожидается результат].
-  - **Системный барьер:** конкретные goal_id/audience_id для interest-кампаний недоступны через API (UAC 403 на всех агентствах Victory, Grid не отдаёт поля targeting/retargetings). Нужен вход владельца в кабинет или скрин раздела «Интересы».
-
-## Сессия 2026-07-16 — Per-слепок минус-площадки — КОД+БД+МИГРАЦИЯ, создание РК НА ПАУЗЕ
-- Новая таблица Victory `public.direct_slepok_minus_places(slepok,url,enabled,sort,updated_at PK(slepok,url))`.
-- Миграция: `direct_global_minus_places` очищена (была 122 строки), 122 URL загружены в `direct_slepok_minus_places` slepok='sk_krs'. Верифицировано SQL.
-- Движок: `_enabled_minus_places(slepok="")` — принимает slepok, читает per-слепок. Без slepok возвращает []. Без глобального fallback.
-- `create_set_tp1_builders.py` строки 1272, 1869: `_enabled_minus_places()` → `_enabled_minus_places(slepok)` (slepok — параметр обоих вызывающих функций).
-- `routes_settings.py`: GET `/api/minus-places?slepok=` (обязательный параметр, 400 без), POST требует `slepok` в теле, пишет в `direct_slepok_minus_places`.
-- `blueprint.py`: передаёт `slepok_minus_places=_slepok_minus_places, slepok_minus_places_ensure=_slepok_minus_places_ensure` в `register_settings_routes`.
-- `index.html`: кнопка «Минус-площадки» в тулбаре «Структура слепков» + `slepkiOpenMinusPlaces()` (uses `_SL_SLEPOK`) + `_slMpSave()`. `loadMinusPlaces(slepok)` теперь принимает slepok: без аргумента рисует селектор слепков, с аргументом — грузит. `saveMinusPlaces` читает slepok из `data-mp-slepok` атрибута.
-- py_compile OK (4 файла). SQL: sk_krs=122/global=0/terehov=0 проверено. НЕ деплоился (рестарт не нужен — статическая задача). НЕ верифицировалось live (создание на паузе).
-
-## Сессия 2026-07-16 — ФИЧА «тег каталоги» — КОД ЗАДЕПЛОЕН, БД ЗАПОЛНЕНА, создание РК НА ПАУЗЕ
-- Код: `create_set_structure.py` (+`CATALOG_TAG="каталоги"`, whitelist `detect_protected_tags`), `create_set_plan.py` (импорт `CATALOG_TAG as _CAT`, флаг `tp1_catalog=True` в `_emit_tp1`), `create_set_tp1.py` (строка ~80: `tp1_shopping = ... or bool(it.get("tp1_catalog"))`).
-- БД: tag_registry id=7 label='каталоги' color=#f2a03d; campaign_tags: tp1=181, tp3=62, tp5=104, tp7=309, tp6=0 (guard OK).
-- md5 Mac==LXC101 для всех трёх файлов. Сервисы direct-create+worker active.
-- Для tp3/tp5/tp7 тег no-op (ListingAd всегда). tp1: тег → tp1_catalog=True → tp1_shopping=True → каталожные объявления.
-- НЕ верифицировано live (создание на паузе). Catalog-role гейт (catalog_only=True) цел.
-
-## Сессия 2026-07-16 — UI: панель «Что означает кодер» доступна не-админам — ЗАДЕПЛОЕНО
-- Баг: `slepki_keywords` и `slepki_coder_components` имели `if not _admin(): 403` → не-админ при клике на группу получал ошибку "только администратор" вместо расшифровки кодера/таргетингов.
-- Фикс: убраны admin-гейты из обоих GET read-only эндпоинтов (`routes_slepki_edit.py`, строки 326-327 и 418-419). `canKw` в `index.html` (строка 2115) — убран `IS_ADMIN &&` (не-админы тоже видят счётчик ключей).
-- WRITE-эндпоинты (edit_keywords/edit_callouts/save_assets/etc.) и JS-кнопка «✏ Редактировать» + бейдж «админ» — admin-гейт сохранён.
-- md5 Mac==LXC101: routes_slepki_edit.py `9e7b3d128f7ad63799db455b9cadbd53`, index.html `9a2b1f0954d2ca5f2a120968c1cf543a`. Сервисы direct-create+worker active. Smoke OK: keywords 200, coder_components 200, edit_keywords 403 для не-админа.
-
-## Сессия 2026-07-16 — Lazy-load конденсация документации (выполнено)
-- Применён lazy-load к 4 файлам: STATE.md / ERRORS_JOURNAL.md / DOD.md / README.md.
-- STATE.md: 635→369 строк (сессии 07-12 и 07-11 → STATE_ARCHIVE.md).
-- ERRORS_JOURNAL.md: 2590→2498 строк; создан ERRORS_JOURNAL_ARCHIVE.md (✅-таблица + разбор прогона 07-06 A-K).
-- DOD.md: 961→856 строк; создан DOD_ARCHIVE.md (§5.b file:line карта dmp + §5.d каноны реконструкции).
-- README.md: 641→572 строк; создан README_ARCHIVE.md (историч. разделы июня-2024).
-- CLAUDE.md direct/: добавлены ссылки на все 3 новых архивных файла в таблицу навигации.
-- ERRORS_JOURNAL / DOD / README не достигли 200-500 — обоснование в отчёте агента (весь контент активный 🟡).
-
-## Сессия 2026-07-16 — ЗАДАЧА #34 («все фиды» tp5 + tp1-РСЯ) — ЗАДЕПЛОЕНО
-- Реализовано потребление флагов `tp5_all_feeds` / `tp1_all_feeds` (ранее эмитировались, но игнорировались).
-- Файлы: `create_set_feed_builders.py` (add `all_feeds` param to `_create_tp5_campaign`, `all_feeds_list` to `_create_tp5_single`), `create_set_gallery.py` (pass `all_feeds=bool(it.get("tp5_all_feeds"))`). tp1-РСЯ правки (`create_set_tp1.py`, `create_set_tp1_builders.py`) были сделаны в предыдущей части сессии.
-- Механика: при флаге — ONE кампания (не fan-out), Phase 4a в `_build_tp1_adgroups` создаёт ОДНУ группу (ShoppingAd+ListingAd) на каждый разрешённый фид. tp7 не тронут. Default-path (all_feeds=False) без изменений.
-- py_compile OK (все 4 файла), pyflakes: только pre-existing DI-globals. md5 Mac==LXC101 для всех 4 файлов. Сервисы `direct-create` + `direct-create-worker` active.
-- Верификация live (реальный многофидовый аккаунт + прогон) — при следующем запуске с тегом «все фиды».
-
-## Сессия 2026-07-16 — ЗАДАЧА #43 (tone-of-voice): 4 новых агента + 10 CROSS_SIGNATURE — задеплоено
-- `ai_agents.py` md5 `f33dc7efbfe1226ea6b84a28a6a81a76` Mac==LXC101; `systemctl restart direct-create direct-create-worker` OK.
-- Добавлено в AGENTS: piterkina (Lada/Tenet монобренд), avtolajt_bu (б/у Краснодар), avto_sk (б/у фид), sk_krs (мультибренд новых Краснодар).
-- Добавлено в AGENT_ADS: piterkina (10 заголовков/5 текстов/4 сайтлинка), avtolajt_bu (10/3/4), avto_sk (0/1/0), sk_krs (0/1/4).
-- CROSS_SIGNATURE: добавлено 10 записей (6 старых без сигнатуры: salamahin/gordeeva/zubakin/chepelev/tumashenko/kuderko + 4 новых); итого 15 ключей.
-- build_titles_messages + build_campaign_messages: добавлена инструкция «≥2 фирменных фразы из корпуса».
-- py_compile OK, pyflakes: 0 undefined-name (3 pre-existing f-string placeholder warnings не мои).
-- Верификация тон-судьёй (≥50/60) — при следующем прогоне этих слепков.
-
-## Сессия 2026-07-16 — ЗАДАЧА 7: content-fix #2 ПОДТВЕРЖДЁН на kryuchkova + КРИТ операц. уроки, грайнд стартует
-Green light: fix #2 (create_set_assets.py md5 e58c4470) + инфра готова. Перевалидация kryuchkova Монобренд через сервис (job 359aff7926e3) = **CLEAN**: created 22/22, Fix#1 стоп-фраза «до 1XX% цены» = 0 hits (2350 строк), Fix#2 generic «Кредит и первый взнос 0» = 0, маркеры kryuchkova есть (выгода-45% ×219, срочность ×159). Регион Новосибирск (нет Волгограда). tp2/5: 159 ads, 0 img, 0 video (DoD 7.13 ✓). Флаг: catchphrases «распродажа/2 платежа» = 0 (ads-corpus gap в LLM-stream, не блокер).
-- **🔑 КРИТ УРОК №1 — DIRECT_ROLE=web для прогонов.** Probe `create_app()` дефолт role=`all` → create_set_async кладёт джобу БЕЗ `_web_posted=true` → systemd-воркер (claim только `_web_posted='true'`, queue_server.py:1925) НИКОГДА не забирает → джоба вечно `queued` (ЭТО корень всех «стопоров», НЕ Victory/куки). Фикс: гонять `DIRECT_ROLE=web python3 -m direct._probe_task7 run ...`. Разовый анблок висящей джобы: `UPDATE ...jsonb_set(body,'{_web_posted}','true')`.
-- **🔑 УРОК №2 — видео ОТЛОЖЕНО 180с (добивка).** Видео вынесено из create в delayed_content_repair (`_DELAYED_CONTENT_REPAIR_DELAY_SECONDS=180`, campaign_spec_audit:874). Сразу после `done` tp1 hasVideo=0 — НОРМА; через ~3+ мин добивается (наблюдал 0→16, растёт). Проверять видео ПОСЛЕ задержки, иначе ложный VIDEO_MISSING.
-- **🔑 УРОК №3 — WRONG_AUTOTARGET на свежих tp5 = лаг-ложняк.** live_verification даёт WRONG_AUTOTARGET на свежих tp5 (edit-view лаг реплики), а живой конфиг корректен (перечитал 27/27 = active/EXACT_V2_MARK/WITHOUT_BRAND). Перечитывать relevance_match до вердикта; edit-view keyword_count тоже лагает (0 vs showConditions 1389).
-- **🔑 УРОК №4 — SSH:** локальное имя `lxc101` флапает (255) → юзать `lxc101-ts` (Tailscale). `pkill -f <pattern>` в ssh убивает СВОЙ шелл если pattern в его cmdline → бить по PID (`ps|grep|awk|kill`). Victory RO по умолч. (`B._victory_conn`/`victory_conn`); запись — `victory_conn_rw`.
-- **СЛЕДУЮЩЕЕ:** грайнд всех слепков (pavlov→karavaev→gordeeva→salamahin→zubakin→chepelev→tumashenko→kuderko→piterkina→avto_sk→avtolajt_bu→sk_krs→terehov→scherbakova), delete_drafts на смене слепка, все site_type/tp 1:1, 1 фид, без cpa, DIRECT_ROLE=web. Stop-on-defect по стоп-фразе. Чекпоинты координатору.
-
-## Сессия 2026-07-16 — ЗАДАЧА 7 ПОЛНЫЙ ПРОГОН: ПРЕРВАНО (fix-first по стоп-фразе) + 2 внешних отказа инфры
-Автономный полный прогон по всем слепкам на porg-asfbs7qe. Прервано координатором: стоп-фраза системная → сначала фикс копирайтером (tp1 автотаргет brand-title путь мимо `_bad_ad_title`), потом продолжаем.
-- **kryuchkova Монобренд:** создано 20/22 (2 потеряны на reconcile: после стопора воркера `_requeue_missing_positions_once` дедупит по ЖИВЫМ именам кабинета, а site_type'ы kryuchkova делят generic-имена с С пробегом → 2 item'а сматчились как «уже есть»). Регион Новосибирск ✓ (нет Волгограда), тон kryuchkova ✓, инварианты OFF ✓. **ДЕФЕКТ (системный, draft-only):** стоп-фраза «трейд-ин. До 150% цены авто» в tp1-автотаргет титрах (712819362 Марки / 712819381 Модели / 712819410 Марка) + тавтология body «Кредит на Первый взнос 0 ₽. Первый взнос 0 ₽…». Фильтр `text_norm._bad_ad_title` РАЗВЁРНУТ и ловит строку (True), но tp1-путь пишет DeepSeek-титры в Grid МИМО фильтра. Фраза НЕ из seed/pack kryuchkova (runtime-LLM). kryuchkova Мультибренд НЕ запускался.
-- **pavlov Мультибренд:** джоба `0b3cf75c94fb` (total=29) поставлена в очередь 00:51, но 2 часа висела `queued`, воркер НЕ забрал → probe TIMEOUT 02:52, создано 0. **Джоба-мина:** при восстановлении Victory воркер её заберёт → повесил watcher `_tmp_cancel_pavlov_watch.py` (nohup, отменит `0b3cf75c94fb` как только Victory отзовётся). Отменить ДО любого resume.
-- **2 ВНЕШНИХ ОТКАЗА (не код):** (1) Victory DB 103.88.240.90:5432 — Connection refused (воркер fail-open sweep, джобы не берёт). (2) Кука porg-asfbs7qe — мёртвая сессия «need_reset / Истёк срок» (force_refresh не помог; нужен релогин агентства в главпотоке). Grid-список/удаление недоступны.
-- **Аккаунт ЧИСТ:** v5 `campaigns.get` (агентский токен, без куки) = 0 text/unified. Клин 00:51 удалил все 30 kryuchkova-черновиков (by_v5=27, by_uac=3), pavlov создал 0 → UAC=0. Итого 0 кампаний.
-- **STAND BY.** Ничего не создаётся (probe мёртв, воркер не берёт джобы). Ждём: фикс стоп-фразы задеплоен+repro-verified → перепроверка kryuchkova → полный прогон (Терехов/Щербакова последними, delete_drafts на смене слепка, 1 фид, без cpa). Порядок слепков и inventory — в отчёте сессии. ⚠️ `lxc101` (локальное имя) флапает — юзать `lxc101-ts` (Tailscale).
