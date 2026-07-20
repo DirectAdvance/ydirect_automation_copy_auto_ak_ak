@@ -21,7 +21,7 @@
 | Загрузить картинки | `routes_copy.py` → `POST /direct/api/copy_images_upload` |
 | Снимок кампаний цели | `routes_copy.py` → `GET /direct/api/copy_target_campaigns` |
 | Дерево регионов | `routes_copy.py` → `GET /direct/api/copy_geo_regions` |
-| Внешний API (A2) | `copy_api.py` → `POST /api/v1/copy/start`, `GET /api/v1/copy/status/<job_id>`, `GET /api/v1/copy/campaigns` |
+| Внешний API (A2) | `copy_api.py` → `POST /api/v1/copy/start`, `GET /api/v1/copy/status/<job_id>`, `GET /api/v1/copy/campaigns`, `GET /api/v1/copy/health`; строгие `campaign_ids`, `Idempotency-Key`, DB-fallback статуса |
 | Сервис/порт | `direct-copy.service`, порт `127.0.0.1:5022`, entrypoint `copy_main.py` |
 | Очередь | `direct_automation_jobs` (Victory, `kind='copy_campaigns'`) + in-memory `_COPY_JOBS` |
 | systemd unit | `direct-copy.service` (нет отдельного worker — копировщик стартует свой поток через `_ensure_copy_worker`) |
@@ -36,10 +36,10 @@
 |------|---------------------|
 | `copy_main.py` | entrypoint Flask-приложения `direct-copy.service`, DI-wiring |
 | `routes_copy.py` | HTTP-роуты `/direct/api/copy_*` и `/direct/automation/copy`; функция `register_copy_routes` |
-| `copy_api.py` | внешний API `POST /api/v1/copy/start` + CORS + API-ключ; функция `register_copy_api` |
+| `copy_api.py` | внешний API `POST /api/v1/copy/start` + `status/campaigns/health` + CORS + API-ключ; безопасный `result_summary`, `public_status/terminal`, `Idempotency-Key`; функция `register_copy_api` |
 | `copy_engine.py` | главный оркестратор job'а: `_copy_run_job`, `_copy_cookie_postprocess`, `_copy_delayed_reverify`; DI-хаб через `configure(deps)` |
 | `copy_snapshot.py` | preflight (`_copy_snapshot_preflight`), фильтрация снэпшота (`_copy_filter_snapshot`), ремап контекста, сидирование feed-maps |
-| `copy_steps.py` | per-шаговые мутаторы: `step_keywords`, `step_prices`, `step_adaptive_creatives`, `step_videos`, `step_attach_callouts`, `step_attach_sitelinks`, `step_attach_promos`, `step_age_bidmods`, `step_disabled_places`, `step_settings_diff`, `step_fix_organic_placement`; `CopyCtx` датакласс |
+| `copy_steps.py` | per-шаговые мутаторы: `step_keywords`, `step_prices`, `step_adaptive_creatives`, `step_videos`, `step_attach_callouts`, `step_attach_sitelinks`, `step_attach_promos`, `step_age_bidmods`, `step_disabled_places`, `step_settings_diff`, `step_fix_organic_placement`, `step_fix_search_campaign_invariants` (tp2-форсинг), `pull_source_campaign_assets`; `CopyCtx` датакласс |
 | `copy_verify.py` | профайлинг и diff: `build_source_profile`, `build_target_profile`, `diff_profiles`, `run_copy_verification`, `run_copy_repair`, `check_geo_kw_consistency` |
 | `copy_geo_morph.py` | LLM-морф гео-замены при копировании |
 | `copy_jobs.py` | `_copy_job_upsert`, `_COPY_JOBS`, `_COPY_JOBS_LOCK` — in-memory + Victory БД |
@@ -79,9 +79,11 @@
 | `step_adaptive_creatives` | `copy_steps.py:1049` | RMW-апдейт adaptive text ads: titles/bodies/image_hashes (до 5) |
 | `step_settings_diff` | `copy_steps.py:1407` | diff Grid edit_rows source↔target → авто-починка v5-полей (report + fix) |
 | `step_videos` | `copy_steps.py:1177` | скачать mp4 из Grid source → аплоуд → RMW-привязка на цели |
-| `step_attach_sitelinks` | `copy_steps.py:387` | перенос быстрых ссылок с гео-морфом |
+| `step_attach_sitelinks` | `copy_steps.py:387` | перенос быстрых ссылок с гео-морфом; вызывается **синхронно ДО verify** (copy_engine.py:825) |
 | `step_attach_promos` | `copy_steps.py:497` | привязка промоакций к кампаниям цели |
 | `step_prices` | `copy_steps.py:689` | цены из фида ЦЕЛИ (не источника) |
+| `step_fix_search_campaign_invariants` | `copy_steps.py:659` | форсирует на tp2 (TEXT_CAMPAIGN): `enableCompanyInfo=False` + автотаргет EXACT_V2_MARK/WITHOUT_BRAND; вызывается ДО live_verification (copy_engine.py:1090); `keywords=grp["keywords"]` — реальные ключи (пустой список стирает ключи!) |
+| `pull_source_campaign_assets` | `copy_steps.py` | читает campaign-level callout/sitelink id с УРОВНЯ КАМПАНИИ (inheritableCallouts/inheritableSitelinkSet); вызывается ДО `_copy_filter_snapshot` (copy_engine.py:1479) |
 | `_copy_apply_metrika` | `copy_metrika.py` | перенос счётчика + PriorityGoals (`Operation="SET"`) через v5 |
 | `_copy_uac_campaigns` | `copy_uac.py` | копирование tp6 МК через Grid/UAC (round-robin картинки) |
 | `_copy_cleanup_uac_drafts` | `copy_cleanup.py` | удаление черновиков tp6 по куки (v5 их не видит) |
@@ -97,24 +99,27 @@
 | D2b | campaign_neg_count | UNREADABLE | `campaigns.json` NegativeKeywords | не читается отдельно — только report |
 | D3 | shared_set_count | СРАВНИВАЕТСЯ | `negative_sets.json` count | Grid `read_campaign_invariants.libraryMinusKeywordsIds` count |
 | D4 | promo_attached | СРАВНИВАЕТСЯ | `promotions.json` has_promo | Grid `edit_rows.promoExtension` |
-| D5 | adaptive_titles_count | СРАВНИВАЕТСЯ | `ads.json` adaptive ads count | Grid `campaign_content_counts.responsiveSearchAdsCount` (=adaptive_total) |
-| D6 | adaptive_bodies_count | СРАВНИВАЕТСЯ | `ads.json` adaptive ads count | Grid (прокси: adaptive_total = D5; отдельного счётчика bodies нет) |
+| D5 | adaptive_titles_count | СРАВНИВАЕТСЯ | `ads.json` adaptive ads count | Grid `adaptive_ads_for_update` — честный per-ad счёт объявлений с `titles` (2026-07-20: было прокси `adaptive_total`; теперь ловит «объявление создалось, заголовки не залились»); Grid не прочитан → UNREADABLE |
+| D6 | adaptive_bodies_count | СРАВНИВАЕТСЯ | `ads.json` bodies count (`ads_with_texts`, grid_snapshot `gs.get("bodies")`) | Grid `adaptive_ads_for_update` — честный per-ad счёт объявлений с `bodies` (2026-07-20: было прокси `adaptive_total`); Grid не прочитан → UNREADABLE |
 | D7 | callout_count | СРАВНИВАЕТСЯ | `callouts.json` count | Grid `edit_rows.calloutExtensions` count |
 | D8 | sitelinks_present | СРАВНИВАЕТСЯ | `sitelinks.json` has_any | Grid `edit_rows.sitelinkExtensions` has_any |
 | D9 | ads_with_images | СРАВНИВАЕТСЯ | `ads.json` ImageHash not null | Grid `_enrich_adaptive_images` / v5 `ads_with_images_v5` |
-| D10 | audiences | UNREADABLE | — | v5 ADGROUPS_FIELDS не содержит аудиторий; UAC interest_ids → 403 |
+| D10 | audiences | СРАВНИВАЕТСЯ* | Grid `GdRetargeting.retargetingCondition` по source campaigns | Grid `GdRetargeting.retargetingCondition` по target campaigns; `GdGridOfferRetargeting` фида игнорируется, при ошибке чтения → UNREADABLE |
 | D11 | bid_modifiers | EXCLUDED | — | намеренно: наш стандарт поверх источника (`step_age_bidmods`) |
 | D12 | strategy_name | СРАВНИВАЕТСЯ | `campaigns.json` BiddingStrategy | Grid `edit_rows.strategyData.strategyName` |
-| D13 | ads_with_video | UNREADABLE | `ads.json` creative_ids count | нет per-campaign агрегата video без доп. запроса |
-| D14 | button_cta | UNREADABLE | `ads.json` button field | мутатора кнопки НЕТ совсем |
+| D13 | ads_with_video | СРАВНИВАЕТСЯ* | `adaptive_ads_for_update` source count | target `adaptive_ads_for_update` по id_maps ads; `?` только если Grid не прочитан |
+| D14 | button_cta | СРАВНИВАЕТСЯ* | `adaptive_ads_for_update` source count | target `adaptive_ads_for_update` по id_maps ads; отдельного repair-шага пока нет |
 | D15 | ad_price | EXCLUDED | — | цена из фида ЦЕЛИ, не источника |
 | D16 | utm_tracking | СРАВНИВАЕТСЯ* | `campaigns.json` TrackingParams (нормализовано) | Grid `CampaignsEditData.bannerHrefParams` (tri-state: None→UNREADABLE) |
-| D17 | site_monitoring | UNREADABLE | — | `hasSiteMonitoring` не в Grid read-схеме |
-| D18 | minus_places | EXCLUDED | — | намеренно: baseline анти-фрод список (не источник) |
-| D19 | shopping_filter_count | СРАВНИВАЕТСЯ* | `shopping_ads.json` SMART_AD count | v5 `ads.get` с `Type=SMART_AD` (добавлен оптимизацией 2026-07-19) |
+| D17 | site_monitoring | СРАВНИВАЕТСЯ* | `campaigns.json` Settings.ENABLE_SITE_MONITORING | v5 `campaigns.get` Settings.ENABLE_SITE_MONITORING |
+| D18 | minus_places | СРАВНИВАЕТСЯ | source ExcludedSites | target Grid `CampaignsEditData.disabledPlaces`, копируется 1в1 |
+| D19 | shopping_filter_count | СРАВНИВАЕТСЯ* | `shopping_ads.json` SHOPPING_AD count | v5/v501 `ads.get` с `Type in (SHOPPING_AD, SMART_AD)` |
+| D19b | listing_filter_count | СРАВНИВАЕТСЯ* | `ads.json` LISTING_AD count | v5/v501 `ads.get` с `Type=LISTING_AD`; ListingAd не должен превращаться во второй ShoppingAd |
+| D19c | shopping_filter_signature | СРАВНИВАЕТСЯ* | `ShoppingAd.FeedFilterConditions.Items` | Grid `GdShoppingAd.feedFilter.conditions`; проверяет сами фильтры, не только count |
+| D19d | listing_filter_signature | СРАВНИВАЕТСЯ* | фильтр `ShoppingAd` той же source-группы (ListingAd source body не отдаётся) | Grid `GdListingAd.feedFilter.conditions`; каталожное объявление должно получить тот же фильтр группы |
 | geo | geo_consistency | СРАВНИВАЕТСЯ | ключи источника | ключи цели (нет ли иностранного города) |
 
-> * D16: tri-state UNREADABLE если `bannerHrefParams` не пришёл из Grid (fail-safe).
+> * D16/D17: tri-state UNREADABLE если нужное поле не пришло из Grid/v5 (fail-safe).
 > * D19: UNREADABLE если v5-fallback не отработал (нет токена).
 
 ---
@@ -124,7 +129,7 @@
 | Симптом | Где искать |
 |---------|-----------|
 | Ключи не залились / недолив | `copy_steps.step_keywords` (Grid batch=1000 + v5 fallback=200); аудит addedItems — пустой = Grid не принял (баг 2026-07-16); `---autotargeting` — НЕ ключ, отсекать |
-| Фид не тот / не нашёлся | `copy_feeds._copy_auto_feed_map` (mode=other) / `copy_snapshot._copy_filter_snapshot` + `_copy_skip_unmapped_feed_campaigns`; preflight: `_copy_snapshot_preflight` |
+| Фид не тот / не нашёлся | `copy_request.parse_feed_map` (public/UI normalization), `copy_feeds._copy_auto_feed_map` (mode=other fallback), `copy_engine._copy_validated_feed_map` (target ownership), `copy_snapshot._copy_filter_snapshot` + `_copy_skip_unmapped_feed_campaigns`; preflight: `_copy_snapshot_preflight` |
 | Preflight стоп | `copy_snapshot._copy_snapshot_preflight` — домен, фид, гео |
 | МК дублируются / не удаляются | `copy_cleanup._copy_cleanup_uac_drafts` — v5 UAC не видит, удалять по куки; `_copy_is_uac_grid_row` проверяет по `"tp6_"/"tp7_"` в имени |
 | Картинки от чужого сайта | `copy_uac._copy_uac_campaigns` round-robin own hashes (mode=upload); v5-ветка: `copy_steps.step_adaptive_creatives` доливка до 5 |
@@ -133,7 +138,8 @@
 | Промо не скопировалось | `copy_snapshot._copy_filter_snapshot` домен-гейт; `direct_copy.py` phase_pull — Status/State → 8000; `step_attach_promos` |
 | DisplayUrlPath/«!» обрезается | `copy_steps.py:1055/1066` — обрезать только при превышении; `grid_finalize:2217/2256` `linkTail` RMW |
 | Сверка (verify) ложный mismatch | `_copy_delayed_reverify` — source_grid надо пересобрать (иначе adaptive недочитан); поллинг sitelinks |
-| Докрутка РСЯ / места показа | `grid_finalize.set_campaign_invariants`; для копий: `_unified_campaign_update_from_edit_row` guard `DEFAULT`/`OPTIMIZE_CLICKS`/`MULTIPLE_CPA` → `_unsupported_strategy` |
+| WRONG_AUTOTARGET / COMPANY_INFO_ENABLED_LIVE на tp2 | `step_fix_search_campaign_invariants` (`copy_steps.py:659`) — форсит ДО verify; если поздно — `direct_delayed_repairs` страховка; verify это покажет в `live_verification` |
+| Докрутка РСЯ / места показа | `grid_finalize.set_campaign_invariants`; для копий: `_unified_campaign_update_from_edit_row` guard `DEFAULT`/`MULTIPLE_CPA` и `OPTIMIZE_CLICKS` только без лимита/avgBid/бюджета → `_unsupported_strategy`; weekly clicks с бюджетом подтверждён HAR и пишется как `AUTOBUDGET_AVG_CLICK` |
 | `full PATCH обнуляет картинки МК` | `routes_content_editor._uac_campaign_patch_payload` деривация `content_ids` из `contents`; порядок правок: картинки — ПОСЛЕДНИМИ |
 | Heal-цикл завис | `copy_engine._copy_delayed_reverify` — min 1200с (`_COPY_HEAL_MIN_SEC`), 8 раундов, 200с пауза |
 | Job не стартует / вечный queued | Очередь: воркер создания клеймит copy-джобы если `kind` не фильтруется → `queue_server._worker_claim_web_jobs` AND фильтр `kind<>'copy_campaigns'` |
