@@ -12896,7 +12896,7 @@
               "items": [
                 {
                   "c": "tp6_cpc_site_ct0001_aon_n000_r0000_ct001_ag011_g00",
-                  "t": "МК - общие запросы - КС",
+                  "t": "МК - общие запросы - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "мк_со_словами_общие_запросы",
                   "camps": [
@@ -12952,7 +12952,7 @@
               "items": [
                 {
                   "c": "tp6_cpc_site_ct0007_aon_n000_r0000_ct001_ag011_g00",
-                  "t": "МК - Трейд-ин - КС",
+                  "t": "МК - Трейд-ин - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "мк_со_словами_трейд_ин",
                   "camps": [
@@ -13007,7 +13007,7 @@
               "items": [
                 {
                   "c": "tp6_cpc_site_ct0006_aon_n000_r0000_ct001_ag011_g00",
-                  "t": "МК - Автокредит - КС",
+                  "t": "МК - Автокредит - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "мк_со_словами_автокредит",
                   "camps": [
@@ -13156,7 +13156,7 @@
               "items": [
                 {
                   "c": "tp6_cpc_site_ct0001_aon_n000_r0000_ct001_ag011_g00",
-                  "t": "МК - общие запросы Китай - КС",
+                  "t": "МК - общие запросы Китай - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "мк_со_словами_общие_запросы_китай",
                   "camps": [
@@ -13187,7 +13187,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Общая - КС",
+                  "t": "ТК - Общая - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "vse_marki",
                   "camps": [
@@ -13207,7 +13207,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - UAZ - КС",
+                  "t": "ТК - UAZ - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "uaz_obshaya",
                   "camps": [
@@ -13227,7 +13227,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Lada - КС",
+                  "t": "ТК - Lada - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "lada_obshaya",
                   "camps": [
@@ -13247,7 +13247,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Chery - КС",
+                  "t": "ТК - Chery - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "chery_obshaya",
                   "camps": [
@@ -13267,7 +13267,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Lifan - КС",
+                  "t": "ТК - Lifan - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "lifan_obshaya",
                   "camps": [
@@ -13287,7 +13287,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Solaris - КС",
+                  "t": "ТК - Solaris - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "solaris_obshaya",
                   "camps": [
@@ -13307,7 +13307,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Moskvich - КС",
+                  "t": "ТК - Moskvich - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "moskvich_obshaya",
                   "camps": [
@@ -13327,7 +13327,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Ravon - КС",
+                  "t": "ТК - Ravon - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "ravon_obshaya",
                   "camps": [
@@ -13347,7 +13347,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Renault - КС",
+                  "t": "ТК - Renault - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "renault_obshaya",
                   "camps": [
@@ -13367,7 +13367,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Xcite - КС",
+                  "t": "ТК - Xcite - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "xcite_obshaya",
                   "camps": [
@@ -13387,7 +13387,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Jetta - КС",
+                  "t": "ТК - Jetta - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "jetta_obshaya",
                   "camps": [
@@ -13407,7 +13407,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - MG - КС",
+                  "t": "ТК - MG - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "mg_obshaya",
                   "camps": [
@@ -13427,7 +13427,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Livan - КС",
+                  "t": "ТК - Livan - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "livan_obshaya",
                   "camps": [
@@ -13447,7 +13447,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Greatwall - КС",
+                  "t": "ТК - Greatwall - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "greatwall_obshaya",
                   "camps": [
@@ -13467,7 +13467,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Volkswagen - КС",
+                  "t": "ТК - Volkswagen - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "volkswagen_obshaya",
                   "camps": [
@@ -13487,7 +13487,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - BAIC - КС",
+                  "t": "ТК - BAIC - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "baic_obshaya",
                   "camps": [
@@ -13507,7 +13507,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Dong Feng - КС",
+                  "t": "ТК - Dong Feng - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "dong_feng_obshaya",
                   "camps": [
@@ -13527,7 +13527,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - EXEED - КС",
+                  "t": "ТК - EXEED - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "exeed",
                   "camps": [
@@ -13547,7 +13547,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Nissan - КС",
+                  "t": "ТК - Nissan - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "nissan_obshaya",
                   "camps": [
@@ -13567,7 +13567,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Tank - КС",
+                  "t": "ТК - Tank - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "tank",
                   "camps": [
@@ -13587,7 +13587,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - FAW - КС",
+                  "t": "ТК - FAW - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "faw_obshaya",
                   "camps": [
@@ -13607,7 +13607,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Kaiyi - КС",
+                  "t": "ТК - Kaiyi - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "kaiyi_obshaya",
                   "camps": [
@@ -13627,7 +13627,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Jac - КС",
+                  "t": "ТК - Jac - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "jac_obshaya",
                   "camps": [
@@ -13647,7 +13647,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Geelyobshaya - КС",
+                  "t": "ТК - Geelyobshaya - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "geelyobshaya",
                   "camps": [
@@ -13667,7 +13667,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - KIA - КС",
+                  "t": "ТК - KIA - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "kia_obshaya",
                   "camps": [
@@ -13687,7 +13687,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Chevrolet - КС",
+                  "t": "ТК - Chevrolet - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "chevrolet_obshaya",
                   "camps": [
@@ -13707,7 +13707,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Jetour - КС",
+                  "t": "ТК - Jetour - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "jetour_obshaya",
                   "camps": [
@@ -13727,7 +13727,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Jaecoo - КС",
+                  "t": "ТК - Jaecoo - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "jaecoo_obshaya",
                   "camps": [
@@ -13747,7 +13747,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Omoda - КС",
+                  "t": "ТК - Omoda - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "omoda_obshaya",
                   "camps": [
@@ -13767,7 +13767,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - GAC - КС",
+                  "t": "ТК - GAC - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "gac_obshaya",
                   "camps": [
@@ -13787,7 +13787,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Zotye - КС",
+                  "t": "ТК - Zotye - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "zotye_obshaya",
                   "camps": [
@@ -13807,7 +13807,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Hyundai - КС",
+                  "t": "ТК - Hyundai - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "hyundai",
                   "camps": [
@@ -13827,7 +13827,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Changan - КС",
+                  "t": "ТК - Changan - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "changan",
                   "camps": [
@@ -13847,7 +13847,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Haval - КС",
+                  "t": "ТК - Haval - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "haval_obshaya",
                   "camps": [
@@ -13867,7 +13867,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Belgee - КС",
+                  "t": "ТК - Belgee - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "belgee_obshaya",
                   "camps": [
@@ -13887,7 +13887,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Skoda - КС",
+                  "t": "ТК - Skoda - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "skoda_obshaya",
                   "camps": [
@@ -20422,7 +20422,7 @@
               "items": [
                 {
                   "c": "tp6_cpc_site",
-                  "t": "МК - Haval - КС",
+                  "t": "МК - Haval - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "мастер_кампаний_модели_ключевики_республика_татарстан_master_haval_slova",
                   "camps": [
@@ -20488,7 +20488,7 @@
               "items": [
                 {
                   "c": "tp6_cpc_site_ct0001_aon_n000_r0000_ct001_ag011_g00",
-                  "t": "МК - общие запросы - КС",
+                  "t": "МК - общие запросы - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "мк_со_словами_общие_запросы",
                   "camps": [
@@ -20547,7 +20547,7 @@
               "items": [
                 {
                   "c": "tp6_cpc_site_ct0007_aon_n000_r0000_ct001_ag011_g00",
-                  "t": "МК - Трейд-ин - КС",
+                  "t": "МК - Трейд-ин - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "мк_со_словами_трейд_ин",
                   "camps": [
@@ -20606,7 +20606,7 @@
               "items": [
                 {
                   "c": "tp6_cpc_site_ct0006_aon_n000_r0000_ct001_ag011_g00",
-                  "t": "МК - Автокредит - КС",
+                  "t": "МК - Автокредит - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "мк_со_словами_автокредит",
                   "camps": [
@@ -20660,7 +20660,7 @@
               "items": [
                 {
                   "c": "tp6_cpc_site_ct0301_aon_n000_r0000_ct001_ag011_g00",
-                  "t": "МК - ТЕНЕТ T4 - КС",
+                  "t": "МК - ТЕНЕТ T4 - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "мк_со_словами_тенет_t4",
                   "camps": [
@@ -20710,7 +20710,7 @@
               "items": [
                 {
                   "c": "tp6_cpc_site_ct0302_aon_n000_r0000_ct001_ag011_g00",
-                  "t": "МК - ТЕНЕТ T7 - КС",
+                  "t": "МК - ТЕНЕТ T7 - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "мк_со_словами_тенет_t7",
                   "camps": [
@@ -20760,7 +20760,7 @@
               "items": [
                 {
                   "c": "tp6_cpc_site_ct0303_aon_n000_r0000_ct001_ag011_g00",
-                  "t": "МК - ТЕНЕТ T8 - КС",
+                  "t": "МК - ТЕНЕТ T8 - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "мк_со_словами_тенет_t8",
                   "camps": [
@@ -20785,7 +20785,7 @@
               "items": [
                 {
                   "c": "tp6_cpc_site",
-                  "t": "МК - Chery - КС",
+                  "t": "МК - Chery - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "мастер_кампаний_chery_ключевики_кс_свердловская_область_master_chery_slova",
                   "camps": [
@@ -20877,7 +20877,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Haval - КС",
+                  "t": "ТК - Haval - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "товарка_мастер_фид_каталог_модели_ключевики_mastercat_haval_slova",
                   "camps": [
@@ -30065,7 +30065,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Общая - КС",
+                  "t": "ТК - Общая - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "новая_группа",
                   "camps": [
@@ -30085,7 +30085,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Honda - КС",
+                  "t": "ТК - Honda - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "honda_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30105,7 +30105,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Ford - КС",
+                  "t": "ТК - Ford - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "ford_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30125,7 +30125,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Nissan - КС",
+                  "t": "ТК - Nissan - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "nissan_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30145,7 +30145,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Mitsubishi - КС",
+                  "t": "ТК - Mitsubishi - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "mitsubishi_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30165,7 +30165,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Lada - КС",
+                  "t": "ТК - Lada - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "lada_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30185,7 +30185,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Mazda - КС",
+                  "t": "ТК - Mazda - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "mazda_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30205,7 +30205,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Skoda - КС",
+                  "t": "ТК - Skoda - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "skoda_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30225,7 +30225,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - KIA - КС",
+                  "t": "ТК - KIA - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "kia_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30245,7 +30245,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Peugeot - КС",
+                  "t": "ТК - Peugeot - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "peugeot_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30265,7 +30265,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Haval - КС",
+                  "t": "ТК - Haval - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "haval_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30305,7 +30305,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Chevrolet - КС",
+                  "t": "ТК - Chevrolet - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "chevrolet_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30325,7 +30325,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Great Wall - КС",
+                  "t": "ТК - Great Wall - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "great_wall_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30345,7 +30345,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Hyunday - КС",
+                  "t": "ТК - Hyunday - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "hyunday_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30365,7 +30365,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Geely - КС",
+                  "t": "ТК - Geely - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "geely_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30385,7 +30385,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Buybu - КС",
+                  "t": "ТК - Buybu - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "buybu_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30405,7 +30405,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Renault - КС",
+                  "t": "ТК - Renault - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "renault_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30425,7 +30425,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Volkswagen - КС",
+                  "t": "ТК - Volkswagen - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "volkswagen_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30445,7 +30445,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Toyota - КС",
+                  "t": "ТК - Toyota - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "toyota_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30465,7 +30465,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Chery - КС",
+                  "t": "ТК - Chery - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "chery_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30485,7 +30485,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Faw - КС",
+                  "t": "ТК - Faw - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "faw_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30559,7 +30559,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "Ваз Lada Granta Cross",
+                  "t": "Ваз Lada Granta Cross + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "ваз_lada_granta_cross",
                   "camps": [
@@ -30667,7 +30667,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "Ваз Lada Granta",
+                  "t": "Ваз Lada Granta + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "ваз_lada_granta",
                   "camps": [
@@ -30883,7 +30883,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Lifan - КС",
+                  "t": "ТК - Lifan - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "lifan_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30901,7 +30901,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Datsun - КС",
+                  "t": "ТК - Datsun - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "datsun_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30919,7 +30919,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Citroen - КС",
+                  "t": "ТК - Citroen - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "citroen_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
@@ -30937,7 +30937,7 @@
               "items": [
                 {
                   "c": "tp7_cpc_site",
-                  "t": "ТК - Ravon - КС",
+                  "t": "ТК - Ravon - КС + Автотаргетинг",
                   "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
                   "gk": "ravon_aon_n000_stavropolo_ct_age_genders",
                   "camps": [
