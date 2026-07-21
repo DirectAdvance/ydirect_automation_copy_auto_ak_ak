@@ -13030,7 +13030,7 @@
               "groups": []
             },
             {
-              "name": "МК - Общие запросы - Автотаргетинг - Самарская область — master_obshaya_avtotargeting",
+              "name": "МК - Общие запросы - Автотаргетинг",
               "items": [
                 {
                   "c": "tp6_cpc_site",
@@ -13099,7 +13099,7 @@
               "groups": []
             },
             {
-              "name": "МК - Автотаргетинг - Волгоградская Область — master_obshaya_avtotargeting — ml3-test-2-20%_750 — цц мл 750₽",
+              "name": "МК - Автотаргетинг",
               "items": [
                 {
                   "c": "tp6_cpc_site",
@@ -13117,12 +13117,12 @@
               "groups": []
             },
             {
-              "name": "МК - Общие запросы - Автотаргетинг - Кемеровская область (Кузбасс) — master_obshaya_avtotargeting",
+              "name": "МК - Общие запросы - Автотаргетинг",
               "items": [],
               "groups": []
             },
             {
-              "name": "МК - Общие запросы - Автотаргетинг - Новосибирская Область — master_obshaya_avtotargeting",
+              "name": "МК - Общие запросы - Автотаргетинг",
               "items": [],
               "groups": []
             },
@@ -20400,7 +20400,7 @@
           "title": "МК",
           "groups": [
             {
-              "name": "МК - Общие запросы - Автотаргетинг - Самарская область — master_obshaya_avtotargeting",
+              "name": "МК - Общие запросы - Автотаргетинг",
               "items": [
                 {
                   "c": "tp6_cpc_site",
@@ -20418,7 +20418,7 @@
               "groups": []
             },
             {
-              "name": "МК - Модели - ключевики - Республика Татарстан — master_haval_slova",
+              "name": "МК - Модели - ключевики",
               "items": [
                 {
                   "c": "tp6_cpc_site",
@@ -20436,7 +20436,7 @@
               "groups": []
             },
             {
-              "name": "МК - Модели - автотаргетинг - Республика Татарстан — master_haval_avtotargeting",
+              "name": "МК - Модели - автотаргетинг",
               "items": [
                 {
                   "c": "tp6_cpc_site",
@@ -20781,7 +20781,7 @@
               "groups": []
             },
             {
-              "name": "МК - Chery - Ключевики/КС - Свердловская Область — master_Chery_slova",
+              "name": "МК - Chery - Ключевики/КС",
               "items": [
                 {
                   "c": "tp6_cpc_site",
@@ -20806,7 +20806,7 @@
               "groups": []
             },
             {
-              "name": "МК - Chery - автотаргет - Свердловская Область — master_Chery_avtotarget",
+              "name": "МК - Chery - автотаргет",
               "items": [
                 {
                   "c": "tp6_cpc_site",

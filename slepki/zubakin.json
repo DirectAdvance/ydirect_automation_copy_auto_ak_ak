@@ -10521,7 +10521,7 @@
               "groups": []
             },
             {
-              "name": "МК - Geely - КС - Волгоградская область — сокр. расх.",
+              "name": "МК - Geely - КС",
               "items": [
                 {
                   "c": "tp6_cpa_site",
@@ -10573,7 +10573,7 @@
               "groups": []
             },
             {
-              "name": "МК - Changan - КС - Краснодарский край — сокр. расх.",
+              "name": "МК - Changan - КС",
               "items": [
                 {
                   "c": "tp6_cpa_site",
@@ -10591,7 +10591,7 @@
               "groups": []
             },
             {
-              "name": "МК - Lada - КС - Краснодарский край — 2",
+              "name": "МК - Lada - КС",
               "items": [
                 {
                   "c": "tp6_cpa_site",
@@ -10616,7 +10616,7 @@
               "groups": []
             },
             {
-              "name": "МК - Skoda - КС - Самарская область — 2",
+              "name": "МК - Skoda - КС",
               "items": [
                 {
                   "c": "tp6_cpa_site_ct0215_aon_n000_r0000_ct001_ag008_g00",
@@ -12350,7 +12350,7 @@
           "title": "МК",
           "groups": [
             {
-              "name": "МК - Chery - КС - Краснодарский край — дилер",
+              "name": "МК - Chery - КС",
               "items": [
                 {
                   "c": "tp6_cpa_site_ct0044_aon_n000_r0000_ct001_ag008_g00",
@@ -12488,7 +12488,7 @@
               "groups": []
             },
             {
-              "name": "МК - Chery Tiggo 7 Pro MAX - КС - Краснодарский край — 2",
+              "name": "МК - Chery Tiggo 7 Pro MAX - КС",
               "items": [
                 {
                   "c": "tp6_cpc_site_ct0050_aon_n000_r0000_ct001_ag008_g00",
@@ -12513,7 +12513,7 @@
               "groups": []
             },
             {
-              "name": "МК - Changan - КС - Республика Татарстан — дилер",
+              "name": "МК - Changan - КС",
               "items": [
                 {
                   "c": "tp6_cpc_site",

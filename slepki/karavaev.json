@@ -17537,7 +17537,7 @@
               "groups": []
             },
             {
-              "name": "МК - Кредит/автокредит - Автотаргетинг- Кемеровская Область — mastercat_credit_at",
+              "name": "МК - Кредит/автокредит - Автотаргетинг",
               "items": [
                 {
                   "c": "tp6_cpc_site",
@@ -17562,7 +17562,7 @@
               "groups": []
             },
             {
-              "name": "МК - Кредит/автокредит - Ключевики- Кемеровская Область — mastercat_credit_slova",
+              "name": "МК - Кредит/автокредит - Ключевики",
               "items": [
                 {
                   "c": "tp6_cpc_site",
@@ -21067,7 +21067,7 @@
           "title": "МК",
           "groups": [
             {
-              "name": "МК - Geely - Автотаргетинг - Краснодарский Край — master_obshaya_avtotargeting",
+              "name": "МК - Geely - Автотаргетинг",
               "items": [
                 {
                   "c": "tp6_cpc_site",
@@ -21092,7 +21092,7 @@
               "groups": []
             },
             {
-              "name": "МК - Geely - Ключевики - Краснодарский Край — master_obshaya_slova",
+              "name": "МК - Geely - Ключевики",
               "items": [
                 {
                   "c": "tp6_cpc_site",
@@ -21142,7 +21142,7 @@
               "groups": []
             },
             {
-              "name": "МК - Lada - автотаргетинг- Краснодарский Край — master_lada_avtotargeting",
+              "name": "МК - Lada - автотаргетинг",
               "items": [
                 {
                   "c": "tp6_cpc_site",
@@ -21167,7 +21167,7 @@
               "groups": []
             },
             {
-              "name": "МК - Lada-granta - автотаргетинг- Краснодарский Край — master_lada-granta_avtotargeting",
+              "name": "МК - Lada-granta - автотаргетинг",
               "items": [
                 {
                   "c": "tp6_cpc_site",
@@ -21192,7 +21192,7 @@
               "groups": []
             },
             {
-              "name": "МК - Lada-vesta - автотаргетинг- Краснодарский Край — master_lada-vesta_avtotargeting",
+              "name": "МК - Lada-vesta - автотаргетинг",
               "items": [
                 {
                   "c": "tp6_cpc_site",
@@ -21217,7 +21217,7 @@
               "groups": []
             },
             {
-              "name": "МК - Lada-niva - автотаргетинг- Краснодарский Край — master_lada-niva_avtotargeting",
+              "name": "МК - Lada-niva - автотаргетинг",
               "items": [
                 {
                   "c": "tp6_cpc_site",
@@ -21242,7 +21242,7 @@
               "groups": []
             },
             {
-              "name": "МК - Lada-largus - автотаргетинг- Краснодарский Край — master_lada-largus_avtotargeting",
+              "name": "МК - Lada-largus - автотаргетинг",
               "items": [
                 {
                   "c": "tp6_cpc_site",
@@ -24117,7 +24117,7 @@
           "title": "МК",
           "groups": [
             {
-              "name": "МК - Общие запросы - Автотаргетинг - Москва и область — master_автокредит_автотаргетинг",
+              "name": "МК - Общие запросы - Автотаргетинг",
               "items": [
                 {
                   "c": "tp6_cpc_site",
@@ -24142,7 +24142,7 @@
               "groups": []
             },
             {
-              "name": "МК - Общие запросы - Ключевики - Москва и область — master_Ключевики",
+              "name": "МК - Общие запросы - Ключевики",
               "items": [
                 {
                   "c": "tp6_cpc_site",
