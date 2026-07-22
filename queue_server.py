@@ -16,6 +16,7 @@ from flask import session
 from . import repair_auto as rauto
 from . import repair_gate as rgate
 from . import slepki_editor as _sed
+from . import write_gate as _write_gate
 from .copy_engine import (
     _copy_run_job, _copy_jobs_recover, _COPY_JOBS, _COPY_JOBS_LOCK,
 )
@@ -74,6 +75,16 @@ _DELAYED_FULL_REPAIR_MAX_ITERATIONS = 2
 _DELAYED_REPAIR_STUCK_TIMEOUT_SECONDS = 1800
 _DELAYED_REPAIR_TIME_BUDGET_SECONDS = 1200
 _DELAYED_REPAIR_MAX_RESCHEDULES = 1
+# Авто-реквью content_repair убитой watchdog'ом (Баг B 2026-07-22): max 2 попытки — если
+# Баг A (IMAGE_NO_POOL) не перехватил все нечинимые случаи, кап страхует от вечного цикла.
+_DELAYED_REPAIR_WATCHDOG_REQUEUE_MAX = 2
+# ДЕФЕКТ-ФИКС (2026-07-20, инцидент 404c320fc32e): reconciler-маркер auto_requeue_missing БОЛЬШЕ
+# не блокирует доставку навсегда одним проходом. Если loose-матч по имени ложно счёл реально
+# отсутствующие позиции «живыми» (устаревшее состояние кабинета / регион-суффикс), они выпадали из
+# missing и терялись молча без шанса на повтор. Теперь маркер несёт attempts и допускает до N
+# свежих проходов (missing пересчитывается по ЖИВОМУ кабинету → штатно опустеет и остановит цикл
+# сам; кап страхует от вечного повтора на нечинимом остатке).
+_REQUEUE_MISSING_MAX_ATTEMPTS = int(os.environ.get("DIRECT_REQUEUE_MISSING_MAX_ATTEMPTS", "3"))
 _CLAIMED_WATCHDOG_TS = {"t": 0.0}
 # Монитор зависшей edit-очереди слепков (find #3 код-ревью): если direct-slepki-worker упал,
 # edit-джобы копятся в 'queued' без исполнения. create-worker (всегда живой) это замечает и алертит.
@@ -499,6 +510,11 @@ def _repair_failures_nonfixable(failed_actions: list) -> bool:
         if not isinstance(result, dict):
             # Структура неизвестна (plain-exception или нет result) → считаем fixable
             return False
+        # IMAGE_NO_POOL (Баг A 2026-07-22): структурный контент-гэп картинок — нет пула для ct.
+        # Не ретраебл-ошибка Grid/сети (те → upload_fail_cts, image_no_pool не выставляется).
+        # Аналог VIDEO_NO_POOL у видео: нечинимо in-place, повтор бессмыслен.
+        if result.get("image_no_pool"):
+            continue  # nonfixable — продолжаем проверку оставшихся actions
         # Собираем коды ошибок из двух источников:
         # 1) top-level errors[].extensions.code (транспортные/авторизационные ошибки Grid)
         # 2) validationResult.errors[].code (валидационные ошибки схемы/фида)
@@ -577,11 +593,32 @@ def _requeue_missing_positions_once(parent_job_id: str, login: str, body: dict) 
         p_res = rgate.dict_from_jsonish(pj.get("result"))
         if not isinstance(p_res, dict):
             p_res = {}
-        if p_res.get("auto_requeue_missing"):
-            return None                              # уже доставляли — не зацикливаемся
+        _arm = p_res.get("auto_requeue_missing")
+        if isinstance(_arm, dict):
+            # One-shot маркер больше не блокирует НАВСЕГДА: предыдущая доставка могла НЕ покрыть
+            # план целиком (loose-матч false-positive исключил реально отсутствующие позиции из
+            # missing — инцидент 404c320fc32e: 4 позиции потеряны молча). Пропускаем на свежий
+            # проход, пока не исчерпан кап: ниже missing пересчитывается по ЖИВОМУ кабинету, и
+            # `if not missing: return None` штатно останавливает цикл, когда всё реально создано
+            # (нормальный успешный кейс НЕ зацикливается — missing пуст). Кап — от вечного повтора
+            # на нечинимом остатке. Дубли в окне in-flight отсекает _job_db_active_by_login (:620).
+            if int(_arm.get("attempts") or 1) >= _REQUEUE_MISSING_MAX_ATTEMPTS:
+                return None                          # исчерпан кап попыток доставки
+        elif _arm:
+            return None                              # старый формат маркера (не-dict) — как раньше
         rbody = {k: v for k, v in dict(body or {}).items()
                  if not str(k).startswith("_")
                  and k not in ("feed_alert", "feed_confirmed", "status", "result", "error")}
+        # ДЕФЕКТ-ФИКС (2026-07-20, инцидент 404c320fc32e): feed_confirmed стрипается как транзиентный
+        # UI-флаг awaiting_feed_decision, но он же несёт ПОДТВЕРЖДЕНИЕ фолбэк-фида, которое читает
+        # tp5/tp3-гейт билда (_resolve_single_feed_variants → create_set_feed_builders.py:926) и
+        # plan-гейт (create_set_plan.py:474). Без него requeue-ребёнок без профильного фида
+        # (/yandex.xml|/yandex-used-auto.xml) молча роняет ВСЕ tp5 («single_feed: целевой фид не
+        # найден»). Транслируем в single_feed_fallback — durable plan-ключ (НЕ стрипается,
+        # принимается обоими гейтами), при этом feed_alert/feed_confirmed остаются вырезаны →
+        # ребёнок не входит в awaiting_feed_decision заново.
+        if (body or {}).get("feed_confirmed") or (body or {}).get("single_feed_fallback"):
+            rbody["single_feed_fallback"] = True
         items = rbody.get("items") or []
         if not items:
             return None
@@ -649,9 +686,13 @@ def _requeue_missing_positions_once(parent_job_id: str, login: str, body: dict) 
             return None
         if not new_jids:
             return None
+        _prev_attempts = (int((_arm or {}).get("attempts") or 0)
+                          if isinstance(_arm, dict) else 0)
         p_res["auto_requeue_missing"] = {"job_id": new_jids[0], "job_ids": new_jids,
                                          "was_created": created,
-                                         "was_failed": failed, "total": total}
+                                         "was_failed": failed, "total": total,
+                                         "attempts": _prev_attempts + 1,
+                                         "last_missing": len(missing)}
         pj["result"] = p_res
         _job_db_save(parent_job_id, pj, full=True)
         with _CREATE_JOBS_LOCK:
@@ -781,6 +822,38 @@ def _delayed_repair_reschedule(did: str, row: dict, remaining: int) -> bool:
         finally:
             conn.close()
     except Exception:  # noqa: BLE001 — повтор best-effort, partial-статус уже записан
+        return False
+
+def _delayed_content_repair_requeue_after_watchdog(did: str) -> bool:
+    """Авто-реквью content_repair-строки, убитой watchdog'ом (Баг B 2026-07-22).
+
+    Строка уже помечена status='failed'. Возвращаем её в 'waiting' с бэкоффом и attempts+1
+    если не исчерпан кап _DELAYED_REPAIR_WATCHDOG_REQUEUE_MAX. Не создаём новую строку —
+    обновляем ту же (уникальный индекс по parent_job_id+kind → конфликта нет при UPDATE).
+
+    Кап защищает от вечного цикла если Баг A (IMAGE_NO_POOL) не перехватил все нечинимые случаи.
+    Бэкофф — _DELAYED_CONTENT_REPAIR_DELAY_SECONDS (300с): дать время Grid осесть перед повтором.
+    """
+    try:
+        conn = _victory_conn_rw()
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE public.direct_delayed_repairs
+                   SET status     = 'waiting',
+                       attempts   = attempts + 1,
+                       run_at     = now() + (%s || ' seconds')::interval,
+                       note       = 'авто-реквью после watchdog-убийства (попытка '
+                                    || (attempts + 1)::text || ')',
+                       updated_at = now()
+                 WHERE id = %s AND attempts < %s
+            """, (str(_DELAYED_CONTENT_REPAIR_DELAY_SECONDS), did,
+                  _DELAYED_REPAIR_WATCHDOG_REQUEUE_MAX))
+            conn.commit()
+            return bool(cur.rowcount)
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 — реквью best-effort, failed-статус уже записан
         return False
 
 def _child_parent_ref(body) -> str:
@@ -1362,6 +1435,13 @@ def _delayed_repair_daemon_loop(app) -> None:
                 except Exception:  # noqa: BLE001
                     pass
                 _parent_absorb_child_progress(_cparent, f"dcr:{_cdid}", 0, 0, 0, final=True)
+                # Баг B (2026-07-22): watchdog убил content_repair с остатком действий.
+                # Возвращаем строку в waiting с бэкоффом, если не исчерпан кап попыток.
+                # С фиксом Бага A (IMAGE_NO_POOL) повтор быстро завершится нечинимым стопом.
+                try:
+                    _delayed_content_repair_requeue_after_watchdog(_cdid)
+                except Exception:  # noqa: BLE001
+                    pass
         rows = []
         try:
             conn = _victory_conn_rw()
@@ -1562,7 +1642,7 @@ def _job_kind(body: dict | None) -> str:
 
 def _job_new_web(total: int, login: str, body: dict, saved_session: dict,
                  dedup_login: bool, priority: bool = False) -> str:
-    """web-роль: постановка джобы ТОЛЬКО в БД (status='queued', _web_posted=true, session в body).
+    """web-роль: постановка джобы ТОЛЬКО в БД (обычно status='queued', _web_posted=true, session в body).
     Воркер-процесс заберёт её клеймом из БД. In-memory очередь web-процесса не используется.
 
     priority=True — добивка/доставка остатка: body['_priority']=true → воркер клеймит такие
@@ -1573,15 +1653,21 @@ def _job_new_web(total: int, login: str, body: dict, saved_session: dict,
         if existing:
             if body is not None:
                 body["_job_id"] = existing
+                body["_dedup_existing"] = True
             return existing
     jid = uuid.uuid4().hex[:12]
+    initial_status = "queued"
     if body is not None:
+        initial_status = str(body.pop("_initial_status", "queued") or "queued")
+        if initial_status not in ("queued", "awaiting_feed_decision"):
+            initial_status = "queued"
+        body.pop("_dedup_existing", None)
         body["_job_id"] = jid
         body["_web_posted"] = True                       # маркер: поллер воркера забирает только такие
         if priority:
             body["_priority"] = True                     # добивка: клейм и очередь — впереди обычных
         body["_session_snapshot"] = dict(saved_session or {})   # нужен для test_request_context в воркере
-    job = {"status": "queued", "login": login, "done": 0,
+    job = {"status": initial_status, "login": login, "done": 0,
            "total": int(total), "created": 0, "failed": 0,
            "set_done": 0, "set_total": int(total),
            "result": None, "error": None, "cancel": False,
@@ -1663,10 +1749,16 @@ def _create_jobs_ahead(jid: str) -> int:
         return 0
     return running + idx
 
-def _agency_gate_claim(agency: str, job_id: str) -> bool:
+def _write_gate_owner(job_kind: str) -> str:
+    kind = str(job_kind or "")
+    if kind == "copy_campaigns":
+        return "direct-copy"
+    if kind in _sed._EDIT_KINDS or _worker_scope() == "slepki":
+        return "direct-slepki-worker"
+    return "direct-create-worker"
+
+def _agency_gate_claim(agency: str, job_id: str, job_kind: str = "") -> bool:
     """Занять кросс-процессный слот агентства. True = слот наш / не применимо; False = занят другим процессом."""
-    if not agency:                                    # пустой ключ агентства — не гейтим (как in-memory)
-        return True
     try:
         conn = _victory_conn_rw()
         try:
@@ -1677,17 +1769,26 @@ def _agency_gate_claim(agency: str, job_id: str) -> bool:
                 (agency, job_id))
             got = cur.fetchone() is not None
             conn.commit()
-            return got
+            if not got:
+                return False
         finally:
             conn.close()
     except Exception as e:  # noqa: BLE001 — FAIL-OPEN
         print(f"[agency-gate] claim fail-open ({agency}): {str(e)[:120]}", flush=True)
         return True
+    if not _write_gate.try_acquire_agency(
+        _victory_conn_rw,
+        agency,
+        job_id,
+        job_kind=job_kind or "direct_automation",
+        owner_service=_write_gate_owner(job_kind),
+    ):
+        _agency_gate_release(agency, job_id)
+        return False
+    return True
 
 def _agency_gate_release(agency: str, job_id: str) -> None:
     """Освободить СВОЙ слот агентства (идемпотентно, только своя job_id). FAIL-OPEN."""
-    if not agency:
-        return
     try:
         conn = _victory_conn_rw()
         try:
@@ -1699,6 +1800,7 @@ def _agency_gate_release(agency: str, job_id: str) -> None:
             conn.close()
     except Exception as e:  # noqa: BLE001
         print(f"[agency-gate] release fail-open ({agency}): {str(e)[:120]}", flush=True)
+    _write_gate.release_agency(_victory_conn_rw, agency, job_id)
 
 def _agency_gate_sweep() -> None:
     """Backstop (из watchdog): освободить слоты, чей job больше не running/claimed
@@ -1716,6 +1818,8 @@ def _agency_gate_sweep() -> None:
             conn.close()
     except Exception as e:  # noqa: BLE001
         print(f"[agency-gate] sweep fail-open: {str(e)[:120]}", flush=True)
+    _write_gate.cleanup_direct_automation_inactive(_victory_conn_rw)
+    _write_gate.cleanup_expired(_victory_conn_rw)
 
 def _claim_next_job():
     """Берёт из очереди следующую джобу, если по агентству ещё не достигнут лимит параллельности.
@@ -1741,7 +1845,7 @@ def _claim_next_job():
                     continue                              # лимит по агентству исчерпан (в этом процессе) — ждёт
                 # Кросс-процессный гейт: агентство может быть занято ДРУГИМ процессом (copy↔create) —
                 # тогда не берём, ждём (не жжём куки/баллы одного агентства параллельно). FAIL-OPEN внутри.
-                if not _agency_gate_claim(_job_agency(q_job), q_jid):
+                if not _agency_gate_claim(_job_agency(q_job), q_jid, str(q_job.get("kind") or "")):
                     continue
                 # подходит: по агентству есть свободный слот (и локально, и кросс-процессно)
                 _CREATE_QUEUE.pop(i)
@@ -1752,7 +1856,7 @@ def _claim_next_job():
                 return q_jid, q_job, q_job["body"], q_job["session"]
             if pick == "retry":
                 continue                                  # снятую/битую убрали — пересканируем
-            _CREATE_COND.wait()                           # нечего брать (пусто или агентства заняты)
+            _CREATE_COND.wait(timeout=_WORKER_POLL_SEC)   # внешний write-gate отпускают без notify
 
 def _create_worker_loop(app):
     """Worker пула создания: параллелит аккаунты, но держит лимит на агентство.
@@ -1979,12 +2083,16 @@ def _ensure_create_worker(app):
     _jobs_db_init()
     if _direct_role() == "web":
         return                                            # web: только схема БД, никаких фоновых тредов
-    # СТОРОННИЙ процесс (ручной скрипт/агент, импортировавший blueprint БЕЗ явной роли и вне
-    # systemd) НЕ должен выполнять recover и поднимать воркеров/демонов: его recover помечал
-    # running-джобы ЖИВОГО воркера 'interrupted' и рвал прогоны (кейс 2026-07-06: контроль №2
-    # 53fd086ef597 прерван скриптом с ролью-дефолтом 'all'). Признак сервиса — systemd
-    # INVOCATION_ID или явно выставленный DIRECT_ROLE.
-    if not os.environ.get("DIRECT_ROLE") and not os.environ.get("INVOCATION_ID"):
+    # СТОРОННИЙ процесс (ручной скрипт/агент, импортировавший blueprint вне systemd) НЕ должен
+    # выполнять recover и поднимать воркеров/демонов: его recover помечал running-джобы ЖИВОГО
+    # воркера 'interrupted' и рвал прогоны. Кейс 2026-07-06 (контроль №2 53fd086ef597, скрипт
+    # с ролью-дефолтом 'all') чинили гейтом «DIRECT_ROLE ИЛИ INVOCATION_ID» — недостаточно:
+    # 2026-07-19/20 живая джоба 404c320fc32e (running, прогресс есть) помечена interrupted
+    # чужим одноразовым скриптом, который просто ЯВНО выставил DIRECT_ROLE (worker/all) —
+    # без запуска под systemd. DIRECT_ROLE тривиально подделать в любом ad-hoc скрипте
+    # (copy-paste из env соседнего сервиса), INVOCATION_ID systemd проставляет только РЕАЛЬНЫМ
+    # управляемым юнитам и подделать его вручную нельзя. Признак сервиса — ТОЛЬКО INVOCATION_ID.
+    if not os.environ.get("INVOCATION_ID"):
         return
     _jobs_db_recover()
     _ensure_create_watchdog()
