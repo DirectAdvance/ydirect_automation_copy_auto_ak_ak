@@ -8,6 +8,10 @@ from .promo import PromoClient
 
 PROMO_FIELDS = ["Id", "Type", "Name", "Description", "Amount", "AmountPrefix", "AmountUnit", "Promocode"]
 
+# Бизнес-правило: промоакция НЕЛЬЗЯ привязывать к МК (tp6) и Товарным кампаниям (tp7).
+# Имена tp6/tp7 всегда начинаются с этих префиксов (см. create_set_plan._build_name).
+_UAC_TP_PREFIXES = ("tp6_", "tp7_", "tp8_", "tp9_", "tp10_")
+
 
 def attach_or_create_promo(*, login: str, items: list[dict[str, Any]], results: list[dict[str, Any]],
                            token: str | None, client: Any, account: dict[str, Any],

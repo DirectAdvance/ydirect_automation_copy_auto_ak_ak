@@ -121,6 +121,17 @@ def _is_feed_item(item: dict[str, Any]) -> bool:
     )
 
 
+_POSEVY_TYPES = {"post_tp8", "post_tp9", "post_tp10"}
+
+
+def _is_posevy_item(item: dict[str, Any]) -> bool:
+    tp = _item_type(item)
+    name = _name(item)
+    return (tp in _POSEVY_TYPES
+            or tp.startswith(("tp8", "tp9", "tp10"))
+            or name.startswith(("tp8_", "tp9_", "tp10_")))
+
+
 def _callouts_relevant(items: list[dict[str, Any]], results: list[dict[str, Any]]) -> bool:
     """Callouts are campaign-level EPK/Grid assets; UAC-only tp6/tp7 does not require them."""
     typed_items = [it for it in (items or []) if isinstance(it, dict) and _name(it)]
@@ -130,6 +141,21 @@ def _callouts_relevant(items: list[dict[str, Any]], results: list[dict[str, Any]
     if named_results:
         return any(not _name(r).startswith(("tp6_", "tp7_")) for r in named_results)
     return True
+
+
+def _promo_relevant(items: list[dict[str, Any]], results: list[dict[str, Any]]) -> bool:
+    """Промо-акции не привязываются к посевам (GdPostCampaign).
+
+    Возвращает False если набор состоит ИСКЛЮЧИТЕЛЬНО из посевных типов.
+    При смешанном наборе (посевы + обычные) — возвращает True (промо нужно для обычных).
+    """
+    typed_items = [it for it in (items or []) if isinstance(it, dict) and _name(it)]
+    if typed_items:
+        return any(not _is_posevy_item(it) for it in typed_items)
+    named_results = [r for r in (results or []) if isinstance(r, dict) and _name(r)]
+    if named_results:
+        return any(not _name(r).startswith(("tp8_", "tp9_", "tp10_")) for r in named_results)
+    return True  # неизвестный набор — считаем релевантным (fail-safe)
 
 
 def _verify_body(body: dict[str, Any] | None, issues: list[dict[str, Any]]) -> dict[str, Any]:
@@ -238,7 +264,7 @@ def verify_create_set(*, login: str, items: list[dict[str, Any]], results: list[
                 issues.append({"severity": "warn", "code": "CONTENT_TITLES_LOW", "name": item_name, "count": titles_n})
             if texts_n and texts_n < 3:
                 issues.append({"severity": "warn", "code": "CONTENT_TEXTS_LOW", "name": item_name, "count": texts_n})
-        elif titles_n <= 0 and texts_n <= 0 and not _is_feed_item(item):
+        elif titles_n <= 0 and texts_n <= 0 and not _is_feed_item(item) and not _is_posevy_item(item):
             issues.append({"severity": "warn", "code": "ITEM_CONTENT_MISSING_LOCAL", "name": item_name})
         if _is_feed_item(item) and not _feed_present(item):
             issues.append({"severity": "warn", "code": "ITEM_FEED_MISSING_LOCAL", "name": item_name})
@@ -288,7 +314,7 @@ def verify_create_set(*, login: str, items: list[dict[str, Any]], results: list[
                            "message": str(r.get("grid_warn"))[:240]})
 
     promo_ok, promo_message = _promo_ok(promo_note, len(created))
-    if not promo_ok:
+    if not promo_ok and _promo_relevant(items, results):
         issues.append({"severity": "warn", "code": "PROMO_NOT_ATTACHED", "message": promo_message})
         repair_candidates.append({"kind": "promo_attach_or_create", "login": login})
 

@@ -86,17 +86,48 @@ def _is_tool_campaign(name: str | None) -> bool:
     """True, если имя кампании похоже на созданное этим сервисом (кодер tpN_{cpc|cpa}_{site|kviz}_…)."""
     return bool(_TOOL_CAMPAIGN_RE.match(str(name or "")))
 
+def _grid_delete_one(login: str, cid: int) -> bool:
+    """Удалить одну кампанию через Grid deleteCampaigns (cookie). → True если удалена.
+    Используется для GdPostCampaign (Посевы tp8/tp9/tp10) — невидимы в v5 и не-UAC.
+    """
+    try:
+        cid = int(cid)  # защита от строкового cid: "712972696" in {712972696} → False без приведения
+        res = gc.GridCreateClient(login).delete_campaigns([cid])
+        return cid in {int(x) for x in (res.get("deleted") or [])}
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _grid_draft_contains(login: str, cid: int) -> bool:
+    """True если cid ещё виден в Grid-черновиках (fallback-проверка после delete).
+
+    Используется как fail-safe: если _grid_delete_one вернул False — проверяем,
+    действительно ли кампания осталась, или просто выпала из Grid-листа быстрее delete.
+    При ошибке чтения возвращаем True (fail-safe: считаем «ещё есть»).
+    """
+    try:
+        return any(
+            int(c["id"]) == cid
+            for c in _grid_list_campaigns(login, only_draft=True)
+            if c.get("id")
+        )
+    except Exception:  # noqa: BLE001
+        return True  # fail-safe
+
+
 def _delete_drafts_core(login: str, agency: str, job: dict | None = None) -> dict:
     """Ядро удаления черновиков (DRAFT) аккаунта, СОЗДАННЫХ ЭТИМ МОДУЛЕМ (по кодеру в имени).
     Чужие/ручные DRAFT-кампании НЕ трогаются (фильтр _is_tool_campaign) — защита от сноса чужого.
     Используется и синхронным эндпоинтом,
     и воркером общей очереди (job ≠ None → прогресс done/created в карточке очереди).
 
-    DRAFT-кампании делятся на два слоя:
+    DRAFT-кампании делятся на три слоя:
     - ЕПК (tp1–tp5, UNIFIED_CAMPAIGN через v5): видны в v5 с State=OFF + Status=DRAFT → v5 delete.
     - UAC (tp6 Мастер, tp7 Товарка): НЕВИДИМЫ в v5; список даёт Grid (_grid_list_campaigns),
       удаляем через DELETE /web-api/uac/campaign/{id}/ (DRAFT удаляется напрямую).
-    НЕОБРАТИМО. → {ok, deleted, by_v5, by_uac, errors, created, failed, kind}."""
+    - Посевы (tp8/tp9/tp10, GdPostCampaign): НЕВИДИМЫ в v5 и не-UAC; список даёт Grid,
+      удаляем через Grid deleteCampaigns (cookie, без баллов v5).
+    НЕОБРАТИМО. → {ok, deleted, by_v5, by_uac, by_cookie, errors, created, failed, kind}."""
     token, ag = _token_for_login(login, agency, _direct_tokens())
     if not token:
         return {"ok": False, "error": "нет рабочего агентского токена для этого логина",
@@ -194,6 +225,12 @@ def _delete_drafts_core(login: str, agency: str, job: dict | None = None) -> dic
                 else:
                     errors.append(f"ЕПК delete {cid}: {(_v5_err(jd) if 'error' in jd else rr.get('Errors'))}"[:120])
                     _adv(False)
+            elif tn == "GdPostCampaign":                 # Посевы tp8/tp9/tp10 — Grid cookie deleteCampaigns
+                ok = _grid_delete_one(login, cid)
+                if not ok and _grid_draft_contains(login, cid):
+                    errors.append(f"Post delete {cid}: не удалён"); _adv(False)
+                    continue
+                deleted += 1; by_cookie += 1; _adv(True)
             else:                                        # UAC Мастер/Товарка — приватный uac/campaign/{id} (по куке)
                 if uac is None:
                     uac = cmc.build_client(login, account=(ag or None))
