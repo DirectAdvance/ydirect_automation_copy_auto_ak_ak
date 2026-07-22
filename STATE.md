@@ -5,6 +5,21 @@
 
 > Архив сессий старше 3 дней — **STATE_ARCHIVE.md** (ротация 2026-07-19 (2): перенесены сессии 07-16 и старше). Правило ротации — см. CLAUDE.md.
 
+## Сессия 2026-07-22 — удаление Hermes с seoadvanced и Proxmox — ЗАВЕРШЕНО
+
+**Цель:** убрать пункт `Hermes AI` из верхней навигации сайта и удалить Hermes с Proxmox.
+
+**Сделано:** из `templates/_nav.html` удалён admin-пункт `Hermes AI`; `/hermes-auth` в `app.py` и nginx
+переименован в `/internal-admin-auth`, потому этот gate ещё используется `/claude/*`; из
+`apps_registry.json` удалены `hermes_profile` и Hermes-note. На LXC101 удалён nginx server-block
+`listen 9119`, backup-файл из `sites-enabled` перенесён в `sites-available/disabled-backups/`.
+Proxmox CT `105 hermes` уничтожен вместе с `vm-105-disk-0`.
+
+**Проверено:** `py_compile app.py`, `json.tool apps_registry.json`, `git diff --check`; sha256 Mac==LXC101
+для `app.py`/`apps_registry.json`/`templates/_nav.html`/`CLAUDE.md`; render `/direct/automation` с
+admin test_client: 200 и без `Hermes AI`/`seoadvanced.ru:9119`; `nginx -T` и `ss` без `9119`;
+`pct status 105` = config missing. Все web-юниты и nginx `active`.
+
 ## Сессия 2026-07-20 — безымянные кампании + счётчик «Создание РК» tp3/tp7 — ЗАВЕРШЕНО
 
 **Задача 1 (данные):** 7 кампаний имели пустой `camp_names` → UI рисовал заглушку «Кампания «Марки»».
