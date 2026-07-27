@@ -104,7 +104,25 @@ def _extract_json(text: str) -> Optional[dict]:
     return obj if isinstance(obj, dict) else None
 
 
-def _validate_paradigm(obj: Optional[dict]) -> Optional[dict]:
+def _extract_roots(name: str) -> list:
+    """Корни слов из географического названия для санити-проверки парадигмы.
+
+    Для каждого слова длиной ≥3 берём stem = len(w)-2 символов (минимум 2).
+    Это корректно покрывает типичные падежные окончания (1–3 символа) и избегает
+    ложного отказа на коротких словах: «уфа»(3) → «уф», «край»(4) → «кр»,
+    «тульская»(8) → «тульск», «область»(7) → «облас».
+    Корни проверяются как подстроки (после _norm) в каждой сгенерированной словоформе.
+    """
+    words = re.findall(r"[а-яёa-z]+", _norm(name))
+    roots = []
+    for w in words:
+        if len(w) >= 3:
+            root_len = max(2, len(w) - 2)
+            roots.append(w[:root_len])
+    return roots
+
+
+def _validate_paradigm(obj: Optional[dict], name: Optional[str] = None) -> Optional[dict]:
     if not isinstance(obj, dict):
         return None
     out: dict[str, str] = {}
@@ -117,6 +135,17 @@ def _validate_paradigm(obj: Optional[dict]) -> Optional[dict]:
         if not v or len(v) > 60:
             return None
         out[c] = v
+    # Корневая проверка: каждая словоформа обязана содержать корень каждого слова исходного названия.
+    # Защита от LLM-галлюцинации «тульская → ульская» (потеря буквы в начале слова).
+    # Если проверка не проходит — возвращаем None: парадигма отвергается, кэш не пишется,
+    # _ask_m3 вернёт None, paradigm_for применит фолбэк (именительная форма без LLM).
+    if name:
+        roots = _extract_roots(name)
+        if roots:
+            for form_val in out.values():
+                form_norm = _norm(form_val)
+                if not all(r in form_norm for r in roots):
+                    return None  # хотя бы один корень не нашёлся → отвергаем парадигму
     return out
 
 
@@ -148,7 +177,7 @@ def _ask_m3(name: str, m3_complete: Callable, log: Callable[[str], None]) -> Opt
     if err or not text:
         log(f"geo-morph: M3 недоступен для {name!r}: {str(err)[:120]}")
         return None
-    para = _validate_paradigm(_extract_json(text))
+    para = _validate_paradigm(_extract_json(text), name=name)
     if not para:
         log(f"geo-morph: невалидный JSON парадигмы для {name!r}: {str(text)[:120]}")
         return None
