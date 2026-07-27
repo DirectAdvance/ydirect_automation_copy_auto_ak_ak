@@ -349,6 +349,59 @@ def _build_tp1_adgroups(
                 idx += 1
             time.sleep(_AC_BATCH_SLEEP)
 
+    # ── Фаза 1.5: tp1 РСЯ — явная установка relevanceMatch.isActive ─────────────────────────────
+    # v501 adgroups.add не поддерживает relevanceMatch → Яндекс ставит дефолт ACTIVE.
+    # Без явного isActive=False группы aoff получают ВКЛ (инверсия кодера aoff→ВКЛ, Случай B).
+    # Без явного isActive=True для aon (ранее попытка через псевдоключ "---autotargeting") — ВЫКЛ
+    # (инверсия aon→ВЫКЛ, Случай A): псевдоключ уводил группу в легаси-режим с isActive=False.
+    # Решение: Grid UpdateUnifiedAdGroups явно задаёт isActive=bool(autotarget) сразу после создания.
+    # tp5 управляет relevanceMatch атомарно в Фазе 1 (AddUnifiedAdGroups), Фаза 1.5 ему не нужна.
+    if tp_code != "tp5" and any(x for x in ag_ids if x):
+        _rm15 = (
+            {"isActive": True, "id": None,
+             "relevanceMatchCategories": ["ALTERNATIVE_MARK", "BROADER_MARK",
+                                          "ACCESSORY_MARK", "EXACT_V2_MARK", "NARROW_MARK"],
+             "autotargetingBrandSettings": ["WITH_BRAND", "WITHOUT_BRAND", "WITH_COMPETITOR_BRAND"]}
+            if autotarget else
+            {"isActive": False, "id": None,
+             "relevanceMatchCategories": [], "autotargetingBrandSettings": []}
+        )
+        _rm15_items: list = []
+        for _i15, _id15 in enumerate(ag_ids):
+            if not _id15:
+                continue
+            _rm15_items.append({
+                "adGroupId": str(_id15),
+                "adGroupName": (groups[_i15].get("name") or "группа")[:255],
+                "adGroupMinusKeywords": [],
+                "bidModifiers": {},
+                "libraryMinusKeywordsIds": [],
+                "regionIds": rids,
+                "hyperGeoId": None,
+                "hyperlocalGeoSegments": None,
+                "audienceTargeting": "ALL_AUDIENCE",
+                "contentTypeShowSettings": None,
+                "keywords": [],
+                "caRetargetingCondition": None,
+                "retargetings": [],
+                "searchRetargetings": [],
+                "offerRetargeting": None,
+                "relevanceMatch": _rm15,
+                "promoExtensionInheritancePolicy": "MERGE",
+                "inheritableCallouts": {"policy": "INHERIT"},
+                "inheritableSitelinkSet": {"policy": "INHERIT"},
+                "generalPrice": None,
+                "trackingParams": _UTM_TEMPLATE_TP1,
+                "contentLanguage": None,
+                "useBidModifiers": True,
+            })
+        if _rm15_items:
+            try:
+                _upd15 = gf.get_grid_client(login, cookie=grid_cookie).update_unified_adgroups(_rm15_items)
+                rep["relevance_match_set"] = len(_upd15)
+            except Exception as _e15:  # noqa: BLE001
+                rep["errors"].append(f"relevanceMatch(1.5): {str(_e15)[:200]}")
+
     # ── Фаза 2: keywords — транспорт по tp_code ──────────────────────────────
     # TP5: Grid-транспорт (тот же _gcl5 из Фазы 1) — смешанный транспорт (Grid группы + v5
     # keywords.add) даёт лаг репликации Grid→v5 → ключи-фантомы (LIVE=0).
@@ -377,19 +430,15 @@ def _build_tp1_adgroups(
                 rep["errors"].append(f"keywords(Grid AddKeywords tp5): {str(_kw5e)[:200]}")
     else:
         # ── tp1 РСЯ: v5 keywords.add (v501-группы, нет межтранспортного лага) ─────────────────
-        # Три режима таргетинга tp1:
-        #   • autotarget=True,  keep_keywords=False → спецключ "---autotargeting" ВМЕСТО реальных.
+        # Режимы ключей tp1 (relevanceMatch.isActive управляется Фазой 1.5, не ключами):
+        #   • autotarget=True,  keep_keywords=False → только relevanceMatch из Фазы 1.5 (ключей нет).
         #   • autotarget=False                      → реальные ключи (чистый КС).
-        #   • autotarget=True,  keep_keywords=True  → И спецключ автотаргета, И реальные ключи.
+        #   • autotarget=True,  keep_keywords=True  → реальные ключи (КС + relevanceMatch из Фазы 1.5).
+        # Спецключ "---autotargeting" упразднён: он вызывал инверсию aon→ВЫКЛ (легаси-режим).
         kw_items = []
         for i, g in enumerate(groups):
             if not ag_ids[i]:
                 continue
-            if autotarget:
-                # tp5 исключён if-ветки выше; здесь всегда tp1 — спецключ допустим.
-                # ⚠ "---autotargeting" на tp1 РСЯ даёт ШИРОКИЙ автотаргет (без сужения категорий);
-                # для tp1 РСЯ приемлемо (в отличие от tp5, где сужаем через Grid-профиль).
-                kw_items.append({"Keyword": _AUTOTARGET_KW, "AdGroupId": int(ag_ids[i])})
             # Реальные ключи: чистый КС (not autotarget) ИЛИ комбинированный КС+Автотаргет.
             if (not autotarget) or keep_keywords:
                 for k in _kw_clean(g.get("keywords") or [], 200):
@@ -400,8 +449,6 @@ def _build_tp1_adgroups(
         for chunk in _chunks(kw_items, _AC_CHUNK_KW):
             jk = _v5_call("keywords", "add", token, login, {"Keywords": chunk})
             if "error" not in jk:
-                # Спецключ "---autotargeting" в счётчик НЕ кладём: он оседает как relevanceMatch,
-                # не как GdKeyword → ложный BUILD_LIVE_MISSING на автотаргетинговых кампаниях.
                 _kw_ids |= _v5_added_keyword_ids(
                     chunk, (jk.get("result") or {}).get("AddResults", []), _AUTOTARGET_KW)
             else:

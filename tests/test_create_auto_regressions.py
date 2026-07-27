@@ -665,7 +665,7 @@ def _make_tp1_test_deps():
     return deps, update_calls, kw_calls
 
 
-def _run_tp1(autotarget: bool, keep_keywords: bool = False, keywords: list | None = None):
+def _run_tp1(autotarget: bool, keep_keywords: bool = False, keywords=None):  # list | None — py3.10+
     """Запустить _build_tp1_adgroups с одной группой, вернуть (rep, update_calls, kw_calls)."""
     deps, update_calls, kw_calls = _make_tp1_test_deps()
     create_set_tp1_builders.configure(deps)
