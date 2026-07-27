@@ -8,7 +8,8 @@ from urllib.parse import urlsplit, urlunsplit
 from . import campaign as cmc
 from . import create_set_context as _csctx  # _parse_targeting_modes (чистый хелпер, без configure)
 from . import kontent_pack as kp
-from .link_check import resolve_or_fallback_url as _resolve_url, resolve_urls_batch as _resolve_urls_batch
+from .link_check import resolve_or_fallback_url as _resolve_url
+from .uac_verifier import UAC_IMAGES_MIN as _UAC_IMAGES_MIN
 from .model_urls import _brand_level_url, _model_page_href, _strip_site_domain_label, _strip_url_query
 
 
@@ -917,6 +918,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     _norm_domain = re.sub(r"^https?://", "", _raw_domain).lower()
     _norm_domain = re.sub(r"^www\.", "", _norm_domain).rstrip("/").strip()
     _img_domain = _norm_domain if _sk == "dmp" else ""
+    img_ct = "ct0000"  # инициализируем до try-блока: нужен ниже для preflight-сообщения
     try:
         _candidate_image_limit = 12
         if c_ct and not _is_common_ct(c_ct):        # модель/кузов в кодере (tp6/tp7)
@@ -934,6 +936,32 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
         it_images = []
     # Передаём запас кандидатов: campaign.py загрузит до 5 УСПЕШНО принятых Direct файлов.
     it_images = list(dict.fromkeys(it_images))[:12]
+    # ── Preflight: пул картинок ──────────────────────────────────────────────────────────────────
+    # Проверяем ТОТ ЖЕ каскад (_creative_images_for_ct), что реальная сборка → preflight и факт
+    # всегда совпадают. Если пул физически меньше порога — кампанию НЕ создаём: создать и тут же
+    # получить UAC_IMAGES_LOW → delete → recreate → та же нехватка (живой цикл porg-pl6iavd5).
+    # Дефицит контента (≠ транзиентный сбой заливки): нечего пересоздавать, кампания не нужна.
+    _pool_size = len(it_images)
+    if _pool_size < _UAC_IMAGES_MIN:
+        _need = _UAC_IMAGES_MIN - _pool_size
+        _gap = (
+            f"CONTENT_GAP_IMAGES_LOW: пул картинок для ct={img_ct} slepok={_sk} — "
+            f"{_pool_size} шт. при необходимых ≥{_UAC_IMAGES_MIN}. "
+            f"Добавить {_need}+ PNG в Manual/{img_ct}/. "
+            "Кампания не создана (дефицит контента, не транзиентный сбой)."
+        )
+        _add_job_err(_job, f"{name}: {_gap}")
+        results.append({
+            "name": name, "ok": False, "error": _gap,
+            "blocked": True, "issue_code": "CONTENT_GAP_IMAGES_LOW",
+            "pool_size": _pool_size, "required": _UAC_IMAGES_MIN, "ct": img_ct,
+        })
+        _bump_job(_job, False)
+        _bump_item(_job)
+        if _job:
+            _job_db_progress(_job)
+        return results, _tp7_mf
+    # ────────────────────────────────────────────────────────────────────────────────────────────
     try:                                          # видео per-кодер (ct): per-модель → фолбэк на логин
         # brand_hint=c_brand: для «Марки»-ct feeds_ct_model()[ct]=None → brand_word="" → пул пуст
         # (D3-create 2026-07-09, зеркало tp1-аудита MEMORY 2026-07-07). Прокидываем марку кодера,

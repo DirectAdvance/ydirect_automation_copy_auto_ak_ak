@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import re as _re
+
 from .text_norm import _trim_clean
+from .uac_verifier import UAC_IMAGES_MIN as _UAC_IMAGES_MIN
+
+_CT_FROM_NAME_RE = _re.compile(r"_ct(\d{4})(?:_|\b)", _re.I)
 
 _DEPS: dict = {}
 
@@ -614,6 +619,29 @@ def _delete_search_draft_campaigns(login: str, agency: str, delete_items: list[d
         failed.extend([{**r, "error": str(e)[:200]} for r in ids_to_delete])
     return {"deleted": rows, "failed": failed, "blocked_non_draft": []}
 
+def _uac_images_pool_size(action: dict, ctx: dict) -> int | None:
+    """Посчитать доступный пул картинок для действия UAC_IMAGES_LOW.
+
+    Использует ТОТ ЖЕ каскад _creative_images_for_ct, что и реальная сборка —
+    preflight и fact всегда считают одинаково. Возвращает None при ошибке/нет данных.
+    _creative_images_for_ct инъектируется через configure() (DEPS ← automation_runtime).
+    """
+    name = str(action.get("name") or "")
+    m = _CT_FROM_NAME_RE.search(name)
+    ct = f"ct{m.group(1)}" if m else "ct0000"
+    body = ctx.get("body") or {}
+    site_type = str(body.get("site_type") or "").strip()
+    slepok = str(body.get("agent") or "").strip()
+    tp = "tp7" if name.lower().startswith("tp7_") else "tp6"
+    if not site_type or not slepok:
+        return None
+    try:
+        imgs = _creative_images_for_ct(site_type, tp, ct, slepok, limit=_UAC_IMAGES_MIN)
+        return len(imgs or [])
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _queue_recreate_repair_job(login: str, ctx: dict, plan: dict, *,
                                parent_job_id: str, saved_session: dict,
                                dedup_login: bool = True) -> dict:
@@ -626,10 +654,62 @@ def _queue_recreate_repair_job(login: str, ctx: dict, plan: dict, *,
         with _CREATE_JOBS_LOCK:
             return _create_jobs_ahead(job_id)
 
-    return rauto.queue_recreate_repair_job(
+    # ── Pool-deficit preflight (ремонт) ──────────────────────────────────────────────────────────
+    # UAC_IMAGES_LOW может быть транзиентным (заливка не дошла) ИЛИ структурным (пул < 5).
+    # Транзиентный → пересоздание исправляет. Структурный → пересоздание даст ТОТ ЖЕ результат
+    # (живой пример: porg-pl6iavd5, tp7 Haval ct0111, цикл delete→recreate→UAC_IMAGES_LOW→...).
+    # Используем тот же каскад _creative_images_for_ct, что и создание → preflight не расходится с фактом.
+    pool_deficit_campaigns: list[dict] = []
+    plan = plan or {}
+    _rgate = _DEPS.get("rgate")
+    if _rgate is not None:
+        _uac_repl = _rgate.executable_uac_replace_campaigns(plan)
+        _deficit_cids: set[int] = set()
+        for _rep in _uac_repl:
+            if str(_rep.get("issue_code") or "") != "UAC_IMAGES_LOW":
+                continue
+            _pool = _uac_images_pool_size(_rep, ctx)
+            if _pool is None or _pool >= _UAC_IMAGES_MIN:
+                continue  # пул достаточен или проверка недоступна → не блокируем recreate
+            try:
+                _cid = int(_rep.get("campaign_id") or 0)
+            except (TypeError, ValueError):
+                _cid = 0
+            _rep_name = str(_rep.get("name") or "")
+            m_ct = _CT_FROM_NAME_RE.search(_rep_name)
+            _ct = f"ct{m_ct.group(1)}" if m_ct else "ct0000"
+            _need = _UAC_IMAGES_MIN - _pool
+            pool_deficit_campaigns.append({
+                "campaign_id": _cid,
+                "name": _rep_name,
+                "pool_size": _pool,
+                "required": _UAC_IMAGES_MIN,
+                "ct": _ct,
+                "note": (
+                    f"CONTENT_GAP_IMAGES_LOW: пул картинок для ct={_ct} = {_pool} шт. "
+                    f"(нужно ≥{_UAC_IMAGES_MIN}). Добавить {_need}+ PNG в Manual/{_ct}/. "
+                    "Кампания оставлена (дефицит контента, а не сбой заливки)."
+                ),
+            })
+            if _cid > 0:
+                _deficit_cids.add(_cid)
+        if pool_deficit_campaigns:
+            # Убираем дефицитные action из плана: delete+recreate с тем же пулом даст тот же результат
+            _filtered_actions = [
+                a for a in (plan.get("actions") or [])
+                if not (
+                    a.get("action") == "resume_or_recreate_campaign"
+                    and str(a.get("issue_code") or "") == "UAC_IMAGES_LOW"
+                    and int(a.get("campaign_id") or 0) in _deficit_cids
+                )
+            ]
+            plan = {**plan, "actions": _filtered_actions}
+    # ──────────────────────────────────────────────────────────────────────────────────────────────
+
+    result = rauto.queue_recreate_repair_job(
         login,
         ctx,
-        plan or {},
+        plan,
         parent_job_id=parent_job_id,
         saved_session=saved_session,
         delete_uac=_delete_uac_repair_campaigns,
@@ -639,6 +719,10 @@ def _queue_recreate_repair_job(login: str, ctx: dict, plan: dict, *,
         delete_search_draft=_delete_search_draft_campaigns,
         units_alive=_DEPS.get("_units_alive_for_login"),   # баллы живы → recreate токеном (не по куке)
     )
+    if pool_deficit_campaigns:
+        result = dict(result)
+        result["pool_deficit_campaigns"] = pool_deficit_campaigns
+    return result
 
 def _auto_queue_recreate_after_done(parent_job_id: str, job_snapshot: dict) -> dict | None:
     """Queue async recreate/UAC replace after the parent create job is terminal.
