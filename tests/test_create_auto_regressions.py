@@ -895,6 +895,102 @@ def test_tp5_autotarget_stays_on_regardless_of_plan_flag():
         assert rm["autotargetingBrandSettings"] == ["WITHOUT_BRAND"]
 
 
+def _run_tp1_with_silent_zero_keywords(tp_code: str):
+    """Прогон с Grid-клиентом, чей add_keywords ТИХО отдаёт [] (валидатор отклонил пачку).
+
+    grid_create.add_keywords:246-254 при validationResult.errors НЕ бросает — печатает в stderr
+    и возвращает []. Раньше это давало rep['keywords']=0 при ПУСТОМ rep['errors'].
+    """
+    from direct import grid_create as _real_gc
+
+    deps, _grid_calls, kw_calls, _ads = _make_tp1_test_deps()
+
+    class _SilentZeroKwClient:
+        def __init__(self, login, cookie=None, **_kw):
+            self.login = login
+
+        def add_adgroups(self, items):
+            return [1001 + i for i in range(len(items))]
+
+        def add_keywords(self, items):
+            kw_calls.append(items)
+            return []   # валидатор Grid отклонил всю пачку, исключения нет
+
+        def _read_adgroup_name_to_id(self, campaign_id):  # noqa: ARG002
+            return {}
+
+    deps["gc"] = types.SimpleNamespace(
+        GridCreateClient=_SilentZeroKwClient,
+        GridCreateError=_real_gc.GridCreateError,
+        build_adgroup=_real_gc.build_adgroup,
+        unique_keyword_ids=_real_gc.unique_keyword_ids,
+    )
+    create_set_tp1_builders.configure(deps)
+
+    groups = [{"name": "тест-группа", "keywords": ["купить авто"], "titles": [], "texts": []}]
+    rep = create_set_tp1_builders._build_tp1_adgroups(
+        token="tok", login="porg-test", campaign_id=999, region_ids=[213],
+        href="https://example.com", groups=groups, autotarget=False,
+        keep_keywords=False, tp_code=tp_code)
+    return rep, kw_calls
+
+
+def test_tp1_silent_zero_keywords_lands_in_errors():
+    """kw_items>0, создано 0 ключей без исключения → причина обязана быть в rep['errors']."""
+    rep, kw_calls = _run_tp1_with_silent_zero_keywords("tp1")
+
+    assert kw_calls, "ключи не отправлялись вовсе — тест не проверяет гейт"
+    assert rep["keywords"] == 0
+    assert any("ключи(AddKeywords tp1)" in str(e) for e in (rep.get("errors") or [])), (
+        f"тихий ноль ключей обязан попасть в rep['errors'], получили {rep.get('errors')!r}")
+
+
+def test_tp5_silent_zero_keywords_is_fatal():
+    """Тот же тихий ноль на поисковой tp5 → синтез singular error → кампания не считается ok."""
+    rep, _kw_calls = _run_tp1_with_silent_zero_keywords("tp5")
+
+    assert rep["keywords"] == 0
+    assert any("ключи(AddKeywords tp5)" in str(e) for e in (rep.get("errors") or []))
+    assert rep.get("error"), (
+        f"tp5 без ключей — структурный провал, ожидался singular error; rep={rep!r}")
+    assert "tp5 ключи" in rep["error"]
+
+
+def test_tp1_all_feeds_group_relevance_match_follows_plan_flag():
+    """Фаза 4a «Товарная галерея · <фид>» (tp1) создаётся Grid-ом с isActive == bool(autotarget).
+
+    Раньше группа шла через v501 adgroups.add БЕЗ relevanceMatch → Директ ставил дефолт ACTIVE,
+    в том числе в кампании планового `aoff`. Детектор grid_read.py:356-362 её не видит (в имени
+    нет токена `_aon_`/`_aoff_`), поэтому дефект был невидим и для замера.
+    """
+    for flag in (True, False):
+        deps, grid_calls, _kw, _ads = _make_tp1_test_deps()
+        v5_calls = []
+
+        def _fake_v5_call(*a, **_kw):
+            v5_calls.append(a)
+            return {"result": {"AddResults": []}}
+
+        deps["_v5_call"] = _fake_v5_call
+        create_set_tp1_builders.configure(deps)
+
+        groups = [{"name": "тест-группа", "keywords": [], "titles": [], "texts": []}]
+        create_set_tp1_builders._build_tp1_adgroups(
+            token="tok", login="porg-test", campaign_id=999, region_ids=[213],
+            href="https://example.com", groups=groups, autotarget=flag,
+            keep_keywords=False, tp_code="tp1", products_only=True,
+            all_feeds_list=[(555, "Основной фид")])
+
+        af_items = [it for call in grid_calls for it in call
+                    if str(it.get("name") or "").startswith("Товарная галерея")]
+        assert len(af_items) == 1, f"группа «все фиды» не создана Grid-ом: {grid_calls!r}"
+        assert af_items[0]["relevanceMatch"]["isActive"] is flag, (
+            f"autotarget={flag} → isActive должен быть {flag}, "
+            f"получили {af_items[0]['relevanceMatch']['isActive']}")
+        assert af_items[0].get("trackingParams"), "UTM группы потерян при переходе на Grid"
+        assert not v5_calls, "v501 adgroups.add всё ещё используется для группы «все фиды»"
+
+
 def test_tp5_group_name_keeps_aon_hardcode():
     """tp5+shopping всегда `_aon_`: это единственное корректное значение, а не хардкод-баг."""
     for flag in (True, False):

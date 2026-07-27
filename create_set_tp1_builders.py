@@ -349,7 +349,7 @@ def _build_tp1_adgroups(
         rep["adgroups"] = sum(1 for x in ag_ids if x)
         rep["relevance_match_set"] = rep["adgroups"]  # атомарно при создании
     except gc.GridCreateError as _ge:
-        # Группы не созданы → rep без adgroups → вызывающий (:1531) вызовет _cleanup_partial
+        # Группы не созданы → rep без adgroups → вызывающий (:1433) вызовет _cleanup_partial
         # и снесёт черновик. ok=True с неверным автотаргетом невозможен.
         rep["errors"].append(f"adgroups(Grid {tp_code}): {str(_ge)[:200]}")
         return rep
@@ -377,6 +377,15 @@ def _build_tp1_adgroups(
             # unique_keyword_ids считает РАЗНЫХ keywordId (Директ схлопывает дубли,
             # как на v5-пути; len(addedItems) давал BUILD_LIVE_UNDERCOUNT — porg-ozge4ntu).
             rep["keywords"] = gc.unique_keyword_ids(_gcl.add_keywords(kw_items))
+            # #ФИКС-7 (тот же гейт, что на родном Grid-пути grid_create.py:591-599): группы
+            # ЗАДУМАНЫ с ключами (kw_items>0), но создано 0 → add_keywords проглотил
+            # validationResult.errors и вернул [] (grid_create.py:246-254 печатает в stderr и
+            # НАМЕРЕННО не бросает). Без этой записи rep["errors"] оставался пустым → позиция
+            # уходила ok=True с нулём ключей, а ловил её только пост-фактум NO_KEYWORDS_LIVE.
+            if not rep["keywords"]:
+                rep["errors"].append(
+                    f"ключи(AddKeywords {tp_code}): 0 из {len(kw_items)} создано "
+                    f"(валидатор Grid отклонил)")
         except Exception as _kwe:  # noqa: BLE001 — ключи единственный путь; сбой = группы без ключей
             rep["errors"].append(f"keywords(Grid AddKeywords {tp_code}): {str(_kwe)[:200]}")
 
@@ -727,18 +736,23 @@ def _build_tp1_adgroups(
                 except Exception as _e:  # noqa: BLE001
                     rep.setdefault("errors", []).append(f"all_feeds grp tp5({_fid}): {str(_e)[:120]}")
             else:
-                # tp1 ЕПК: группа через v501 adgroups.add
+                # tp1 ЕПК: группа через ТОТ ЖЕ Grid-транспорт, что и Фаза 1 — relevanceMatch
+                # выставляется АТОМАРНО при создании. v501 adgroups.add не умеет relevanceMatch:
+                # группа получала дефолт Директа (ACTIVE) даже в кампании планового `aoff` —
+                # ровно тот дефект, который для основных групп уже закрыт Фазой 1. Детектору
+                # grid_read.py:356-362 такая группа НЕ видна (нет токена `_aon_`/`_aoff_` в имени
+                # «Товарная галерея · <фид>»), поэтому чинить надо в источнике, а не в замере.
+                # UTM не теряется: build_adgroup кладёт trackingParams = cmc.UTM_TEMPLATE — тот же
+                # макрос, что и _UTM_TEMPLATE_TP1 на прежнем v501-пути.
                 try:
-                    _ja_af = _v5_call("adgroups", "add", token, login, {"AdGroups": [{
-                        "Name": _gn_af, "CampaignId": int(campaign_id),
-                        "RegionIds": rids, "TrackingParams": _UTM_TEMPLATE_TP1,
-                    }]})
-                    _r_af = ((_ja_af.get("result") or {}).get("AddResults") or [{}])[0]
-                    if not _r_af.get("Errors"):
-                        _new_ag = _r_af.get("Id")
-                    else:
+                    _gaf_items = [gc.build_adgroup(
+                        campaign_id=int(campaign_id), name=_gn_af, region_ids=rids,
+                        keywords=[], minus_keywords=[], autotargeting=bool(autotarget))]
+                    _gaf_ids = _gcl.add_adgroups(_gaf_items)
+                    _new_ag = _gaf_ids[0] if _gaf_ids else None
+                    if not _new_ag:
                         rep.setdefault("errors", []).append(
-                            f"all_feeds grp tp1({_fid}): {_r_af.get('Errors')}")
+                            f"all_feeds grp tp1({_fid}): группа не создана (Grid AddUnifiedAdGroups)")
                 except Exception as _e:  # noqa: BLE001
                     rep.setdefault("errors", []).append(f"all_feeds grp tp1({_fid}): {str(_e)[:120]}")
             if not _new_ag:
