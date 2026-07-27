@@ -265,6 +265,24 @@ class TestBidModDemStructure:
 
         assert href == "https://autopark777.site/auto/haval/m6/ii/suv-5d"
 
+    def test_post_href_ignores_quiz_only_feed_offer(self, monkeypatch):
+        """Посевы: единственный оффер марки — из квиз-фида → кнопка ведёт на страницу марки."""
+        urls = {"kaiyi": "https://newautos-193.site/quiz?fid=95713#x7-kunlun-i-suv-5d"}
+
+        monkeypatch.setattr(post_module, "_post_feed_url_map", lambda *_args, **_kw: urls)
+        monkeypatch.setattr(post_module, "_post_feed_url_for_label", lambda u, label: u.get(label.lower()))
+        monkeypatch.setattr(post_module, "_post_ct_segment", lambda _ct: "Марки")
+
+        href = _post_href_for_label(
+            "porg-test",
+            "https://newautos-193.site/",
+            "Kaiyi",
+            ct="ct0154",
+            site_type="Мультибренд",
+        )
+
+        assert href == "https://newautos-193.site/auto/kaiyi"
+
     def test_post_href_single_brand_fallback_uses_brand_page_when_segment_missing(self, monkeypatch):
         urls = {"haval": "https://autopark777.site/auto/haval/m6/ii/suv-5d?fid=1"}
 

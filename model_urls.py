@@ -68,6 +68,33 @@ def _brand_level_url(u: str) -> str:
     return origin + brand_path
 
 
+def _is_degenerate_feed_url(u: str) -> bool:
+    """True если URL ИЗ ФИДА не ведёт на страницу марки/модели и его нельзя брать как href.
+
+    Вырожденные варианты: пусто, голый корень домена, путь `/quiz(/…)`.
+
+    Зачем (AD_HREF_ROOT_INSTEAD_OF_MODEL): у части салонов единственный оффер в account-мёрже
+    фидов приходит из КВИЗ-фида — `targetUrl = https://site/quiz?fid=…#anchor`. Такой URL
+    проходит фид-first ветку builder'ов, а `link_check.strip_quiz_url` схлопывает любой `/quiz`
+    в голый корень домена → объявление уходит на главную вместо страницы марки.
+
+    Гард ставится ПОСЛЕ фид-лукапа и ДО link_check: фид игнорируется, href строится формулой
+    `_model_page_href`. Проверяется ТОЛЬКО URL из фида, поэтому легальный фолбэк формулы
+    (`/auto/uaz` → 404 → `_parent_path` → `/auto`) под гард не попадает — он рождается уже
+    после гарда, в resolve-цепочке.
+    """
+    s = _strip_url_query(u)
+    if not s:
+        return True
+    m = re.match(r"(https?://[^/]+)(.*)$", s)
+    if not m:
+        return False              # не абсолютный URL — не наша зона, поведение прежнее
+    parts = [p for p in (m.group(2) or "").split("/") if p]
+    if not parts:
+        return True               # голый корень домена — марки/модели в нём нет
+    return parts[0].lower() == "quiz"
+
+
 def _href_host(href: str = "") -> str:
     """Hostname аккаунта из href, без схемы/www/пути/query. Пусто → ''."""
     h = (href or "").lower().strip()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .text_norm import _trim_clean
 from .link_check import resolve_or_fallback_url as _resolve_url, resolve_urls_batch as _resolve_urls_batch
+from .model_urls import _is_degenerate_feed_url
 
 import json
 import os
@@ -40,11 +41,15 @@ def _pack_group_href(ct: str, brand: str, feed_urls: "dict | None", href: str, s
 
     feed_urls может быть None (tp1_pack_groups при feed_url_by_model=None) — в этом случае
     фид-URL не ищем и сразу строим формульный слаг.
+
+    AD_HREF_ROOT_INSTEAD_OF_MODEL: вырожденный URL из фида (квиз-оффер `/quiz?fid=…`, голый
+    корень) игнорируем — link_check.strip_quiz_url схлопнул бы его в главную. Обход
+    `_multi and _uname` в call-sites спасал только multi-группы; гард закрывает и НЕ-multi.
     """
     site_href = _site_root_href(href)
     raw_feed = (_feed_url_for_model(feed_urls, brand, no_brand_fallback=(_ct_segment(ct) == "Модели"))
                 if feed_urls else None)
-    if raw_feed:
+    if raw_feed and not _is_degenerate_feed_url(raw_feed):
         return _brand_level_url(raw_feed) if _ct_segment(ct) == "Марки" else _strip_url_query(raw_feed)
     return _model_page_href(site_href, site_type, brand)
 

@@ -255,6 +255,137 @@ def test_group_href_formula_fallback_strips_quiz_base(monkeypatch):
     assert href == "https://newautos-193.site/auto/haval"
 
 
+def test_is_degenerate_feed_url_table():
+    from direct import model_urls
+
+    # Вырожденные: пусто, корень домена, /quiz в любом виде
+    assert model_urls._is_degenerate_feed_url("") is True
+    assert model_urls._is_degenerate_feed_url("https://newautos-193.site") is True
+    assert model_urls._is_degenerate_feed_url("https://newautos-193.site/") is True
+    assert model_urls._is_degenerate_feed_url("https://newautos-193.site/?utm=x") is True
+    assert model_urls._is_degenerate_feed_url(
+        "https://newautos-193.site/quiz?fid=95713#x7-kunlun-i-suv-5d") is True
+    assert model_urls._is_degenerate_feed_url("https://newautos-193.site/QUIZ/step-2") is True
+    # Нормальные фид-URL: гард молчит
+    assert model_urls._is_degenerate_feed_url("https://newautos-193.site/auto/kaiyi") is False
+    assert model_urls._is_degenerate_feed_url(
+        "https://newautos-193.site/auto/belgee/x70/i/suv-5d?fid=1") is False
+    assert model_urls._is_degenerate_feed_url("https://newautos-193.site/auto") is False
+
+
+def _patch_text_builder_urls(monkeypatch, segment, feed_url):
+    monkeypatch.setattr(create_set_text_builders, "_ct_segment", lambda _ct: segment, raising=False)
+    monkeypatch.setattr(
+        create_set_text_builders,
+        "_feed_url_for_model",
+        lambda *_a, **_kw: feed_url,
+        raising=False,
+    )
+    monkeypatch.setattr(create_set_text_builders, "_strip_url_query",
+                        lambda url: url.split("?", 1)[0], raising=False)
+    monkeypatch.setattr(create_set_text_builders, "_brand_level_url",
+                        lambda url: url, raising=False)
+    monkeypatch.setattr(
+        create_set_text_builders,
+        "_model_page_href",
+        lambda base, _site_type, name: base.rstrip("/") + "/auto/" + name.lower().replace(" ", "-"),
+        raising=False,
+    )
+
+
+def test_tp2_group_href_ignores_quiz_only_feed_offer(monkeypatch):
+    """Kaiyi: единственный оффер аккаунта — из квиз-фида → href обязан быть страницей марки."""
+    _patch_text_builder_urls(monkeypatch, "Марки",
+                             "https://newautos-193.site/quiz?fid=95713#x7-kunlun-i-suv-5d")
+
+    href = create_set_text_builders._pack_group_href(
+        "ct0154", "KAIYI", "KAIYI", {"kaiyi": "https://newautos-193.site/quiz?fid=95713"},
+        "https://newautos-193.site", "Мультибренд",
+    )
+
+    assert href == "https://newautos-193.site/auto/kaiyi"
+
+
+def test_tp2_group_href_keeps_catalog_feed_offer(monkeypatch):
+    """Каталог-фид (не квиз) — поведение прежнее, гард не вмешивается."""
+    _patch_text_builder_urls(monkeypatch, "Модели",
+                             "https://newautos-193.site/auto/belgee/x70/i/suv-5d?fid=1")
+
+    href = create_set_text_builders._pack_group_href(
+        "ct0201", "Belgee X70", "Belgee X70", {"belgee x70": "x"},
+        "https://newautos-193.site", "Мультибренд",
+    )
+
+    assert href == "https://newautos-193.site/auto/belgee/x70/i/suv-5d"
+
+
+def test_tp2_group_href_uses_uname_when_real_brand_empty(monkeypatch):
+    """Зеркало tp1-фикса: real_brand пуст (ct0000) → формула по структурному имени группы."""
+    _patch_text_builder_urls(monkeypatch, "Марки", "https://newautos-193.site/quiz?fid=1")
+
+    href = create_set_text_builders._pack_group_href(
+        "ct0000", "Авто", "", {"x": "y"}, "https://newautos-193.site", "Мультибренд",
+        uname="Knewstar",
+    )
+
+    assert href == "https://newautos-193.site/auto/knewstar"
+
+
+def test_tp1_non_multi_group_href_ignores_quiz_feed_offer(monkeypatch):
+    """tp1/tp5 без _multi: обход `_multi and _uname` не работает → гард обязан отработать сам."""
+    monkeypatch.setattr(create_set_tp1_builders, "_ct_segment", lambda _ct: "Марки", raising=False)
+    monkeypatch.setattr(create_set_tp1_builders, "_feed_url_for_model",
+                        lambda *_a, **_kw: "https://newautos-193.site/quiz?fid=1", raising=False)
+    monkeypatch.setattr(create_set_tp1_builders, "_brand_level_url", lambda url: url, raising=False)
+    monkeypatch.setattr(
+        create_set_tp1_builders,
+        "_model_page_href",
+        lambda base, _site_type, brand: base.rstrip("/") + "/auto/" + brand.lower(),
+        raising=False,
+    )
+
+    href = create_set_tp1_builders._pack_group_href(
+        "ct0154", "Kaiyi", {"kaiyi": "https://newautos-193.site/quiz?fid=1"},
+        "https://newautos-193.site", "Мультибренд",
+    )
+
+    assert href == "https://newautos-193.site/auto/kaiyi"
+
+
+def test_master_product_feed_branch_has_quiz_guard():
+    """tp6/tp7 (`run_master_product_item`) — фид-first ветка закрыта тем же общим гардом.
+
+    Проверка по исходнику: функция DI-тяжёлая и целиком в unit-тесте не поднимается.
+    """
+    import inspect
+
+    src = inspect.getsource(create_set_master_product.run_master_product_item)
+    assert "if _raw_feed_url and not _is_degenerate_feed_url(_raw_feed_url):" in src
+
+
+def test_uaz_formula_fallback_to_auto_survives_guard(monkeypatch):
+    """UAZ нет в фидах: формула /auto/uaz → 404 → /auto (легальный фолбэк), гард не мешает."""
+    monkeypatch.setattr(create_set_text_builders, "_ct_segment", lambda _ct: "Марки", raising=False)
+    monkeypatch.setattr(create_set_text_builders, "_feed_url_for_model",
+                        lambda *_a, **_kw: None, raising=False)
+    monkeypatch.setattr(
+        create_set_text_builders,
+        "_model_page_href",
+        lambda base, _site_type, name: base.rstrip("/") + "/auto/" + name.lower(),
+        raising=False,
+    )
+
+    raw = create_set_text_builders._pack_group_href(
+        "ct0256", "UAZ", "UAZ", {}, "https://newautos-193.site", "Мультибренд",
+    )
+    assert raw == "https://newautos-193.site/auto/uaz"
+
+    monkeypatch.setattr(link_check, "_http_status",
+                        lambda url, timeout: 404 if url.endswith("/auto/uaz") else 200)
+    link_check._URL_CHECK_CACHE.clear()
+    assert link_check.resolve_or_fallback_url(raw) == "https://newautos-193.site/auto"
+
+
 def test_x3_requires_registry_tag_not_hybrid_name():
     camp = {
         "name": "РСЯ - Марки - КС + Автотаргетинг",

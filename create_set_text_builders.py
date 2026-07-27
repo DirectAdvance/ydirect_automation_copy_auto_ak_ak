@@ -6,6 +6,7 @@ from .text_norm import _trim_clean
 from .text_gen import _fill_title
 from .grid_create import unique_keyword_ids as _unique_keyword_ids
 from .link_check import resolve_or_fallback_url as _resolve_url, resolve_urls_batch as _resolve_urls_batch
+from .model_urls import _is_degenerate_feed_url
 
 import re
 import time
@@ -34,19 +35,26 @@ def _site_root_href(href: str) -> str:
     return raw.rstrip("/")
 
 
-def _pack_group_href(ct: str, brand: str, real_brand: str, feed_urls: dict, href: str, site_type: str) -> str:
+def _pack_group_href(ct: str, brand: str, real_brand: str, feed_urls: dict, href: str, site_type: str,
+                     uname: str = "") -> str:
     """Raw model_href для группы пака (до link_check resolve). Вызывается в pre-pass и основном цикле.
 
     BUTTON_404_GENERIC_AVTO (2026-07-21): формульный deep-link зовём ТОЛЬКО с реальным брендом
     (real_brand, не brand), т.к. brand может быть литеральным фолбэком «Авто» →
     _slugify("Авто")="avto" → /auto/avto (404, страницы не существовало).
+
+    AD_HREF_ROOT_INSTEAD_OF_MODEL: вырожденный URL из фида (квиз-оффер `/quiz?fid=…`, голый
+    корень) игнорируем — иначе link_check.strip_quiz_url схлопнет его в главную. Фолбэк —
+    формула по real_brand, а при пустом real_brand по uname (структурное имя группы, зеркало
+    tp1-фикса `_multi and _uname`).
     """
     site_href = _site_root_href(href)
     raw_feed = _feed_url_for_model(feed_urls, brand, no_brand_fallback=(_ct_segment(ct) == "Модели"))
-    if raw_feed:
+    if raw_feed and not _is_degenerate_feed_url(raw_feed):
         return _brand_level_url(raw_feed) if _ct_segment(ct) == "Марки" else _strip_url_query(raw_feed)
-    if real_brand:
-        return _model_page_href(site_href, site_type, real_brand)
+    _formula_name = real_brand or uname
+    if _formula_name:
+        return _model_page_href(site_href, site_type, _formula_name)
     return site_href.rstrip("/")
 
 
@@ -515,7 +523,8 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
                  else (ct_name.get(_pct) or ct_model.get(_pct) or _pct))
         _preal = _valid_pack_brand_name(_pct, _praw)
         _pbrand = _preal if _struct_names else (_preal or "Авто")
-        _batch_hrefs.append(_pack_group_href(_pct, _pbrand, _preal, _feed_urls, href, site_type))
+        _batch_hrefs.append(_pack_group_href(_pct, _pbrand, _preal, _feed_urls, href, site_type,
+                                            uname=_puname))
     _resolve_urls_batch(_batch_hrefs)
 
     for ct, _gk, _uname in _units:
@@ -541,7 +550,8 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
         # deep-link: фид → формульный слаг. ФИКС-A: Марки→/auto/{brand}, Модели→полный путь.
         # BUTTON_404_GENERIC_AVTO: helper принимает _real_brand (не brand) для формульного deep-link.
         # 404-фолбэк: кэш прогрет pre-pass (batch 6 потоков) → cache-hit. (#LINK_CHECK_404_FALLBACK)
-        model_href = _resolve_url(_pack_group_href(ct, brand, _real_brand, _feed_urls, href, site_type))
+        model_href = _resolve_url(_pack_group_href(ct, brand, _real_brand, _feed_urls, href, site_type,
+                                                   uname=_uname))
         # Title: шаблон «Новые {brand} в {город}. {акция}» (≤35 симв.) — фолбэк brand[:56]
         # с добивкой до ≥54 через _fill_title (иначе «BAIC» 4 симв. отбрасывается gate-ом <48).
         # dmp (гейт _struct_names): авто-шаблоны неприменимы — title-seed пуст, _rsya_titles ведёт

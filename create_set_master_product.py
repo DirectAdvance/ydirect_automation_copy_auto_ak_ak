@@ -10,7 +10,8 @@ from . import create_set_context as _csctx  # _parse_targeting_modes (чисты
 from . import kontent_pack as kp
 from .link_check import resolve_or_fallback_url as _resolve_url
 from .uac_verifier import UAC_IMAGES_MIN as _UAC_IMAGES_MIN
-from .model_urls import _brand_level_url, _model_page_href, _strip_site_domain_label, _strip_url_query
+from .model_urls import (_brand_level_url, _is_degenerate_feed_url, _model_page_href,
+                         _strip_site_domain_label, _strip_url_query)
 
 
 def _site_root_href(href: str) -> str:
@@ -307,7 +308,9 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
                                                  no_brand_fallback=(not _is_brand_only)) or "")
         except Exception:  # noqa: BLE001 — URL-фолбэк ниже
             _raw_feed_url = ""
-        if _raw_feed_url:
+        # AD_HREF_ROOT_INSTEAD_OF_MODEL: вырожденный URL из фида (квиз-оффер `/quiz?fid=…`,
+        # голый корень) игнорируем — link_check ниже схлопнул бы его в главную.
+        if _raw_feed_url and not _is_degenerate_feed_url(_raw_feed_url):
             it_href = _brand_level_url(_raw_feed_url) if _is_brand_only else _strip_url_query(_raw_feed_url)
         else:
             it_href = _model_page_href(_site_href, eff_site, c_brand)

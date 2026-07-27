@@ -211,13 +211,16 @@ def _post_href_for_label(login: str, base_href: str, label: str,
     if not label or str(label).lower() == "посевы":
         return base_href.rstrip("/")
     try:
-        from .model_urls import _brand_level_url, _model_page_href  # noqa: PLC0415
+        from .model_urls import _brand_level_url, _is_degenerate_feed_url, _model_page_href  # noqa: PLC0415
     except ImportError:
-        from model_urls import _brand_level_url, _model_page_href  # type: ignore[no-redef]  # noqa: PLC0415
+        from model_urls import (_brand_level_url, _is_degenerate_feed_url,  # type: ignore[no-redef]  # noqa: PLC0415
+                                _model_page_href)
 
     urls = _post_feed_url_map(login, base_href)
     raw = _post_feed_url_for_label(urls, label)
-    if raw:
+    # AD_HREF_ROOT_INSTEAD_OF_MODEL: вырожденный URL из фида (квиз-оффер `/quiz?fid=…`, голый
+    # корень) игнорируем — кнопка поста иначе уходит на главную вместо страницы марки/модели.
+    if raw and not _is_degenerate_feed_url(raw):
         if _post_label_is_brand_level(label, ct, urls):
             return _brand_level_url(raw)
         return _strip_url_query_local(raw)
