@@ -1042,7 +1042,11 @@ def _build_tp1_from_pack(
         _praw = ((_struct_names.get(_pct) or ct_name.get(_pct) or _pct) if _struct_names
                  else (ct_name.get(_pct) or ct_model.get(_pct) or _pct))
         _pbrand = _valid_pack_brand_name(_pct, _praw)
-        _batch_hrefs.append(_pack_group_href(_pct, _pbrand, _feed_urls_tp1, href, site_type))
+        # ФИКС-B pre-pass: per-model (_multi + _puname) → формульный href (ct0000 "Марки"
+        # по умолчанию давал бы brand-level URL через feed-lookup).
+        _batch_hrefs.append(_model_page_href(_site_root_href(href), site_type, _puname)
+                            if (_multi and _puname)
+                            else _pack_group_href(_pct, _pbrand, _feed_urls_tp1, href, site_type))
     _resolve_urls_batch(_batch_hrefs)
 
     for ct, _gk, _uname in _units:
@@ -1085,7 +1089,11 @@ def _build_tp1_from_pack(
         _img_rr += 1
         # deep-link: фид → формульный слаг. ФИКС-A: Марки→/auto/{brand}, Модели→полный путь.
         # 404-фолбэк: кэш прогрет pre-pass (batch 6 потоков) → cache-hit. (#LINK_CHECK_404_FALLBACK)
-        model_href = _resolve_url(_pack_group_href(ct, brand, _feed_urls_tp1, href, site_type))
+        # ФИКС-B: per-model (_multi + _uname, ct0000): _valid_pack_brand_name возвращает "" для
+        # ct0000 → _pack_group_href давал голый домен. Обходим feed-lookup, строим по формуле.
+        model_href = (_resolve_url(_model_page_href(_site_root_href(href), site_type, _uname))
+                      if (_multi and _uname)
+                      else _resolve_url(_pack_group_href(ct, brand, _feed_urls_tp1, href, site_type)))
         # Title: шаблон «Новые {brand} в {город}. {акция}» (≤35 симв.) — фолбэк brand[:35].
         # ai_title2 — ИИ-заголовок (если дан), иначе round-robin из пула.
         is_brand_group = _ct_segment(ct) in ("Марки", "Модели")
@@ -2144,7 +2152,10 @@ def _tp1_pack_groups(login: str, slepok: str, site_type: str, r_code: str, href:
         _praw = ((_struct_names.get(_pct) or ct_name.get(_pct) or _pct) if _struct_names
                  else (_puname or ct_name.get(_pct) or ct_model.get(_pct) or _pct))
         _pbrand = _valid_pack_brand_name(_pct, _praw)
-        _batch_hrefs.append(_pack_group_href(_pct, _pbrand, feed_url_by_model, href, site_type))
+        # ФИКС-B pre-pass: per-model (_pgk + _puname) → формульный href (аналогично v5-пути).
+        _batch_hrefs.append(_model_page_href(_site_root_href(href), site_type, _puname)
+                            if (_pgk and _puname)
+                            else _pack_group_href(_pct, _pbrand, feed_url_by_model, href, site_type))
     _resolve_urls_batch(_batch_hrefs)
 
     for ct, _gk, _uname in _units:
@@ -2187,7 +2198,10 @@ def _tp1_pack_groups(login: str, slepok: str, site_type: str, r_code: str, href:
                                            autotarget=autotarget, tp_code=tp_code))
         # deep-link: фид → формульный слаг. ФИКС-A: Марки→/auto/{brand}, Модели→полный путь.
         # 404-фолбэк: кэш прогрет pre-pass (batch 6 потоков) → cache-hit. (#LINK_CHECK_404_FALLBACK)
-        model_href = _resolve_url(_pack_group_href(ct, brand, feed_url_by_model, href, site_type))
+        # ФИКС-B: per-model (_gk + _uname): аналогично v5-пути — формульный href минуя feed-lookup.
+        model_href = (_resolve_url(_model_page_href(_site_root_href(href), site_type, _uname))
+                      if (_gk and _uname)
+                      else _resolve_url(_pack_group_href(ct, brand, feed_url_by_model, href, site_type)))
         is_brand_group = _ct_segment(ct) in ("Марки", "Модели")
         title = (_title_from_template(brand, city, slepok=slepok, site_type=site_type) if (is_brand_group and not ai_title2)
                  else (_GENERIC_AT_TITLES[0] if not is_brand_group else brand[:35]))

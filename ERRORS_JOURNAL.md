@@ -4,6 +4,14 @@
 > метод решения → **помогло или нет** (проверено живым прогоном). Перед фиксом любой ошибки —
 > СНАЧАЛА искать её здесь: возможно, решение уже известно или уже пробовали и не помогло.
 
+### TP5_MODEL_HREF_ROOT — tp5 «Товарная галерея - Модели» per-model group ведёт на корень домена (2026-07-27)
+- Симптом: кампания tp5_cpc_site «Товарная галерея - Модели», группа «Lada Niva Legend» (кодер ct0186_aon_n000_r0088_ct010_ag011_g00), комбинаторное объявление — «Ссылка в объявлении» = `https://newautos-193.site` (корень), ожидаемо `/auto/lada/niva-legend`. job 446ab5bd0ab3, porg-pl6iavd5.
+- Root-cause: `_valid_pack_brand_name("ct0000", ...)` возвращает `""` (ct0000 = Общее). В per-model `_multi`-ветке (ct0000 + `_gk`/`_uname`) `brand=""` → `_pack_group_href(ct0000, "", ...)` → `_model_page_href(root, type, "")` → голый домен. Имя `_uname` («Lada Niva Legend») корректно шло в кодер группы и ключи, но НЕ в href.
+- Где: `create_set_tp1_builders.py:1044-1045, 1086-1088` (v5 путь `_build_tp1_from_pack`) и `:2146-2147, 2188-2190` (cookie/grid путь `_tp1_pack_groups`).
+- Решение (2026-07-27): оба пути + их pre-pass: для per-model группы (`_multi and _uname` для v5, `_gk and _uname` для cookie/grid) строим href напрямую через `_model_page_href(_site_root_href(href), site_type, _uname)`, минуя `_pack_group_href` (feed-lookup с ct0000 даёт "Марки" по умолчанию → brand-level URL). Стандартные Общее-группы с `_multi=False`/`_gk=""` — без изменений (корень домена штатен). `py_compile` OK, 9/9 href-related тестов passed, 414 всего passed (20 pre-existing failures несвязанных).
+- Статус: 🟡 фикс на Mac. Ждёт живого прогона (next tp5 с «Товарная галерея - Модели»).
+- НЕ помогало ранее: link_check.py не виноват — fail-open по таймауту сохраняет ИСХОДНЫЙ url (гипотеза проверена и отвергнута).
+
 ### TP1_AUTOTARGET_INVERSION — инверсия relevanceMatch.isActive для aon/aoff в tp1 РСЯ (2026-07-27)
 - Симптом: Случай A — группа с кодером `aon` (ct0146, camp 713080285, grp 5777189791) → UI автотаргетинг ВЫКЛ (ждали ВКЛ). Случай B — группа с кодером `aoff` (ct0301, camp 713080436, grp 5777191390) → UI автотаргетинг ВКЛ (ждали ВЫКЛ). Job 446ab5bd0ab3, аккаунт porg-pl6iavd5, scherbakova, Мультибренд.
 - Root-cause: `v501 adgroups.add` (Phase 1 tp1) не поддерживает `relevanceMatch` → Яндекс ставит дефолт ACTIVE. Для `aon` вместо явного `isActive=True` применялся псевдоключ `"---autotargeting"` (legasi-путь), который уводил группу в легаси-режим с `isActive=False` → инверсия. Для `aoff` псевдоключ не добавлялся, но и явного `isActive=False` не было → дефолт Яндекса ACTIVE → инверсия. Правильный field: `relevanceMatch.isActive` (объект группы, читается `grid_read.py:335`).
