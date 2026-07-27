@@ -243,6 +243,39 @@ def _tp1_video_ads(login: str, created_ad_meta: list, grid_cookie: str | None = 
             rep["warnings"].append(f"attach: {str(e)[:100]}")
     return rep
 
+def _synthesize_tp1_build_error(rep: dict, tp_code: str) -> None:
+    """Синтез singular rep["error"] из rep["errors"] (plural) для структурных дефектов.
+
+    Зачем: вызывающий код (create_set_tp1_builders ~:1481, create_set_feed_builders ~:838)
+    гейтит вердикт позиции через rep["error"] (singular), но ДВЕНАДЦАТЬ мест пишут в
+    rep["errors"] (plural) — без синтеза эти дефекты не влияют на вердикт и позиция
+    уходит как ok=True.
+
+    Фатальные (→ синтез singular error):
+      tp5 (TEXT_CAMPAIGN / поиск): ключевые слова не добавлены при созданных группах.
+      Без ключей в поисковой кампании нет трафика → позиция нефункциональна.
+
+    Намеренно информационные (остаются в errors, НЕ синтезируют singular error):
+      - "позиционный сдвиг" (line ~312): кампания работает, порядок групп shifted
+      - shopping / all_feeds ошибки: TextAd-группы работают
+      - частичные сбои групп/объявлений (adgroups > 0, ads > 0): позиция частично ok
+      - tp1 RSY ключевые слова: РСЯ использует контекстный таргетинг без явных ключей
+
+    Phase 1.5 уже ставит rep["error"] singular — не дублируем (проверка not rep.get("error")).
+    """
+    if (tp_code == "tp5"
+            and rep.get("adgroups")
+            and not rep.get("keywords")
+            and rep.get("errors")
+            and not rep.get("error")):
+        _kw_errs = [e for e in rep["errors"]
+                    if "keyword" in e.lower() or "ключ" in e.lower() or "kw" in e.lower()
+                    or e.startswith("adgroups(Grid tp5)") or "tp5" in e]
+        _src = _kw_errs or rep["errors"]
+        rep["error"] = ("tp5 ключи не созданы при наличии групп: "
+                        + "; ".join(str(e) for e in _src[:2]))[:240]
+
+
 def _build_tp1_adgroups(
     token: str,
     login: str,
@@ -827,6 +860,10 @@ def _build_tp1_adgroups(
                     rep["listing_ads"] += _af_build.get("listing_ads", 0)
             except Exception as _e:  # noqa: BLE001
                 rep.setdefault("errors", []).append(f"all_feeds shop({_fid}): {str(_e)[:120]}")
+
+    # Синтез singular error из errors (plural) для структурных дефектов.
+    # Вынесено в _synthesize_tp1_build_error() для покрытия тестами.
+    _synthesize_tp1_build_error(rep, tp_code)
     return rep
 
 def _pack_read_glitch(key: str, site_type: str, pack_tp: str) -> bool:
