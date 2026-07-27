@@ -173,6 +173,52 @@ def _copy_remap_region_code(name: str | None, target_r_code: str) -> str:
     return _COPY_R_CODE_RE.sub(target_r_code, text)
 
 
+def _copy_remap_snapshot_region_code(src_dir, target_r_code: str) -> dict:
+    """Переписать r-сегмент кодера в именах ГРУПП и КАМПАНИЙ снимка (v5-ветка копирования).
+
+    Гео-переписывание снимка меняет только словоформы; регион в кодере зашит КОДОМ (`ag_part4`)
+    и словами не задевается, а direct_copy.phase_upload льёт имя группы как есть
+    (direct_copy.py:1453) → на цели оставался r ИСТОЧНИКА. Здесь правим снимок ДО upload:
+    единственный писатель имён в v5-ветке — это файлы снимка.
+
+    → {"adgroups": N, "campaigns": M} — сколько имён реально изменено. Невалидный
+    target_r_code / нечитаемый файл → {} (безопасный no-op, копирование не валим)."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    if not re.fullmatch(r"r\d{4}", str(target_r_code or "")):
+        return {}
+    out: dict[str, int] = {}
+    for fname, key in (("adgroups.json", "adgroups"), ("campaigns.json", "campaigns")):
+        path = _Path(src_dir) / fname
+        if not path.exists():
+            continue
+        try:
+            rows = _json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — снимок нечитаем: ремап best-effort, не валим копирование
+            continue
+        if not isinstance(rows, list):
+            continue
+        changed = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            old = row.get("Name")
+            if not isinstance(old, str) or not old:
+                continue
+            new = _copy_remap_region_code(old, target_r_code)
+            if new != old:
+                row["Name"] = new
+                changed += 1
+        if changed:
+            try:
+                path.write_text(_json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                continue
+        out[key] = changed
+    return out
+
+
 def _copy_normalize_campaign_name(name: str | None, replacements: list[tuple[str, str]],
                                   target_r_code: str = "") -> str:
     out = _copy_apply_geo_replacements(name, replacements).strip()

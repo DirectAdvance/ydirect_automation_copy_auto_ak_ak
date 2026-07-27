@@ -818,6 +818,20 @@ def _copy_run_job(job_id: str, body: dict) -> None:
                 if not tgt_region_id:
                     raise RuntimeError(f"не найден GeoRegionId для целевого гео: city={target_city!r}, region={target_region!r}")
         body["_copy_source_domain"] = src_domain
+        # Ремап r-сегмента кодера в именах групп/кампаний снимка ДО phase_upload.
+        # Гео-переписывание снимка меняет только СЛОВОФОРМЫ, а регион в кодере зашит КОДОМ
+        # (`ag_part4`: r0088=Краснодарский край) — словами его не задеть. В Grid/ЕПК-ветке ремап
+        # есть (copy_grid_unified.py:326), в v5-ветке имя группы уезжало как есть
+        # (direct_copy.py:1453 `"Name": g["Name"]`) → на цели оставался r источника
+        # (живой баг porg-mjyh6hjv→porg-ln7tz7xh, 2026-07-27: 102 группы с r0088 вместо r0066).
+        # mode='other' — r не ремапим (как в ЕПК-ветке: чужая сфера, кодера может не быть).
+        if mode != "other":
+            _v5_r_code = _copy_target_region_code(target_city, target_region)
+            if _v5_r_code:
+                _r_renamed = _copy_remap_snapshot_region_code(src_dir, _v5_r_code)
+                _copy_job_log(job_id, f"кодер: r-сегмент региона → {_v5_r_code} "
+                                      f"(групп: {_r_renamed.get('adgroups', 0)}, "
+                                      f"кампаний: {_r_renamed.get('campaigns', 0)})")
         # Пофидовая замена: валидируем целевые фиды по аккаунту (только СВОИ фиды) и предзаписываем
         # id_maps.json — phase_upload загрузит его и подставит целевые фиды вместо единого forced-фида.
         if use_feed_map:
@@ -962,7 +976,7 @@ from .copy_jobs import (  # noqa: E402,F401  (ре-экспорт распила
 )
 
 from .copy_geo import (  # noqa: E402,F401  (ре-экспорт распила)
-    _COPY_R_CODE_RE, _copy_canonical_region_name, _copy_geo_id_for_target, _copy_ctx, _copy_m3_decliner, _copy_build_geo, _copy_geo_replacements, _copy_apply_geo_replacements, _copy_target_region_code, _copy_remap_region_code, _copy_normalize_campaign_name, _copy_domain_from_href, _copy_target_href,
+    _COPY_R_CODE_RE, _copy_canonical_region_name, _copy_geo_id_for_target, _copy_ctx, _copy_m3_decliner, _copy_build_geo, _copy_geo_replacements, _copy_apply_geo_replacements, _copy_target_region_code, _copy_remap_region_code, _copy_remap_snapshot_region_code, _copy_normalize_campaign_name, _copy_domain_from_href, _copy_target_href,
     _REGION_ALIASES, _REGION_ALIASES_NORM, _norm_region_alias_key, _REGION_ALIAS_DASH_RE,
 )
 

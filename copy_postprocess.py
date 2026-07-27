@@ -179,6 +179,83 @@ def _prefetch_copy_verify_grid_cache(target_login: str, target_agency: str, grid
     return out
 
 
+def _v5_conditions_to_grid(raw) -> list[dict]:
+    """v5 FeedFilterConditions → Grid feedFilter.conditions.
+
+    v5: {"Items":[{"Operand":"url","Operator":"CONTAINS_ANY","Arguments":["GAC"]}]} (или сразу список).
+    Grid: [{"field":"url","operator":"CONTAINS_ANY","stringValue":"[\\"GAC\\"]"}] — stringValue
+    это JSON-массив СТРОКОЙ (форма подтверждена чтением живого источника, 2026-07-27)."""
+    if isinstance(raw, dict):
+        raw = raw.get("Items") or []
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for cond in raw:
+        if not isinstance(cond, dict):
+            continue
+        field = str(cond.get("Operand") or "").strip()
+        operator = str(cond.get("Operator") or "").strip()
+        args = [str(x) for x in (cond.get("Arguments") or []) if str(x).strip()]
+        if not field or not operator or not args:
+            continue
+        out.append({"field": field, "operator": operator,
+                    "stringValue": json.dumps(args, ensure_ascii=False)})
+    return out
+
+
+def _copy_apply_product_filters(src_dir: Path, maps: dict, grid, log=None) -> dict:
+    """Перенести feedFilter источника на созданные в цели ShoppingAd/ListingAd (Grid).
+
+    Источник фильтра для ОБОИХ типов — ShoppingAd той же исходной группы: v5 не отдаёт
+    детальных полей ListingAd, а в слепках фид и фильтр у пары идут вместе (та же логика,
+    что в direct_copy.phase_upload при создании ListingAd).
+    → {"shopping": N, "listing": M, "errors": [...]}."""
+    ce = _engine()
+    rep = {"shopping": 0, "listing": 0, "errors": []}
+    shopping_ads = ce._copy_read_json(src_dir / "shopping_ads.json") or []
+    if not shopping_ads:
+        return rep
+
+    # src AdGroupId → (conditions, bodies, src_feed_id) по ShoppingAd источника.
+    by_group: dict[str, dict] = {}
+    shop_items: list[dict] = []
+    for sa in shopping_ads:
+        sad = sa.get("ShoppingAd") or {}
+        conds = _v5_conditions_to_grid(sad.get("FeedFilterConditions"))
+        if not conds:
+            continue
+        new_fid = maps.get("feeds", {}).get(str(sad.get("FeedId") or ""))
+        if not new_fid:
+            continue
+        bodies = [str(t) for t in (sad.get("DefaultTexts") or []) if str(t or "").strip()]
+        entry = {"conditions": conds, "bodies": bodies, "feed_id": int(new_fid)}
+        by_group[str(sa.get("AdGroupId") or "")] = entry
+        new_ad_id = maps.get("ads", {}).get(str(sa.get("Id") or ""))
+        if new_ad_id:
+            shop_items.append({"id": int(new_ad_id), **entry})
+
+    listing_items: list[dict] = []
+    for ad in (ce._copy_read_json(src_dir / "ads.json") or []):
+        if str(ad.get("Type") or "") != "LISTING_AD":
+            continue
+        entry = by_group.get(str(ad.get("AdGroupId") or ""))
+        new_ad_id = maps.get("ads", {}).get(str(ad.get("Id") or ""))
+        if entry and new_ad_id:
+            listing_items.append({"id": int(new_ad_id), **entry})
+
+    for items, listing, key in ((shop_items, False, "shopping"), (listing_items, True, "listing")):
+        if not items:
+            continue
+        try:
+            rep[key] = grid.set_product_feed_filters(items, listing=listing)
+        except Exception as e:  # noqa: BLE001 — UNKNOWN_FIELD (схема целевого фида) не должна валить job
+            rep["errors"].append(f"feed-filters {key}: {str(e)[:220]}")
+    if log:
+        log(f"фильтры товарных/каталожных: {rep['shopping']}/{len(shop_items)} товарных, "
+            f"{rep['listing']}/{len(listing_items)} каталожных")
+    return rep
+
+
 def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                              src_dir: Path, workdir: Path, body: dict) -> dict:
     """Cookie/Grid fallback after direct_copy upload: callouts, ShoppingAd, ListingAd, verification, repair."""
@@ -472,6 +549,23 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
 
     ce._copy_write_json(maps_path, maps)
 
+    # 2b) ФИЛЬТРЫ товарных/каталожных объявлений (feedFilter) — Grid-мутацией.
+    # v501 ads.add ПРИНИМАЕТ FeedFilterConditions в теле, но на ЕПК ShoppingAd/ListingAd их
+    # молча не применяет: объявления создаются, на цели FeedFilterConditions=null и feedFilter=null
+    # (живой баг porg-mjyh6hjv→porg-ln7tz7xh 2026-07-27: 204 товарных/каталожных, фильтров 0 —
+    # верификатор дал shopping_filter_signature=mismatch, но авторемонт не поднялся).
+    # Единственный подтверждённый писатель — updateShoppingAds/updateListingAds (grid_finalize
+    # set_product_feed_filters). Шаг идёт ПОСЛЕ fallback-блока выше, поэтому покрывает и
+    # объявления, созданные v5, и созданные по куке.
+    try:
+        filters_rep = _copy_apply_product_filters(src_dir, maps, grid,
+                                                  log=(lambda m: ce._copy_job_log(job_id, m)))
+        rep["shopping_filters_set"] = filters_rep.get("shopping", 0)
+        rep["listing_filters_set"] = filters_rep.get("listing", 0)
+        rep["errors"] += filters_rep.get("errors") or []
+    except Exception as e:  # noqa: BLE001 — объявления уже созданы; фильтры чиним отдельно
+        rep["errors"].append(f"product filters grid: {str(e)[:220]}")
+
     # П.15: восстановление стратегии PAY_FOR_CONVERSION_MULTIPLE_GOALS через Grid.
     # Кампании с этой стратегией создавались с WB_MAXIMUM_CLICKS (v5 не принимает PFCMG).
     # Здесь восстанавливаем реальную стратегию: payForConversion=True + goalId + sum (рубли).
@@ -721,6 +815,22 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                     )
             except Exception as _sle:  # noqa: BLE001
                 rep["errors"].append(f"copy_repair sitelinks-retry: {str(_sle)[:150]}")
+            # Дыра «verify нашёл — никто не починил — job done»: строки, которые помечены
+            # repairable=True, но после авторемонта всё ещё не ok, раньше нигде не всплывали
+            # (repair_gate пустой, статус done). Выносим их явно — в отчёт и в лог джобы.
+            _unresolved = [
+                {"scope": r.get("scope"), "dimension": r.get("dimension"),
+                 "status": r.get("status")}
+                for r in (_cv_report.get("results") or [])
+                if r.get("repairable") and r.get("status") not in ("ok", "excluded_intentional")
+            ]
+            if _unresolved:
+                rep["verify_unresolved"] = _unresolved
+                _dims = sorted({str(u["dimension"]) for u in _unresolved})
+                _msg = (f"verify: {len(_unresolved)} расхождений НЕ закрыто авторемонтом "
+                        f"({', '.join(_dims[:6])})")
+                rep["errors"].append(_msg)
+                ce._copy_job_log(job_id, f"⚠️ {_msg}")
     except Exception as _re:  # noqa: BLE001
         rep["errors"].append(f"copy_repair: {str(_re)[:200]}")
 

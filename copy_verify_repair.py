@@ -344,6 +344,68 @@ def _repair_shopping_filters(
         errors.append(f"repair_shopping: add_shopping_ads: {str(exc)[:200]}")
 
 
+def _repair_product_filter_signatures(
+    results: List[dict],
+    *,
+    src_dir: Path,
+    workdir: Path,
+    grid: gf.GridClient,
+    repairs: list,
+    errors: list,
+    log: Callable[[str], None],
+) -> None:
+    """D19-sig: проставить feedFilter товарным/каталожным, у которых сигнатура ≠ источнику.
+
+    Отдельно от `shopping_filter_count` (там чинится ЧИСЛО объявлений, здесь — их ФИЛЬТРЫ).
+    Дыра, из-за которой это понадобилось: v501 ads.add принимает FeedFilterConditions, но на ЕПК
+    их не применяет — verify видел `*_filter_signature: mismatch`, а writer'а под эту размерность
+    не было, и job закрывался как done с пустыми фильтрами (porg-ln7tz7xh, 2026-07-27).
+
+    Writer — тот же, что в постпроцессе: Grid updateShoppingAds/updateListingAds, 0 баллов,
+    идемпотентно (повторная запись того же фильтра безвредна)."""
+    dims = ("shopping_filter_signature", "listing_filter_signature")
+    broken = [
+        r for r in results
+        if r.get("dimension") in dims
+        and r.get("repairable")
+        and r.get("status") not in (_OK, _EXCLUDED)
+    ]
+    if not broken:
+        return
+
+    maps_path = Path(workdir) / "id_maps.json"
+    if not maps_path.exists():
+        errors.append("repair_filters: id_maps.json не найден")
+        return
+    try:
+        maps = json.loads(maps_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"repair_filters: id_maps.json нечитаем: {str(exc)[:150]}")
+        return
+
+    try:
+        from .copy_postprocess import _copy_apply_product_filters
+        rep = _copy_apply_product_filters(Path(src_dir), maps, grid, log=log)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"repair_filters: {str(exc)[:200]}")
+        return
+    errors += rep.get("errors") or []
+    if not (rep.get("shopping") or rep.get("listing")):
+        return
+
+    for row in broken:
+        row["status"] = _OK
+        repairs.append({
+            "scope": row.get("scope", ""),
+            "dimension": row.get("dimension"),
+            "action": "set_product_feed_filters",
+            "shopping": rep.get("shopping", 0),
+            "listing": rep.get("listing", 0),
+        })
+    log(f"repair_filters: фильтры проставлены — {rep.get('shopping', 0)} товарных, "
+        f"{rep.get('listing', 0)} каталожных ({len(broken)} строк verify закрыто)")
+
+
 def _repair_keywords(
     results: List[dict],
     *,
@@ -513,6 +575,8 @@ def run_copy_repair(
     Ремонтируемые (repairable=True в verify):
         D3  shared_set_count — создать/найти shared минус-наборы + привязать (v5).
         D19 shopping_filter_count — до-создать ShoppingAd через Grid.
+        D19-sig shopping_filter_signature / listing_filter_signature — проставить feedFilter
+            источника на созданные Shopping/Listing через Grid.
 
     НЕ ремонтируем (repairable=False в verify):
         D10 audiences — сверяется через Grid, но авто-writer repair нет;
@@ -564,6 +628,16 @@ def run_copy_repair(
     # D19: shopping filter count (Grid без баллов)
     if grid is not None:
         _repair_shopping_filters(
+            results,
+            src_dir=src_dir_p,
+            workdir=workdir_p,
+            grid=grid,
+            repairs=repairs,
+            errors=errors,
+            log=_log,
+        )
+        # D19-sig: фильтры товарных/каталожных (Grid без баллов)
+        _repair_product_filter_signatures(
             results,
             src_dir=src_dir_p,
             workdir=workdir_p,
