@@ -1,3 +1,5 @@
+import types
+
 from flask import Flask
 
 from direct import create_set_plan
@@ -601,3 +603,164 @@ def test_tp1_products_only_fallback_preserves_segments(monkeypatch):
     assert len(products_only) == 6
     assert {item["tp1_segment"] for item in products_only} == {"Марки", "Модели", "Общее"}
     assert all(" - None -" not in item["name"] for item in products_only)
+
+
+# ── tp1 РСЯ: инверсия автотаргетинга (Phase 1.5 fix) ────────────────────────────────────────────
+
+def _make_tp1_test_deps():
+    """Минимальный набор deps для тестирования _build_tp1_adgroups (фокус: Phase 1.5 + Phase 2).
+
+    v5 adgroups.add возвращает Id=1001 для первой группы.
+    v5 keywords.add возвращает Id=2001 для каждого ключа.
+    Grid update_unified_adgroups захватывает вызовы в update_calls[].
+    keywords.add захватывает все тела запросов в kw_calls[].
+    """
+    update_calls = []
+    kw_calls = []
+
+    class _FakeGridClient:
+        def update_unified_adgroups(self, items):
+            update_calls.append(items)
+            return [int(it["adGroupId"]) for it in items]
+
+    gf_mock = types.SimpleNamespace(
+        get_grid_client=lambda login, cookie=None: _FakeGridClient(),
+    )
+
+    def fake_v5_call(svc, method, token, login, body):
+        if svc == "adgroups" and method == "add":
+            groups_body = body.get("AdGroups", [])
+            return {"result": {"AddResults": [{"Id": 1001 + i} for i in range(len(groups_body))]}}
+        if svc == "keywords" and method == "add":
+            kw_calls.append(body.get("Keywords", []))
+            kws = body.get("Keywords", [])
+            return {"result": {"AddResults": [{"Id": 2001 + i} for i in range(len(kws))]}}
+        return {"result": {"AddResults": []}}
+
+    deps = {
+        "_v5_call": fake_v5_call,
+        "_v5_err": lambda r: "",
+        "gf": gf_mock,
+        "gc": None,
+        "_AUTOTARGET_KW": "---autotargeting",
+        "_kw_clean": lambda kws, limit: [k for k in (kws or []) if k][:limit],
+        "_chunks": lambda lst, n: ([lst[i:i + n] for i in range(0, len(lst), n)] if lst else []),
+        "_AC_CHUNK_AG": 50,
+        "_AC_CHUNK_KW": 200,
+        "_AC_CHUNK_AD": 100,
+        "_AC_BATCH_SLEEP": 0,
+        "_AC_GROUP_CAP": 500,
+        "_UTM_TEMPLATE_TP1": "utm_source=yandex",
+        "_responsive_ad": lambda *_a, **_kw: None,   # пропустить Phase 3 (ads)
+        "_rsya_titles": lambda *_a, **_kw: [],
+        "_rsya_texts": lambda *_a, **_kw: [],
+        "_feed_url_for_model": lambda *_a, **_kw: None,
+        "_brand_level_url": lambda u: u,
+        "_strip_url_query": lambda u: u,
+        "_model_page_href": lambda *_a, **_kw: "",
+        "_ct_segment": lambda ct: ct,
+        "_apply_global_feed_minus_for_site": lambda st: False,
+        "cmc": types.SimpleNamespace(UTM_TEMPLATE="utm_source=yandex"),
+    }
+    return deps, update_calls, kw_calls
+
+
+def _run_tp1(autotarget: bool, keep_keywords: bool = False, keywords: list | None = None):
+    """Запустить _build_tp1_adgroups с одной группой, вернуть (rep, update_calls, kw_calls)."""
+    deps, update_calls, kw_calls = _make_tp1_test_deps()
+    create_set_tp1_builders.configure(deps)
+
+    groups = [{"name": "тест-группа", "keywords": keywords or [], "titles": [], "texts": []}]
+    rep = create_set_tp1_builders._build_tp1_adgroups(
+        token="tok",
+        login="porg-test",
+        campaign_id=999,
+        region_ids=[213],
+        href="https://example.com",
+        groups=groups,
+        autotarget=autotarget,
+        keep_keywords=keep_keywords,
+        tp_code="tp1",
+    )
+    return rep, update_calls, kw_calls
+
+
+def test_tp1_aon_phase15_sets_isactive_true():
+    """Случай A: autotarget=True → Phase 1.5 должна задать isActive=True (не ВЫКЛ)."""
+    _rep, update_calls, _kw = _run_tp1(autotarget=True)
+
+    assert update_calls, "Phase 1.5: update_unified_adgroups не вызвана"
+    rm = update_calls[0][0]["relevanceMatch"]
+    assert rm["isActive"] is True, f"aon → isActive должен быть True, получили {rm['isActive']}"
+
+
+def test_tp1_aoff_phase15_sets_isactive_false():
+    """Случай B: autotarget=False → Phase 1.5 должна задать isActive=False (не ВКЛ-дефолт)."""
+    _rep, update_calls, _kw = _run_tp1(autotarget=False, keywords=["купить авто"])
+
+    assert update_calls, "Phase 1.5: update_unified_adgroups не вызвана"
+    rm = update_calls[0][0]["relevanceMatch"]
+    assert rm["isActive"] is False, f"aoff → isActive должен быть False, получили {rm['isActive']}"
+
+
+def test_tp1_aon_no_autotarget_pseudokey_in_keywords():
+    """Псевдоключ '---autotargeting' больше НЕ должен уходить в keywords.add."""
+    _rep, _upd, kw_calls = _run_tp1(autotarget=True)
+
+    all_kw_texts = [kw["Keyword"] for batch in kw_calls for kw in batch]
+    assert "---autotargeting" not in all_kw_texts, (
+        f"Псевдоключ всё ещё в keywords.add: {all_kw_texts}"
+    )
+
+
+def test_tp1_aon_keep_keywords_preserves_real_keywords():
+    """autotarget=True + keep_keywords=True → реальные ключи сохраняются (нет регрессии)."""
+    real_kws = ["купить авто", "новый автомобиль"]
+    _rep, _upd, kw_calls = _run_tp1(autotarget=True, keep_keywords=True, keywords=real_kws)
+
+    all_kw_texts = [kw["Keyword"] for batch in kw_calls for kw in batch]
+    assert "купить авто" in all_kw_texts, "Реальный ключ 'купить авто' не попал в keywords.add"
+    assert "новый автомобиль" in all_kw_texts, "Реальный ключ 'новый автомобиль' не попал в keywords.add"
+    assert "---autotargeting" not in all_kw_texts, "Псевдоключ всё ещё в keywords.add"
+
+
+def test_tp7_listing_plus_filter_uses_equals_not_contains(monkeypatch):
+    """_tp7_listings_plus_filter возвращает EQUALS+values+value (эталон: HAR entry 59,
+    PATCH /web-api/uac/campaign/713081184). CONTAINS без values — не рабочий вариант.
+    """
+    mark_col = {"id": "mark_6", "name": "Haval", "offers": 42}
+    monkeypatch.setattr(create_set_feeds, "_feed_collections",
+                        lambda *_args, **_kw: [mark_col])
+    monkeypatch.setattr(create_set_feeds, "_brand_level_collection_id",
+                        lambda base, cols: "mark_6")
+    monkeypatch.setattr(create_set_feeds, "_coder_name_real_brand",
+                        lambda name: True)
+
+    result = create_set_feeds._tp7_listing_plus_filter(
+        "porg-test", 3593963, "Haval", "ct0006", ""
+    )
+
+    assert result, "Функция вернула пустой список — фильтр не построен"
+    conditions = result[0]["conditions"]
+    assert len(conditions) == 1, f"Ожидалось 1 условие, получили {len(conditions)}"
+    cond = conditions[0]
+
+    # Оператор — строго EQUALS (не CONTAINS, не EQUALS_ANY)
+    assert cond["operator"] == "EQUALS", (
+        f"operator должен быть 'EQUALS', получили '{cond['operator']}'"
+    )
+    # values — обычный массив (не JSON-строка)
+    assert "values" in cond, "Поле 'values' отсутствует в условии"
+    assert cond["values"] == ["mark_6"], (
+        f"values должен быть ['mark_6'], получили {cond['values']}"
+    )
+    # value — JSON-строка (обратная совместимость)
+    assert "value" in cond, "Поле 'value' отсутствует в условии"
+    import json as _json
+    assert _json.loads(cond["value"]) == ["mark_6"], (
+        f"value должен декодироваться в ['mark_6'], получили '{cond['value']}'"
+    )
+    # field — collectionId
+    assert cond["field"] == "collectionId", (
+        f"field должен быть 'collectionId', получили '{cond['field']}'"
+    )

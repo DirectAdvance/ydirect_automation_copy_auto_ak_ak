@@ -101,7 +101,7 @@ class MasterCampaignSpec:
     #   [{"conditions":[{"field":"model","operator":"CONTAINS","value":"[\"Jolion\"]"}]}]  value = JSON-строка-массив!
     listings_feed_id: int | None = None                   # фид «страницы каталога» (ecom-листинги)
     listings_feed_filters: list[dict] = field(default_factory=list)  # фильтр листингов ТОЛЬКО по "collectionId":
-    #   [{"conditions":[{"field":"collectionId","operator":"CONTAINS","value":"[\"model_26\"]"}]}]  (по имени модели НЕ фильтрует!)
+    #   [{"conditions":[{"field":"collectionId","operator":"EQUALS","values":["mark_6"],"value":"[\"mark_6\"]"}]}]  (по имени модели НЕ фильтрует!)
 
     # --- опционально, с дефолтами как в интерфейсе мастера ---
     display_name: str | None = None                       # имя кампании (по умолчанию из href+даты)

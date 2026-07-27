@@ -1721,7 +1721,8 @@ def _tp7_listing_plus_filter(login: str, feed_id: int, brand_model: str, ct: str
             cid = None
     if not cid:
         return []
-    return [{"conditions": [{"field": "collectionId", "operator": "CONTAINS",
+    return [{"conditions": [{"field": "collectionId", "operator": "EQUALS",
+                             "values": [str(cid)],
                              "value": json.dumps([str(cid)], ensure_ascii=False)}]}]
 
 
