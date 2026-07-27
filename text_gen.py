@@ -35,6 +35,14 @@ def _drop_used_car(*a, **k):
     raise RuntimeError("text_gen._drop_used_car не инъектирован (configure)")
 
 
+def _drop_new_car(*a, **k):
+    raise RuntimeError("text_gen._drop_new_car не инъектирован (configure)")
+
+
+def _is_bu_site(*a, **k):
+    raise RuntimeError("text_gen._is_bu_site не инъектирован (configure)")
+
+
 def _brand_canon(*a, **k):
     raise RuntimeError("text_gen._brand_canon не инъектирован (configure)")
 
@@ -48,11 +56,19 @@ _GENERIC_AT_TITLES: list = []       # DI из blueprint
 _RA_TITLES_CAP: int = 7             # DI из blueprint
 _RA_TEXTS_CAP: int = 3              # DI из blueprint
 _NON_AUTO_SITE_TYPES: set = set()   # DI из blueprint: site_type не-авто слепков (B2B) — без авто-фильтра ключей
+_INSTALLMENT_RE = re.compile(r"(?i)\bрассрочк\w*\b(?:\s+без\s+переплат)?")
 
 
 def configure(deps: dict) -> None:
     """Инъекция blueprint-зависимостей (globals().update)."""
     globals().update(deps)
+
+
+def _strip_installment_text(s: str) -> str:
+    s = _INSTALLMENT_RE.sub(" ", s or "")
+    s = re.sub(r"\s+([.,;:!?])", r"\1", s)
+    s = re.sub(r"\s{2,}", " ", s).strip(" .,;:!?")
+    return s
 
 
 # Акционные фразы для шаблона Title (ротация round-robin при формировании групп).
@@ -84,7 +100,7 @@ def _next_title_promo() -> str:
 _SLEPOKS_NO_CITY_TITLES: frozenset[str] = frozenset({"terehov"})
 
 
-def _title_from_template(brand: str, city: str = "", slepok: str = "") -> str:
+def _title_from_template(brand: str, city: str = "", slepok: str = "", site_type: str = "") -> str:
     """Сформировать Title по эталонному шаблону «Новые {brand} в {город}. {акция}».
     Лимит Директа для ЕПК TextAd — 35 символов (поле Title). Обрезаем аккуратно.
 
@@ -93,22 +109,45 @@ def _title_from_template(brand: str, city: str = "", slepok: str = "") -> str:
     city — город из аккаунта (ctx.city); пустой → без города («Новые {brand}. {акция}»).
     Город подставляется в предложном падеже через _city_locative().
     Фолбэк: если шаблон не влезает даже без акции — возвращаем brand[:35].
+
+    site_type «С пробегом» (Б/У) — префикс «Новые» ВРЁТ про товар, поэтому заменяется
+    нейтральным «{brand} с пробегом …» (не влез — просто «{brand} …»), а из промо-пула
+    выбрасывается «Скидки на новые авто». Фильтровать это `_drop_new_car`/`_NEW_RE` НЕЛЬЗЯ:
+    (а) результат уходит прямо в ЕПК Title мимо `_cf`; (б) «Новые BAIC» регулярка и не поймает —
+    после «новые» идёт МАРКА, а не слово «авто» (расширять регулярку на `нов\\w+\\s+[A-Z]`
+    нельзя — она начнёт резать легитимное «Новый Haval» на сайтах НОВЫХ авто).
     """
     if slepok in _SLEPOKS_NO_CITY_TITLES:                 # terehov: город в заголовках запрещён (#15)
         city = ""
     city = _content_city(city)                            # мультигород (через запятую) → без города
     city_loc = _city_locative(city) if city else ""
+    bu = _is_bu_site(site_type)
     promo = _next_title_promo()
-    if city_loc:
-        full = f"Новые {brand} в {city_loc}. {promo}"
+    if bu:
+        # Промо-пул писан под новые авто («Скидки на новые авто»): на Б/У прокручиваем
+        # round-robin до первой строки без новое-авто-лексики. Не нашлось — идём без акции.
+        for _ in range(len(_TITLE_PROMO_POOL)):
+            if _drop_new_car([promo], site_type):
+                break
+            promo = _next_title_promo()
+        else:
+            promo = ""
+    lead = f"{brand} с пробегом" if bu else f"Новые {brand}"
+    if promo:
+        full = f"{lead} в {city_loc}. {promo}" if city_loc else f"{lead}. {promo}"
     else:
-        full = f"Новые {brand}. {promo}"
+        full = f"{lead} в {city_loc}" if city_loc else lead
     if len(full) <= 35:
         return full
     # Попробуем без акционной фразы
-    short = f"Новые {brand} в {city_loc}" if city_loc else f"Новые {brand}"
+    short = f"{lead} в {city_loc}" if city_loc else lead
     if len(short) <= 35:
         return short[:35]
+    # Б/У: «{brand} с пробегом …» не влез — снимаем уточнение, но НЕ возвращаем «Новые …»
+    if bu:
+        bare = f"{brand} в {city_loc}" if city_loc else str(brand)
+        if len(bare) <= 35:
+            return bare[:35]
     # Фолбэк: просто бренд
     return brand[:35]
 
@@ -598,6 +637,21 @@ def _brand_in_text(text: str, brand: str) -> bool:
     low = str(text or "").lower()
     return any(re.search(r"(?<![a-zа-яё0-9])" + re.escape(tok) + r"(?![a-zа-яё0-9])", low) for tok in own)
 
+def _brand_isolated_first_phrase(title: str, brand: str) -> bool:
+    """Bad title start: the first sentence is only the brand/model, e.g. ``KAIYI.``."""
+    if not brand:
+        return False
+    head = str(title or "").split(".")[0].strip()
+    if not head:
+        return False
+    brand_norm = re.sub(r"\s+", " ", _display_brand(brand)).strip().lower()
+    head_norm = re.sub(r"\s+", " ", head).strip().lower()
+    if head_norm == brand_norm:
+        return True
+    own = _own_brand_tokens(brand)
+    words = re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", head_norm)
+    return bool(words) and all(w in own for w in words)
+
 # Слова-модификаторы, при которых марка ОСТАЁТСЯ подлежащим (brand-first уже соблюдён):
 # «Новый BAIC …», «Купить BAIC …» — реордер НЕ нужен.
 _BRAND_LEAD_OK_PREFIX = {
@@ -628,6 +682,23 @@ def _brand_first_reorder(title: str, brand: str) -> str:
     own = _own_brand_tokens(brand)
     if not own:
         return t
+    if _brand_isolated_first_phrase(t, brand):
+        parts0 = [p.strip().rstrip(".") for p in re.split(r"\s*\.\s+", t) if p.strip()]
+        if len(parts0) >= 2:
+            low_next = parts0[1].lower()
+            if low_next.startswith("кредит"):
+                parts0[0] = f"{parts0[0]} в кредит"
+            elif low_next.startswith("платеж") or low_next.startswith("платёж"):
+                parts0[0] = f"{parts0[0]} с платежом"
+            elif low_next.startswith("каско"):
+                parts0[0] = f"{parts0[0]} с КАСКО"
+            elif low_next.startswith("выгода"):
+                parts0[0] = f"{parts0[0]} с выгодой"
+            elif low_next.startswith("одобрение"):
+                parts0[0] = f"{parts0[0]} с одобрением"
+            else:
+                parts0[0] = f"{parts0[0]} в наличии"
+            t = ". ".join(parts0)
     tok_re = re.compile(
         r"(?<![a-zа-яё0-9])(?:" + "|".join(re.escape(x) for x in own) + r")(?![a-zа-яё0-9])",
         re.IGNORECASE)
@@ -660,6 +731,23 @@ def _brand_first_reorder(title: str, brand: str) -> str:
     new_parts += [p for i, p in enumerate(parts) if i != b_idx]
     out = ". ".join(x.strip().rstrip(".") for x in new_parts if x and x.strip())
     out = _cap_first(out)
+    if _brand_isolated_first_phrase(out, brand):
+        p2 = [p.strip().rstrip(".") for p in re.split(r"\s*\.\s+", out) if p.strip()]
+        if len(p2) >= 2:
+            low_next = p2[1].lower()
+            if low_next.startswith("кредит"):
+                p2[0] = f"{p2[0]} в кредит"
+            elif low_next.startswith("платеж") or low_next.startswith("платёж"):
+                p2[0] = f"{p2[0]} с платежом"
+            elif low_next.startswith("каско"):
+                p2[0] = f"{p2[0]} с КАСКО"
+            elif low_next.startswith("выгода"):
+                p2[0] = f"{p2[0]} с выгодой"
+            elif low_next.startswith("одобрение"):
+                p2[0] = f"{p2[0]} с одобрением"
+            else:
+                p2[0] = f"{p2[0]} в наличии"
+            out = ". ".join(p2)
     # безопасность: реордер не должен родить «плохой» заголовок — иначе оставляем оригинал
     if not out or _is_bad_start(out) or _bad_ad_title(out):
         return t
@@ -706,7 +794,9 @@ def _rsya_texts(incoming: list, site_type: str, city: str,
     acc_city = (city or "").strip()
 
     def _cf(lst):
-        return _replace_foreign_city(_drop_used_car(list(lst or []), site_type), acc_city, _cities_bl)
+        return _replace_foreign_city(
+            _drop_new_car(_drop_used_car(list(lst or []), site_type), site_type),
+            acc_city, _cities_bl)
 
     raw_incoming = _cf(list(incoming or []))
     branded_incoming = [t for t in raw_incoming if _brand_in_text(t, brand)] if brand else []
@@ -724,11 +814,14 @@ def _rsya_texts(incoming: list, site_type: str, city: str,
     # Чистка КАЖДОГО куска: убрать %-ставку, заглавная буква, ВЫКИНУТЬ огрызки (начинается с предлога
     # «до/от/у…» = середина предложения → «дермовый» текст). Дедуп. Чистый пул — в добивку.
     seen, uniq, stamp_fallback = set(), [], []
-    for p in (pieces + list(_RSYA_TEXT_POOL)):
+    # ⚠️ Пул-добивка идёт мимо `_cf` (он чистит только incoming), а в пуле есть строки про НОВЫЕ
+    # авто («Кредит на новый авто…», «Новые авто в наличии…») — на Б/У-сайте они и протекали.
+    for p in (pieces + _drop_new_car(list(_RSYA_TEXT_POOL), site_type)):
         # БАГ 4→исправлен: тире -> точка; дефис-разделитель → точка; БАГ 8: капитализация; %-ставка убирается
         p = _normalize_numeric_suffixes_bp(
             _sentence_case(_cap_first(_replace_sep_hyphen(_replace_emdash(_strip_credit_rate(p)))))
         )
+        p = _strip_installment_text(p)
         # ⚠️ НЕ чистим числовой хвост у входящего контента: «Выгода до 300 000» без ₽ —
         # валидное УТП донора, безусловная чистка его ампутирует (ревью 06.07). Обрыв
         # НАШЕЙ обрезки лечится в _trim_clean на точках эмиссии; финал — _sanitize_content.
@@ -886,6 +979,30 @@ def _diverse_text_offers(candidates: list[str], limit: int = 3) -> list[str]:
             break
     return out
 
+# ЭТАЖ-ГАРАНТ tp6/tp7: заголовки, нейтральные к типу сайта — БЕЗ Б/У-лексики и БЕЗ «новых авто»,
+# поэтому не режутся ни `_drop_used_car`, ни `_drop_new_car` ни на одном site_type. Все с цифрой
+# (number-gate), с кредитным углом, 50-51 симв. Используются, только когда фильтры вычистили всё.
+_NEUTRAL_CREDIT_TITLES = [
+    "Авто в кредит от 9 000 ₽/мес. Одобрение за 30 минут",
+    "Кредит на авто. Первый взнос 0 ₽. Ключи за 1 день",
+    "Автокредит от 15 банков. Решение за 30 минут онлайн",
+    "Трейд-ин выше рынка. Платеж от 9 000 ₽/мес в кредит",
+    "Одобрение за 30 минут. Кредит на авто от 15 банков",
+]
+
+# Текстовый близнец `_NEUTRAL_CREDIT_TITLES` — для финальной сборки адаптива
+# (`create_set_assets._upgrade_credit_texts`), где хардкод-варианты «Новые авто в кредит…» /
+# «Выгода до 45% на новые авто…» вычищаются на Б/У-сайте и набор надо чем-то добрать.
+# Те же инварианты: без Б/У-лексики и без «новых авто» (не режутся ни одним из двух фильтров),
+# кредитный угол в каждой строке, ≤81 симв. (_RA_TEXT_MAX), без слова «автокредит» (в ТЕКСТАХ
+# оно под запретом, в отличие от заголовков).
+_NEUTRAL_CREDIT_TEXTS = [
+    "Авто в кредит. Первый взнос 0 ₽. КАСКО на 1 год в подарок. Оставьте заявку.",
+    "Кредит от 15 банков. Одобрение за 30 минут онлайн. Трейд-ин выше рынка.",
+    "Господдержка 2026. Платеж от 9 000 ₽/мес. Заявка на кредит за 1 минуту.",
+]
+
+
 def _fallback_master_titles(brand: str, city: str, site_type: str, limit: int = 5) -> list[str]:
     """Безопасный добор для tp6/tp7, если строгие фильтры вычистили все заголовки."""
     brand = str(brand or "").strip()
@@ -913,23 +1030,43 @@ def _fallback_master_titles(brand: str, city: str, site_type: str, limit: int = 
     _, cities_bl = _title2_blocklist()
     out: list[str] = []
     seen: set[str] = set()
-    for t in _replace_foreign_city(_drop_used_car(raw, site_type), city, cities_bl):
-        s = _trim_to_word(_sanitize_content(_strip_credit_rate(str(t)), 56), 56).rstrip()
-        if not s or _is_bad_start(s) or _bad_ad_title(s):
-            continue
-        nk = _variant_norm_key(s)
-        if nk and nk in seen:
-            continue
-        if nk:
-            seen.add(nk)
-        out.append(s)
-        if len(out) >= limit:
-            break
+
+    def _collect(src: list) -> None:
+        """Прогнать кандидатов через ПОЛНУЮ валидацию и добрать в `out` (до `limit`).
+        Единственный путь наполнения — и для обычных кандидатов, и для floor'а: заголовок
+        не может уехать в Директ, минуя site_type-фильтры, санитайз, обрезку по слову,
+        стоп-листы и дедуп."""
+        for t in _replace_foreign_city(
+                _drop_new_car(_drop_used_car(list(src), site_type), site_type), city, cities_bl):
+            if len(out) >= limit:
+                return
+            s = _trim_to_word(_sanitize_content(_strip_credit_rate(str(t)), 56), 56).rstrip()
+            if not s or _is_bad_start(s) or _bad_ad_title(s):
+                continue
+            nk = _variant_norm_key(s)
+            if nk and nk in seen:
+                continue
+            if nk:
+                seen.add(nk)
+            out.append(s)
+
+    _collect(raw)
     # Этаж-гарант: если бренд-вариант вычистился в ноль (бренд-токен абсурден, напр. источник
     # «Авито»/«Дром» по ошибке прилетел как brand) — отдаём БЕЗ-брендовые общие заголовки.
     # Они всегда проходят фильтры → tp6/tp7 НИКОГДА не падает «нужен хотя бы один заголовок».
     if not out and brand:
         return _fallback_master_titles("", city, site_type, limit)
+    # АНТИ-ПУСТОЙ ГЕЙТ: это последний рубеж tp6/tp7 — уехать пустым нельзя (позиция без заголовков
+    # = кампания не создаётся / создаётся битой). Нейтральный пул не режется ни одним из двух
+    # site_type-фильтров, поэтому floor держится на ЛЮБОМ типе сайта, включая «С пробегом».
+    # ⚠️ Floor идёт ЧЕРЕЗ ТУ ЖЕ `_collect` (2026-07-19, находка ревью): раньше он возвращался
+    # голым `return list(_NEUTRAL_CREDIT_TITLES)[:limit]` и обходил санитайз/стоп-листы — правка
+    # любой строки пула не была бы поймана ничем перед отправкой в Директ.
+    # Гарантия непустоты держится, пока валиден ХОТЯ БЫ ОДИН заголовок пула (сегодня валидны все 5);
+    # если сломать разом все — floor осознанно вернёт [], т.е. ГРОМКИЙ отказ создания вместо
+    # тихой отправки невалидного заголовка в live.
+    if not out:
+        _collect(list(_NEUTRAL_CREDIT_TITLES))
     return out
 
 # «Хвосты»-УТП для добивки коротких заголовков до 45-56 симв. (правило Семёна: заполнять по максимуму).
@@ -1067,21 +1204,28 @@ def _brand_title_set(brand: str, city: str) -> list:
     # Баг #2: МАРКА/МОДЕЛЬ первой (под автотаргетинг Яндекса — он матчит по началу заголовка),
     # затем кредит, затем остальное. Бренд-первые кандидаты идут вверх списка.
     cand = [
-        f"{brand}{loc}. Кредит от 15 банков. Первый взнос 0 ₽",  # марка первой + кредит
-        f"{brand}{loc}. Платеж от 9 000 ₽/мес. Кредит онлайн",   # марка первой + платёж
-        f"{brand}{loc}. КАСКО на 1 год в подарок. Трейд-ин",     # марка первой + подарки
+        f"{brand} в кредит{loc}. Первый взнос 0 ₽",              # марка первой + кредит
+        f"{brand} с платежом от 9 000 ₽/мес{loc}. Кредит онлайн", # марка первой + платёж
+        f"{brand} с КАСКО на 1 год{loc}. Трейд-ин в подарок",    # марка первой + подарки
         f"{brand} в трейд-ин{loc}. Оценка авто за 30 минут",     # бренд-подлежащее
         f"{brand} по госпрограмме{loc}. Господдержка 2026",      # бренд-подлежащее
-        f"{brand}{loc}. Выгода до 45% при покупке в кредит",     # марка первой + выгода/кредит
+        f"{brand} с выгодой до 45%{loc}. Покупка в кредит",      # марка первой + выгода/кредит
         f"Купить {brand}{loc}. КАСКО на 1 год бесплатно",        # «Купить»
-        f"Новый {brand}{loc}. Одобрение за 30 минут",            # «Новый»
+        # Был «Новый {brand}{loc}. Одобрение за 30 минут» — на Б/У-сайте «Новый Haval» ВРЁТ.
+        # Фильтром это не снять: `_NEW_RE` требует хвост «авто»/«автомобил», а тут МАРКА.
+        # Site_type-параметра у функции нет намеренно — её зовёт и tp6-путь
+        # (`create_set_master_product.py:175`), который site_type сюда не передаёт. Поэтому
+        # кандидат сделан нейтральным БЕЗУСЛОВНО: «Новый» не нёс УТП (продаёт «Одобрение
+        # за 30 минут»), а brand-first от снятия слова только выигрывает (DoD §2.1).
+        f"{brand} с одобрением онлайн{loc}. Решение за 30 минут", # brand-first, нейтрально к site_type
     ]
     out: list = []
     for t in cand:
         ft = _fill_title(_strip_credit_rate(t), 45, 56)   # убрать %-ставку, потом добить до 45-56
         if ft and ft not in out:
             out.append(ft)
-    return out[:8] or [f"Новые {brand}{loc}"[:56], brand]   # 8 = все #23-шаблоны, вкл. «Госпрограмма»
+    # Последний рубеж: без «Новые {brand}» — тот же site_type-независимый мотив, что и выше.
+    return out[:8] or [f"{brand}{loc}"[:56], brand]         # 8 = все #23-шаблоны, вкл. «Госпрограмма»
 
 # Стемы крупных городов РФ (для матча в склонениях: «москв»→москва/москве; «казан»→казань/казани).
 # Дополняет города из local_gsheet_sites — ловит ключи слепка с городами, где нет наших аккаунтов.
@@ -1123,7 +1267,9 @@ def _rsya_titles(brand: str, city: str, site_type: str, ai_title2: str = "",
     acc_city = (city or "").strip()
 
     def _cf(lst):
-        return _replace_foreign_city(_drop_used_car(list(lst or []), site_type), acc_city, _cities_bl)
+        return _replace_foreign_city(
+            _drop_new_car(_drop_used_car(list(lst or []), site_type), site_type),
+            acc_city, _cities_bl)
 
     if brand and is_brand:
         branded_base = [t for t in (list(base or [])) if t and _brand_in_text(t, brand)]
@@ -1138,7 +1284,9 @@ def _rsya_titles(brand: str, city: str, site_type: str, ai_title2: str = "",
         supp = list(pool or []) + _GENERIC_TITLE_FILLERS
     primary = _drop_foreign_brand_mentions(primary, brand)
     supp = _drop_foreign_brand_mentions(supp, brand)
-    titles = _fill_variants(_cf(primary), _cf(supp) + _GENERIC_TITLE_FILLERS, cap)
+    # Хвост `_GENERIC_TITLE_FILLERS` — сырой резерв мимо `_cf`: на Б/У-сайте протаскивал
+    # «Кредит на новый авто…»/«Новые авто в наличии…». Прогоняем через `_cf` (site_type-фильтр).
+    titles = _fill_variants(_cf(primary), _cf(supp) + _cf(_GENERIC_TITLE_FILLERS), cap)
     # убрать %-ставку кредита + тире/дефис-разделитель → точка + добить до 45-56; дедуп по норм-ключу (БАГ 2).
     out: list = []
     seen_keys: set = set()
@@ -1158,6 +1306,7 @@ def _rsya_titles(brand: str, city: str, site_type: str, ai_title2: str = "",
         s = _normalize_numeric_suffixes_bp(
             _fill_title(_replace_sep_hyphen(_replace_emdash(_strip_credit_rate(_t0))), 45, 56)
         )
+        s = _strip_installment_text(s)
         if not s:
             continue
         # TITLE_TARGET_MIN gate (= 48): _fill_title может не добить до 48 когда ни один хвост
@@ -1192,10 +1341,15 @@ def _rsya_titles(brand: str, city: str, site_type: str, ai_title2: str = "",
     if len(out) >= cap and not (brand and is_brand):
         out = _alternate_rhythm(out[:cap])
     if not (brand and is_brand) and len(out) < cap:
-        for cand in (_GENERIC_AT_TITLES + _GENERIC_TITLE_FILLERS):
+        # Финальный добор тонкой группы. Источник инцидента kryuchkova (Б/У): сырой
+        # `_GENERIC_AT_TITLES` нёс «Купить новое авто…»/«Выгода до 45% на новые авто…».
+        # `_cf` (=_drop_new_car∘_drop_used_car∘_replace_foreign_city) чистит по site_type;
+        # после фильтра остаётся ≥5 нейтральных строк → пустым набор не станет.
+        for cand in _cf(_GENERIC_AT_TITLES + _GENERIC_TITLE_FILLERS):
             s = _normalize_numeric_suffixes_bp(
                 _fill_title(_replace_sep_hyphen(_replace_emdash(_strip_credit_rate(str(cand)))), 45, 56)
             )
+            s = _strip_installment_text(s)
             if not s or _bad_ad_title(s) or _is_bad_start(s):
                 continue
             nk = _variant_norm_key(s)

@@ -301,22 +301,28 @@ def read_generated_content(login: str, agency: str, campaign_ids: list[int]) -> 
 # ══════════════════════════════════════════════════════════════════════════════════
 #  3. Эталон голоса слепка из ai_agents.py
 # ══════════════════════════════════════════════════════════════════════════════════
-def build_voice_reference(slepok: str) -> dict:
-    """Собрать определение голоса: system + tagline + promo + сигнатура + эталон-корпус."""
+def build_voice_reference(slepok: str, site_type: str = "") -> dict:
+    """Собрать определение голоса с тем же site_type-фильтром, что использует генерация."""
     from direct import ai_agents as A  # type: ignore
     agent = A.AGENTS.get(slepok) or {}
-    signature = A.CROSS_SIGNATURE.get(slepok) or ""
-    ads = A.AGENT_ADS.get(slepok) or {}
+    signature = A.signature_for(slepok, site_type)
+    ads = A.filtered_ads_for_site(agent, site_type) if agent else {}
     ref_titles = (ads.get("titles") or [])[:MAX_REF]
     ref_texts = (ads.get("texts") or [])[:MAX_REF]
     parts = []
     if agent.get("name"):
         parts.append(f"Слепок: {agent['name']} ({slepok})")
+    if site_type:
+        parts.append(f"Тип сайта: {site_type}")
+    st_hint = A.SITE_TYPE_PROFILE.get((site_type or "").strip(), "")
+    if st_hint:
+        parts.append(f"Правила типа сайта:\n{st_hint}")
     if agent.get("tagline"):
         parts.append(f"Кредо: {agent['tagline']}")
-    if agent.get("system"):
-        parts.append(f"Определение голоса (system):\n{agent['system']}")
-    promo = agent.get("promo") or {}
+    system_text = A.system_for_site(agent, site_type) if agent else ""
+    if system_text:
+        parts.append(f"Определение голоса (system):\n{system_text}")
+    promo = A.filtered_promo_for_site(agent, site_type) if agent else {}
     if promo:
         ex = "; ".join(promo.get("examples") or [])
         plus = "; ".join(promo.get("plus") or [])
@@ -353,7 +359,7 @@ def score_offline(slepok: str, site_type: str,
         res = score_offline("kryuchkova", "Монобренд", titles, texts)
         print(res["voice_score"], res["verdict"])
     """
-    voice_ref = build_voice_reference(slepok)
+    voice_ref = build_voice_reference(slepok, site_type)
     if not voice_ref.get("text"):
         return {"error": f"no voice reference for slepok={slepok!r}",
                 "voice_score": 0, "verdict": "generic",
@@ -448,11 +454,11 @@ def judge_voice(voice_ref: dict, titles: list[str], texts: list[str],
 
 
 # ══════════════════════════════════════════════════════════════════════════════════
-#  5. Telegram (личный канал Семёна)
+#  5. Telegram (Direct automation bot)
 # ══════════════════════════════════════════════════════════════════════════════════
 def send_telegram(text: str) -> bool:
     from loader import load_telegram, send_telegram_message  # type: ignore
-    tg = load_telegram("personal")
+    tg = load_telegram("direct")
     tok = tg.get("bot_token")
     chat = tg.get("chat_id")
     if not tok or not chat:
@@ -545,7 +551,7 @@ def run_check(*, job_id: str | None = None, latest: bool = False, login: str | N
         _log("в джобе нет agent (слепка) — пропуск")
         return {"ok": False, "error": "no agent in job"}
 
-    voice_ref = build_voice_reference(slepok)
+    voice_ref = build_voice_reference(slepok, job.get("site_type") or "")
     content = read_generated_content(job["login"], job["agency"], job["campaign_ids"])
 
     # нет контента → честно сообщить «не смог проверить»

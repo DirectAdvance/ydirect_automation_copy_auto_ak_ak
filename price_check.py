@@ -34,6 +34,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
+from .agent_board_bridge import notify_price_job_error
+
 
 # ─────────────────────────────── конфигурация ────────────────────────────────
 
@@ -374,6 +376,8 @@ def ensure_price_check_tables(victory_conn_rw: Callable) -> None:
             # см. request_start_now/_claim_next_run_now_apply.
             cur.execute("ALTER TABLE public.direct_price_check_jobs "
                         "ADD COLUMN IF NOT EXISTS run_now boolean NOT NULL DEFAULT false")
+            cur.execute("ALTER TABLE public.direct_price_check_jobs "
+                        "ADD COLUMN IF NOT EXISTS agent_board_task_id bigint")
         conn.commit()
     except Exception:  # noqa: BLE001
         try:
@@ -487,6 +491,8 @@ def _job_finish(victory_conn_rw: Callable, job_id: str, status: str,
         conn.commit()
     finally:
         conn.close()
+    if status == "error":
+        notify_price_job_error(victory_conn_rw, job_id)
 
 
 def job_public(victory_conn: Callable, job_id: str) -> dict | None:

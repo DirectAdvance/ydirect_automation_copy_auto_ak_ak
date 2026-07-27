@@ -140,12 +140,12 @@ def _parse_texts(obj) -> list:
 
 
 def brand_head_ok(title: str, brand: str) -> bool:
-    """Марка/модель присутствует ДО первой точки заголовка (brand-first, механизм B)."""
+    """Марка/модель присутствует ДО первой точки и не стоит отдельной фразой ``Brand.``."""
     if not brand:
         return True
-    from .text_gen import _brand_in_text
+    from .text_gen import _brand_in_text, _brand_isolated_first_phrase
     head = str(title or "").split(".")[0]
-    return _brand_in_text(head, brand)
+    return _brand_in_text(head, brand) and not _brand_isolated_first_phrase(title, brand)
 
 
 # ── A/B: перегенерация заголовков ────────────────────────────────────────────────

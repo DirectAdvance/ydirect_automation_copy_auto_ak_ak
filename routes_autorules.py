@@ -105,6 +105,7 @@ def register_autorules_routes(
             "direct/autorules.html",
             active_section="services",
             active_page="direct_autorules",
+            hide_scope=request.args.get("hide_scope") == "1",
         )
 
     # ── ЗАДАЧА A: Обзор ─────────────────────────────────────────────────────────

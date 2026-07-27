@@ -434,3 +434,20 @@ def _bad_ad_sitelink(title: str, description: str = "") -> bool:
         s,
     ))
 
+
+
+def _strip_href_fragment(href: str) -> str:
+    """Срезать #якорь из Href НЕПОСРЕДСТВЕННО ПЕРЕД отправкой в Директ/Grid.
+
+    Якорь (`#sl1`, `#credit`, …) проставляется на этапе СБОРКИ быстрых ссылок
+    (`create_set_feed_builders._ensure_sitelink_hrefs` / `_DEFAULT_SITELINKS_FALLBACK`) как
+    внутреннее средство различения ссылок. В живом Href он не нужен и вреден — ведёт на
+    несуществующий раздел сайта. Поэтому срезаем в ТОЧКЕ ОТПРАВКИ, а не в сборке.
+
+    Href, состоящий из одного фрагмента, оставляем как есть (лучше странный href, чем пустой:
+    пустой Href Директ отбивает валидацией и теряет весь набор).
+    """
+    s = (href or "").strip()
+    if "#" not in s:
+        return s
+    return s.split("#", 1)[0] or s

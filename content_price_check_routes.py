@@ -241,6 +241,8 @@ def register_price_check_routes(
     @bp.route("/api/content-editor/admin/pricecheck/start_now", methods=["POST"])
     @access
     def ce_pc_start_now():
+        if not _admin_allowed():
+            return jsonify({"error": "запуск заливки цен из очереди доступен только админу"}), 403
         job_id = ((request.json or {}).get("job_id") or "").strip()
         if not job_id:
             return jsonify({"error": "job_id обязателен"}), 400

@@ -201,7 +201,7 @@ def run_baseline(slepok_site_types: list[tuple[str, str]], *,
             continue
 
         # ── 2. Голос-референс ─────────────────────────────────────────────────
-        vref = build_voice_reference(slepok)
+        vref = build_voice_reference(slepok, site_type)
         has_corpus = vref.get("has_corpus", False)
 
         # ── 3. Оценить ─────────────────────────────────────────────────────────

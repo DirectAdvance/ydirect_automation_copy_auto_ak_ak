@@ -1,4 +1,4 @@
-"""Ядро генерации контента ОДНОЙ РК (M3 fan-out 14B×3 + 72B-патч + фолбэк слепка).
+"""Ядро генерации контента ОДНОЙ РК (M3 fan-out 14B×3 + 72B-патч).
 
 Вынесено из `_gen_campaign_content` (blueprint.py) БЕЗ изменения поведения: одна pure-функция
 `run_gen_campaign_content(...)`. Все module-level helper'ы/константы blueprint.py инъектируются
@@ -995,24 +995,37 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
     if diag:
         warns = list(warns) + [f"diag M3 filter: {json.dumps(diag, ensure_ascii=False)}"]
     fallback = (not good_t and not good_x)
+    fallback_reason = (
+        f"заголовки {len(good_t)}/{title_target_n}, тексты {len(good_x)}/{A.TEXTS_N}; "
+        f"{str(last_err or 'нет валидного ответа LLM')[:300]}"
+    )
+    # ── Видимость деградации (2026-07-19) ──────────────────────────────────────────────
+    # Раньше падение на НЕ-LLM контент было немым: в result лежал флаг `fallback`, но в журнале
+    # не было ни строки, и «шаблонность» годами читалась как «архитектура такая». Теперь каждое
+    # падение именуется причиной (диагноз последнего LLM-отказа) и копится в per-run счётчике.
+    try:
+        from .llm_providers import record_content_fallback as _rec_fb
+        _rec_fb(fallback, fallback_reason if fallback else "")
+    except Exception:  # noqa: BLE001  (телеметрия не должна ронять генерацию)
+        pass
+    _content_complete = (
+        len(content.get("titles") or []) >= title_target_n
+        and len(content.get("texts") or []) >= A.TEXTS_N
+        and len(content.get("sitelinks") or []) >= A.SITELINKS_N
+    )
+    if fallback and not _content_complete:
+        print(f"[content-fallback] {login} / {agent_key or ''} / {st} / brand={brand or '-'}: "
+              f"LLM не дала валидного контента → шаблонный фолбэк запрещён. Причина: "
+              f"{fallback_reason}", flush=True)
+        return {"ok": False, "agent": agent["name"], "login": login, "item": item,
+                "brand": brand, "content": {"titles": [], "texts": [], "sitelinks": []},
+                "title2": "", "warnings": warns, "fallback": True, "m3_debug": m3_debug,
+                "error": f"шаблонный фолбэк запрещён: {fallback_reason}"}
     if fallback:
-        lib = _slepok_content_get(agent_key or "", st, "campaign")
-        if isinstance(lib, dict) and (lib.get("titles") or lib.get("texts")):
-            content, _lib_warns = A.assemble_campaign(
-                lib.get("titles") or [],
-                lib.get("texts") or [],
-                lib.get("sitelinks") or [],
-                agent,
-                site_type=st,
-                brand=brand,
-            )
-            content = _final_fill_campaign_content(content)
-            content["titles"] = (content.get("titles") or [])[:title_target_n]
-            content["texts"] = (content.get("texts") or [])[:A.TEXTS_N]
-            content["sitelinks"] = (content.get("sitelinks") or [])[:A.SITELINKS_N]
-            warns = [f"⚠ M3 недоступна — контент из БД-библиотеки слепка «{agent['name']}»"]
-        else:
-            warns = [f"⚠ M3 недоступна ({last_err or 'нет валидного ответа'}) — контент собран из слепка «{agent['name']}»"] + warns
+        warns = list(warns) + [
+            "⚠ LLM не дала валидного контента — использован полный corpus-fill после фильтров; "
+            "direct_slepok_content не копировался"
+        ]
     # ── C. LLM-судья УТП-дублей/релевантности (тот же _llm_pair_for), НА ГЕНЕРАЦИИ ──────
     # Осознанно НА ГЕНЕРАЦИИ, а не на live-чтении каждой проверки набора: +1 короткий LLM-вызов
     # на РК (~центы OpenRouter, ~2-4с), вместо повторного прогона по всему аккаунту. Судья
@@ -1052,6 +1065,19 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
                     f"{jr.get('attempts')} попыток — {'; '.join((jr.get('issues') or [])[:3])}"]
         except Exception as e:  # noqa: BLE001  (fail-open: судья не должен ронять генерацию)
             utp_judge = {"error": str(e)[:160]}
+    # Терминальный гард единых чисел УТП (2026-07-21): assemble_campaign уже вызывает
+    # unify_utp_numbers, но НА СВОЕЙ локальной копии — good_t/good_x, которые потом ещё трижды
+    # подмешиваются обратно через _merge_lines (topup из live seed, из LLM, из judge-регенерации),
+    # каждый раз внося исходные (ненормализованные) варианты обратно ("Автокредит от 12 000₽/мес"
+    # рядом с "…от 9 000₽/мес" — разные строки для дедупа по точному совпадению). Единственная
+    # точка, где виден ИТОГОВЫЙ набор (после topup И после UTP-судьи) — здесь, перед return.
+    _ft, _fx, _f2, _fsl, _fu = A.unify_utp_numbers(
+        content.get("titles") or [], content.get("texts") or [],
+        content.get("title2", "") or "", content.get("sitelinks") or [])
+    if _fu:
+        content["titles"], content["texts"] = _ft, _fx
+        content["title2"], content["sitelinks"] = _f2, _fsl
+        warns = list(warns) + ["числа УТП (терминальный гард): суммы/проценты унифицированы"]
     return {"ok": True, "agent": agent["name"], "login": login, "item": item,
             "brand": brand, "content": content,
             "title2": content.get("title2", ""), "utp_judge": utp_judge,

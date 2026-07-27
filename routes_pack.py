@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Callable
 
 from flask import jsonify, request
+
+_log = logging.getLogger(__name__)
 
 
 def register_pack_routes(
@@ -12,6 +16,7 @@ def register_pack_routes(
     access,
     *,
     victory_conn: Callable,
+    victory_conn_rw: Callable | None = None,
     slepok_key_map: dict,
     callout_limits: dict,
     m3_content_status: Callable,
@@ -80,3 +85,81 @@ def register_pack_routes(
         if slepok_segment_counts_response is None:
             return jsonify({"error": "not configured"})
         return slepok_segment_counts_response()
+
+    @bp.route("/api/sync-gsheet-sites", methods=["POST"])
+    @access
+    def api_sync_gsheet_sites():
+        """TRUNCATE+INSERT local_gsheet_sites из FDW gsheet_sites (оба в ad_analytics_bi).
+
+        Одна транзакция RW. Guard: если gsheet_sites пуста (FDW недоступен) — не трогаем
+        local_gsheet_sites. Возвращает {ok, src, dst, took_ms} или {ok: false, error}.
+        """
+        if victory_conn_rw is None:
+            return jsonify({"ok": False, "error": "victory_conn_rw not configured"})
+
+        t0 = time.monotonic()
+        conn = None
+        try:
+            conn = victory_conn_rw()
+            cur = conn.cursor()
+
+            # Динамически собрать пересечение колонок по именам (защита от позиционного сдвига)
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'gsheet_sites'
+                INTERSECT
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'local_gsheet_sites'
+                ORDER BY column_name
+                """
+            )
+            cols = [row[0] for row in cur.fetchall()]
+            if not cols:
+                conn.rollback()
+                return jsonify({"ok": False, "error": "Не удалось получить список колонок — таблицы не найдены"})
+
+            cols_sql = ", ".join(f'"{c}"' for c in cols)
+
+            # GUARD: FDW-0-guard — если источник недоступен или пуст, не трогаем local
+            cur.execute("SELECT count(*) FROM public.gsheet_sites")
+            src_count = cur.fetchone()[0]
+            if src_count == 0:
+                conn.rollback()
+                return jsonify({
+                    "ok": False,
+                    "error": "gsheet_sites вернула 0 строк — FDW недоступен или источник пуст. local_gsheet_sites не тронута.",
+                })
+
+            cur.execute("TRUNCATE public.local_gsheet_sites")
+            cur.execute(
+                f"INSERT INTO public.local_gsheet_sites ({cols_sql}) "
+                f"SELECT {cols_sql} FROM public.gsheet_sites"
+            )
+
+            cur.execute("SELECT count(*) FROM public.local_gsheet_sites")
+            dst_count = cur.fetchone()[0]
+
+            conn.commit()
+            took_ms = round((time.monotonic() - t0) * 1000)
+            _log.info("sync-gsheet-sites: src=%d dst=%d took=%dms cols=%d", src_count, dst_count, took_ms, len(cols))
+            return jsonify({"ok": True, "src": src_count, "dst": dst_count, "took_ms": took_ms})
+
+        except Exception as e:  # noqa: BLE001
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+            _log.exception("sync-gsheet-sites failed")
+            return jsonify({"ok": False, "error": str(e)[:300]})
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass

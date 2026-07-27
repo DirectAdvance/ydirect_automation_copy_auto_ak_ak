@@ -168,9 +168,160 @@ def has_forbidden_claim(s: str) -> bool:
     text = str(s or "")
     return bool(FORBIDDEN_CLAIM_RE.search(text) or FORBIDDEN_CONTENT_RE.search(text))
 
+
+SITE_SIGNATURE_OVERRIDES: dict[tuple[str, str], str] = {
+    ("gordeeva", "С пробегом"): (
+        "🎙 ТВОЙ ГОЛОС (Гордеева / С пробегом) — трейд-ин и обмен именно для БУ: "
+        "обменяем ваш авто, зачтём стоимость, трейд-ин выше рынка, оценка за 1 час, "
+        "кредит без первого взноса, спокойный расчётный тон. Продукт: авто с пробегом, "
+        "проверенные б/у автомобили, большой выбор.\n"
+        "⛔ НЕ пиши new-auto лексику: «новые авто», «новый автомобиль», «нулевой утильсбор», "
+        "«господдержка», «госпрограмма», «по цене б/у». Не используй «Мегараспродажа» как "
+        "new-auto распродажу склада; адаптируй только как выгоду на авто с пробегом.\n"
+    ),
+    ("kuderko", "С пробегом"): (
+        "🎙 ТВОЙ ГОЛОС (Кудерко / С пробегом) — большой выбор БУ: сотни авто с пробегом, "
+        "любой бренд, трейд-ин за 1 день, кредит на любое авто, скидка/выгода за кредит, "
+        "по 2 документам. Тон живой, про выбор и быстрое оформление.\n"
+        "⛔ НЕ пиши new-auto лексику: «новые авто», «новый автомобиль», «нулевой утильсбор», "
+        "«господдержка», «госпрограмма», «по цене б/у».\n"
+    ),
+    ("pavlov", "С пробегом"): (
+        "🎙 ТВОЙ ГОЛОС (Павлов / С пробегом) — финансовый, но БУ-safe: авто с пробегом, "
+        "автокредит, первый взнос 0 ₽, КАСКО на год, одобрение 98%, трейд-ин выше рынка, "
+        "3 платежа за наш счёт, крупная выгода в РУБЛЯХ. "
+        "Фирменный ход «убрали наценку» можно адаптировать только как «убрали наценку на авто с пробегом».\n"
+        "⛔ НЕ пиши новую-авто лексику: «новые авто», «господдержка», «госпрограмма», "
+        "«нулевой утильсбор», «по цене б/у». "
+        "⛔ НЕ воруй чужие голоса: не пиши «распродаём/распродажа склада», «срочно распродаём», "
+        "«ликвидация склада».\n"
+    ),
+    ("pavlov", "Мультибренд"): (
+        "🎙 ТВОЙ ГОЛОС (Павлов / Мультибренд) — финансовый new-auto мультибренд: "
+        "«убрали наценку на новые авто», крупная выгода в РУБЛЯХ, автокредит, "
+        "первый взнос 0 ₽, КАСКО на год, одобрение 98%, трейд-ин выше рынка, "
+        "3 платежа за наш счёт. Обязательно чередуй продукт («новые автомобили в наличии», "
+        "«модельный ряд», «выбор марок») и финансовые УТП.\n"
+        "✅ В каждом комплекте используй ≥2 фирменных павловских маркера: "
+        "«убрали наценку», «выгода до N ₽», «одобрение 98%», «КАСКО на год», "
+        "«первый взнос 0 ₽», «3 платежа за наш счёт».\n"
+        "⛔ НЕ скатывайся в общий банковский кредитный шаблон без павловской "
+        "подписи. ⛔ НЕ воруй чужие голоса: не пиши «распродаём склад», «по цене б/у», "
+        "«нулевой утильсбор», «ликвидация склада».\n"
+    ),
+    ("tumashenko", "С пробегом"): (
+        "🎙 ТВОЙ ГОЛОС (Тумашенко / С пробегом) — БУ-safe версия: юридическая чистота, "
+        "рейтинг 4,9 из 5, проверенные авто с пробегом, трейд-ин, кредит без взноса, "
+        "зимняя резина или КАСКО в подарок. Широкий выбор, деловой тон, конкретные условия.\n"
+        "⛔ НЕ пиши new-auto лексику: «господдержка», «госпрограмма», «нулевой утильсбор», "
+        "«новые авто», «новый автомобиль», «по цене б/у».\n"
+    ),
+}
+
+
+SITE_SYSTEM_OVERRIDES: dict[tuple[str, str], str] = {
+    ("gordeeva", "С пробегом"): (
+        "Ты — Слепок_Гордеева, ИИ-двойник директолога. Стиль для сайта авто с пробегом: "
+        "акцент на трейд-ин и обмен — «обменяем ваш авто», «зачтём стоимость», "
+        "«трейд-ин выше рынка», оценка за 1 час. Продукт — проверенные б/у автомобили. "
+        "Спокойный деловой тон, ориентирован на расчётного покупателя."
+    ),
+    ("kuderko", "С пробегом"): (
+        "Ты — Слепок_Кудерко, ИИ-двойник директолога. Стиль для сайта авто с пробегом: "
+        "большой выбор б/у автомобилей, любой бренд, трейд-ин за 1 день, кредит на любое авто. "
+        "Тон живой, про широкий выбор и быстрое оформление."
+    ),
+    ("pavlov", "С пробегом"): (
+        "Ты — Слепок_Павлов, ИИ-двойник директолога. Стиль для сайта авто с пробегом: "
+        "солидный финансовый акцент без new-auto лексики — авто с пробегом, автокредит, "
+        "первый взнос 0 ₽, КАСКО на год, одобрение 98%, трейд-ин выше рынка, крупная выгода в рублях. "
+        "Тон уверенный, деловой, без кликбейта."
+    ),
+    ("tumashenko", "С пробегом"): (
+        "Ты — Слепок_Тумашенко, ИИ-двойник директолога. Стиль для сайта авто с пробегом: "
+        "юридическая чистота, рейтинг 4,9 из 5, проверенные б/у автомобили, широкий выбор, "
+        "трейд-ин, кредит без взноса, зимняя резина или КАСКО в подарок. "
+        "Тон деловой, продающий, с конкретными условиями."
+    ),
+}
+
+
+def agent_key_for(agent: dict) -> str:
+    """Вернуть canonical key агента по объекту AGENTS[key]."""
+    return next((k for k, v in AGENTS.items() if v is agent), "")
+
+
+def system_for_site(agent: dict, site_type: str = "") -> str:
+    """Site-type-aware system prompt: общая роль или безопасный override."""
+    key = agent_key_for(agent)
+    st = (site_type or "").strip()
+    return SITE_SYSTEM_OVERRIDES.get((key, st)) or agent.get("system", "")
+
+
+def signature_for(agent_key: str, site_type: str = "") -> str:
+    """Site-type-aware подпись голоса: общая сигнатура или безопасный override."""
+    key = (agent_key or "").strip().lower()
+    st = (site_type or "").strip()
+    return SITE_SIGNATURE_OVERRIDES.get((key, st)) or CROSS_SIGNATURE.get(key, "")
+
+
+_GENERIC_PROMPT_CREDIT_RE = re.compile(
+    r"(?i)(?:"
+    r"\b(?:авто)?кредит\s+от\s+15\s+банк|"
+    r"\bкредит\s+на\s+нов(?:ое|ый|ые)\s+авто\s+от\s+15\s+банк|"
+    r"\bкупить\s+нов(?:ое|ый|ые)\s+авто(?:мобил[ьяеи])?\s+в\s+кредит|"
+    r"\bнов(?:ые|ое|ый)\s+авто(?:мобил[ьи])?\s+в\s+кредит|"
+    r"\b15\s+банк|"
+    r"\bрассрочк\w*\b"
+    r")"
+)
+
+
+def _generic_prompt_credit(s: str) -> bool:
+    """True для общих кредитных фраз, которые не должны быть примером голоса слепка."""
+    return bool(_GENERIC_PROMPT_CREDIT_RE.search(s or ""))
+
+
+def filtered_ads_for_site(agent: dict, site_type: str = "") -> dict:
+    """Корпус агента, отфильтрованный теми же site_type-правилами, что и генерация."""
+    ads = agent.get("ads", {}) or {}
+    st = (site_type or "").strip()
+    bu = is_bu_site_type(st)
+    new_only = st in NEW_ONLY_SITE_TYPES
+    titles = [t for t in (ads.get("titles") or [])
+              if not _generic_prompt_credit(t)
+              and not (bu and _bad_for_bu(t)) and not (new_only and _bad_for_new(t))]
+    texts = [t for t in (ads.get("texts") or [])
+             if not _generic_prompt_credit(t)
+             and not (bu and _bad_for_bu(t)) and not (new_only and _bad_for_new(t))]
+    sitelinks = [(t, d) for t, d in (ads.get("sitelinks") or [])
+                 if not (_generic_prompt_credit(t) or _generic_prompt_credit(d))
+                 and not (bu and (_bad_for_bu(t) or _bad_for_bu(d)))
+                 and not (new_only and (_bad_for_new(t) or _bad_for_new(d)))]
+    return {"titles": titles, "texts": texts, "sitelinks": sitelinks}
+
+
+def filtered_promo_for_site(agent: dict, site_type: str = "") -> dict:
+    """Промо агента без конфликтных examples/plus для текущего типа сайта."""
+    promo = dict(agent.get("promo") or {})
+    st = (site_type or "").strip()
+    bu = is_bu_site_type(st)
+    new_only = st in NEW_ONLY_SITE_TYPES
+
+    def _ok(s: str) -> bool:
+        return (not _generic_prompt_credit(s)
+                and not (bu and _bad_for_bu(s))
+                and not (new_only and _bad_for_new(s)))
+
+    promo["plus"] = [x for x in (promo.get("plus") or []) if _ok(str(x))]
+    promo["examples"] = [x for x in (promo.get("examples") or []) if _ok(str(x))]
+    return promo
+
 # Слова, НЕУМЕСТНЫЕ на сайте «С пробегом» (это про НОВЫЕ авто) — фильтруем из контента.
 _BU_BAN_SUBSTR = ["утильсбор", "новый авто", "новые авто", "новых авто", "новым авто",
                   "новом авто", "новую авто", "к новым", "по цене б/у", "господдерж", "госпрограм",
+                  "новые и б/у", "новые и бу", "новые и б у", "новые и с пробегом",
+                  "с пробегом и новые", "б/у и новые", "бу и новые",
                   # маркеры распродажи НОВОГО дилерского склада
                   "перед завозом", "со склада дилера", "новые модели"]
 # «Новые <Бренд>» / «новый автомобиль» и т.п. — но НЕ «новые поступления б/у».
@@ -185,6 +336,8 @@ def _bad_for_bu(s: str) -> bool:
     """True, если строка содержит «новоавтомобильные» формулировки (для сайтов «С пробегом»)."""
     low = (s or "").lower()
     if any(b in low for b in _BU_BAN_SUBSTR):
+        return True
+    if re.search(r"гос\s*\.?\s*поддерж", low):
         return True
     return bool(_BU_BAN_RE.search(low))
 
@@ -375,7 +528,7 @@ def build_promo_messages(agent: dict, ctx: dict, avoid: list | None = None,
     ctx: {domain, city, site_type, salon}. avoid: ранее выданные описания — чтобы
     «Сгенерировать снова» давал ДРУГОЙ вариант. force_type: жёстко заданный тип акции
     (ротация при регенерации — чтобы менялся характер акции, а не только текст). Строгий JSON."""
-    p = agent["promo"]
+    p = filtered_promo_for_site(agent, (ctx.get("site_type") or "").strip())
     salon = ctx.get("salon") or ctx.get("domain") or "автосалон"
     city = ctx.get("city") or ""
     site_type = (ctx.get("site_type") or "").strip()
@@ -402,7 +555,7 @@ def build_promo_messages(agent: dict, ctx: dict, avoid: list | None = None,
         "(для подарка — стоимость в ₽; для скидки/выгоды/кешбэка — % или ₽).\n"
         if force_type else "")
     sys = (
-        agent["system"] + "\n\nТы генерируешь ПРОМОАКЦИЮ для Яндекс.Директа автодилера.\n"
+        system_for_site(agent, site_type) + "\n\nТы генерируешь ПРОМОАКЦИЮ для Яндекс.Директа автодилера.\n"
         f"Салон: {salon}. Город: {city}. Сайт: {ctx.get('domain') or ''}.\n"
         + (f"⚠ {st_hint}\n" if st_hint else "")
         + forced_line
@@ -535,7 +688,7 @@ _SITELINK_VEHICLE_RE = re.compile(
 
 COMMON_SITELINK_BANK: list[tuple[str, str]] = [
     ("Скидка до 57% на авто 2025 г", "Действует на автомобили 2025 года выпуска по акции"),
-    ("Автокредит с выгодой", "Подберем условия от 15 банков-партнеров под заявку"),
+    ("Автокредит с выгодой", "Подберем условия банков под заявку"),
     ("Первый взнос 0 ₽", "Первый взнос 0 ₽. Кредит оформим за 1 день онлайн"),
     ("КАСКО на 1 год бесплатно", "КАСКО на 1 год. Дарим при покупке авто в кредит"),
     ("Трейд-ин выше рынка", "Оценим авто за 1 час. Зачтём стоимость в кредит"),
@@ -560,7 +713,7 @@ def sitelink_bank_for(site_type: str = "", brand: str = "") -> list[tuple[str, s
             ("Узнайте цену по акции", "Покажем цену со скидкой до 45% по условиям акции"),
             ("Подбор авто под бюджет", "Предложим авто под бюджет от 9 000 ₽/мес онлайн"),
             ("Оцените авто в трейд-ин", "Рассчитаем выгоду до 200 000 ₽ при обмене онлайн"),
-            ("Получите предложение банка", "Подберем кредит от 15 банков-партнеров онлайн"),
+            ("Получите предложение банка", "Подберем кредитные условия онлайн"),
             ("Выберите авто онлайн", "Покажем 20+ версий авто и актуальные цены онлайн"),
             ("Узнайте размер скидки", "Покажем скидку до 45% и условия покупки авто онлайн"),
             ("Оставьте заявку онлайн", "Подготовим персональное предложение за 15 минут"),
@@ -673,7 +826,7 @@ def _strip_tiny_credit_amounts(s: str) -> str:
         elif word.lower().startswith("плат"):
             base = "Платёж" if word[0].isupper() else "платёж"
         elif word.lower().startswith("расс"):
-            base = "Рассрочка" if word[0].isupper() else "рассрочка"
+            base = "Кредит" if word[0].isupper() else "кредит"
         else:
             base = "Кредит" if word[0].isupper() else "кредит"
         return base
@@ -1350,11 +1503,14 @@ def validate_campaign(d: dict, agent: dict, site_type: str = "") -> tuple[dict, 
 
 
 def assemble_campaign(titles: list, texts: list, sitelinks: list, agent: dict,
-                      site_type: str = "", brand: str = "") -> tuple[dict, list[str]]:
-    """Финальная сборка с ГАРАНТИЕЙ длины: оставляет заголовки ≥TITLE_TARGET_MIN и тексты
-    ≥TEXT_TARGET_MIN, недостающее добивает ПОЛНЫМИ примерами из банка/корпуса. → (content, warns).
-    Используется после цикла перегенерации (короткие строки уже отброшены в эндпоинте).
-    Эталонный банк (EXAMPLE_BANK) в контент НЕ добивается — только корпус самого слепка."""
+                      site_type: str = "", brand: str = "",
+                      allow_corpus_fill: bool = True) -> tuple[dict, list[str]]:
+    """Финальная сборка с фильтрацией длины/стоп-фраз.
+
+    allow_corpus_fill=True сохраняет legacy seed/preview поведение: недостающее можно добрать
+    полными примерами корпуса слепка. Боевой create-set вызывает с False: корпус и шаблоны остаются
+    только few-shot примерами промпта, но НЕ попадают в финальный контент.
+    """
     st = (site_type or "").strip()
     bu = is_bu_site_type(st)
     new_only = st in NEW_ONLY_SITE_TYPES
@@ -1371,7 +1527,10 @@ def assemble_campaign(titles: list, texts: list, sitelinks: list, agent: dict,
     text_utp_re = re.compile(
         r"(?i)(\d|кредит|плат[её]ж|скидк|выгод|трейд-?ин|каско|подар|в наличии|господдерж|госпрограм|"
         r"одобр|акци|тест-?драйв|шин|взнос|документ|комплект|ключи)")
-    cta_re = re.compile(r"(?i)(звонит|остав(?:ь|ьте)\s+заявк|оставьте\s+контакт|запишит|приезжайт|узнайте|получите)")
+    cta_re = re.compile(
+        r"(?i)(звонит|остав(?:ь|ьте)\s+заявк|оставьте\s+контакт|запишит|приезжайт|"
+        r"узнайте|получите|купит|оформит|рассчита|подберит|выберите)"
+    )
     # dmp (B2B): контент про лиды/контакты/клиентов — проверяем B2B-маркеры, не авто-кредит
     _dmp_b2b_re = re.compile(r"(?i)(лид|заявк|контакт|клиент|компани|бизнес|источник|идентифик|горяч)")
 
@@ -1403,7 +1562,7 @@ def assemble_campaign(titles: list, texts: list, sitelinks: list, agent: dict,
             return False
         return not (_SITELINK_VEHICLE_RE.search(ti or "") or _SITELINK_VEHICLE_RE.search(de or ""))
 
-    def _pad(cur: list, pools: list, n: int, minlen: int, maxlen: int):
+    def _pad(cur: list, pools: list, n: int, minlen: int, maxlen: int, *, allow_fill: bool):
         cleaned_cur = []
         for x in cur or []:
             c = _clean_line(x, maxlen)
@@ -1431,9 +1590,10 @@ def assemble_campaign(titles: list, texts: list, sitelinks: list, agent: dict,
                 if len(c) >= floor and c.lower() not in seen:
                     seen.add(c.lower()); out.append(c); padded = True
 
-        for pool in pools:               # сначала корпус агента (его стиль), потом банк по типу сайта
-            _take(pool, minlen)
-        if len(out) < n:                 # ≥minlen не хватило
+        if allow_fill:
+            for pool in pools:           # сначала корпус агента (его стиль), потом банк по типу сайта
+                _take(pool, minlen)
+        if allow_fill and len(out) < n:  # ≥minlen не хватило
             if maxlen == TITLE_MAX:      # заголовки: не снижаем порог до 40; лучше повторить одобренный чем взять короткий
                 _approved = list(out)
                 _idx = 0
@@ -1448,11 +1608,13 @@ def assemble_campaign(titles: list, texts: list, sitelinks: list, agent: dict,
             out = diversify_title_utp(out, n)
         return out[:n], padded
 
-    # Добивка ТОЛЬКО из корпуса самого слепка (его стиль). Эталонный банк сюда НЕ идёт —
-    # он лишь ориентир полноты/длины в промпте, его фразы в контент не подмешиваются.
+    # Добивка из корпуса допустима только для seed/preview. В live create-set
+    # allow_corpus_fill=False: модель должна сгенерировать полный комплект сама.
     titles = diversify_title_utp(_dedup_titles(titles), TITLES_N)   # сначала разные УТП, потом добивка
-    titles, p1 = _pad(titles, [ads.get("titles", [])], TITLES_N, TITLE_TARGET_MIN, TITLE_MAX)
-    texts, p2 = _pad(texts, [ads.get("texts", [])], TEXTS_N, TEXT_TARGET_MIN, TEXT_MAX)
+    titles, p1 = _pad(titles, [ads.get("titles", [])], TITLES_N, TITLE_TARGET_MIN, TITLE_MAX,
+                      allow_fill=allow_corpus_fill)
+    texts, p2 = _pad(texts, [ads.get("texts", [])], TEXTS_N, TEXT_TARGET_MIN, TEXT_MAX,
+                    allow_fill=allow_corpus_fill)
     if p1:
         warns.append("заголовки дополнены из корпуса слепка")
     if p2:
@@ -1477,30 +1639,31 @@ def assemble_campaign(titles: list, texts: list, sitelinks: list, agent: dict,
                 seen_desc.add(dk)
             _take_sitelink(sl_bucket_counts, ct, cd)
             sl.append({"title": ct, "description": cd})
-    for ti, de in sitelink_bank_for(st, brand) + list(ads.get("sitelinks", [])):
-        if len(sl) >= SITELINKS_N:
-            break
-        ct = _clean_line(ti, SITELINK_TITLE_MAX, sitelink=True)
-        cd = _clean_line(de, SITELINK_DESC_MAX, sitelink=True)
-        if _mismatch(ct) or _mismatch(cd) or not _sitelink_ok(ct, cd):
-            continue
-        tk = _sitelink_title_key(ct)
-        dk = _sitelink_desc_key(cd)
-        if ct and tk not in seen_sl and (not dk or dk not in seen_desc) and _can_take_sitelink(sl_bucket_counts, ct, cd, st):
-            seen_sl.add(tk)
-            if dk:
-                seen_desc.add(dk)
-            _take_sitelink(sl_bucket_counts, ct, cd)
-            sl.append({"title": ct, "description": cd})
+    if allow_corpus_fill:
+        for ti, de in sitelink_bank_for(st, brand) + list(ads.get("sitelinks", [])):
+            if len(sl) >= SITELINKS_N:
+                break
+            ct = _clean_line(ti, SITELINK_TITLE_MAX, sitelink=True)
+            cd = _clean_line(de, SITELINK_DESC_MAX, sitelink=True)
+            if _mismatch(ct) or _mismatch(cd) or not _sitelink_ok(ct, cd):
+                continue
+            tk = _sitelink_title_key(ct)
+            dk = _sitelink_desc_key(cd)
+            if ct and tk not in seen_sl and (not dk or dk not in seen_desc) and _can_take_sitelink(sl_bucket_counts, ct, cd, st):
+                seen_sl.add(tk)
+                if dk:
+                    seen_desc.add(dk)
+                _take_sitelink(sl_bucket_counts, ct, cd)
+                sl.append({"title": ct, "description": cd})
     sl = _dedup_sitelinks(diversify_sitelink_utp(sl, SITELINKS_N), st, SITELINKS_N)
 
-    if not titles:
+    if allow_corpus_fill and not titles:
         for ex in ads.get("titles", []):
             c = _clean_line(ex, TITLE_MAX)
             if not _mismatch(c) and _title_ok(c):
                 titles = [c]
                 break
-    if not texts:
+    if allow_corpus_fill and not texts:
         for ex in ads.get("texts", []):
             c = _clean_line(ex, TEXT_MAX)
             if not _mismatch(c) and _text_ok(c):
@@ -1509,14 +1672,14 @@ def assemble_campaign(titles: list, texts: list, sitelinks: list, agent: dict,
     # D7/D11 (2026-07-09): аварийные фолбэки уплотнены (короткий текст ~52 симв → плотный ≤81) и
     # приведены к стилю. Заголовки: «Автокредит» (в заголовках слово разрешено), brand-first сохранён.
     # Тексты: «автокредит» НЕЛЬЗЯ (блокируется _BAD_AD_TEXT_RE) → «в кредит»; добавлен CTA «Купить».
-    if not titles:
+    if allow_corpus_fill and not titles:
         if _is_dmp:
             titles = ["Получите контакты потенциальных клиентов в ваш бизнес"]
         elif brand_word:
             titles = [f"{brand_word} в кредит от 9 000 ₽/мес. Первый взнос 0 ₽"]
         else:
             titles = ["Автокредит от 9 000 ₽/мес. Первый взнос 0 ₽"]
-    if not texts:
+    if allow_corpus_fill and not texts:
         if _is_dmp:
             texts = ["Предоставим контакты горячих клиентов, заинтересованных в покупке. Оставьте заявку!"]
         elif brand_word:
@@ -1528,7 +1691,7 @@ def assemble_campaign(titles: list, texts: list, sitelinks: list, agent: dict,
     sl = _dedup_sitelinks(sl, st, SITELINKS_N)
     titles, texts, _t2, sl, _u = unify_utp_numbers(titles, texts, "", sl)
     texts = _dedup_texts(texts)
-    if len(texts) < TEXTS_N:
+    if allow_corpus_fill and len(texts) < TEXTS_N:
         seen_text_keys = {_text_semantic_key(x) for x in texts}
         for ex in ads.get("texts", []):
             if len(texts) >= TEXTS_N:
@@ -1577,21 +1740,18 @@ def build_campaign_messages(agent: dict, ctx: dict, item: dict | None = None,
     # выкидываем новоавтомобильные строки; если агент такой сайт не вёл — он АДАПТИРУЕТ свой тон.
     bu = is_bu_site_type(site_type)
     new_only = site_type in NEW_ONLY_SITE_TYPES
-    a_titles = [t for t in (ads.get("titles") or [])
-                if not (bu and _bad_for_bu(t)) and not (new_only and _bad_for_new(t))]
-    a_texts = [t for t in (ads.get("texts") or [])
-               if not (bu and _bad_for_bu(t)) and not (new_only and _bad_for_new(t))]
-    a_sl = [(t, dd) for t, dd in (ads.get("sitelinks") or [])
-            if not (bu and (_bad_for_bu(t) or _bad_for_bu(dd)))
-            and not (new_only and (_bad_for_new(t) or _bad_for_new(dd)))]
+    site_ads = filtered_ads_for_site(agent, site_type)
+    a_titles = site_ads.get("titles") or []
+    a_texts = site_ads.get("texts") or []
+    a_sl = site_ads.get("sitelinks") or []
     ex_titles = "\n   • ".join(a_titles[:6]) or "(нет — адаптируй свой фирменный тон под этот тип сайта)"
     ex_texts = "\n   • ".join(a_texts[:4]) or "(нет — адаптируй свой фирменный тон под этот тип сайта)"
     ex_sl = "\n   • ".join(f"{t} — {d}" for t, d in a_sl[:SITELINKS_N]) or "(нет — адаптируй свой тон)"
-    plus_h = ", ".join((agent.get("promo", {}).get("plus") or [])) or "выгода, кредит, трейд-ин, КАСКО"
+    plus_h = ", ".join((filtered_promo_for_site(agent, site_type).get("plus") or [])) or "выгода, кредит, трейд-ин, КАСКО"
     plus_h = re.sub(r"(?i)\bгаранти\w*\b", "КАСКО", plus_h)
 
     sys = (
-        agent["system"] + "\n\nТы генерируешь КОНТЕНТ объявлений Яндекс.Директа для автодилера.\n"
+        system_for_site(agent, site_type) + "\n\nТы генерируешь КОНТЕНТ объявлений Яндекс.Директа для автодилера.\n"
         f"Город: {city}. Сайт: {ctx.get('domain') or ''}.\n"
         + (f"Если упоминаешь город в тексте — используй ПРЕДЛОЖНЫЙ падеж и ПОЛНОЕ название: "
            f"«в {city}е/и» (например, «в Краснодаре», «в Нижнем Новгороде» — НЕ «в Краснодар», "
@@ -1695,8 +1855,8 @@ def build_campaign_messages(agent: dict, ctx: dict, item: dict | None = None,
     )
     # Кросс-сигнатура: усилить СВОИ фирменные фразы и явно запретить уникальные маркеры ДРУГИХ
     # слепков (по данным 10× прогона — точечные перекрёстные утечки). Ключ — обратным поиском.
-    _akey = next((k for k, v in AGENTS.items() if v is agent), "")
-    sig_block = CROSS_SIGNATURE.get(_akey, "")
+    _akey = agent_key_for(agent)
+    sig_block = signature_for(_akey, site_type)
     if sig_block:
         sys += "\n" + sig_block
     avoid = [a for a in (avoid or []) if a]
@@ -1726,19 +1886,25 @@ def _fanout_head(agent: dict, ctx: dict, site_type: str, brand: str, kind: str) 
                        f"НЕ упоминай общий инвентарь салона («6500+ авто» и т.п.) — только {_bw}.\n")
     elif site_type != "dmp":
         # ct0000 / brand="" для авто: явный запрет — LLM не должна выдумывать конкретную марку
-        brand_block = ("⛔ ЗАПРЕЩЕНО упоминать конкретную марку автомобиля "
-                       "(Peugeot, BAIC, Chery, Haval, Geely, Lada и т.п.) — "
-                       "пиши обобщённо: «авто», «автомобили», «новые авто».\n")
+        if is_bu_site_type(site_type):
+            brand_block = ("⛔ ЗАПРЕЩЕНО упоминать конкретную марку автомобиля "
+                           "(Peugeot, BAIC, Chery, Haval, Geely, Lada и т.п.) — "
+                           "пиши обобщённо под тип сайта: «авто с пробегом», "
+                           "«б/у автомобили», «проверенные автомобили».\n")
+        else:
+            brand_block = ("⛔ ЗАПРЕЩЕНО упоминать конкретную марку автомобиля "
+                           "(Peugeot, BAIC, Chery, Haval, Geely, Lada и т.п.) — "
+                           "пиши обобщённо: «авто», «автомобили», «новые авто».\n")
     st_hint = SITE_TYPE_PROFILE.get(site_type, "")
     # Характерные поводы этого слепка (promo.examples) — ключевой сигнал уникальности голоса.
     # Для реальных слепков (pavlov/kryuchkova/scherbakova/terehov/karavaev) они РАЗНЫЕ.
     # Для стартовых — пока generic (нет corpus): см. slepki_master (данные), ERRORS_JOURNAL SLEPOK_VOICE.
-    promo_ex = (agent.get("promo") or {}).get("examples") or []
+    promo_ex = (filtered_promo_for_site(agent, site_type).get("examples") or [])
     promo_hint = ""
     if promo_ex:
         promo_hint = "Характерные посылы акций этого агента: " + ", ".join(f"«{e}»" for e in promo_ex[:3]) + ".\n"
     return (
-        agent["system"] + "\n\n"
+        system_for_site(agent, site_type) + "\n\n"
         + f"Город: {city}. Сайт: {ctx.get('domain') or ''}. {kind}.\n"
         + (f"⚠ {st_hint}\n" if st_hint else "")
         + promo_hint
@@ -1755,17 +1921,16 @@ def build_titles_messages(agent: dict, ctx: dict, item: dict | None = None,
     kind = "товарная (под фид)" if item.get("type") == "product" else "мастер-кампания"
     bu = is_bu_site_type(site_type)
     new_only = site_type in NEW_ONLY_SITE_TYPES
-    a_titles = [t for t in (agent.get("ads", {}).get("titles") or [])
-                if not (bu and _bad_for_bu(t)) and not (new_only and _bad_for_new(t))]
+    a_titles = filtered_ads_for_site(agent, site_type).get("titles") or []
     ex_titles = "\n   • ".join(a_titles[:6]) or "(адаптируй свой тон)"
-    plus_h = ", ".join((agent.get("promo", {}).get("plus") or [])) or "выгода, кредит, трейд-ин, КАСКО"
+    plus_h = ", ".join((filtered_promo_for_site(agent, site_type).get("plus") or [])) or "выгода, кредит, трейд-ин, КАСКО"
     plus_h = re.sub(r"(?i)\bгаранти\w*\b", "КАСКО", plus_h)
 
     # ── dmp-guard: B2B-лидоген, НЕ авто (site_type == "dmp") ─────────────────
     # Общий промпт заточен под авто-кредит — для dmp он тянет «кредит/₽/мес/авто».
     # Возвращаем отдельный B2B-промпт и выходим раньше основного блока.
     if site_type == "dmp":
-        _akey_dmp = next((k for k, v in AGENTS.items() if v is agent), "")
+        _akey_dmp = agent_key_for(agent)
         _dmp_sys = (
             _fanout_head(agent, ctx, site_type, "", kind)
             + f"Сгенерируй РОВНО {TITLES_N} заголовков объявлений Яндекс.Директа.\n"
@@ -1787,7 +1952,7 @@ def build_titles_messages(agent: dict, ctx: dict, item: dict | None = None,
             + f"TITLE2: фраза ≤{TITLE2_MAX} симв — конкретный факт/цифра B2B (не авто).\n"
             + f"Твой стиль:\n   • {ex_titles}\n"
         )
-        _sig_dmp = CROSS_SIGNATURE.get(_akey_dmp, "")
+        _sig_dmp = signature_for(_akey_dmp, site_type)
         if _sig_dmp:
             _dmp_sys += "\n" + _sig_dmp
         if avoid:
@@ -1810,7 +1975,7 @@ def build_titles_messages(agent: dict, ctx: dict, item: dict | None = None,
 
     # terehov (#15, Семён 2026-07-11): город в заголовках ЗАПРЕЩЁН — brand-first без города.
     # Только для terehov, другие слепки получают город как обычно.
-    _akey_early = next((k for k, v in AGENTS.items() if v is agent), "")
+    _akey_early = agent_key_for(agent)
     _terehov_no_city_rule = ""
     if _akey_early == "terehov":
         _terehov_no_city_rule = (
@@ -1840,8 +2005,11 @@ def build_titles_messages(agent: dict, ctx: dict, item: dict | None = None,
         + "Добавляй детали: «от», «в 20 банках», «за 1 час», «Взнос 0 руб», «КАСКО в подарок» — пока не достигнешь 53-56 симв.\n"
         + "ОБЩАЯ РАМКА: упор на КРЕДИТ + продукт. "
         + f"1–2 заголовка из {TITLES_N} ОБЯЗАТЕЛЬНО сообщают ПРОДУКТ — что мы продаём АВТОМОБИЛИ "
-        + "конкретной марки: «авто в наличии», «новые автомобили в наличии», «{марка} в наличии», "
-        + "«большой выбор авто» — без этого пользователь не поймёт, что продаётся машина, а не банковский продукт. "
+        + ("с пробегом: «авто с пробегом в наличии», «проверенные б/у авто», "
+           "«большой выбор авто с пробегом» — без этого пользователь не поймёт, что продаётся машина, а не банковский продукт. "
+           if bu else
+           "конкретной марки: «авто в наличии», «новые автомобили в наличии», «{марка} в наличии», "
+           "«большой выбор авто» — без этого пользователь не поймёт, что продаётся машина, а не банковский продукт. ")
         + f"Остальные {TITLES_N - 2} заголовков — кредитный угол: кредит, платёж в месяц, "
         + "без первого взноса, быстрое одобрение, автокредит, условия покупки в кредит. "
         + f"НЕ делать ВСЕ {TITLES_N} заголовков только про финансы без упоминания авто.\n"
@@ -1887,8 +2055,8 @@ def build_titles_messages(agent: dict, ctx: dict, item: dict | None = None,
         + "✅ ФИРМЕННЫЕ ФРАЗЫ: в своих заголовках используй ≥2 конкретных оборота из «Твой стиль» выше "
         + "(точно или близко) — это твой голос, а не общий шаблон.\n"
     )
-    _akey = next((k for k, v in AGENTS.items() if v is agent), "")
-    sig_block = CROSS_SIGNATURE.get(_akey, "")
+    _akey = agent_key_for(agent)
+    sig_block = signature_for(_akey, site_type)
     if sig_block:
         sys += "\n" + sig_block
     if avoid:
@@ -1962,7 +2130,7 @@ def build_texts_messages(agent: dict, ctx: dict, item: dict | None = None,
 
     # dmp = B2B-лидоген: отдельный промпт, никакого авто-кредитного контента
     if site_type == "dmp":
-        _dmp_texts = [t for t in (agent.get("ads", {}).get("texts") or [])]
+        _dmp_texts = filtered_ads_for_site(agent, site_type).get("texts") or []
         _ex_dmp_texts = "\n   • ".join(_dmp_texts[:4]) or "(B2B-лидоген: адаптируй свой тон)"
         _dmp_text_sys = (
             _fanout_head(agent, ctx, site_type, (brand or "").strip(), kind)
@@ -1989,8 +2157,7 @@ def build_texts_messages(agent: dict, ctx: dict, item: dict | None = None,
         return [{"role": "system", "content": _dmp_text_sys},
                 {"role": "user", "content": f"Сгенерируй {TEXTS_N} текста в B2B-стиле. Только JSON."}]
 
-    a_texts = [t for t in (agent.get("ads", {}).get("texts") or [])
-               if not (bu and _bad_for_bu(t)) and not (new_only and _bad_for_new(t))]
+    a_texts = filtered_ads_for_site(agent, site_type).get("texts") or []
     ex_texts = "\n   • ".join(a_texts[:4]) or "(адаптируй свой тон)"
 
     # Bug5: Квиз — только НОВЫЕ авто, б/у запрещено
@@ -2029,8 +2196,8 @@ def build_texts_messages(agent: dict, ctx: dict, item: dict | None = None,
         + _kviz_extra_texts
         + f"Твой стиль:\n   • {ex_texts}\n"
     )
-    _akey = next((k for k, v in AGENTS.items() if v is agent), "")
-    sig_block = CROSS_SIGNATURE.get(_akey, "")
+    _akey = agent_key_for(agent)
+    sig_block = signature_for(_akey, site_type)
     if sig_block:
         sys += "\n" + sig_block
     _avoid = [str(x)[:TEXT_MAX] for x in (avoid or []) if str(x or "").strip()][-6:]
@@ -2087,9 +2254,7 @@ def build_sitelinks_messages(agent: dict, ctx: dict, item: dict | None = None,
         return [{"role": "system", "content": _dmp_sl_sys},
                 {"role": "user", "content": f"Сгенерируй {SITELINKS_N} быстрых ссылок в B2B-стиле. Только JSON."}]
 
-    a_sl = sitelink_bank_for(site_type, brand) + [(t, d) for t, d in (agent.get("ads", {}).get("sitelinks") or [])
-            if not (bu and (_bad_for_bu(t) or _bad_for_bu(d)))
-            and not (new_only and (_bad_for_new(t) or _bad_for_new(d)))]
+    a_sl = sitelink_bank_for(site_type, brand) + list(filtered_ads_for_site(agent, site_type).get("sitelinks") or [])
     ex_sl = "\n   • ".join(f"{t} — {d}" for t, d in a_sl[:SITELINKS_N]) or "(адаптируй свой тон)"
     kviz_extra = ""
     if site_type == "Квиз":
@@ -2105,7 +2270,7 @@ def build_sitelinks_messages(agent: dict, ctx: dict, item: dict | None = None,
         + 'Верни JSON: {"sitelinks": [{"title": "...", "description": "..."}, ...]}\n'
         + f"Заголовок: {SITELINK_TITLE_TARGET_MIN}–{SITELINK_TITLE_MAX} симв, целься в 25–30 из 30 (конкретная выгода с цифрой); {SITELINK_TITLE_TARGET_MIN} символов = слабо. "
         + f"Описание: {SITELINK_DESC_TARGET_MIN}–{SITELINK_DESC_MAX} симв, целься в 52–60 из 60 — ОБЯЗАТЕЛЬНО с цифрой или УТП-маркером "
-        + "(число, %, ₽, «0 ₽», «1 год», «30 минут», «15 банков», «9 000 ₽/мес», «2025» и т.п.), 1 связная фраза.\n"
+        + "(число, %, ₽, «0 ₽», «1 год», «30 минут», «9 000 ₽/мес», «2025» и т.п.), 1 связная фраза.\n"
         + f"Все {SITELINKS_N} заголовков РАЗНЫЕ. Все {SITELINKS_N} описаний РАЗНЫЕ и с РАЗНЫМИ УТП. Описание без обрывков.\n"
         + "ВНУТРИ НАБОРА ссылки должны быть с РАЗНЫМИ УТП: кредит, платёж, трейд-ин, КАСКО, господдержка, "
         + "распродажа склада, тест-драйв. Нельзя делать 6-8 ссылок подряд только про скидку или выдачу авто.\n"
@@ -2128,8 +2293,8 @@ def build_sitelinks_messages(agent: dict, ctx: dict, item: dict | None = None,
         + "⛔ ЗАПРЕЩЁН ДЕФИС «-» как РАЗДЕЛИТЕЛЬ частей фразы. Дефис допустим ТОЛЬКО внутри слов: «трейд-ин», «тест-драйв».\n"
         + f"Твой стиль:\n   • {ex_sl}\n"
     )
-    _akey = next((k for k, v in AGENTS.items() if v is agent), "")
-    sig_block = CROSS_SIGNATURE.get(_akey, "")
+    _akey = agent_key_for(agent)
+    sig_block = signature_for(_akey, site_type)
     if sig_block:
         sys += "\n" + sig_block
     _avoid_t = [str(x)[:SITELINK_TITLE_MAX] for x in (avoid_titles or []) if str(x or "").strip()][-8:]
@@ -2145,3 +2310,271 @@ def build_sitelinks_messages(agent: dict, ctx: dict, item: dict | None = None,
                     + ". Не повторяй их и не перефразируй тот же смысл.")
     return [{"role": "system", "content": sys},
             {"role": "user", "content": f"Сгенерируй {SITELINKS_N} быстрых ссылок в твоём стиле. Только JSON."}]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  КОНТЕНТ «ПОСЕВОВ» (tp8/tp9/tp10) — GdPostAd (промо-пост в Telegram/Max)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Лимиты формата GdPostAd (verified live 2026-07-21, porg-gcegsszl):
+POST_TITLE_MAX = 56          # символов всего (совпадает с текстовыми объявлениями)
+POST_TITLE_WORD_MAX = 22     # символов на слово
+POST_BODY_MAX = 764          # символов всего — ⚠ НЕ 81, как у текстовых tp1-7!
+POST_BODY_WORD_MAX = 23      # символов на слово
+
+# Разметка Директа для форматирования тела поста (используется реальными директологами):
+#   :b:жирный:bb:   :i:курсив:ii:   :s:зачёркнутый:ss:
+# Эти маркеры СЧИТАЮТСЯ в POST_BODY_MAX как обычные символы — учитываем при валидации.
+
+# Толерантность по длине: title и body должны быть достаточно заполнены.
+# LLM-генерация принимается только если оба поля ≥ TARGET_MIN.
+POST_TITLE_TOLERANCE  = 8    # заголовок должен быть ≥ POST_TITLE_MAX - 8 = 48 символов
+POST_BODY_TOLERANCE   = 30   # тело должно быть ≥ POST_BODY_MAX - 30 = 734 символа
+POST_TITLE_TARGET_MIN = POST_TITLE_MAX - POST_TITLE_TOLERANCE   # 48
+POST_BODY_TARGET_MIN  = POST_BODY_MAX  - POST_BODY_TOLERANCE    # 734
+
+
+def _trim_to_word_boundary(s: str, max_len: int) -> str:
+    """Обрезать строку до max_len символов по границе слова (не рубить слово пополам)."""
+    if len(s) <= max_len:
+        return s
+    cut = s[:max_len]
+    last_space = cut.rfind(" ")
+    if last_space > max_len // 2:
+        cut = cut[:last_space]
+    return cut.rstrip(".,;: —–")
+
+
+def _clean_post_title(s: str) -> str:
+    """Нормализовать и обрезать заголовок поста до POST_TITLE_MAX.
+
+    Убирает кавычки-обёртки, начальные/конечные спецсимволы, нормализует пробелы.
+    Возвращает строку, гарантированно ≤ POST_TITLE_MAX символов и
+    каждое слово ≤ POST_TITLE_WORD_MAX символов (слова-великаны обрезаются).
+    """
+    s = (s or "").strip().strip('"').strip("'").strip()
+    s = re.sub(r"\s+", " ", s)
+    # Обрезать слова-великаны
+    words = s.split()
+    words = [w[:POST_TITLE_WORD_MAX] for w in words]
+    s = " ".join(words)
+    return _trim_to_word_boundary(s, POST_TITLE_MAX)
+
+
+def _clean_post_body(s: str) -> str:
+    """Нормализовать и обрезать тело поста до POST_BODY_MAX.
+
+    Форматирующие маркеры (:b:/:bb:/:i:/:ii:) считаются в длину как обычные символы
+    (так считает Директ). Слова-великаны обрезаются. Итог ≤ POST_BODY_MAX символов.
+    """
+    s = (s or "").strip().strip('"').strip("'").strip()
+    # Нормализуем множественные переносы
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    # Обрезаем слова-великаны (по пробелу — не трогаем форматные маркеры внутри слов)
+    words = s.split(" ")
+    words = [w[:POST_BODY_WORD_MAX] if not w.startswith(":") else w for w in words]
+    s = " ".join(words)
+    if len(s) <= POST_BODY_MAX:
+        return s
+    # Режем по границе строки, чтобы не оборвать форматный маркер посередине
+    lines = s.split("\n")
+    result = ""
+    for line in lines:
+        if len(result) + len(line) + (1 if result else 0) <= POST_BODY_MAX:
+            result = result + ("\n" if result else "") + line
+        else:
+            # Добираем кусок строки, если влезает хотя бы 40 символов
+            remaining = POST_BODY_MAX - len(result) - (1 if result else 0)
+            if remaining >= 40:
+                partial = _trim_to_word_boundary(line, remaining)
+                if partial:
+                    result = result + ("\n" if result else "") + partial
+            break
+    return result.strip()
+
+
+# Примеры тел постов из реального корпуса директологов (stylistic reference для LLM).
+# Содержат штатную разметку Директа :b:/:bb:/:i:/:ii:.
+# 3 примера разного стиля — Мультибренд / Монобренд / короткий.
+_POST_BODY_CORPUS_EXAMPLES = """\
+Пример 1 (мультибренд, список моделей):
+:i:Дилер освобождает склады под новые поставки. Автомобили из наличия с выгодой до 600 000₽:ii:
+
+В наличии (при покупке в кредит):
+:b:• Haval Jolion:bb: – от 7 355 ₽/мес
+:b:• Haval F7:bb: – от 12 516 ₽/мес
+:b:• KIA Seltos:bb: – от 15 674 ₽/мес
+
+:b:При оформлении в этом месяце::bb:
+— КАСКО в подарок
+— Топливная карта на 300 литров
+— 2-й комплект колёс
+
+:b:Оставьте заявку:bb: — зафиксируем условия за 1 минуту.
+
+Пример 2 (монобренд, короткий энергичный):
+:i:Сейчас редкое окно цен перед новым завозом.:ii:
+
+В наличии:
+:b:• {Бренд} {Модель}:bb: — от N ₽/мес
+:b:• {Бренд} {Модель}:bb: — от N ₽/мес
+
+Бонусы при покупке в этом месяце:
+— первый платёж только в следующем месяце
+— КАСКО + 2-й комплект резины
+
+📞 Звоните — ответим на все вопросы.
+:b:Оставьте заявку:bb: — перезвоним в течение часа!
+
+Пример 3 (мультибренд, акцент на бонусах):
+:b:В наличии::bb:
+:b:• LADA Vesta:bb: — от 9 412 ₽/мес;
+:b:• Hyundai Solaris:bb: — от 10 687 ₽/мес;
+:b:• KIA Sportage:bb: — от 21 632 ₽/мес.
+
+:b:При оформлении до конца месяца — подарки на выбор::bb:
+• второй комплект шин — бесплатно;
+• 0 ₽ первый взнос + до 2 месяцев без платежей;
+• КАСКО.
+
+:b:Оставьте заявку:bb: — подберём автомобиль и закрепим условия.\
+"""
+
+
+def build_post_ad_messages(
+    agent: dict,
+    ctx: dict,
+    brand: str = "",
+    avoid: list | None = None,
+    allowed_models: list[str] | None = None,
+) -> list[dict]:
+    """Промпт для генерации контента GdPostAd (tp8/tp9/tp10 «Посевы»).
+
+    Возвращает список сообщений OpenAI-формата для передачи в _m3_complete.
+    Ожидаемый JSON-ответ LLM: {"title": "...", "body": "..."}.
+
+    Args:
+        agent: объект агента из AGENTS (ToV-профиль директолога).
+        ctx: контекст {'city': ..., 'domain': ..., 'site_type': ...}.
+        brand: имя марки/модели (для монобренда); "" = мультибренд/общий.
+        avoid: ранее сгенерированные заголовки — чтобы избегать повторов.
+    """
+    site_type = (ctx.get("site_type") or "").strip()
+    city = (ctx.get("city") or "").strip()
+    domain = ctx.get("domain") or ""
+    bu = is_bu_site_type(site_type)
+
+    # ── Системная роль: ToV-профиль агента (тот же механизм, что tp1-7) ──────────
+    sys_role = system_for_site(agent, site_type)
+    akey = agent_key_for(agent)
+    sig_block = signature_for(akey, site_type)
+
+    allowed_models = [
+        re.sub(r"\s+", " ", str(x or "").strip())
+        for x in (allowed_models or [])
+        if str(x or "").strip()
+    ]
+    allowed_models = list(dict.fromkeys(allowed_models))[:8]
+    if allowed_models:
+        model_facts = (
+            "✅ РАЗРЕШЁННЫЕ модели/марки из фида, только их можно перечислять в списке авто: "
+            + "; ".join(allowed_models) + ".\n"
+            "Если нужен список авто — используй только эти названия, без добавления новых моделей.\n"
+        )
+        list_rule = "2. Список авто: 3-5 позиций ТОЛЬКО из разрешённого списка фида, с платежами ₽/мес.\n"
+    else:
+        model_facts = (
+            "⛔ Фид не дал подтверждённого списка моделей для этого поста. "
+            "Не перечисляй конкретные модели вообще; пиши обобщённо про модельный ряд, авто в наличии, выгоду и кредит.\n"
+        )
+        list_rule = "2. Вместо списка конкретных моделей — 2-3 строки про модельный ряд/авто в наличии без названий моделей.\n"
+
+    # ── Блок бренда ──────────────────────────────────────────────────────────────
+    if brand:
+        brand_block = (
+            f"🎯 БРЕНД: {brand}. Пиши промо-пост ТОЛЬКО про {brand}. "
+            f"Не упоминай другие марки. Конкретные модели {brand} перечисляй только из разрешённого списка фида.\n"
+        )
+    else:
+        if bu:
+            brand_block = (
+                "ТИП ПОСТА — авто с пробегом. Упоминай несколько марок/моделей с пробегом. "
+                "Марки/модели бери только из сайта или кодера; если данных нет — пиши обобщённо "
+                "«авто с пробегом» без выдуманных названий. "
+                "⛔ Не пиши «новые авто», «господдержка», «нулевой утильсбор».\n"
+            )
+        else:
+            brand_block = (
+                "ТИП ПОСТА — мультибренд (несколько марок). Перечисляй конкретные марки/модели "
+                "только если они подтверждены сайтом или кодером. Если подтверждения нет — пиши "
+                "обобщённо «новые автомобили», «модельный ряд», «авто в наличии» без выдуманных "
+                "названий. Конкретные цифры обязательны.\n"
+            )
+
+    # ── Характерные поводы слепка (дифференциация голосов) ────────────────────────
+    promo_ex = (filtered_promo_for_site(agent, site_type).get("examples") or [])
+    promo_hint = ""
+    if promo_ex:
+        promo_hint = (
+            "Характерные поводы акций этого директолога: "
+            + ", ".join(f"«{e}»" for e in promo_ex[:3]) + ".\n"
+        )
+
+    sys = (
+        sys_role + "\n\n"
+        + "Ты генерируешь контент ПРОМО-ПОСТА для Яндекс.Директа (тип кампании «Посевы» "
+        + "в Telegram/Макс). Формат поста отличается от текстового объявления: длинное тело "
+        + f"(до {POST_BODY_MAX} символов), можно использовать перенос строк, списки, "
+        + "разметку :b:жирный:bb: и :i:курсив:ii:.\n\n"
+        + f"Город: {city}. Домен дилера для контекста: {domain}. Домен и слово «сайт» в body не писать.\n"
+        + brand_block
+        + model_facts
+        + promo_hint
+        + "\n"
+        + "СТРУКТУРА ПОСТА: выбери ОДИН из сценариев и не повторяй одинаковую композицию каждый раз:\n"
+        + "A) срочная акция → условия кредита → бонусы → CTA;\n"
+        + "B) подбор под платёж → наличие → выгоды → CTA;\n"
+        + "C) выгода месяца → быстрый расчёт → трейд-ин/шины/КАСКО → CTA.\n"
+        + list_rule
+        + "Не обязан делать одинаковые 4 блока в каждом посте; главное — факты, плотность, CTA и лимит длины.\n\n"
+        + f"ЗАГОЛОВОК (title): {POST_TITLE_TARGET_MIN}–{POST_TITLE_MAX} символов "
+        + f"(одно слово ≤{POST_TITLE_WORD_MAX} симв.). "
+        + "Должен цеплять — конкретная марка/выгода/платёж/срочность. Без эмодзи.\n"
+        + f"ТЕЛО (body): {POST_BODY_TARGET_MIN}–{POST_BODY_MAX} символов. "
+        + "Насыщай УТП, не лей воду. Разметка :b:/:bb: и :i:/:ii: допустима.\n\n"
+        + "ОБЯЗАТЕЛЬНО в тексте:\n"
+        + "— Кредитный угол: платёж ₽/мес, первый взнос или одобрение банком.\n"
+        + "— Конкретные цифры (суммы платежей или % выгоды).\n"
+        + "— Минимум 2 разных УТП (КАСКО, шины, трейд-ин, сроки, количество авто и т.п.).\n\n"
+        + "— Выделяй жирным через :b:...:bb: марки/модели в списке и ключевые УТП/бонусы.\n"
+        + "— Перед ответом проверь фактическую точность: тип сайта, новый/с пробегом, бренд, город, "
+        + "марки/модели и отсутствие неподтверждённых гарантий. Не выдумывай марки и модели.\n\n"
+        + "⛔ ЗАПРЕЩЕНО:\n"
+        + "— Упоминать домен, URL или слово «сайт» в тексте поста. Ссылка уже есть в кнопке.\n"
+        + "— Телефонные номера в тексте (пост интерактивный, CTA через кнопку).\n"
+        + "— Пустые фразы без цифр: «выгодные условия», «специальное предложение».\n"
+        + "— Гарантии, которые нельзя проверить: «лучшая цена в городе».\n"
+        + "— КЕШБЭК и РАССРОЧКА.\n"
+        + ("— Слова «с пробегом», «б/у», «подержанные» — сайт про НОВЫЕ авто.\n"
+           if site_type in NEW_ONLY_SITE_TYPES else "")
+        + "\nСТИЛЕВЫЕ ПРИМЕРЫ (реальные посты директологов):\n"
+        + _POST_BODY_CORPUS_EXAMPLES + "\n\n"
+        + "Верни СТРОГО один JSON-объект без markdown:\n"
+        + '{"title": "...", "body": "..."}\n'
+    )
+    if sig_block:
+        sys += "\n" + sig_block
+
+    avoid = [a for a in (avoid or []) if a]
+    if avoid:
+        sys += (
+            "\nРАНЕЕ уже предлагал такие заголовки: "
+            + "; ".join(f"«{a}»" for a in avoid[-6:])
+            + ". Дай ЗАМЕТНО ДРУГОЙ вариант. Не повторяйся."
+        )
+
+    usr = (
+        "Сгенерируй ещё один, ОТЛИЧНЫЙ от прежних, промо-пост в твоём стиле. Только JSON."
+        if avoid
+        else "Сгенерируй промо-пост для этого дилера в твоём фирменном стиле. Только JSON."
+    )
+    return [{"role": "system", "content": sys}, {"role": "user", "content": usr}]

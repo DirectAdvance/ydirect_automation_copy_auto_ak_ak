@@ -4,7 +4,130 @@ from __future__ import annotations
 
 from typing import Callable
 
-from flask import jsonify, request
+from flask import jsonify, request, session
+
+
+def save_global_minus_places_payload(
+    body: dict,
+    *,
+    global_minus_places: Callable[[], list[dict]],
+    minus_places_ensure: Callable,
+    place_host: Callable[[str], str],
+    victory_conn_rw: Callable,
+) -> tuple[dict, int]:
+    """Validate and replace the shared disabledPlaces list."""
+    if "places" not in body:
+        return {"ok": False, "error": "нет ключа 'places' — replace-all не выполняется"}, 400
+    raw = body.get("places")
+    if not isinstance(raw, list):
+        return {"ok": False, "error": "places должен быть массивом"}, 400
+    if not raw and not bool(body.get("confirm_clear")):
+        try:
+            cur_cnt = len(global_minus_places())
+        except Exception:  # noqa: BLE001
+            cur_cnt = 0
+        if cur_cnt:
+            return {
+                "ok": False,
+                "needs_confirm": True,
+                "error": (
+                    f"список пуст — для полной очистки {cur_cnt} общих минус-площадок "
+                    "передай confirm_clear=true"
+                ),
+            }, 409
+
+    seen: set[str] = set()
+    items: list[tuple[str, bool]] = []
+    for r in raw:
+        url = (r.get("url") if isinstance(r, dict) else r) or ""
+        url = place_host(url)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        enabled = bool(r.get("enabled", True)) if isinstance(r, dict) else True
+        items.append((url, enabled))
+
+    conn = victory_conn_rw()
+    try:
+        cur = conn.cursor()
+        minus_places_ensure(cur)
+        cur.execute("DELETE FROM public.direct_global_minus_places")
+        for i, (url, enabled) in enumerate(items, 1):
+            cur.execute(
+                "INSERT INTO public.direct_global_minus_places(url, enabled, sort, updated_at) "
+                "VALUES(%s, %s, %s, now()) ON CONFLICT(url) DO UPDATE SET "
+                "enabled=EXCLUDED.enabled, sort=EXCLUDED.sort, updated_at=now()",
+                (url, enabled, i),
+            )
+        conn.commit()
+    except Exception:  # noqa: BLE001
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return {"ok": True, "saved": len(items)}, 200
+
+
+def save_post_minus_places_payload(
+    body: dict,
+    *,
+    post_minus_places_slice: Callable[[str], list[dict]],
+    post_minus_places_ensure: Callable,
+    place_host: Callable[[str], str],
+    victory_conn_rw: Callable,
+) -> tuple[dict, int]:
+    """Validate and replace one geo-slice of tp8/tp9/tp10 disabledPlaces."""
+    geo = (body.get("geo") or "*").strip() or "*"
+    if "places" not in body:
+        return {"ok": False, "error": "нет ключа 'places' — replace-all не выполняется"}, 400
+    raw = body.get("places")
+    if not isinstance(raw, list):
+        return {"ok": False, "error": "places должен быть массивом"}, 400
+    if not raw and not bool(body.get("confirm_clear")):
+        try:
+            cur_cnt = len(post_minus_places_slice(geo))
+        except Exception:  # noqa: BLE001
+            cur_cnt = 0
+        if cur_cnt:
+            return {
+                "ok": False,
+                "needs_confirm": True,
+                "error": (
+                    f"список пуст — для полной очистки {cur_cnt} минус-площадок посевов "
+                    f"geo={geo!r} передай confirm_clear=true"
+                ),
+            }, 409
+
+    seen: set[str] = set()
+    items: list[tuple[str, bool]] = []
+    for r in raw:
+        url = (r.get("url") if isinstance(r, dict) else r) or ""
+        url = place_host(url)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        enabled = bool(r.get("enabled", True)) if isinstance(r, dict) else True
+        items.append((url, enabled))
+
+    conn = victory_conn_rw()
+    try:
+        cur = conn.cursor()
+        post_minus_places_ensure(cur)
+        cur.execute("DELETE FROM public.direct_post_minus_places WHERE geo=%s", (geo,))
+        for i, (url, enabled) in enumerate(items, 1):
+            cur.execute(
+                "INSERT INTO public.direct_post_minus_places(geo, url, enabled, sort, updated_at) "
+                "VALUES(%s, %s, %s, %s, now()) ON CONFLICT(geo, url) DO UPDATE SET "
+                "enabled=EXCLUDED.enabled, sort=EXCLUDED.sort, updated_at=now()",
+                (geo, url, enabled, i),
+            )
+        conn.commit()
+    except Exception:  # noqa: BLE001
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return {"ok": True, "saved": len(items), "geo": geo}, 200
 
 
 def register_settings_routes(
@@ -17,6 +140,8 @@ def register_settings_routes(
     global_minus_places: Callable[[], list[dict]],
     minus_places_ensure: Callable,
     place_host: Callable[[str], str],
+    post_minus_places_slice: Callable[[str], list[dict]] | None = None,
+    post_minus_places_ensure: Callable | None = None,
     minus_words_slice: Callable,
     minus_words_ensure: Callable,
     global_minus_marks: Callable[[], list[dict]],
@@ -278,57 +403,43 @@ def register_settings_routes(
     def api_minus_places_post():
         """Сохранить ОБЩИЙ список минус-площадок (replace-all глобальной таблицы).
         Body: {places:[str|{url,enabled}], confirm_clear?}. slepok в теле игнорируется."""
-        body = request.json or {}
-        if "places" not in body:
-            return jsonify({"ok": False, "error": "нет ключа 'places' — replace-all не выполняется"}), 400
-        raw = body.get("places")
-        if not isinstance(raw, list):
-            return jsonify({"ok": False, "error": "places должен быть массивом"}), 400
-        if not raw and not bool(body.get("confirm_clear")):
-            try:
-                cur_cnt = len(global_minus_places())
-            except Exception:  # noqa: BLE001
-                cur_cnt = 0
-            if cur_cnt:
-                return jsonify({
-                    "ok": False,
-                    "needs_confirm": True,
-                    "error": (
-                        f"список пуст — для полной очистки {cur_cnt} общих минус-площадок "
-                        "передай confirm_clear=true"
-                    ),
-                }), 409
+        if not session.get("is_admin"):
+            return jsonify({"ok": False, "error": "только администратор"}), 403
+        payload, status = save_global_minus_places_payload(
+            request.json or {},
+            global_minus_places=global_minus_places,
+            minus_places_ensure=minus_places_ensure,
+            place_host=place_host,
+            victory_conn_rw=victory_conn_rw,
+        )
+        return jsonify(payload), status
 
-        seen: set[str] = set()
-        items: list[tuple[str, bool]] = []
-        for r in raw:
-            url = (r.get("url") if isinstance(r, dict) else r) or ""
-            url = place_host(url)
-            if not url or url in seen:
-                continue
-            seen.add(url)
-            enabled = bool(r.get("enabled", True)) if isinstance(r, dict) else True
-            items.append((url, enabled))
+    @bp.route("/api/post-minus-places")
+    @access
+    def api_post_minus_places_get():
+        """Минус-площадки для Посевов (tp8/tp9/tp10) в пределах geo-среза.
+        ?geo=* — общий пак; ?geo=<город/область> — городской пак. Движок объединяет * + geo."""
+        if not callable(post_minus_places_slice):
+            return jsonify({"places": [], "geo": (request.args.get("geo") or "*").strip() or "*"})
+        geo = (request.args.get("geo") or "*").strip() or "*"
+        return jsonify({"places": post_minus_places_slice(geo), "geo": geo})
 
-        conn = victory_conn_rw()
-        try:
-            cur = conn.cursor()
-            minus_places_ensure(cur)
-            cur.execute("DELETE FROM public.direct_global_minus_places")
-            for i, (url, enabled) in enumerate(items, 1):
-                cur.execute(
-                    "INSERT INTO public.direct_global_minus_places(url, enabled, sort, updated_at) "
-                    "VALUES(%s, %s, %s, now()) ON CONFLICT(url) DO UPDATE SET "
-                    "enabled=EXCLUDED.enabled, sort=EXCLUDED.sort, updated_at=now()",
-                    (url, enabled, i),
-                )
-            conn.commit()
-        except Exception:  # noqa: BLE001
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-        return jsonify({"ok": True, "saved": len(items)})
+    @bp.route("/api/post-minus-places", methods=["POST"])
+    @access
+    def api_post_minus_places_post():
+        """Сохранить минус-площадки Посевов — replace-all В ПРЕДЕЛАХ geo-среза."""
+        if not session.get("is_admin"):
+            return jsonify({"ok": False, "error": "только администратор"}), 403
+        if not callable(post_minus_places_slice) or not callable(post_minus_places_ensure):
+            return jsonify({"ok": False, "error": "хранилище минус-площадок посевов не подключено"}), 500
+        payload, status = save_post_minus_places_payload(
+            request.json or {},
+            post_minus_places_slice=post_minus_places_slice,
+            post_minus_places_ensure=post_minus_places_ensure,
+            place_host=place_host,
+            victory_conn_rw=victory_conn_rw,
+        )
+        return jsonify(payload), status
 
     @bp.route("/api/minus-words")
     @access

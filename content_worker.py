@@ -38,6 +38,7 @@ os.environ.setdefault("DIRECT_REGISTER_CONTENT_EDITOR", "0")
 from direct import direct_repository as repository  # noqa: E402
 from direct import yandex_gateway as yandex  # noqa: E402
 from direct import routes_content_editor as ce  # noqa: E402
+from direct.agent_board_bridge import notify_content_job_error, notify_unreported_content_errors  # noqa: E402
 
 WORKER_THREADS = int(os.environ.get("CE_WORKER_THREADS") or 4)
 AGENCY_PARALLEL = int(os.environ.get("CE_AGENCY_PARALLEL") or 2)
@@ -132,12 +133,25 @@ def _finish(job_id: str, out: dict) -> None:
          _json.dumps(errors, ensure_ascii=False),
          _json.dumps(out, ensure_ascii=False, default=str),
          str(error)[:500], job_id))
+    if status == "error":
+        try:
+            task_id = notify_content_job_error(ce._jobs_exec, T, job_id)
+            if task_id:
+                _log(f"agent-board task #{task_id} created for {job_id}")
+        except Exception as e:  # noqa: BLE001
+            _log(f"agent-board notify failed {job_id}: {str(e)[:160]}")
 
 
 def _fail(job_id: str, e: Exception) -> None:
     ce._jobs_exec(
         f"UPDATE {T} SET status='error', done=1, error=%s, finished_at=now() "
         "WHERE job_id=%s", (str(e)[:500], job_id))
+    try:
+        task_id = notify_content_job_error(ce._jobs_exec, T, job_id)
+        if task_id:
+            _log(f"agent-board task #{task_id} created for {job_id}")
+    except Exception as notify_exc:  # noqa: BLE001
+        _log(f"agent-board notify failed {job_id}: {str(notify_exc)[:160]}")
 
 
 def _run_one(job: dict) -> None:
@@ -210,6 +224,7 @@ def main() -> None:
         return
     try:
         ce.ensure_jobs_table()
+        notify_unreported_content_errors(ce._jobs_exec, T, limit=10)
     except Exception as e:  # noqa: BLE001 — гонка каталога при одновременном старте с flask
         _log(f"ensure_jobs_table: {str(e)[:200]}")
     _requeue_orphans()
@@ -223,6 +238,7 @@ def main() -> None:
         time.sleep(60)
         try:
             _requeue_stale()
+            notify_unreported_content_errors(ce._jobs_exec, T, limit=10)
         except Exception as e:  # noqa: BLE001
             _log(f"watchdog error: {str(e)[:150]}")
 

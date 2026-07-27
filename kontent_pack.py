@@ -25,6 +25,7 @@ import shlex
 import subprocess
 import math
 import shutil
+import time
 
 # NEURO_PACK_MOUNT: переключение на ЛОКАЛЬНУЮ копию пака (перенесённую с M3 ночным
 # sync-ом, scripts/sync_content_m3.py). Дефолт — sshfs-монт (обратная совместимость).
@@ -76,8 +77,11 @@ import zlib
 # прервать нельзя (он в непрерываемом syscall), но вызывающий продолжает работу и
 # получает предсказуемый default вместо вечного зависания.
 _FS_OP_TIMEOUT = float(os.environ.get("NEURO_FS_OP_TIMEOUT", "20") or 20)
+_PACK_TEXT_READ_TIMEOUT = float(os.environ.get("NEURO_PACK_TEXT_READ_TIMEOUT", "3") or 3)
 _FS_STUCK_MAX = int(os.environ.get("NEURO_FS_STUCK_MAX", "16") or 16)
+_FS_DEGRADED_COOLDOWN = float(os.environ.get("NEURO_FS_DEGRADED_COOLDOWN", "60") or 60)
 _FS_STUCK = {"n": 0}
+_FS_DEGRADED = {"until": 0.0}
 _FS_STUCK_LOCK = _threading.Lock()
 
 
@@ -88,8 +92,13 @@ def fs_call_bounded(fn, *args, timeout: float | None = None, default=None):
     монте — новые НЕ запускаем (сразу default), иначе подвисший sshfs расплодил бы
     поток на каждую картинку."""
     tmo = _FS_OP_TIMEOUT if timeout is None else float(timeout)
+    now = time.monotonic()
     with _FS_STUCK_LOCK:
+        if now < float(_FS_DEGRADED.get("until") or 0.0):
+            return default
         if _FS_STUCK["n"] >= _FS_STUCK_MAX:
+            _FS_DEGRADED["until"] = max(float(_FS_DEGRADED.get("until") or 0.0),
+                                        now + _FS_DEGRADED_COOLDOWN)
             return default
     box: dict = {}
 
@@ -107,6 +116,9 @@ def fs_call_bounded(fn, *args, timeout: float | None = None, default=None):
     if th.is_alive():
         # Поток остаётся висеть в FUSE (снять нельзя) — счётчик вернёт его сам,
         # когда монт оживёт; вызывающий освобождён прямо сейчас.
+        with _FS_STUCK_LOCK:
+            _FS_DEGRADED["until"] = max(float(_FS_DEGRADED.get("until") or 0.0),
+                                        time.monotonic() + _FS_DEGRADED_COOLDOWN)
         def _reap(_t=th):
             _t.join()
             with _FS_STUCK_LOCK:
@@ -1125,15 +1137,18 @@ def _pack_mount_is_fuse() -> bool:
 
 
 def _read_lines(path: str) -> list:
-    """Чтение текстового файла пака. Если путь под НАСТОЯЩИМ sshfs/fuse-монтом — читаем через
-    `timeout cat` (FUSE-чтение прерываемо → процесс убивается по таймауту, НЕ виснет вечно).
-    Иначе (локальное зеркало/кэш/индекс) — обычный open."""
+    """Чтение текстового файла пака с fail-soft таймаутом для sshfs/FUSE.
+
+    Внешний ``timeout cat`` оказался ненадёжным: на подвисшем sshfs сам subprocess может
+    зависнуть в communicate(). Bounded read освобождает вызывающий поток и даёт пустой
+    fallback вместо зависания set_plan/worker.
+    """
     try:
         if path.startswith(PACK_MOUNT + os.sep) and _pack_mount_is_fuse():
-            r = subprocess.run(["timeout", "12", "cat", path], capture_output=True, text=True, timeout=15)
-            if r.returncode != 0:
+            raw = read_bytes_bounded(path, timeout=_PACK_TEXT_READ_TIMEOUT)
+            if raw is None:
                 return []
-            src = r.stdout.splitlines()
+            src = raw.decode("utf-8", errors="ignore").splitlines()
         else:
             with open(path, encoding="utf-8") as f:
                 src = list(f)
@@ -1182,10 +1197,10 @@ def _read_lines_opt(path: str) -> tuple[list, bool]:
     файл — 3 лишних процесса на каждый /api/slepki/keywords с непустым group."""
     try:
         if path.startswith(PACK_MOUNT + os.sep) and _pack_mount_is_fuse():
-            r = subprocess.run(["timeout", "12", "cat", path], capture_output=True, text=True, timeout=15)
-            if r.returncode != 0:
+            raw = read_bytes_bounded(path, timeout=_PACK_TEXT_READ_TIMEOUT)
+            if raw is None:
                 return [], False
-            src = r.stdout.splitlines()
+            src = raw.decode("utf-8", errors="ignore").splitlines()
         else:
             if not os.path.isfile(path):
                 return [], False
@@ -1233,17 +1248,11 @@ def _ct_dir(segment: str, tp: str, ct: str) -> str:
 
 
 # ── чтение контента по НАШЕМУ ct (= имя папки пака) ──────────────────────────
-def read_keywords(segment: str, tp: str, ct: str, slepok: str, group: str = "") -> dict:
-    """Ключи слепка для (сегмент, tp, наш ct[, group]) из пака.
-    → {"positive":[...], "minus":[...]}. ct пустой/нет папки → пусто (caller фолбэчит).
-    Позитивные ключи проходят гео-нормализацию (_normalize_geo_lines): токены городов РФ
-    удаляются, чтобы ключи Самарского директолога работали в Кемерово без чужих топонимов.
-    Минус-слова НЕ трогаются — операторные формы «-самара» внутри ключей семантически полезны.
+def _has_real_positive(lines: list) -> bool:
+    return any(str(x or "").strip() and str(x or "").strip().lower() != "---autotargeting" for x in (lines or []))
 
-    group (per-adgroup, опц.): непустой gc/gk → читаем per-group файлы ``{slepok}__{slug}.txt`` /
-    ``{slepok}__{slug}_minus.txt`` с ФОЛБЭКОМ на легаси ``{slepok}.txt``/``{slepok}_minus.txt``,
-    когда per-group файла нет. shared-минус ``{slepok}_minus_shared.txt`` — всегда (пер-ct, общий).
-    ``group=""`` → байт-в-байт прежнее поведение (легаси-файлы)."""
+
+def _read_keywords_exact(segment: str, tp: str, ct: str, slepok: str, group: str = "") -> dict:
     kd = os.path.join(_ct_dir(segment, tp, ct), "keywords")
     slug = _group_slug(group)
     if slug:
@@ -1259,6 +1268,30 @@ def read_keywords(segment: str, tp: str, ct: str, slepok: str, group: str = "") 
         neg = (_read_lines(os.path.join(kd, f"{slepok}_minus.txt"))
                + _read_lines(os.path.join(kd, f"{slepok}_minus_shared.txt")))
     return {"positive": _dedup(_normalize_geo_lines(pos, dedup=False)), "minus": _dedup(neg)}
+
+
+def read_keywords(segment: str, tp: str, ct: str, slepok: str, group: str = "") -> dict:
+    """Ключи слепка для (сегмент, tp, наш ct[, group]) из пака.
+    → {"positive":[...], "minus":[...]}. ct пустой/нет папки → пусто (caller фолбэчит).
+    Позитивные ключи проходят гео-нормализацию (_normalize_geo_lines): токены городов РФ
+    удаляются, чтобы ключи Самарского директолога работали в Кемерово без чужих топонимов.
+    Минус-слова НЕ трогаются — операторные формы «-самара» внутри ключей семантически полезны.
+
+    group (per-adgroup, опц.): непустой gc/gk → читаем per-group файлы ``{slepok}__{slug}.txt`` /
+    ``{slepok}__{slug}_minus.txt`` с ФОЛБЭКОМ на легаси ``{slepok}.txt``/``{slepok}_minus.txt``,
+    когда per-group файла нет. shared-минус ``{slepok}_minus_shared.txt`` — всегда (пер-ct, общий).
+    ``group=""`` → байт-в-байт прежнее поведение (легаси-файлы)."""
+    data = _read_keywords_exact(segment, tp, ct, slepok, group=group)
+    # tp2/tp4 — поисковые группы. Если в текущем tp нет реальных ключей, берём тот же
+    # ct/gk из ближайшего поискового донора: tp4 -> tp2 -> tp1, tp2 -> tp1.
+    # Это сохраняет группы слепка и не создаёт кампании без КС, когда ключи лежат только в РСЯ.
+    if str(tp or "") in ("tp2", "tp4") and not _has_real_positive(data.get("positive") or []):
+        donors = ("tp2", "tp1") if str(tp or "") == "tp4" else ("tp1",)
+        for donor_tp in donors:
+            fallback = _read_keywords_exact(segment, donor_tp, ct, slepok, group=group)
+            if _has_real_positive(fallback.get("positive") or []):
+                return fallback
+    return data
 
 
 def read_callouts(segment: str, tp: str, ct: str, slepok: str, group: str = "") -> list:
@@ -1715,12 +1748,7 @@ print(json.dumps(out, ensure_ascii=False))
 '''
 
 
-def gather(slepok: str, segment: str, tp: str, timeout: float = 40.0) -> dict:
-    """Все ключи/минус/уточнения для (slepok, segment, tp) одним ssh-вызовом к M3.
-
-    → {ctNNNN: {"positive":[...], "minus":[...], "callouts":[...]}}.
-    Пусто при сбое связи/таймауте (caller фолбэчит). Картинки тут НЕ берём.
-    """
+def _gather_once(slepok: str, segment: str, tp: str, timeout: float = 40.0) -> dict:
     # С 2026-07-12: при активном локальном зеркале (NEURO_PACK_MOUNT) читаем тем же _GATHER_PY
     # ЛОКАЛЬНО (как refresh_index), а не по ssh к M3. Иначе gather уходил на СТАРЫЙ M3-pack
     # (ct0001–34), тогда как свежий кодер (ct0800+) задеплоен только в зеркало 101 → cts не
@@ -1744,6 +1772,52 @@ def gather(slepok: str, segment: str, tp: str, timeout: float = 40.0) -> dict:
         return _normalize_gather(json.loads(r.stdout))
     except Exception:  # noqa: BLE001
         return {}
+
+
+def _merge_missing_keywords(primary: dict, fallback: dict) -> dict:
+    if not fallback:
+        return primary
+    out = dict(primary or {})
+    for ct, fb in fallback.items():
+        if not isinstance(fb, dict):
+            continue
+        cur = out.get(ct)
+        if not isinstance(cur, dict):
+            out[ct] = dict(fb)
+            continue
+        if not _has_real_positive(cur.get("positive") or []) and _has_real_positive(fb.get("positive") or []):
+            cur["positive"] = list(fb.get("positive") or [])
+            cur["minus"] = list(fb.get("minus") or [])
+            cur["callouts"] = list(fb.get("callouts") or [])
+            cur["images"] = cur.get("images", fb.get("images", 0))
+        groups = dict(cur.get("_groups") or {})
+        for gk, gfb in (fb.get("_groups") or {}).items():
+            if not isinstance(gfb, dict):
+                continue
+            gcur = groups.get(gk)
+            if not isinstance(gcur, dict) or (
+                not _has_real_positive(gcur.get("positive") or [])
+                and _has_real_positive(gfb.get("positive") or [])
+            ):
+                groups[gk] = dict(gfb)
+        if groups:
+            cur["_groups"] = groups
+    return out
+
+
+def gather(slepok: str, segment: str, tp: str, timeout: float = 40.0) -> dict:
+    """Все ключи/минус/уточнения для (slepok, segment, tp) одним ssh-вызовом к M3.
+
+    → {ctNNNN: {"positive":[...], "minus":[...], "callouts":[...]}}.
+    Пусто при сбое связи/таймауте (caller фолбэчит). Картинки тут НЕ берём.
+    """
+    data = _gather_once(slepok, segment, tp, timeout=timeout)
+    if str(tp or "") == "tp4":
+        data = _merge_missing_keywords(data, _gather_once(slepok, segment, "tp2", timeout=timeout))
+        data = _merge_missing_keywords(data, _gather_once(slepok, segment, "tp1", timeout=timeout))
+    elif str(tp or "") == "tp2":
+        data = _merge_missing_keywords(data, _gather_once(slepok, segment, "tp1", timeout=timeout))
+    return data
 
 
 def m3_reachable(timeout: float = 12.0) -> bool:

@@ -41,7 +41,7 @@ def _log_tail(n: int = 12) -> str:
 
 
 def _notify(text: str) -> None:
-    """Личное TG-уведомление (образец — sync_content_m3._notify_telegram). Best-effort."""
+    """Direct TG-уведомление через профиль .secret TG_DIRECT_*. Best-effort."""
     try:
         import requests
         for _p in Path(__file__).resolve().parents:
@@ -50,7 +50,7 @@ def _notify(text: str) -> None:
                 break
         from loader import load_telegram
 
-        cfg = load_telegram("personal")
+        cfg = load_telegram("direct")
         token, chat_id = cfg["bot_token"], cfg["chat_id"]
         for proxy in cfg.get("proxies") or [cfg.get("proxy")]:
             proxies = {"https": proxy, "http": proxy} if proxy else None
