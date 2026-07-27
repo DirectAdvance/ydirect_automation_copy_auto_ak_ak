@@ -86,7 +86,10 @@ def _is_degenerate_feed_url(u: str) -> bool:
     s = _strip_url_query(u)
     if not s:
         return True
-    m = re.match(r"(https?://[^/]+)(.*)$", s)
+    # re.I: схема из фида приходит и в верхнем регистре (`HTTPS://site/quiz`). Без флага гард
+    # промахивался мимо такого URL, а link_check.strip_quiz_url (urlsplit нормализует схему)
+    # всё равно схлопывал его в корень домена → дефект просачивался.
+    m = re.match(r"(https?://[^/]+)(.*)$", s, re.I)
     if not m:
         return False              # не абсолютный URL — не наша зона, поведение прежнее
     parts = [p for p in (m.group(2) or "").split("/") if p]

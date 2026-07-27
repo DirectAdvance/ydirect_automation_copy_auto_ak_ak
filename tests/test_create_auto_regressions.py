@@ -266,6 +266,9 @@ def test_is_degenerate_feed_url_table():
     assert model_urls._is_degenerate_feed_url(
         "https://newautos-193.site/quiz?fid=95713#x7-kunlun-i-suv-5d") is True
     assert model_urls._is_degenerate_feed_url("https://newautos-193.site/QUIZ/step-2") is True
+    # схема в верхнем регистре: strip_quiz_url её нормализует и схлопнет URL в корень — гард обязан ловить
+    assert model_urls._is_degenerate_feed_url("HTTPS://NEWAUTOS-193.SITE/quiz?fid=1") is True
+    assert model_urls._is_degenerate_feed_url("HTTPS://NEWAUTOS-193.SITE/") is True
     # Нормальные фид-URL: гард молчит
     assert model_urls._is_degenerate_feed_url("https://newautos-193.site/auto/kaiyi") is False
     assert model_urls._is_degenerate_feed_url(
@@ -319,16 +322,32 @@ def test_tp2_group_href_keeps_catalog_feed_offer(monkeypatch):
     assert href == "https://newautos-193.site/auto/belgee/x70/i/suv-5d"
 
 
-def test_tp2_group_href_uses_uname_when_real_brand_empty(monkeypatch):
-    """Зеркало tp1-фикса: real_brand пуст (ct0000) → формула по структурному имени группы."""
-    _patch_text_builder_urls(monkeypatch, "Марки", "https://newautos-193.site/quiz?fid=1")
+def test_tp2_group_href_keeps_site_root_for_non_brand_group(monkeypatch):
+    """BUTTON_404_GENERIC_AVTO: тема, а не марка → формулу НЕ зовём, остаётся корень сайта.
 
-    href = create_set_text_builders._pack_group_href(
-        "ct0000", "Авто", "", {"x": "y"}, "https://newautos-193.site", "Мультибренд",
-        uname="Knewstar",
+    Достижимый случай tp2/tp4 (`_multi`): реальный ct с не-брендовым структурным именем
+    («Автокредит Купить Авто В Автокредит», «Авито», «Авто»). `_valid_pack_brand_name` такое имя
+    отвергает → `real_brand` пуст. Формула по теме дала бы `/auto/avtokredit-...` / `/auto/avto`
+    (404 → `_parent_path` → brandless `/auto` + лишние HEAD-запросы), поэтому она запрещена.
+    """
+    _patch_text_builder_urls(monkeypatch, "Марки", "https://newautos-193.site/quiz?fid=1")
+    _formula_calls: list[str] = []
+    monkeypatch.setattr(
+        create_set_text_builders,
+        "_model_page_href",
+        lambda base, _site_type, name: _formula_calls.append(name) or (base.rstrip("/") + "/auto/x"),
+        raising=False,
     )
 
-    assert href == "https://newautos-193.site/auto/knewstar"
+    for _name in ("Автокредит Купить Авто В Автокредит", "Авто"):
+        # real_brand="" — ровно то, что вернул _valid_pack_brand_name для такого имени (ct реальный,
+        # не ct0000: в tp2/tp4 ct0000 отфильтрован в _struct_cts).
+        href = create_set_text_builders._pack_group_href(
+            "ct0031", _name, "", {"x": "y"}, "https://newautos-193.site", "Мультибренд",
+        )
+        assert href == "https://newautos-193.site"
+
+    assert _formula_calls == []
 
 
 def test_tp1_non_multi_group_href_ignores_quiz_feed_offer(monkeypatch):
