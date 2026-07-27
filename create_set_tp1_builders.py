@@ -49,22 +49,6 @@ def _pack_group_href(ct: str, brand: str, feed_urls: "dict | None", href: str, s
     return _model_page_href(site_href, site_type, brand)
 
 
-def _v5_added_keyword_ids(chunk: list, add_results: list, skip_keyword: str) -> set:
-    """{Id} реально созданных фраз из ответа v5 ``keywords.add`` (без спецключа автотаргета).
-
-    ``AddResults`` позиционно соответствует отправленному chunk (контракт v5). На фразу, которую
-    Директ считает дублем уже существующей, возвращается Id ТОЙ ЖЕ фразы + Warning 10140 —
-    поэтому множество Id и есть число реально осевших ключей."""
-    out: set = set()
-    for it, r in zip(chunk or [], add_results or []):
-        if not isinstance(r, dict) or not isinstance(it, dict):
-            continue
-        kid = r.get("Id")
-        if kid and str(it.get("Keyword") or "") != skip_keyword:
-            out.add(str(kid))
-    return out
-
-
 def _build_minus_mod_by_brand(pairs: list) -> dict:
     """Строит карту {mark_canon: set(model_lower_collapsed)} из пар (mark_canon, model_lower).
     Допущение: марки автодилеров односложные (BAIC/Chery/MG/Lada) — первый токен raw_brand = бренд.
@@ -96,8 +80,10 @@ def _tp1_group_name(ct: str, r_code: str, brand: str, with_shopping: bool = Fals
                         ct{N}_aon_n000_{r}_ct010_ag011_g00 — {Бренд}
     Источник: справочник local_gsheet_naming (ag_part5): ct010 = «Комбинированный: ТГО + каталог/фид»,
     ct009 = «Товарное (Фид/каталог)» — БЕЗ TextAd; ag011 = с демо-корректировками TextAd, ag001 = без.
-    Автотаргетинг для tp5+shopping: всегда aon (чекбоксы включены, autotarget-флаг для brand-групп=False
-    означает «бренд-ключи вместо чистого автотаргетинга», но галки relevanceMatch ставятся отдельно).
+    Автотаргетинг для tp5+shopping: всегда aon и это ЕДИНСТВЕННОЕ корректное значение —
+    в поисковой кампании Директа автотаргет выключить нельзя в принципе (подтверждено Семёном
+    2026-07-27). Плановый autotarget-флаг для brand-групп tp5 означает «бренд-ключи вместо
+    чистого автотаргетинга», а не «автотаргет выключен».
     """
     aud_code = "aon" if autotarget else "aoff"
     if with_shopping:
@@ -265,7 +251,8 @@ def _synthesize_tp1_build_error(rep: dict, tp_code: str, *,
       - чистый автотаргет (autotarget=True, keep_keywords=False): keywords=0 штатно,
         таргетинг = relevanceMatch search_tp2 из Фазы 1 — синтез не нужен.
 
-    Phase 1.5 уже ставит rep["error"] singular — не дублируем (проверка not rep.get("error")).
+    Проверка not rep.get("error"): singular error мог быть выставлен раньше по ходу сборки —
+    не затираем чужую причину.
     """
     if (tp_code == "tp5"
             and rep.get("adgroups")
@@ -320,189 +307,78 @@ def _build_tp1_adgroups(
         rep["deferred"] = len(groups) - _AC_GROUP_CAP
         groups = groups[:_AC_GROUP_CAP]
 
-    # ── Фаза 1: adgroups — создание групп ────────────────────────────────────
-    if tp_code == "tp5":
-        # tp5 (Поиск + товарная галерея): группы через Grid AddUnifiedAdGroups с relevanceMatch
-        # АТОМАРНО (EXACT_V2_MARK + WITHOUT_BRAND) — как tp2 через grid_create.create_full.
-        # v501 adgroups.add не умеет relevanceMatchCategories → Яндекс ставит дефолт (все 5 + 3
-        # бренда). Grid профиль search_tp2 ставится при создании — lag-проблемы нет.
-        # Фаза 1.5 (post-create UpdateUnifiedAdGroups) упразднена (v3 решение, 2026-07-08).
-        _gcl5 = gc.GridCreateClient(login, cookie=grid_cookie)
-        _g5_items = [gc.build_adgroup(
-            campaign_id=int(campaign_id),
-            name=(g.get("name") or "группа")[:255],
-            region_ids=rids,
-            keywords=[],           # ключи — ТОЛЬКО через Фазу 2 (AddKeywords), без дублей
-            minus_keywords=[],     # групповой минус для поиска не ставим (кампанийный уровень)
-            autotargeting=bool(autotarget),
-            autotargeting_profile=("search_tp2" if autotarget else ""),  # EXACT_V2_MARK + WITHOUT_BRAND атомарно
-        ) for g in groups]
-        try:
-            ag_ids = _gcl5.add_adgroups(_g5_items)
-            # Позиционный сдвиг: Grid пропускает упавшие группы (не возвращает null-заглушку)
-            # → список может быть короче входного → выравниваем по имени (аналог create_full:615).
-            if len(ag_ids) != len(groups):
-                _n2id5 = _gcl5._read_adgroup_name_to_id(int(campaign_id))
-                if _n2id5:
-                    ag_ids = [_n2id5.get(g.get("name") or "") for g in groups]
-                else:
-                    ag_ids = list(ag_ids) + [None] * (len(groups) - len(ag_ids))
-                    rep["errors"].append("tp5 Grid: позиционный сдвиг групп — ключи могут быть смещены")
-            rep["adgroups"] = sum(1 for x in ag_ids if x)
-            rep["relevance_match_set"] = rep["adgroups"]  # атомарно при создании
-        except gc.GridCreateError as _g5e:
-            rep["errors"].append(f"adgroups(Grid tp5): {str(_g5e)[:200]}")
-            return rep
-    else:
-        # ── v501 ЕПК: TrackingParams на уровне группы (#2 инвариант — UTM) ──────────────────
-        # РСЯ (tp1): минуса на группе НЕ ставим — в сетях они режут охват без пользы.
-        # Минус-слова для поисковых (tp2/tp4) — в _build_tp2_adgroups (отдельный путь).
-        specs = []
-        for g in groups:
-            ag: dict = {
-                "Name": (g.get("name") or "группа")[:255],
-                "CampaignId": int(campaign_id),
-                "RegionIds": rids,
-                "TrackingParams": _UTM_TEMPLATE_TP1,   # #2 UTM на уровне группы
-            }
-            specs.append(ag)
-
-        ag_ids = [None] * len(groups)
-        idx = 0
-        for chunk in _chunks(specs, _AC_CHUNK_AG):
-            ja = _v5_call("adgroups", "add", token, login, {"AdGroups": chunk})
-            if "error" in ja:
-                rep["errors"].append(f"adgroups.add {_v5_err(ja)}")
-                idx += len(chunk)
-                time.sleep(_AC_BATCH_SLEEP)
-                continue
-            for r in (ja.get("result") or {}).get("AddResults", []):
-                errs = r.get("Errors") or []
-                if r.get("Id") and not errs:
-                    ag_ids[idx] = r["Id"]
-                    rep["adgroups"] += 1
-                else:
-                    nm = groups[idx].get("name", "?") if idx < len(groups) else "?"
-                    rep["errors"].append(f"{nm}: adgroup " + ("; ".join(e.get("Message", "") for e in errs) or "нет Id"))
-                idx += 1
-            time.sleep(_AC_BATCH_SLEEP)
-
-    # ── Фаза 1.5: tp1 РСЯ — явная установка relevanceMatch.isActive ─────────────────────────────
-    # v501 adgroups.add не поддерживает relevanceMatch → Яндекс ставит дефолт ACTIVE.
-    # Без явного isActive=False группы aoff получают ВКЛ (инверсия кодера aoff→ВКЛ, Случай B).
-    # Без явного isActive=True для aon (ранее попытка через псевдоключ "---autotargeting") — ВЫКЛ
-    # (инверсия aon→ВЫКЛ, Случай A): псевдоключ уводил группу в легаси-режим с isActive=False.
-    # Решение: Grid UpdateUnifiedAdGroups явно задаёт isActive=bool(autotarget) сразу после создания.
-    # tp5 управляет relevanceMatch атомарно в Фазе 1 (AddUnifiedAdGroups), Фаза 1.5 ему не нужна.
-    if tp_code != "tp5" and any(x for x in ag_ids if x):
-        _rm15 = (
-            {"isActive": True, "id": None,
-             "relevanceMatchCategories": ["ALTERNATIVE_MARK", "BROADER_MARK",
-                                          "ACCESSORY_MARK", "EXACT_V2_MARK", "NARROW_MARK"],
-             "autotargetingBrandSettings": ["WITH_BRAND", "WITHOUT_BRAND", "WITH_COMPETITOR_BRAND"]}
-            if autotarget else
-            {"isActive": False, "id": None,
-             "relevanceMatchCategories": [], "autotargetingBrandSettings": []}
-        )
-        _rm15_items: list = []
-        for _i15, _id15 in enumerate(ag_ids):
-            if not _id15:
-                continue
-            _rm15_items.append({
-                "adGroupId": str(_id15),
-                "adGroupName": (groups[_i15].get("name") or "группа")[:255],
-                "adGroupMinusKeywords": [],
-                "bidModifiers": {},
-                "libraryMinusKeywordsIds": [],
-                "regionIds": rids,
-                "hyperGeoId": None,
-                "hyperlocalGeoSegments": None,
-                "audienceTargeting": "ALL_AUDIENCE",
-                "contentTypeShowSettings": None,
-                "keywords": [],
-                "caRetargetingCondition": None,
-                "retargetings": [],
-                "searchRetargetings": [],
-                "offerRetargeting": None,
-                "relevanceMatch": _rm15,
-                "promoExtensionInheritancePolicy": "MERGE",
-                "inheritableCallouts": {"policy": "INHERIT"},
-                "inheritableSitelinkSet": {"policy": "INHERIT"},
-                "generalPrice": None,
-                "trackingParams": _UTM_TEMPLATE_TP1,
-                "contentLanguage": None,
-                "useBidModifiers": True,
-            })
-        if _rm15_items:
-            try:
-                _upd15 = gf.get_grid_client(login, cookie=grid_cookie).update_unified_adgroups(_rm15_items)
-                rep["relevance_match_set"] = len(_upd15)
-            except Exception as _e15:  # noqa: BLE001
-                _e15_msg = f"relevanceMatch(1.5): {str(_e15)[:200]}"
-                rep["errors"].append(_e15_msg)
-                # Группы созданы, но isActive остался на дефолте Яндекса (aoff→ВКЛ, aon→ВЫКЛ) —
-                # та же инверсия кодера, которую Phase 1.5 устраняла. Устанавливаем rep["error"]
-                # (singular), чтобы вызывающий код (:1471) вызвал _cleanup_partial и снёс черновик.
-                # Верификатор для tp1 к этому классу слеп → дефект иначе невидим молча.
-                # Черновик безопасно пересоздать на следующем прогоне.
-                rep["error"] = _e15_msg
-
-    # ── Фаза 2: keywords — транспорт по tp_code ──────────────────────────────
-    # TP5: Grid-транспорт (тот же _gcl5 из Фазы 1) — смешанный транспорт (Grid группы + v5
-    # keywords.add) даёт лаг репликации Grid→v5 → ключи-фантомы (LIVE=0).
-    # Класс бага DMP_TP2_KEYWORDS_LOST_MIXED_TRANSPORT (ERRORS_JOURNAL ~строка 3127): уже
-    # исправлен для tp2/tp4 в create_set_text_builders.py:96-119 — тот же паттерн здесь.
-    # ---autotargeting спецключ на tp5 не ставим: профиль search_tp2 (relevanceMatch) атомарно
-    # активен из Фазы 1; gc.GridCreateClient.add_keywords сам режет ---autotargeting.
-    # TP1 РСЯ: v5-путь без изменений (v501-группы, нет межтранспортного лага).
-    if tp_code == "tp5":
-        kw_g5: list = []
-        for i, g in enumerate(groups):
-            if not ag_ids[i]:
-                continue
-            # Группы чистого автотаргета (autotarget=True, keep_keywords=False) не несут ключей:
-            # таргетинг = relevanceMatch search_tp2 из Фазы 1 (EXACT_V2_MARK+WITHOUT_BRAND).
-            if autotarget and not keep_keywords:
-                continue
-            for k in _kw_clean(g.get("keywords") or [], 200):
-                kw_g5.append({"adGroupId": str(ag_ids[i]), "keyword": k})
-        if kw_g5:
-            try:
-                # unique_keyword_ids считает РАЗНЫХ keywordId (Директ схлопывает дубли,
-                # как на v5-пути; len(addedItems) давал BUILD_LIVE_UNDERCOUNT — porg-ozge4ntu).
-                rep["keywords"] = gc.unique_keyword_ids(_gcl5.add_keywords(kw_g5))
-            except Exception as _kw5e:  # noqa: BLE001 — ключи единственный путь; сбой = группы без ключей
-                rep["errors"].append(f"keywords(Grid AddKeywords tp5): {str(_kw5e)[:200]}")
-    else:
-        # ── tp1 РСЯ: v5 keywords.add (v501-группы, нет межтранспортного лага) ─────────────────
-        # Режимы ключей tp1 (relevanceMatch.isActive управляется Фазой 1.5, не ключами):
-        #   • autotarget=True,  keep_keywords=False → только relevanceMatch из Фазы 1.5 (ключей нет).
-        #   • autotarget=False                      → реальные ключи (чистый КС).
-        #   • autotarget=True,  keep_keywords=True  → реальные ключи (КС + relevanceMatch из Фазы 1.5).
-        # Спецключ "---autotargeting" упразднён: он вызывал инверсию aon→ВЫКЛ (легаси-режим).
-        kw_items = []
-        for i, g in enumerate(groups):
-            if not ag_ids[i]:
-                continue
-            # Реальные ключи: чистый КС (not autotarget) ИЛИ комбинированный КС+Автотаргет.
-            if (not autotarget) or keep_keywords:
-                for k in _kw_clean(g.get("keywords") or [], 200):
-                    kw_items.append({"Keyword": k, "AdGroupId": int(ag_ids[i])})
-        # build-счётчик = число РАЗНЫХ Id (Директ схлопывает дубли, отдаёт Id существующей
-        # фразы + Warning 10140). Счёт отправленных давал BUILD_LIVE_UNDERCOUNT (porg-ozge4ntu).
-        _kw_ids: set = set()
-        for chunk in _chunks(kw_items, _AC_CHUNK_KW):
-            jk = _v5_call("keywords", "add", token, login, {"Keywords": chunk})
-            if "error" not in jk:
-                # Legacy-страховка: _AUTOTARGET_KW ("---autotargeting") упразднён из Phase 2
-                # (псевдоключ был причиной инверсии aon→ВЫКЛ) — в chunk больше не попадает,
-                # но skip_keyword оставлен на случай попадания ключа другим путём.
-                _kw_ids |= _v5_added_keyword_ids(
-                    chunk, (jk.get("result") or {}).get("AddResults", []), _AUTOTARGET_KW)
+    # ── Фаза 1: adgroups — АТОМАРНОЕ создание через Grid AddUnifiedAdGroups ──────────────────
+    # relevanceMatch (автотаргет) выставляется ПРИ СОЗДАНИИ группы — единственный путь, который
+    # держится живым фактом. v501 adgroups.add не умеет relevanceMatch: свежая группа получает
+    # дефолт Директа, а пост-патч Grid UpdateUnifiedAdGroups по таким группам оказался ПОЛНЫМ
+    # no-op (2026-07-27: кампании 713089308 «КС + Автотаргетинг» и 713089104 «КС» получили
+    # ПРОТИВОПОЛОЖНЫЕ isActive, а живая картина вышла идентичной — 84 ON / 29 SUSPENDED в обеих).
+    # Детект по живому аккаунту: 433 группы Grid-путём (tp2/tp4/tp5) → 0 дефектов; все 600
+    # дефектов — в 14 tp1-кампаниях, шедших v501-путём. Фаза 1.5 удалена как неработающая.
+    # Профиль relevanceMatch (grid_create_payloads.build_adgroup:107-129):
+    #   tp5 (Поиск + галерея) → search_tp2: EXACT_V2_MARK + WITHOUT_BRAND, isActive=True ВСЕГДА.
+    #     В поисковой кампании Директа автотаргет выключить нельзя в принципе (подтверждено
+    #     Семёном 2026-07-27), поэтому плановый autotarget-флаг профиль НЕ отменяет: он значит
+    #     лишь «бренд-ключи вместо чистого автотаргетинга» и управляет только Фазой 2 (ключи).
+    #     Живое `isActive=True` у tp5-групп планового `aoff` — норма, а не дефект.
+    #   tp1 (РСЯ)             → дефолтная ветка: все 5 категорий + 3 бренда при autotarget=True,
+    #                           isActive=False с пустыми списками при autotarget=False.
+    _gcl = gc.GridCreateClient(login, cookie=grid_cookie)
+    _is_tp5 = (tp_code == "tp5")
+    _g_items = [gc.build_adgroup(
+        campaign_id=int(campaign_id),
+        name=(g.get("name") or "группа")[:255],
+        region_ids=rids,
+        keywords=[],           # ключи — ТОЛЬКО через Фазу 2 (AddKeywords), без дублей
+        minus_keywords=[],     # групповой минус не ставим: РСЯ режет охват, поиск — на кампании
+        autotargeting=(True if _is_tp5 else bool(autotarget)),
+        autotargeting_profile=("search_tp2" if _is_tp5 else ""),
+    ) for g in groups]
+    try:
+        ag_ids = _gcl.add_adgroups(_g_items)
+        # Позиционный сдвиг: Grid пропускает упавшие группы (не возвращает null-заглушку)
+        # → список может быть короче входного → выравниваем по имени (аналог create_full:615).
+        if len(ag_ids) != len(groups):
+            _n2id = _gcl._read_adgroup_name_to_id(int(campaign_id))
+            if _n2id:
+                ag_ids = [_n2id.get(g.get("name") or "") for g in groups]
             else:
-                rep["errors"].append(f"keywords.add {_v5_err(jk)}")
-            time.sleep(_AC_BATCH_SLEEP)
-        rep["keywords"] += len(_kw_ids)
+                ag_ids = list(ag_ids) + [None] * (len(groups) - len(ag_ids))
+                rep["errors"].append(
+                    f"{tp_code} Grid: позиционный сдвиг групп — ключи могут быть смещены")
+        rep["adgroups"] = sum(1 for x in ag_ids if x)
+        rep["relevance_match_set"] = rep["adgroups"]  # атомарно при создании
+    except gc.GridCreateError as _ge:
+        # Группы не созданы → rep без adgroups → вызывающий (:1531) вызовет _cleanup_partial
+        # и снесёт черновик. ok=True с неверным автотаргетом невозможен.
+        rep["errors"].append(f"adgroups(Grid {tp_code}): {str(_ge)[:200]}")
+        return rep
+
+    # ── Фаза 2: keywords — ЕДИНЫЙ Grid-транспорт (AddKeywords тем же _gcl из Фазы 1) ─────────
+    # Смешанный транспорт (Grid-группы + v5 keywords.add) даёт лаг репликации Grid→v5 →
+    # ключи-фантомы, LIVE=0 (DMP_TP2_KEYWORDS_LOST_MIXED_TRANSPORT, ERRORS_JOURNAL ~3127).
+    # Тот же паттерн уже закрыт для tp2/tp4 в create_set_text_builders.py:155-194.
+    # Режимы ключей (relevanceMatch.isActive выставлен атомарно в Фазе 1, ключами НЕ управляется):
+    #   • autotarget=True,  keep_keywords=False → ключей нет, таргетинг = relevanceMatch.
+    #   • autotarget=False                      → реальные ключи (чистый КС).
+    #   • autotarget=True,  keep_keywords=True  → реальные ключи (КС + автотаргет).
+    # Псевдоключ "---autotargeting" не шлём: автотаргет живёт в relevanceMatch, а
+    # gc.GridCreateClient.add_keywords сам режет фразы, начинающиеся с "---".
+    kw_items: list = []
+    for i, g in enumerate(groups):
+        if not ag_ids[i]:
+            continue
+        if autotarget and not keep_keywords:
+            continue
+        for k in _kw_clean(g.get("keywords") or [], 200):
+            kw_items.append({"adGroupId": str(ag_ids[i]), "keyword": k})
+    if kw_items:
+        try:
+            # unique_keyword_ids считает РАЗНЫХ keywordId (Директ схлопывает дубли,
+            # как на v5-пути; len(addedItems) давал BUILD_LIVE_UNDERCOUNT — porg-ozge4ntu).
+            rep["keywords"] = gc.unique_keyword_ids(_gcl.add_keywords(kw_items))
+        except Exception as _kwe:  # noqa: BLE001 — ключи единственный путь; сбой = группы без ключей
+            rep["errors"].append(f"keywords(Grid AddKeywords {tp_code}): {str(_kwe)[:200]}")
 
     # ── Фаза 3: ads.add без предварительной token-загрузки картинок ──────────
     # Живой баг 2026-06-28: v501 upload_image на больших tp1 мог зависать до стадии ads.add.
@@ -514,6 +390,32 @@ def _build_tp1_adgroups(
     # + картинки (AdImageHashes) + быстрые ссылки (SitelinkSetId). Уточнения наследуются (AdExtensions нет).
     _sl_set_cache: dict = {}   # ad_href → sitelink_set_id (per-group кэш, #ФИКС-3)
     _base_href = (href or "").rstrip("/")
+    # ── Пре-пасс быстрых ссылок: N наборов ОДНИМ запросом vs N запросов ──────────────────────
+    # Цикл ниже создавал набор НА КАЖДУЮ группу с собственным deep-link: 774 вызова
+    # v501 sitelinks.add за прогон = 444 с (17% wall-clock). Здесь собираем уникальные
+    # ad_href до цикла и заливаем их батчем `_get_or_reuse_sitelink_sets` (1 запрос на
+    # кампанию; наборы, уже созданные на этом login с тем же СОДЕРЖИМЫМ, отдаются из
+    # процессного кэша вообще без запроса). Одинаковые наборы → один id, разные → свои id
+    # (ключ кэша = сигнатура содержимого, `automation_runtime._sitelink_set_sig`).
+    # В цикле остаётся поштучный фолбэк — на href, который батч не покрыл (None/сбой).
+    if base_sitelinks and not products_only:
+        _sl_hrefs: list = []
+        for i, g in enumerate(groups):
+            if not ag_ids[i]:
+                continue
+            _ah = g.get("href") or href
+            if _ah and _ah.rstrip("/") != _base_href and _ah not in _sl_hrefs:
+                _sl_hrefs.append(_ah)
+        if _sl_hrefs:
+            try:
+                _sl_ids = _get_or_reuse_sitelink_sets(
+                    token, login,
+                    [[{**s, "Href": _ah} for s in base_sitelinks] for _ah in _sl_hrefs])
+            except Exception:  # noqa: BLE001 — батч best-effort, цикл ниже добьёт поштучно
+                _sl_ids = []
+            for _ah, _sid in zip(_sl_hrefs, _sl_ids or []):
+                if _sid:
+                    _sl_set_cache[_ah] = _sid
     ad_items = []
     ad_meta = []   # параллельно ad_items: {brand,href,titles,bodies,image_hashes} — для adPrice из фида
     for i, g in enumerate(groups):

@@ -605,43 +605,68 @@ def test_tp1_products_only_fallback_preserves_segments(monkeypatch):
     assert all(" - None -" not in item["name"] for item in products_only)
 
 
-# ── tp1 РСЯ: инверсия автотаргетинга (Phase 1.5 fix) ────────────────────────────────────────────
+# ── tp1 РСЯ: автотаргет ставится АТОМАРНО при создании группы (Grid AddUnifiedAdGroups) ────────
 
-def _make_tp1_test_deps():
-    """Минимальный набор deps для тестирования _build_tp1_adgroups (фокус: Phase 1.5 + Phase 2).
+def _make_tp1_test_deps(responsive: bool = False):
+    """Минимальный набор deps для _build_tp1_adgroups (фокус: Фаза 1 Grid + Фаза 2 ключи).
 
-    v5 adgroups.add возвращает Id=1001 для первой группы.
-    v5 keywords.add возвращает Id=2001 для каждого ключа.
-    Grid update_unified_adgroups захватывает вызовы в update_calls[].
-    keywords.add захватывает все тела запросов в kw_calls[].
+    `gc` — РЕАЛЬНЫЕ payload-фабрики grid_create (build_adgroup/unique_keyword_ids), чтобы тест
+    проверял фактический payload, а не свою копию. Подменён только транспорт GridCreateClient:
+    add_adgroups пишет отправленные items в grid_calls[], add_keywords — в kw_calls[].
+    responsive=True → `_responsive_ad` отдаёт словарь (Фаза 3 доходит до ads.add), иначе None.
     """
-    update_calls = []
+    from direct import grid_create as _real_gc
+
+    grid_calls = []
     kw_calls = []
+    ad_calls = []
+
+    class _FakeGridCreateClient:
+        def __init__(self, login, cookie=None, **_kw):
+            self.login = login
+
+        def add_adgroups(self, items):
+            grid_calls.append(items)
+            return [1001 + i for i in range(len(items))]
+
+        def add_keywords(self, items):
+            kw_calls.append(items)
+            # Живой Grid сам режет служебные "---" фразы (grid_create.add_keywords:234).
+            return [{"id": 2001 + i, "adGroupId": it["adGroupId"]}
+                    for i, it in enumerate(items)
+                    if not str(it.get("keyword") or "").startswith("---")]
+
+        def _read_adgroup_name_to_id(self, campaign_id):  # noqa: ARG002
+            return {}
+
+    gc_mock = types.SimpleNamespace(
+        GridCreateClient=_FakeGridCreateClient,
+        GridCreateError=_real_gc.GridCreateError,
+        build_adgroup=_real_gc.build_adgroup,
+        unique_keyword_ids=_real_gc.unique_keyword_ids,
+    )
 
     class _FakeGridClient:
-        def update_unified_adgroups(self, items):
-            update_calls.append(items)
-            return [int(it["adGroupId"]) for it in items]
+        def upload_image(self, *_a, **_kw):
+            return None
 
     gf_mock = types.SimpleNamespace(
         get_grid_client=lambda login, cookie=None: _FakeGridClient(),
     )
 
-    def fake_v5_call(svc, method, token, login, body):
-        if svc == "adgroups" and method == "add":
-            groups_body = body.get("AdGroups", [])
-            return {"result": {"AddResults": [{"Id": 1001 + i} for i in range(len(groups_body))]}}
-        if svc == "keywords" and method == "add":
-            kw_calls.append(body.get("Keywords", []))
-            kws = body.get("Keywords", [])
-            return {"result": {"AddResults": [{"Id": 2001 + i} for i in range(len(kws))]}}
+    def fake_v501_svc(svc, method, token, login, body):
+        if svc == "ads" and method == "add":
+            ads = body.get("Ads", [])
+            ad_calls.append(ads)
+            return {"result": {"AddResults": [{"Id": 3001 + i} for i in range(len(ads))]}}
         return {"result": {"AddResults": []}}
 
     deps = {
-        "_v5_call": fake_v5_call,
+        "_v5_call": lambda *_a, **_kw: {"result": {"AddResults": []}},
+        "_v501_svc": fake_v501_svc,
         "_v5_err": lambda r: "",
         "gf": gf_mock,
-        "gc": None,
+        "gc": gc_mock,
         "_AUTOTARGET_KW": "---autotargeting",
         "_kw_clean": lambda kws, limit: [k for k in (kws or []) if k][:limit],
         "_chunks": lambda lst, n: ([lst[i:i + n] for i in range(0, len(lst), n)] if lst else []),
@@ -651,7 +676,9 @@ def _make_tp1_test_deps():
         "_AC_BATCH_SLEEP": 0,
         "_AC_GROUP_CAP": 500,
         "_UTM_TEMPLATE_TP1": "utm_source=yandex",
-        "_responsive_ad": lambda *_a, **_kw: None,   # пропустить Phase 3 (ads)
+        "_responsive_ad": ((lambda titles, texts, href, **_kw: {
+            "Titles": ["з"], "Texts": ["т"], "Href": href})
+            if responsive else (lambda *_a, **_kw: None)),
         "_rsya_titles": lambda *_a, **_kw: [],
         "_rsya_texts": lambda *_a, **_kw: [],
         "_feed_url_for_model": lambda *_a, **_kw: None,
@@ -662,12 +689,12 @@ def _make_tp1_test_deps():
         "_apply_global_feed_minus_for_site": lambda st: False,
         "cmc": types.SimpleNamespace(UTM_TEMPLATE="utm_source=yandex"),
     }
-    return deps, update_calls, kw_calls
+    return deps, grid_calls, kw_calls, ad_calls
 
 
-def _run_tp1(autotarget: bool, keep_keywords: bool = False, keywords=None):  # list | None — py3.10+
-    """Запустить _build_tp1_adgroups с одной группой, вернуть (rep, update_calls, kw_calls)."""
-    deps, update_calls, kw_calls = _make_tp1_test_deps()
+def _run_tp1(autotarget: bool, keep_keywords: bool = False, keywords=None, tp_code: str = "tp1"):
+    """Запустить _build_tp1_adgroups с одной группой, вернуть (rep, grid_calls, kw_calls)."""
+    deps, grid_calls, kw_calls, _ads = _make_tp1_test_deps()
     create_set_tp1_builders.configure(deps)
 
     groups = [{"name": "тест-группа", "keywords": keywords or [], "titles": [], "texts": []}]
@@ -680,64 +707,93 @@ def _run_tp1(autotarget: bool, keep_keywords: bool = False, keywords=None):  # l
         groups=groups,
         autotarget=autotarget,
         keep_keywords=keep_keywords,
-        tp_code="tp1",
+        tp_code=tp_code,
     )
-    return rep, update_calls, kw_calls
+    return rep, grid_calls, kw_calls
 
 
-def test_tp1_aon_phase15_sets_isactive_true():
-    """Случай A: autotarget=True → Phase 1.5 должна задать isActive=True (не ВЫКЛ)."""
-    _rep, update_calls, _kw = _run_tp1(autotarget=True)
+def test_tp1_aon_grid_creates_group_with_active_relevance_match():
+    """Случай A: autotarget=True → relevanceMatch.isActive=True уходит В САМОМ AddUnifiedAdGroups."""
+    rep, grid_calls, _kw = _run_tp1(autotarget=True)
 
-    assert update_calls, "Phase 1.5: update_unified_adgroups не вызвана"
-    rm = update_calls[0][0]["relevanceMatch"]
+    assert grid_calls, "Фаза 1: Grid add_adgroups не вызвана (tp1 всё ещё на v501?)"
+    rm = grid_calls[0][0]["relevanceMatch"]
     assert rm["isActive"] is True, f"aon → isActive должен быть True, получили {rm['isActive']}"
+    assert "EXACT_V2_MARK" in rm["relevanceMatchCategories"]
+    assert rep.get("relevance_match_set") == rep.get("adgroups") == 1
 
 
-def test_tp1_aoff_phase15_sets_isactive_false():
-    """Случай B: autotarget=False → Phase 1.5 должна задать isActive=False (не ВКЛ-дефолт)."""
-    _rep, update_calls, _kw = _run_tp1(autotarget=False, keywords=["купить авто"])
+def test_tp1_aoff_grid_creates_group_with_inactive_relevance_match():
+    """Случай B: autotarget=False → relevanceMatch.isActive=False при создании (не дефолт Яндекса)."""
+    _rep, grid_calls, _kw = _run_tp1(autotarget=False, keywords=["купить авто"])
 
-    assert update_calls, "Phase 1.5: update_unified_adgroups не вызвана"
-    rm = update_calls[0][0]["relevanceMatch"]
+    assert grid_calls, "Фаза 1: Grid add_adgroups не вызвана"
+    rm = grid_calls[0][0]["relevanceMatch"]
     assert rm["isActive"] is False, f"aoff → isActive должен быть False, получили {rm['isActive']}"
+    assert rm["relevanceMatchCategories"] == []
+    assert rm["autotargetingBrandSettings"] == []
 
 
-def test_tp1_aon_no_autotarget_pseudokey_in_keywords():
-    """Псевдоключ '---autotargeting' больше НЕ должен уходить в keywords.add."""
-    _rep, _upd, kw_calls = _run_tp1(autotarget=True)
+def test_tp1_relevance_match_isactive_equals_autotarget_flag():
+    """`relevanceMatch.isActive` в payload создания == bool(autotarget) для обоих режимов."""
+    for flag in (True, False):
+        _rep, grid_calls, _kw = _run_tp1(autotarget=flag, keep_keywords=True,
+                                         keywords=["купить авто"])
+        assert grid_calls[0][0]["relevanceMatch"]["isActive"] is flag
 
-    all_kw_texts = [kw["Keyword"] for batch in kw_calls for kw in batch]
-    assert "---autotargeting" not in all_kw_texts, (
-        f"Псевдоключ всё ещё в keywords.add: {all_kw_texts}"
-    )
+
+def test_tp1_aon_sends_no_keywords_and_no_pseudokey():
+    """Чистый автотаргет: реальных ключей нет, псевдоключ '---autotargeting' не шлётся."""
+    _rep, _grid, kw_calls = _run_tp1(autotarget=True, keywords=["купить авто"])
+
+    all_kw = [it["keyword"] for batch in kw_calls for it in batch]
+    assert all_kw == [], f"у aon-группы не должно появляться ключей, получили {all_kw}"
+    assert "---autotargeting" not in all_kw, "Псевдоключ всё ещё уходит в AddKeywords"
+
+
+def test_tp1_aoff_keeps_real_keywords():
+    """Чистый КС: реальные ключи не пропадают при переходе на Grid-транспорт."""
+    rep, _grid, kw_calls = _run_tp1(autotarget=False, keywords=["купить авто", "новый автомобиль"])
+
+    all_kw = [it["keyword"] for batch in kw_calls for it in batch]
+    assert all_kw == ["купить авто", "новый автомобиль"], f"ключи потерялись: {all_kw}"
+    assert all(str(it["adGroupId"]) == "1001" for batch in kw_calls for it in batch)
+    assert rep["keywords"] == 2
 
 
 def test_tp1_aon_keep_keywords_preserves_real_keywords():
     """autotarget=True + keep_keywords=True → реальные ключи сохраняются (нет регрессии)."""
     real_kws = ["купить авто", "новый автомобиль"]
-    _rep, _upd, kw_calls = _run_tp1(autotarget=True, keep_keywords=True, keywords=real_kws)
+    _rep, _grid, kw_calls = _run_tp1(autotarget=True, keep_keywords=True, keywords=real_kws)
 
-    all_kw_texts = [kw["Keyword"] for batch in kw_calls for kw in batch]
-    assert "купить авто" in all_kw_texts, "Реальный ключ 'купить авто' не попал в keywords.add"
-    assert "новый автомобиль" in all_kw_texts, "Реальный ключ 'новый автомобиль' не попал в keywords.add"
-    assert "---autotargeting" not in all_kw_texts, "Псевдоключ всё ещё в keywords.add"
+    all_kw = [it["keyword"] for batch in kw_calls for it in batch]
+    assert "купить авто" in all_kw, "Реальный ключ 'купить авто' не попал в AddKeywords"
+    assert "новый автомобиль" in all_kw, "Реальный ключ 'новый автомобиль' не попал в AddKeywords"
+    assert "---autotargeting" not in all_kw, "Псевдоключ всё ещё уходит в AddKeywords"
 
 
-def test_tp1_phase15_exception_sets_error_field():
-    """Phase 1.5: сетевой сбой update_unified_adgroups → rep['error'] проставлен, не только errors[].
+def test_tp1_grid_adgroups_failure_leaves_zero_adgroups():
+    """Сбой Grid-создания групп → adgroups=0 → вызывающий (:1531) снесёт черновик.
 
-    Смысл: вызывающий код (:1471) проверяет tp1_build.get('error') (singular).
-    Без этой проверки кампания с неверным isActive вернёт ok=True молча (Случай B).
+    Раньше эту роль играл rep['error'] от Phase 1.5; теперь автотаргет неотделим от создания:
+    группы нет → и неверного isActive быть не может.
     """
-    deps, _update_calls, _kw_calls = _make_tp1_test_deps()
+    from direct import grid_create as _real_gc
 
-    class _FailingGridClient:
-        def update_unified_adgroups(self, items):  # noqa: ARG002
-            raise RuntimeError("сетевой сбой Grid")
+    deps, _grid_calls, _kw_calls, _ads = _make_tp1_test_deps()
 
-    deps["gf"] = types.SimpleNamespace(
-        get_grid_client=lambda login, cookie=None: _FailingGridClient(),
+    class _FailingGridCreateClient:
+        def __init__(self, login, cookie=None, **_kw):
+            self.login = login
+
+        def add_adgroups(self, items):  # noqa: ARG002
+            raise _real_gc.GridCreateError("AddUnifiedAdGroups validation: сбой")
+
+    deps["gc"] = types.SimpleNamespace(
+        GridCreateClient=_FailingGridCreateClient,
+        GridCreateError=_real_gc.GridCreateError,
+        build_adgroup=_real_gc.build_adgroup,
+        unique_keyword_ids=_real_gc.unique_keyword_ids,
     )
     create_set_tp1_builders.configure(deps)
 
@@ -754,13 +810,98 @@ def test_tp1_phase15_exception_sets_error_field():
         tp_code="tp1",
     )
 
-    assert rep.get("error"), (
-        "При сбое Phase 1.5 rep['error'] должен быть заполнен, "
-        f"получили: error={rep.get('error')!r}, errors={rep.get('errors')!r}"
+    assert not rep.get("adgroups"), "при сбое Grid групп быть не должно"
+    assert any("adgroups(Grid tp1)" in str(e) for e in (rep.get("errors") or [])), (
+        f"причина сбоя должна быть в rep['errors'], получили {rep.get('errors')!r}"
     )
-    assert any("relevanceMatch(1.5)" in str(e) for e in (rep.get("errors") or [])), (
-        "Детали сбоя Phase 1.5 должны быть в rep['errors']"
+
+
+def test_tp1_sitelink_sets_created_by_single_batch_call():
+    """Пре-пасс быстрых ссылок: N групп → ОДИН батч-вызов, id не перепутаны по содержимому."""
+    deps, _grid, _kw, ad_calls = _make_tp1_test_deps(responsive=True)
+    batch_calls = []
+    single_calls = []
+
+    def fake_batch(token, login, sets, warns=None):  # noqa: ARG001
+        batch_calls.append(sets)
+        return [7001 + i for i in range(len(sets))]
+
+    deps["_get_or_reuse_sitelink_sets"] = fake_batch
+    deps["_get_or_reuse_sitelink_set"] = (
+        lambda token, login, sls, warns=None: single_calls.append(sls))  # noqa: ARG005
+    create_set_tp1_builders.configure(deps)
+
+    groups = [
+        {"name": "g1", "keywords": [], "href": "https://example.com/auto/lada"},
+        {"name": "g2", "keywords": [], "href": "https://example.com/auto/lada"},
+        {"name": "g3", "keywords": [], "href": "https://example.com/auto/kia"},
+    ]
+    create_set_tp1_builders._build_tp1_adgroups(
+        token="tok", login="porg-test", campaign_id=999, region_ids=[213],
+        href="https://example.com", groups=groups, autotarget=True,
+        base_sitelinks=[{"Title": "Кредит", "Href": "https://example.com"}],
+        tp_code="tp1",
     )
+
+    assert len(batch_calls) == 1, f"ожидался один батч-вызов, получили {len(batch_calls)}"
+    assert not single_calls, "поштучный _get_or_reuse_sitelink_set не должен вызываться"
+    # одинаковый href двух групп → ОДИН набор в батче; разный href → свой набор
+    assert len(batch_calls[0]) == 2, f"дедуп по href не сработал: {batch_calls[0]!r}"
+    assert [s[0]["Href"] for s in batch_calls[0]] == [
+        "https://example.com/auto/lada", "https://example.com/auto/kia"]
+    ads = [a["ResponsiveAd"] for batch in ad_calls for a in batch]
+    assert [a["SitelinkSetId"] for a in ads] == [7001, 7001, 7002], (
+        f"id наборов раздались неверно: {[a.get('SitelinkSetId') for a in ads]}")
+
+
+def test_tp1_sitelink_batch_failure_falls_back_to_single_calls():
+    """Батч не отдал id → поштучный путь по-прежнему работает (наборы не теряются)."""
+    deps, _grid, _kw, ad_calls = _make_tp1_test_deps(responsive=True)
+    single_calls = []
+
+    def fake_single(token, login, sls, warns=None):  # noqa: ARG001
+        single_calls.append(sls)
+        return 9100 + len(single_calls)
+
+    deps["_get_or_reuse_sitelink_sets"] = lambda token, login, sets, warns=None: []  # noqa: ARG005
+    deps["_get_or_reuse_sitelink_set"] = fake_single
+    create_set_tp1_builders.configure(deps)
+
+    groups = [{"name": "g1", "keywords": [], "href": "https://example.com/auto/lada"}]
+    create_set_tp1_builders._build_tp1_adgroups(
+        token="tok", login="porg-test", campaign_id=999, region_ids=[213],
+        href="https://example.com", groups=groups, autotarget=True,
+        base_sitelinks=[{"Title": "Кредит", "Href": "https://example.com"}],
+        tp_code="tp1",
+    )
+
+    assert len(single_calls) == 1, "фолбэк на поштучное создание набора не сработал"
+    ads = [a["ResponsiveAd"] for batch in ad_calls for a in batch]
+    assert ads and ads[0]["SitelinkSetId"] == 9101
+
+
+def test_tp5_autotarget_stays_on_regardless_of_plan_flag():
+    """tp5 — поисковая кампания: автотаргет выключить нельзя, профиль search_tp2 идёт ВСЕГДА.
+
+    Общий Grid-путь tp1/tp5 не должен «выключать» автотаргет у tp5 при плановом autotarget=False:
+    живое isActive=True у таких групп — норма Директа, а не дефект (Семён, 2026-07-27).
+    """
+    for flag in (True, False):
+        _rep, grid_calls, _kw = _run_tp1(autotarget=flag, keep_keywords=True,
+                                         keywords=["купить авто"], tp_code="tp5")
+        rm = grid_calls[0][0]["relevanceMatch"]
+        assert rm["isActive"] is True, f"tp5 autotarget={flag} → isActive должен остаться True"
+        assert rm["relevanceMatchCategories"] == ["EXACT_V2_MARK"]
+        assert rm["autotargetingBrandSettings"] == ["WITHOUT_BRAND"]
+
+
+def test_tp5_group_name_keeps_aon_hardcode():
+    """tp5+shopping всегда `_aon_`: это единственное корректное значение, а не хардкод-баг."""
+    for flag in (True, False):
+        name = create_set_tp1_builders._tp1_group_name(
+            "tp5_cpc_site_ct0146", "r0002", "Haval", with_shopping=True,
+            autotarget=flag, tp_code="tp5")
+        assert "_aon_" in name and "_aoff_" not in name, name
 
 
 def test_tp1_rsya_verifier_detects_aon_isactive_false():
