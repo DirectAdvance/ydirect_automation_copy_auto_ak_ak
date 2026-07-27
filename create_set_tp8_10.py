@@ -132,6 +132,29 @@ def _post_feed_url_map(login: str, href: str) -> dict:
         return {}
 
 
+def _post_feed_price_map(login: str, href: str) -> dict:
+    """DI-wrapper for account offer prices: {key(lower): (current, old)}.
+
+    Пробует DI-ключ '_account_offer_prices' (инъектируется оркестратором).
+    Если DI не настроен — прямой импорт из create_set_feeds (fallback без оркестратора).
+    """
+    fn = _DEPS.get("_account_offer_prices")
+    if not callable(fn):
+        # Прямой импорт как fallback — работает до обновления оркестратора
+        try:
+            from .create_set_feeds import _account_offer_prices as fn  # noqa: PLC0415
+        except ImportError:
+            try:
+                from create_set_feeds import _account_offer_prices as fn  # type: ignore[no-redef]  # noqa: PLC0415
+            except ImportError:
+                return {}
+    try:
+        return dict(fn(login, href) or {})
+    except Exception as exc:  # noqa: BLE001
+        print(f"[post-engine] feed prices load failed login={login!r}: {exc!s:.120}", flush=True)
+        return {}
+
+
 def _post_feed_url_for_label(urls: dict, label: str) -> str:
     if not urls:
         return ""
@@ -237,6 +260,182 @@ def _post_allowed_models_from_feed(login: str, base_href: str, label: str, limit
         if len(out) >= limit:
             break
     return out
+
+
+_BRAND_OFFER_DIVISOR = 84   # простое деление: платёж = цена ÷ 84, без ставки и аннуитета
+
+
+def _fmt_payment(amount: int) -> str:
+    """Форматировать целое число в русский формат с пробелами-разделителями тысяч."""
+    return f"{amount:,}".replace(",", " ")  # ASCII space (U+0020), не NNBSP — типографский стандарт
+
+
+def _build_brand_offer_block(login: str, href: str, label: str, ct: str, limit: int = 5) -> str:
+    """Детерминированный блок марочных оферов для посевов (ct-сегмент «Марки»).
+
+    Возвращает строки вида «Haval Jolion – от 7 355 ₽/мес» (ровно до *limit* штук),
+    отсортированные по возрастанию платежа. Пустая строка, если:
+    - это не марочная кампания (seg != «Марки»);
+    - цены из фида недоступны;
+    - ни одна позиция не имеет валидной цены (правило: не подставлять 0 / не выдумывать).
+
+    Расчёт: цена (актуальная) ÷ {BRAND_OFFER_DIVISOR}; округление вниз (math.floor).
+    % ставки кредита НЕ печатается (правило Семёна, закреплено в text_gen.py:758).
+    """
+    if not label or str(label).lower() == "посевы":
+        return ""
+    if _post_ct_segment(ct) != "Марки":
+        return ""
+
+    prices = _post_feed_price_map(login, href)
+    if not prices:
+        return ""
+
+    brand_lc = re.sub(r"\s+", " ", str(label or "").strip().lower())
+
+    # Шаг 1: берём модели из _post_allowed_models_from_feed (до 2×limit = запас)
+    model_names = _post_allowed_models_from_feed(login, href, label, limit=limit * 2)
+
+    candidates: list[tuple[int, str]] = []   # (payment, display_name)
+    seen_keys: set[str] = set()
+
+    def _try_add(name_display: str, name_lc: str) -> bool:
+        """Найти цену для имени, посчитать платёж, добавить в candidates. True при успехе."""
+        if name_lc in seen_keys:
+            return False
+        price_tup = prices.get(name_lc)
+        if price_tup is None:
+            # Попробовать без года: «haval jolion 2025» → «haval jolion»
+            ny = re.sub(r"\s*\b20\d\d\b", " ", name_lc).strip()
+            if ny != name_lc:
+                price_tup = prices.get(ny)
+        if not price_tup or price_tup[0] <= 0:
+            return False
+        current_price = price_tup[0]          # актуальная (новая) цена из фида
+        payment = current_price // _BRAND_OFFER_DIVISOR
+        if payment <= 0:
+            return False
+        seen_keys.add(name_lc)
+        candidates.append((payment, name_display))
+        return True
+
+    for model in model_names:
+        _try_add(model, model.strip().lower())
+
+    # Шаг 2: если < limit — добираем из price map по ключам с префиксом бренда
+    if len(candidates) < limit:
+        brand_prefix = brand_lc + " "
+        for key in sorted(prices.keys()):
+            if len(candidates) >= limit * 2:
+                break
+            if not key.startswith(brand_prefix):
+                continue
+            if len(key.split()) < 2:
+                continue
+            _try_add(_title_case_vehicle_name(key), key)
+
+    if not candidates:
+        return ""
+
+    # Шаг 3: сортировка по возрастанию платежа, берём top-limit
+    candidates.sort(key=lambda x: x[0])
+    lines = [
+        f"{name} – от {_fmt_payment(pay)} ₽/мес"   # «–» = en-dash (U+2013)
+        for pay, name in candidates[:limit]
+    ]
+    return "\n".join(lines)
+
+
+def _replace_post_model_list(body: str, brand_block: str) -> str:
+    """Заменить LLM-сгенерированный список модель→цена детерминированным блоком.
+
+    Алгоритм:
+    1. Считает ₽/мес-строки по ВСЕМ параграфам тела.
+    2. Если суммарно ≥2 — нашли список, даже если LLM разбил каждую модель отдельным
+       параграфом. Заменяем параграф с наибольшим числом ценовых строк (при равенстве —
+       первый совпавший); сохраняем заголовок «В наличии:». Параграфы, где ВСЕ непустые
+       строки содержат ₽/мес (чисто-ценовые), отбрасываем — иначе в посте два блока
+       с РАЗНЫМИ суммами на одни и те же машины.
+    3. Если суммарно <2 (одно случайное упоминание цены или его нет) — ищем параграф
+       с 2+ ценовыми строками (старая логика). Не найден → вставляем блок после первого
+       параграфа.
+    Гасит дубль «LLM-список + детерминированный блок» на стороне сборки.
+    """
+    if not brand_block:
+        return body
+
+    price_re = re.compile(r"₽/мес|₽\s*/\s*мес")
+    paragraphs = (body or "").split("\n\n")
+
+    def _para_price_count(para: str) -> int:
+        return sum(1 for ln in para.splitlines() if price_re.search(ln))
+
+    def _is_price_only(para: str) -> bool:
+        """Все непустые строки параграфа содержат ₽/мес."""
+        lines = [ln for ln in para.splitlines() if ln.strip()]
+        return bool(lines) and all(price_re.search(ln) for ln in lines)
+
+    def _extract_header(para: str) -> str:
+        """Строка-заголовок: оканчивается на «:», не содержит цен."""
+        for ln in para.splitlines():
+            plain = re.sub(r":(?:b|bb|i|ii|s|ss):", "", ln).strip()
+            if plain.endswith(":") and not price_re.search(ln):
+                return ln
+        return ""
+
+    total_price_lines = sum(_para_price_count(p) for p in paragraphs)
+    new_paras: list[str] = []
+    inserted = False
+
+    if total_price_lines >= 2:
+        # Список обнаружен глобально — возможно, разбит на отдельные параграфы.
+        # Выбираем параграф с максимальным числом ценовых строк (первый при равенстве).
+        best_idx = -1
+        best_count = 0
+        for i, para in enumerate(paragraphs):
+            cnt = _para_price_count(para)
+            if cnt > best_count:
+                best_count = cnt
+                best_idx = i
+
+        for i, para in enumerate(paragraphs):
+            if not inserted and i == best_idx:
+                header = _extract_header(para)
+                replacement = (header + "\n" + brand_block) if header else brand_block
+                new_paras.append(replacement)
+                inserted = True
+            elif _is_price_only(para):
+                # Чисто-ценовой параграф (не целевой) — отбрасываем, чтобы не
+                # оставить в посте конкурирующие LLM-суммы.
+                pass
+            else:
+                new_paras.append(para)
+    else:
+        # Суммарно <2 ценовых строк — одиночное упоминание цены или его нет.
+        # Старая логика: ищем параграф с 2+ ценовыми строками.
+        for para in paragraphs:
+            if inserted:
+                new_paras.append(para)
+                continue
+            if _para_price_count(para) >= 2:
+                header = _extract_header(para)
+                replacement = (header + "\n" + brand_block) if header else brand_block
+                new_paras.append(replacement)
+                inserted = True
+            else:
+                new_paras.append(para)
+
+    if not inserted:
+        # Список не найден — вставить блок после первого параграфа.
+        if len(new_paras) > 1:
+            new_paras.insert(1, brand_block)
+        elif new_paras:
+            new_paras.append(brand_block)
+        else:
+            new_paras = [brand_block]
+
+    result = "\n\n".join(new_paras)
+    return re.sub(r"\n{3,}", "\n\n", result).strip()
 
 
 def _extend_post_body_after_finalize(text: str, brand_label: str, href: str) -> str:
@@ -778,8 +977,104 @@ def _ensure_post_highlights(text: str, brand_label: str = "") -> str:
     return highlighted
 
 
+# ── Детерминированная нормализация текста посевов на выходе (правила 1-11) ──────
+# Промпт генерации НЕ трогаем — только постобработка готового LLM-текста.
+
+_NORM_EMOJI_RE = re.compile(
+    "[\U0001F300-\U0001FAFF"   # Misc Symbols and Pictographs, Emoticons, Transport...
+    "\U00002600-\U000027BF"    # Misc Symbols (☀ ✅ ⚡ ✔ ⚠ ❤ etc.)
+    "\U0001F1E6-\U0001F1FF"    # Regional Indicator symbols (flags)
+    "\U00002190-\U000021FF"    # Arrows
+    "\U00002B00-\U00002BFF"    # Misc Symbols and Arrows
+    "︀-️"            # Variation Selectors 1-16 (incl. U+FE0F)
+    "‍"                   # Zero Width Joiner (ZWJ-последовательности)
+    "❤"                   # Heavy Black Heart ❤ (U+2764)
+    "]+",
+    re.UNICODE,
+)
+_NORM_MARKUP_START_RE = re.compile(r"^:(?:b|bb|i|ii|s|ss):")
+_NORM_BULLET_RE = re.compile(r"^(?:[-—–•*])\s*")
+_NORM_STEP_RE = re.compile(r"^(?:->|-->|→|=>)\s*")
+
+
+def _norm_apply_currency(line: str) -> str:
+    """Rules 3+4: валюта/процент/период платежа."""
+    # Rule 3a: пробел перед ₽ (500 000₽ → 500 000 ₽)
+    line = re.sub(r"(\d)\s*₽", r"\1 ₽", line)
+    # Rule 3b: процент прижат к числу (30 % → 30%)
+    line = re.sub(r"(\d)\s+%", r"\1%", line)
+    # Rule 4: период платежа → ₽/мес без пробелов
+    line = re.sub(r"₽\s*(?:/\s*мес(?:яц)?|в\s+месяц)\b", "₽/мес", line)
+    return line
+
+
+def _normalize_post_body_line(line: str) -> str:
+    """Per-line нормализация правилами 1-9."""
+    stripped_raw = line.strip()
+    if not stripped_raw:
+        return ""
+    # Строки, начинающиеся с markup-токена — НЕ трогаем как буллет/шаг
+    starts_with_markup = bool(_NORM_MARKUP_START_RE.match(stripped_raw))
+    # Проверяем шаг/буллет ДО снятия эмодзи: символы → и • входят в emoji-диапазоны
+    # (U+2192 Arrow, U+2022 Bullet), и их нужно распознать как маркеры раньше очистки.
+    step_m = None if starts_with_markup else _NORM_STEP_RE.match(stripped_raw)
+    bullet_m = None if starts_with_markup else _NORM_BULLET_RE.match(stripped_raw)
+    if step_m:
+        # Rules 6, 7, 8: шаг → "-> Тело"
+        body = stripped_raw[step_m.end():]
+        body = _NORM_EMOJI_RE.sub("", body).lstrip()   # Rule 1: emoji из тела
+        body = re.sub(r"[ \t]{2,}", " ", body)          # Rule 2
+        body = _norm_apply_currency(body)
+        body = body.rstrip(".,;")                        # Rule 8
+        body = (body[:1].upper() + body[1:]) if body else body  # Rule 7
+        return f"-> {body}"
+    if bullet_m:
+        # Rules 5, 7, 8: буллет → "— Тело"
+        body = stripped_raw[bullet_m.end():]
+        body = _NORM_EMOJI_RE.sub("", body).lstrip()   # Rule 1: emoji из тела
+        body = re.sub(r"[ \t]{2,}", " ", body)          # Rule 2
+        body = _norm_apply_currency(body)
+        body = body.rstrip(".,;")                        # Rule 8
+        body = (body[:1].upper() + body[1:]) if body else body  # Rule 7
+        return f"— {body}"
+    # Обычная строка / заголовок блока
+    # Rule 1: убрать эмодзи, затем ведущий пробел
+    line = _NORM_EMOJI_RE.sub("", stripped_raw).lstrip()
+    # Rule 2: схлопнуть 2+ пробелов/табов
+    line = re.sub(r"[ \t]{2,}", " ", line)
+    if not line.strip():
+        return ""
+    line = _norm_apply_currency(line.strip())
+    # Rule 9: убрать пробел перед : (кроме markup-токенов :b: :bb: :i: :ii: :s: :ss:)
+    line = re.sub(r"\s+:(?!(?:b|bb|i|ii|s|ss):)", ":", line)
+    return line
+
+
+def normalize_post_body_text(text: str) -> str:
+    """Детерминированная нормализация тела поста посева (правила 1-11).
+
+    Вызывается ПЕРВОЙ в цепочке постобработки — до обрезки по POST_BODY_MAX,
+    чтобы эмодзи и двойные пробелы не съедали лимит.
+    Только форматирование: не меняет смысл, порядок блоков и markup-токены.
+    """
+    lines = [_normalize_post_body_line(ln) for ln in str(text or "").splitlines()]
+    # Rule 10: удалить строку «Подробности по телефону» без цифр (оборванный хвост)
+    out_lines = [
+        ln for ln in lines
+        if not (
+            ln.strip().lower().startswith("подробности по телефону")
+            and not re.search(r"\d{5,}", ln)
+        )
+    ]
+    result = "\n".join(out_lines)
+    # Rule 11: 3+ переводов строки → 2, обрезать края
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip()
+
+
 def _prepare_post_body(text: str, href: str = "", brand_label: str = "") -> str:
     """Final body sanitizer before AddPostAds."""
+    text = normalize_post_body_text(text)  # нормализация ПЕРВОЙ, до обрезки
     text = _remove_post_site_mentions(text, href)
     text = _ensure_post_highlights(text, brand_label)
     text = _normalize_post_body_structure(text)
@@ -1356,6 +1651,11 @@ def run_create_set_post(
     if not body_text:
         body_text = "Узнайте актуальные предложения и запишитесь на тест-драйв."
     body_text = _prepare_post_body(body_text, post_href, brand_label)
+    # Детерминированный блок марочных оферов: заменяет LLM-сгенерированный список
+    # (гасит дубль на стороне сборки — промпт не трогаем).
+    _brand_block = _build_brand_offer_block(login, post_href, brand_label, ct)
+    if _brand_block:
+        body_text = _replace_post_model_list(body_text, _brand_block)
     body_text = _append_post_phone_line(body_text, post_href)
     title_text = title_text[:POST_TITLE_MAX]
     body_text = _trim_post_body_preserve_phone(body_text, POST_BODY_MAX)
