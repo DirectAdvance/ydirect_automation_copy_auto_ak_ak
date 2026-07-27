@@ -5,6 +5,276 @@
 
 > Архив сессий старше 3 дней — **STATE_ARCHIVE.md** (ротация 2026-07-19 (2): перенесены сессии 07-16 и старше). Правило ротации — см. CLAUDE.md.
 
+## Сессия 2026-07-28 — БОЕВОЙ прогон 7 аккаунтов — 4 из 7 сделаны, 3 отбиты content-gap
+
+**Условия Семёна:** удалять только DRAFT (живые не трогать), tp1/tp2/tp4/tp5/tp7, флаг `n`=true,
+`single_feed=true`, counter+goal обязательны. `porg-l7d5424w` (tenet-126.site) ИСКЛЮЧЁН — не тронут
+ни на чтение, ни на запись (в скриптах его нет).
+
+**Сделано:** живых кампаний не было ни на одном из 7 (LIVE=0) → удалено **374 черновика**
+(25/56/117/30/117/29), errors=[] везде; на `porg-azsw6eyh` 1 чужая DRAFT «Системная кампания eLama»
+(id 710883134) корректно пропущена `skipped_foreign`. Планы 405 позиций, `pay='cpa'`=0 во всех 7.
+Создано **128 кампаний**: xjxpfxby `2d71d6163b80` 24/24, rgwzgo57 `b56bd4abfb1b` 52/52,
+azsw6eyh `9b0f7dbe70d5` 24/26 + добор `8856c3571239` 2/2 = 26, 4ealp4ry `034d7e0fe042` 26/26.
+ver_errors=0 у всех (кроме 2 RESULT_FAILED на azsw6eyh, закрыты добором). Все РК — DRAFT.
+
+**БЛОКЕР (открыт):** 3 аккаунта отбиты HTTP **409** `content-gap preflight` ДО создания —
+`porg-nqavjicg`/`porg-dmwfp3dk` (terehov/«С пробегом», нет keywords для tp2/ct0283, tp4/ct0283) и
+`porg-uy3huxcn` (salamahin/Мультибренд, ct0885+ct0051). Проверено фактом `kontent_pack.read_keywords`:
+positive=0 у всех 6 пар, у остальных 50/204 ключи есть → точечный дефицит контента, не код.
+Нужен top-up keyword pack ИЛИ исключение ct из структуры. Потеряно 277 позиций из 405.
+Запись `CREATE_SET_KEYWORD_PACK_GAP_409` в ERRORS_JOURNAL.
+
+**Важная находка:** in-job `WRONG_AUTOTARGET` (12 на xjxpfxby, 6 на rgwzgo57) — ЛОЖНЫЙ сигнал:
+после отложенной авто-добивки живой перезамер `GridReadClient.campaign_content_counts` дал
+`wrong_autotarget_groups=0` на всех 4 аккаунтах; у rgwzgo57 репейр «исполнено 0» — снялось само
+(лаг реплики Grid). Мерить автотаргет надо ПОСЛЕ delayed repair, не по джобе.
+
+**Осталось:** 3 заблокированных аккаунта; 1 `NO_KEYWORDS_LIVE` на azsw6eyh («РСЯ - Комби - Общие - КС»,
+5 групп без ключей — ровно как у парной кампании основного прогона, структурный гэп, не регресс).
+Отчёт: `.claude/sdd/run-prod-7accounts.md`.
+
+## Сессия 2026-07-27 — ПОЛНЫЙ контрольный прогон `3f56db987ab9` (porg-pl6iavd5) — ЗАВЕРШЁН
+
+**Сделано:** полный набор без урезания, plan_len=26 (tp1=14, tp2=2, tp4=2, tp5=6, tp7=2),
+`n:true`, `single_feed=true`, `DIRECT_TOKEN_THREADS=1`. Wall **1939 с** (база `69a140093e78` = 2677 с,
+−27.6 %), `status=error`, created=25, failed=1, done=26. Все 24 v5-кампании `OFF/DRAFT`.
+
+**Подтверждено фактом:** **ROOT_HREF 18 → 0** из 1325 объявлений (короткий прогон: 6 → 0);
+`BRANDLESS_/auto` 47/1325 = 3.5 % против 14/207 = 6.8 % — доля упала, опасение ревью про
+переезд дефекта в `/auto` НЕ подтвердилось (tp2/tp4 дают по 1 `/auto` = UAZ; 28 = Dongfeng 404→parent;
+16 = 2 кампании «Общие») · **автотаргет 0 дефектных групп из 1325, 0 из 24 кампаний** (база 600/1325,
+14/24) · **build == live по всем 24 кампаниям** (группы и ключи, 78 тыс. ключей) · tp7 Haval
+заблокирован `CONTENT_GAP_IMAGES_LOW` 4<5 без цикла (`recreate_delete_campaigns=0`) ·
+`has_issues` пишется при `status=error` (dc564106 подтверждён: lv_errors=0, ver_errors=1) ·
+`live_verification` status=pass, issues=0 · `v501:sitelinks.add` **774/444 с → 6/4.6 с** ·
+0 реавторизаций куки, 0 ошибок 152.
+
+**Осталось/не проверено:** пункт «tp7 фильтр каталога (EQUALS+values)» — **н/д вторую сессию
+подряд**: единственная созданная tp7 = ct0000, у которой `_tp7_listing_plus_filter` по коду
+возвращает `[]` (`create_set_feeds.py:1706`), а брендовая ct0111 снова заблокирована по картинкам →
+нужен 5-й PNG в `Manual/ct0111/` · гейт «ключи(AddKeywords …): 0 из N создано» не воспроизведён
+(отказов ключей не было) · 22 warn `ITEM_CONTENT_*_MISSING_LOCAL` — шум preflight (контент
+генерится per-item), live их не подтверждает. Отчёт: `.claude/sdd/run-full-3f56db987ab9.md`.
+
+## Сессия 2026-07-28 — контрольный прогон `96f76846fc68` (porg-pl6iavd5) — 2 из 3 ожиданий закрыты
+
+**Сделано:** очистка кабинета прошлого прогона (`create_set_cancel 3f56db987ab9` + `delete_drafts`
+→ 25 удалено, кабинет 0/0, джоб 0), затем полный набор 26 позиций (scherbakova/Мультибренд,
+`n=true`, `single_feed=true`, counter 110881350 / goal 586850590). Wall **2535 с**, `status=done`,
+**created=26 / failed=0** (база `3f56db987ab9`: error, 25/1). ver_errors=0 (22 warn), lv_errors=0 (1 warn).
+
+**Подтверждено фактом:** (2) **Haval tp7 создан** — id `713096179`, images=4, единственный дефект
+`UAC_IMAGES_POOL_SHORT` уровня **warn**, `CONTENT_GAP_IMAGES_LOW` нет, `recreate_delete_campaigns=0`,
+0 строк recreate в journal → правка `d5ae4952` работает. (3) **автотаргет 0 дефектных из 1325 групп /
+0 из 24 кампаний** (`/tmp/det.py`) — регресса нет.
+
+**НЕ закрыто:** (1) href — `ROOT_HREF 0` ✅, но `BRANDLESS_/auto` = **47**, а не ожидавшиеся ~14.
+47 воспроизвелось байт-в-байт с базой (16 «Общие» не-марочные темы + 28 Dongfeng 404→`_parent_path`
++ 3 UAZ). База «14» была из КОРОТКОГО прогона (207 объявлений), с полным набором (1325) несопоставима.
+Запись в ERRORS_JOURNAL переведена в ⚠️ ЧАСТИЧНО. Отчёт: `.claude/sdd/run-precheck-96f76846fc68.md`.
+
+## Сессия 2026-07-27 — Autorules Home: K50-style Оптимизатор — ЗАДЕПЛОЕНО, ВЕРИФИЦИРОВАНО
+
+**Сделано:** на `/direct/autorules/home` добавлена Home-only вкладка «Оптимизатор» по модели K50:
+шаблоны → событие → правила с приоритетами → задержка данных → preview/report. Шаблоны:
+мониторинг расхода без заявок, снижение ставок при высоком CPA, каскад ключ→группа→кампания,
+управление автостратегией через CPA/недельный бюджет, площадки РСЯ, автотаргетинг, слабые креативы,
+мониторинг текстов/ссылок/посадочных.
+
+**Backend:** добавлен `autorules/k50_optimizer.py`; в `direct_autorules` добавлены таблицы
+`optimizer_events`, `optimizer_event_rules`, `optimizer_event_runs`. API:
+`GET /direct/api/ar/home/optimizer/templates`, `GET/POST /direct/api/ar/home/optimizer/events`,
+`PUT/DELETE /direct/api/ar/home/optimizer/events/<id>`,
+`POST /direct/api/ar/home/optimizer/events/<id>/preview`,
+`POST /direct/api/ar/home/optimizer/preview`. Preview читает Victory
+`public.yandex_direct_manager_reports` (`Clicks`, `Impressions`, `CampaignName`, `total_cost`,
+`all_forms`) и не пишет в Директ.
+
+**Ограничения:** авто-применение намеренно выключено; keyword/ad/placement-level правила сохраняются
+как K50-шаблоны, но в preview помечаются как требующие отдельного Reports API датасета, пока подключён
+только account/campaign агрегат из Victory.
+
+**Проверено:** local+LXC `py_compile` для `routes_autorules.py`, `autorules/repository.py`,
+`autorules/k50_optimizer.py`, `autorules_main.py`; `git diff --check`; `direct-autorules.service`
+active. LXC test-client: Home HTML содержит `panel-optimizer`/`optLoadTemplates`; templates=8;
+template preview `monitoring_waste` для `sdvor-deltaplan` → `ok=True`; временное событие создалось,
+preview прошло, затем событие удалено; unknown Home login → 404. Headless Chrome по render HTML:
+`panelOptimizer=true`, `activePanelDisplay=block`, `PAGE_MODE='home'`; file:// fetch errors ожидаемы
+из-за локального открытия без сервера, JS-синтаксических падений нет. Доп. guard: Work
+`/direct/autorules?tab=optimizer` уходит на Overview, Home `/direct/autorules/home?tab=optimizer`
+остаётся на Optimizer.
+
+## Сессия 2026-07-27 — Autorules Home, куки и доступы Стройдвора — ЗАДЕПЛОЕНО, ВЕРИФИЦИРОВАНО
+
+**Сделано:** `Work` и `Home` разведены как разные сервисные режимы: Work остаётся на
+`/direct/autorules`, Home открыт на `/direct/autorules/home`. На Home-вкладке «Обзор» убраны
+work-only поля выбора аккаунта/куки агентства/директолога/города/салона/целей; выбор аккаунта сделан
+строгим dropdown с чекбоксами внутри и поддержкой выбора одного или двух аккаунтов Стройдвора:
+`sdvor-deltaplan`, `sdvor-direct-Deltaplan`.
+
+**Доступы Home:** добавлена таблица `direct_autorules.home_accounts` и API
+`GET/POST /direct/api/ar/home-accounts` для сохранения дополнительных Home-логинов, по умолчанию
+`agency_login='skuderko1'`. Добавлен блок статуса доступов через
+`GET /direct/api/ar/access-status`: токен проверяется live-запросом v4 balance для выбранного логина,
+кука проверяется от имени `skuderko1`.
+
+**Куки:** на Home добавлено поле ввода и сохранения куки в формате `# skuderko1 / name=value; ...`.
+`POST /direct/api/ar/cookies` парсит логин, атомарно обновляет `.secret/cookies.json`, выставляет
+`0600`, сбрасывает локальный cookie-cache процесса и не возвращает содержимое куки в ответе.
+
+**Фикс правил:** сохранение автоправил больше не затирает режим правила `dryrun/manual/auto` режимом
+страницы. Фронт отправляет режим страницы отдельным полем `account_mode`, а `form.mode` остаётся
+режимом правила.
+
+**Проверено:** local+LXC `py_compile` для `routes_autorules.py`, `autorules/repository.py`,
+`autorules_main.py`; `git diff --check`; `direct-autorules.service` активен. Test-client на LXC:
+Home HTML содержит `home-account-dropdown`, поле `ar-cookie-input` и `account_mode:_AR_MODE`;
+`/direct/api/ar/home-accounts` возвращает два аккаунта Стройдвора; Overview корректно работает для
+одного и двух выбранных логинов; access-status показывает `token_ok=True` для обоих аккаунтов.
+Cookie-save smoke выполнялся с временным `codex_tmp_cookie`, затем файл восстановлен: временного ключа
+нет, `skuderko1` остался. Верификатор Pauli после исправления `account_mode` дал PASS.
+
+**Текущее ограничение:** для обоих Home-аккаунтов токены активны, но `cookie_ok=False`, пока через UI
+не сохранена свежая рабочая кука `skuderko1`. Финальная визуальная проверка Home-dropdown в публичном
+Chrome упёрлась во внешний `ERR_CONNECTION_CLOSED`/SSL на `seoadvanced.ru`; nginx, Flask и роуты
+проверены изнутри LXC через test-client и loopback.
+
+## Сессия 2026-07-27 — короткий контрольный прогон `fbb63cc8f962` (porg-pl6iavd5) — ЗАВЕРШЁН, автотаргет починен
+
+**Сделано:** прогон по 1 позиции на tp (урезание через `selected_pos`, plan 26→9: tp1=4, tp2=1, tp4=1,
+tp5=2, tp7=1), `DIRECT_TOKEN_THREADS=1`. Wall 461 с, created=9/9, failed=0, errors_log=0.
+Плюс мини-прогон `ab2b967df2f7` с `single_feed=false` под проверку группы «все фиды».
+
+**Подтверждено фактом:** автотаргет vs кодер — **0 дефектных групп из 216, 0 кампаний из 8**
+(было 600/1325 и 14/24) — и по v5-детектору, и по Grid `relevanceMatch.isActive` · tp1-ключи через
+Grid: build==live (33/4363, 33/0, 33/4363, 8/150) · tp5 узкий автотаргет `isActive=True` +
+`EXACT_V2_MARK` + `WITHOUT_BRAND` на 28/28 групп, включая плановый aoff · 9 групп «Товарная галерея ·
+<фид>» с relevanceMatch = флагу кампании · `v501:sitelinks.add` 2 вызова (было ~154 на tp1) ·
+0 реавторизаций куки, 0 error-строк в journal.
+
+**Осталось/не проверено:** гейт «ключи(AddKeywords …): 0 из N создано» не воспроизведён (отказов
+ключей не было) · ветка `has_issues` на `status='error'` (dc564106) не проверена — джоба завершилась
+`done` · дефект `AD_HREF_ROOT_INSTEAD_OF_MODEL` жив: lv_errors=2 (tp2 3 объявления, tp4 3 объявления) ·
+`_tp1_all_feeds` требует `single_feed=false` (`create_set_tp1.py:92`) — при `single_feed=true` группы
+«все фиды» не создаются by design. Отчёт: `.claude/sdd/run-short-fbb63cc8f962.md`.
+
+## Сессия 2026-07-27 — контрольный прогон `69a140093e78` (porg-pl6iavd5) — ЗАВЕРШЁН, 2 ожидания провалены
+
+**Сделано:** чистый live-прогон на пустом кабинете после рестарта 18:08 (`DIRECT_TOKEN_THREADS=1`,
+`DIRECT_PARALLEL_CHANNELS=1`). План 26 (tp1=14, tp2=2, tp4=2, tp5=6, tp7=2; `n:true` → CPA нет,
+`metrika_alert.needed=false`). Wall 2677с, БД: `status=error`, created=25, failed=1, done=26.
+
+**Подтверждено фактом:** tp2/tp4 живут (107/58/126/53 с, 0 `TypeError keep_keywords`) · 709/709 групп
+«КС + Автотаргетинг» имеют реальные ключи (78 035) · tp2/tp4 в плане · Haval tp7 заблокирован
+`CONTENT_GAP_IMAGES_LOW` (4<5) без цикла создать-удалить-пересоздать (`recreate_delete_campaigns=0`).
+
+**СЛОМАНО (провалено):** (1) **автотаргет** — Grid `relevance_match.isActive` расходится с кодером в
+**18 из 24** кампаний: все 14 tp1 (`aon`→все False, `aoff`→84/113 и 28/33 True) + 4 tp5 `aoff` (100% True).
+Фикс `TP1_AUTOTARGET_INVERSION` помечен в ERRORS_JOURNAL как ❌ не помогло; паттерн 84/29 намекает на
+частичное применение Phase 1.5 `UpdateUnifiedAdGroups`. (2) **корневые ссылки** — 18 из 1325 TEXT_AD
+ведут на `https://newautos-193.site` (tp2 3+3, tp4 8+3, tp5 1); tp1 чист (0). (3) `has_issues` не пишется
+при `failed>0` — новая запись `JOB_STATUS_ERROR_SKIPS_HAS_ISSUES`.
+
+**Не проверено:** tp7-фильтр каталога (EQUALS+values) — единственная созданная tp7 = ct0000 с
+`listings_feed_filters=null`; брендовая ct0111 не создана. Отчёт: `.claude/sdd/run-clean-69a140093e78.md`.
+
+## Сессия 2026-07-27 — Саламахин: шаблонные названия tp2/tp4 — ЗАВЕРШЕНО
+
+**Сделано:** по всему `salamahin.json` проверены все типы сайта и tp. Технические названия кампаний
+`КС CPA`/`КС CPC` найдены только в `Мультибренд/tp2` и `Мультибренд/tp4`; 432 ссылки приведены к
+шаблонному виду `КС`, `Общее - КС CPA` → `Общая - КС`. После нормализации удалены 10 повторов
+внутри массивов `camp_names`; рабочих групп не удалялось, потому точных дублей items не было.
+
+**Проверено:** `tp2` схлопнулся 24→20 уникальных campaign names, `tp4` 25→20; `rg` по
+`КС CPA|КС CPC|KC CPA|KC CPC|CPA - Автотаргетинг|CPC - Автотаргетинг` = 0; JSON валиден; Mac↔LXC101
+sha256 `salamahin.json` совпал; на LXC101 `dirty_terms=0`, `dup_arrays=0`,
+`exact_duplicate_items_extra=0`. `scripts/slepki_preflight.py` всё ещё падает только на старые
+CROSS-SLEPOK коллизии; пустых tp/групп и невалидных gc нет.
+
+## Сессия 2026-07-27 — Саламахин: `Марка/Мультибренд` и видимые дубли tp1 — ЗАВЕРШЕНО
+
+**Сделано:** в `salamahin.json` по всем типам сайта и tp добит второй слой шаблонного нейминга:
+`Марка`→`Марки`, `Модель`→`Модели`, `Общее`→`Общая`, лишнее `Мультибренд - Марки/Модели/КС`
+убрано из названий кампаний. В `Мультибренд/tp1` схлопнуты 12 видимых бренд-дублей
+`* Obshaya` + обычная бренд-группа (`Lada`, `Chery`, `Moskvich`, `Exeed`, `Omoda`, `Hyundai`,
+`Changan`, `Haval`, `Skoda`, `Geely`, `Renault`) с переносом всех `camp_names` в оставшуюся группу;
+также схлопнут `Renaultobshaya` в `tp3`.
+
+**Проверено:** `Мультибренд/tp1` стало 303→291 групп и 24→16 уникальных campaign names; повторов
+по UI-display+`c/gc` 0, дублей внутри `camp_names` 0. `rg` по старым шаблонам
+`Марка/Модель/Общее/Мультибренд/КС CPA/CPC` = 0; JSON валиден; Mac↔LXC101 sha256 совпал.
+
+## Сессия 2026-07-27 — удаление мусорных групп Lal/Ret и КС+Аудитории — ЗАВЕРШЕНО
+
+**Сделано:** из 10 per-slepok файлов удалены 36 найденных групп с непонятным таргетингом:
+`Lal/Ret`, `КС+Аудитории`, двойной хвост `Аудитории + Автотаргетинг - Автотаргетинг`.
+После удаления пустыми стали 4 `tp6`-ветки (`chepelev/Мультибренд`, `karavaev/С пробегом`,
+`pavlov/С пробегом`, `tumashenko/Мультибренд`) — пустые `tp`-блоки тоже удалены.
+
+**Проверено:** before/after от бэкапа `/tmp/slepki_delete_bad_groups_20260727_175033`: 11937→11901
+групп, bad 36→0, пустых `tp` 0. JSON валиден для 10 файлов; Mac↔LXC101 sha256 совпал; на LXC101
+`slepki_store.assemble()` вернул 19 слепков и 0 вхождений удалённых признаков. `scripts/slepki_preflight.py`
+всё ещё падает только на 3 старые CROSS-SLEPOK коллизии, пустых tp/групп и невалидных gc нет.
+
+## Сессия 2026-07-27 — полный `c`-кодер tp6/tp7 в auto-слепках — ЗАВЕРШЕНО
+
+**Сделано:** в 15 auto-файлах `direct/slepki/*.json` неполные `tp6/tp7` значения поля `c`
+(`tp7_cpc_site`, `tp6_cpc_site`, голые `ct...`) приведены к полному виду `tp*_cpc_*_ct...`.
+Изменены только 182 scalar-значения поля `c`; `gc`, `camp_names`, `tp1-tp5`, `dmp`, `posevy` не менялись.
+
+**Проверено:** локально и на LXC101 все 221 auto-позиции `tp6/tp7` имеют полный `c`; md5 Mac==LXC101
+для 15 файлов; Flask `test_client` `/direct/api/slepki/ui_structure?selected=scherbakova&full=1`
+локально вернул `tp7_cpc_site_ct0026_aon_n000_r0000_ct010_ag001_g00`; `direct-slepki.service` и
+`direct-slepki-worker.service` active. `scripts/slepki_preflight.py` всё ещё падает на 3 старые
+CROSS-SLEPOK коллизии, но сравнение с backup показало тот же набор коллизий до правки.
+
+## Сессия 2026-07-27 — видео by_code для слепка Павлова — ЗАВЕРШЕНО
+
+**Сделано:** из `/Users/semen/Downloads/Telegram Desktop/by_code` добавлены 96 реальных mp4 по 26 ct
+в общий video-пул: full-оригиналы на M3 `/Users/Shared/agency/Video/<ct>/`, оригиналы в RAW
+`/opt/neuro_content_raw/_video_pool/<ct>/`, сжатые 80%-версии на LXC101
+`/opt/neuro_content_local/_video_pool/<ct>/`. Служебные macOS `._*.mp4` отфильтрованы.
+
+**Проверено:** `kontent_pack.refresh_index()` обновил `/opt/neuro_kontent_index/manifest.json`;
+LXC101: 96/96 mp4, `._`=0, все ≤9.9MB, min duration 5.042s, суммарно 129684724 bytes; M3: 96/96
+full-файлов, размеры совпадают с исходниками, `._`=0; runtime
+`NEURO_PACK_MOUNT=/opt/neuro_content_local` возвращает по 2 ролика для тестовых ct Павлова
+`ct0098`, `ct0118`, `ct0189`, `ct0234`, `ct0299`. `direct-slepki.service` и
+`direct-slepki-worker.service` перезапущены и active. `direct_verifier` Galileo: ✅ принято.
+
+## Сессия 2026-07-27 — второй токен-поток + атомарный 152-флип — ЗАДЕПЛОЕНО
+
+**Задача:** ускорить типовой набор 40 мин → 22-23 мин вторым потоком внутри канала A (токен/v501).
+
+**Сделано:** `create_set_orchestrator.py` + `create_set_response.py`, коммит `a9675276`.
+- Новый `_ASharedCookieState` (Lock + sync_to/flip_from): атомарный 152-флип между A суб-потоками.
+- Новый `_partition_a_indices`: interleaved split, оба суб-потока получают смесь тяжёлых tp1 и лёгких tp5.
+- Фича-флаг `DIRECT_TOKEN_THREADS` (дефолт 2, cap 2, откат до 1 без деплоя).
+- `chan_A_wall_sec` / `chan_B_wall_sec` в ответе джобы — замер после первого боевого прогона.
+- 28 тестов: дизъюнктность, полнота, атомарность, race-safety, timing fields, env-capping.
+
+**Проверено:** `py_compile` Mac+LXC101 OK; md5 Mac==LXC101 для 3 файлов; 28/28 тестов passed локально.
+Сервисы `direct-create.service`/`direct-create-worker.service` НЕ рестартовались (требование задачи).
+
+**Осталось:** рестарт `direct-create.service direct-create-worker.service` + первый боевой прогон
+для проверки chan_A_wall_sec ≈ 1200s (ожидаемый выигрыш ×1.77 от базовых 2397s).
+
+## Сессия 2026-07-27 — пакет Auto: точечное схлопывание дублей tp2-tp5 — ЗАВЕРШЕНО
+
+**Сделано:** после ревизии дублей в структуре слепков пакета `auto` схлопнуты только согласованные
+точные пары `camp_names` в `tp2-tp5`: `tumashenko / Мульти + БУ / tp3` (`GAC` -> `Китайцы`,
+`Lada+Иномарки` -> `KIA`), `zubakin / Монобренд / tp2` (`Автору/Авито/Дром` -> `Chery`),
+`kryuchkova / Монобренд / tp2` (`Haval` -> `Марки`), `pavlov / Монобренд / tp2`
+(`Марка` -> `Модели и марки`), `terehov / Монобренд / tp5` (`Марки - Lada` -> `Lada - Марки`).
+Не трогались штатные массовые пересечения бренд/модель/общая и `tp1 Комби` vs `Комби+Фид`.
+
+**Проверено:** JSON валидный локально и на LXC101; md5 Mac==LXC101 для `kryuchkova.json`,
+`pavlov.json`, `terehov.json`, `tumashenko.json`, `zubakin.json`; `direct-slepki.service`,
+`direct-slepki-worker.service`, `digest.service` active. Live API
+`/direct/api/slepki/ui_structure?light=0` показал по всем 6 инвариантам: old-название `0`,
+new-название `1`, пересечения `both=0`. `direct_verifier` Mendel: ✅ принято.
+
 ## Сессия 2026-07-22 — удаление Hermes с seoadvanced и Proxmox — ЗАВЕРШЕНО
 
 **Цель:** убрать пункт `Hermes AI` из верхней навигации сайта и удалить Hermes с Proxmox.
