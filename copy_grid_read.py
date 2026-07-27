@@ -5,6 +5,7 @@ DI инъектится copy_engine.configure() фан-аутом; sibling-мо�
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 import re
 import time
 
@@ -12,6 +13,7 @@ from . import grid_finalize as gf
 
 # ── DI (инъектится copy_engine.configure фан-аутом; None до инъекции) ──
 _grid_list_campaigns = None
+_COPY_SELECTED_GRID_LIST_TIMEOUT_SEC = 25
 
 
 def configure(deps: dict) -> None:
@@ -23,7 +25,15 @@ def _copy_selected_grid_campaigns(login: str, selected_ids: set[int]) -> list[di
     if not selected_ids:
         return []
     try:
-        rows = _grid_list_campaigns(login)
+        executor = ThreadPoolExecutor(max_workers=1)
+        try:
+            rows = executor.submit(_grid_list_campaigns, login).result(
+                timeout=_COPY_SELECTED_GRID_LIST_TIMEOUT_SEC
+            )
+        except FuturesTimeout:
+            return []
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
     except Exception:
         return []
     out = []

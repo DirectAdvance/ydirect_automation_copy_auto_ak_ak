@@ -5,7 +5,9 @@ DI инъектится copy_engine.configure() фан-аутом; sibling-мо�
 """
 from __future__ import annotations
 
+import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 from . import campaign as cmc
 
@@ -112,10 +114,83 @@ def _copy_uac_media_urls(row: dict, *, want: str) -> list[str]:
     return urls[:5 if want == "image" else 2]
 
 
-def _copy_uac_filter_list(value) -> list[dict]:
+def _copy_uac_filter_list(value, *, target_login: str = "", target_feed_id: int | None = None,
+                          listing: bool = False) -> list[dict]:
     if isinstance(value, list):
-        return value
-    return []
+        rows = value
+    else:
+        return []
+    if not target_login or not target_feed_id:
+        return rows
+
+    try:
+        from . import create_set_feeds as _feeds
+        fields = set(_feeds._feed_filter_fields(target_login, int(target_feed_id)) or [])
+        brand_field = _feeds._resolve_feed_field(target_login, int(target_feed_id), "brand") or "vendor"
+        model_field = _feeds._resolve_feed_field(target_login, int(target_feed_id), "model") or "model"
+        name_field = _feeds._resolve_feed_field(target_login, int(target_feed_id), "name") or "name"
+    except Exception:  # noqa: BLE001 - best-effort normalization
+        fields = set()
+        brand_field, model_field, name_field = "vendor", "model", "name"
+
+    def _values(cond: dict):
+        vals = cond.get("values")
+        if vals is None:
+            vals = cond.get("value")
+        if vals is None:
+            vals = cond.get("stringValue")
+        if vals is None:
+            vals = cond.get("Arguments")
+        if isinstance(vals, str):
+            try:
+                parsed = json.loads(vals)
+                vals = parsed
+            except Exception:  # noqa: BLE001
+                pass
+        if isinstance(vals, (list, tuple, set)):
+            return [v for v in vals if str(v).strip()]
+        return [vals] if vals not in (None, "") else []
+
+    def _target_field(raw: str) -> str:
+        field = str(raw or "").strip()
+        low = field.lower()
+        if listing:
+            return "collectionId" if low in ("collectionid", "collection_id") else field
+        if low in ("mark_id", "vendor", "vendorname", "manufacturer", "brand", "make"):
+            return brand_field
+        if low in ("folder_id", "model", "modelname", "model_name", "modification"):
+            return model_field
+        if low == "name":
+            return name_field
+        return field
+
+    out: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        conditions: list[dict] = []
+        for cond in row.get("conditions") or []:
+            if not isinstance(cond, dict):
+                continue
+            src_field = cond.get("field") or cond.get("fieldName") or cond.get("operand") or cond.get("name")
+            field = _target_field(str(src_field or ""))
+            if not field:
+                continue
+            # Если Grid отдал fieldsForUseAs target-фида, не тащим заведомо несовместимое поле
+            # в UAC create: иначе получаем HTTP 400 UNKNOWN_FIELD и теряем всю tp7-кампанию.
+            if fields and field not in fields and field != "collectionId":
+                continue
+            values = _values(cond)
+            if not values:
+                continue
+            operator = str(cond.get("operator") or cond.get("Operator") or "").strip() or "CONTAINS"
+            norm = {"field": field, "operator": operator}
+            norm["values"] = values
+            norm["value"] = json.dumps(values, ensure_ascii=False)
+            conditions.append(norm)
+        if conditions:
+            out.append({"conditions": conditions})
+    return out
 
 
 def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str,
@@ -130,8 +205,6 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
         return rep
     try:
         from .uac_read import UacReadClient
-        source_reader = UacReadClient(source_login)
-        target_client = cmc.build_client(target_login, account=(target_agency or None))
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"uac init: {str(e)[:220]}")
         return rep
@@ -162,6 +235,31 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
                     if u and u not in tgt_img_urls:
                         tgt_img_urls.append(u)
 
+    def _read_detail(row: dict) -> tuple[int, dict | None, str]:
+        try:
+            src_id = int(row.get("id") or 0)
+        except (TypeError, ValueError):
+            src_id = 0
+        if src_id <= 0:
+            return src_id, None, "source_id пуст"
+        try:
+            # Отдельный reader на worker: не шарим cookie/session между потоками.
+            return src_id, UacReadClient(source_login).campaign_detail(src_id), ""
+        except Exception as e:  # noqa: BLE001
+            return src_id, None, str(e)[:220]
+
+    details_by_src: dict[int, dict] = {}
+    detail_errors: dict[int, str] = {}
+    with ThreadPoolExecutor(max_workers=min(2, len(rows))) as pool:
+        for src_id, detail, err in pool.map(_read_detail, rows):
+            if detail is not None:
+                details_by_src[src_id] = detail
+            elif src_id > 0:
+                detail_errors[src_id] = err or "detail пуст"
+
+    pending_creates: list[tuple[int, int, str, object]] = []
+    early_results: dict[int, dict] = {}
+
     for cidx, row in enumerate(rows):
         try:
             src_id = int(row.get("id") or 0)
@@ -171,7 +269,11 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
         if src_id <= 0:
             continue
         try:
-            d = source_reader.campaign_detail(src_id)
+            if src_id in detail_errors:
+                raise RuntimeError(f"uac detail: {detail_errors[src_id]}")
+            d = details_by_src.get(src_id)
+            if not d:
+                raise RuntimeError("uac detail пуст")
             source_domain = str(body.get("_copy_source_domain") or "").strip()
             target_domain = str(body.get("target_domain") or "").strip()
             titles = _copy_uac_strings(d, "titles", "title_items", limit=5)
@@ -246,8 +348,10 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
                 campaign_type=("product" if is_product else "master"),
                 feed_id=feed_id,
                 listings_feed_id=feed_id,
-                feed_filters=_copy_uac_filter_list(d.get("feed_filters")),
-                listings_feed_filters=_copy_uac_filter_list(d.get("listings_feed_filters")),
+                feed_filters=_copy_uac_filter_list(
+                    d.get("feed_filters"), target_login=target_login, target_feed_id=feed_id, listing=False),
+                listings_feed_filters=_copy_uac_filter_list(
+                    d.get("listings_feed_filters"), target_login=target_login, target_feed_id=feed_id, listing=True),
                 display_name=name,
                 pricing=pricing,
                 keywords=keywords,
@@ -271,12 +375,37 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
                 utm_template=cmc.UTM_TEMPLATE,
                 **_extra,
             )
-            cid = target_client.create_master_campaign(spec, launch=False)
-            res = {"ok": True, "id": int(cid), "campaign_id": int(cid), "name": name, "kind": "uac", "source_id": src_id}
-            rep["results"].append(res)
-            rep["created"] += 1
+            pending_creates.append((cidx, src_id, name, spec))
         except Exception as e:  # noqa: BLE001
             msg = str(e)[:260]
             rep["errors"].append(f"{name}: {msg}")
-            rep["results"].append({"ok": False, "name": name, "source_id": src_id, "error": msg})
+            early_results[cidx] = {"ok": False, "name": name, "source_id": src_id, "error": msg}
+
+    def _create_one(item: tuple[int, int, str, object]) -> tuple[int, dict, str]:
+        cidx, src_id, name, spec = item
+        try:
+            # Отдельный UAC client на worker: не шарим session/csrf между потоками.
+            client = cmc.build_client(target_login, account=(target_agency or None))
+            cid = client.create_master_campaign(spec, launch=False)
+            return cidx, {
+                "ok": True,
+                "id": int(cid),
+                "campaign_id": int(cid),
+                "name": name,
+                "kind": "uac",
+                "source_id": src_id,
+            }, ""
+        except Exception as e:  # noqa: BLE001
+            msg = str(e)[:260]
+            return cidx, {"ok": False, "name": name, "source_id": src_id, "error": msg}, f"{name}: {msg}"
+
+    if pending_creates:
+        with ThreadPoolExecutor(max_workers=min(2, len(pending_creates))) as pool:
+            for cidx, result, err in pool.map(_create_one, pending_creates):
+                early_results[cidx] = result
+                if result.get("ok"):
+                    rep["created"] += 1
+                if err:
+                    rep["errors"].append(err)
+    rep["results"] = [early_results[i] for i in sorted(early_results)]
     return rep

@@ -77,7 +77,7 @@ def _copy_grid_unified_steps(job_id: str, body: dict, target_login: str, target_
     Применяет к комбинированным кампаниям, созданным create_full, те же под-сервисы, что и
     v5-snapshot путь (_copy_cookie_postprocess):
       • step_age_bidmods    (п.14) — возраст −100% (<18/18–24) через Grid set_campaign_age_bidmods;
-      • step_disabled_places(п.13) — наш минус-список площадок на РСЯ (network из синт. campaigns.json);
+      • step_disabled_places(п.13) — копирование disabledPlaces источника 1в1;
       • step_attach_callouts(п.11) — уточнения по исходной связи (text-bridge источник→target);
       • step_attach_promos  (п.10) — формально (нет source-promo-def reader → безопасный no-op);
       • step_prices         (п.8)  — новые цены из ФИДА target-аккаунта на комбинаторные объявления;
@@ -141,7 +141,7 @@ def _copy_grid_unified_steps(job_id: str, body: dict, target_login: str, target_
         src_dir=src_dir, workdir=workdir, body=body, maps=maps,
         grid=grid, target_token=_tgt_token or "",
         log=(lambda m: _copy_job_log(job_id, m)),
-        v5_call=_v5_call, enabled_minus_places=_enabled_baseline_minus_places,
+        v5_call=_v5_call,
         feed_offer_prices=_grid_feed_offer_prices, account_offer_prices=_account_offer_prices,
         group_ad_price=_group_ad_price, set_ad_prices=_grid_set_ad_prices,
     )

@@ -5,6 +5,8 @@ DI инъектится copy_engine.configure() фан-аутом; sibling-мо�
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
 from . import grid_create as gc
 
 from .copy_jobs import _copy_job_log
@@ -12,11 +14,26 @@ from .copy_uac import _copy_is_uac_grid_row
 
 # ── DI (инъектится copy_engine.configure фан-аутом; None до инъекции) ──
 _direct_tokens = _grid_list_campaigns = _resolve_agency_hint = _token_for_login = _v5_call = _v5_err = None
+_COPY_UAC_CLEANUP_GRID_TIMEOUT_SEC = 25
 
 
 def configure(deps: dict) -> None:
     """Инъекция DI из blueprint (фан-аут из copy_engine.configure)."""
     globals().update(deps)
+
+
+def _grid_list_campaigns_bounded(login: str) -> list[dict]:
+    """Read Grid campaigns with a hard wall-clock cap for optional UAC cleanup/info."""
+    if not callable(_grid_list_campaigns):
+        return []
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        fut = executor.submit(_grid_list_campaigns, login)
+        return fut.result(timeout=_COPY_UAC_CLEANUP_GRID_TIMEOUT_SEC) or []
+    except FuturesTimeout as exc:
+        raise TimeoutError(f"grid_list_campaigns timeout>{_COPY_UAC_CLEANUP_GRID_TIMEOUT_SEC}s") from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _copy_target_campaigns_info(login: str) -> dict:
@@ -40,20 +57,46 @@ def _copy_target_campaigns_info(login: str) -> dict:
             err_text = (_v5_err(j) if callable(_v5_err) else str(j.get("error")))
             return {"error": (err_text or "API error")[:200]}
         campaigns = (j.get("result") or {}).get("Campaigns", [])
-        draft_count = sum(1 for c in campaigns if c.get("Status") == "DRAFT")
-        non_draft_count = len(campaigns) - draft_count
+        v5_seen = {str(c.get("Id")) for c in campaigns if c.get("Id")}
+        grid_extra: list[dict] = []
+        grid_error = ""
+        try:
+            # v5 не видит МК/tp6/tp7, а cleanup delete_drafts удаляет их по куке ниже.
+            # UI-подтверждение должно показывать тот же объём удаления, а не только v5-слой.
+            for row in _grid_list_campaigns_bounded(login):
+                rid = str(row.get("id") or "")
+                if not rid or rid in v5_seen:
+                    continue
+                if row.get("archived"):
+                    continue
+                if _copy_is_uac_grid_row(row):
+                    grid_extra.append(row)
+        except Exception as e:  # noqa: BLE001
+            grid_error = str(e)[:200]
+        v5_draft_count = sum(1 for c in campaigns if c.get("Status") == "DRAFT")
+        grid_draft_count = sum(1 for c in grid_extra if str(c.get("status") or "").upper() == "DRAFT")
+        draft_count = v5_draft_count + grid_draft_count
+        non_draft_count = (len(campaigns) - v5_draft_count)
         breakdown: dict[str, int] = {}
         for c in campaigns:
             key = f"{c.get('State') or '?'}/{c.get('Status') or '?'}"
             breakdown[key] = breakdown.get(key, 0) + 1
-        return {
-            "total": len(campaigns),
+        for c in grid_extra:
+            key = f"GRID/{c.get('status') or '?'}"
+            breakdown[key] = breakdown.get(key, 0) + 1
+        out = {
+            "total": len(campaigns) + len(grid_extra),
             "draft_count": draft_count,
             "non_draft_count": non_draft_count,
             # DRAFT нельзя архивировать (v5 8303); archivable = только не-черновики
             "archivable_count": non_draft_count,
+            "v5_draft_count": v5_draft_count,
+            "cookie_draft_count": grid_draft_count,
             "breakdown": breakdown,
         }
+        if grid_error:
+            out["warning"] = f"cookie/Grid слой не прочитан: {grid_error}"
+        return out
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)[:200]}
 
@@ -65,7 +108,10 @@ def _copy_cleanup_uac_drafts(job_id: str, login: str, errors: list[str]) -> int:
     Сбой кук — не критичен (v5-ветка уже отработала): пишем в errors, копирование не рвём.
     """
     try:
-        rows = _grid_list_campaigns(login) or []
+        rows = _grid_list_campaigns_bounded(login)
+    except TimeoutError as e:
+        _copy_job_log(job_id, f"cleanup uac list skipped: {str(e)[:120]}")
+        return 0
     except Exception as e:  # noqa: BLE001
         errors.append(f"cleanup uac list: {str(e)[:120]}")
         return 0

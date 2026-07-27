@@ -6,6 +6,8 @@ from typing import Callable
 
 from flask import current_app, jsonify, render_template, request, session
 
+from .copy_request import default_geo_mode, parse_campaign_ids, validate_other_geo
+
 
 # GeoRegionId России в справочнике GeoRegions Директа. Виджет выбора регионов
 # «Прочих сфер» показывает ТОЛЬКО Россию и её вложенность (округа → области →
@@ -48,9 +50,7 @@ def _geo_only_russia(rows: list) -> list:
 def _parse_campaign_ids(body: dict, *, as_set: bool = False):
     """Единый разбор campaign_ids из тела запроса (устраняет троекратное дублирование).
     Принимает список строк/чисел, пропускает нечисловые. as_set=True → frozenset для O(1) lookup."""
-    raw = body.get("campaign_ids") or []
-    ids = [int(x) for x in raw if str(x).isdigit()]
-    return set(ids) if as_set else ids
+    return parse_campaign_ids(body, as_set=as_set)
 
 
 def register_copy_routes(
@@ -80,7 +80,44 @@ def register_copy_routes(
     images_upload_func: Callable | None = None,
     target_campaigns_info_func: Callable | None = None,  # кол-во кампаний на цели (read-only, для UI очистки)
     repair_pending_func: Callable | None = None,  # job_id → bool: есть ли незакрытая запись в direct_delayed_repairs
+    job_db_get_func: Callable | None = None,  # fallback copy_status после рестарта direct-copy.service
+    copy_queue_func: Callable | None = None,  # список последних copy-джоб для вкладки «Очередь»
 ) -> None:
+    def _copy_ts(value):
+        if hasattr(value, "timestamp"):
+            try:
+                return value.timestamp()
+            except Exception:  # noqa: BLE001
+                return None
+        return value
+
+    def _copy_status_from_db(row: dict) -> dict:
+        body = row.get("body") if isinstance(row.get("body"), dict) else {}
+        campaign_ids = body.get("campaign_ids") or []
+        total = int(row.get("total") or len(campaign_ids) or 0)
+        done = int(row.get("done") or row.get("created") or 0)
+        status = row.get("status")
+        progress = 100 if status in ("done", "error", "cancelled", "interrupted") else (
+            min(99, round(done * 100 / total)) if total else 0
+        )
+        return {
+            "job_id": row.get("job_id"),
+            "status": status,
+            "progress": progress,
+            "total": total,
+            "done": done,
+            "created": int(row.get("created") or 0),
+            "failed": int(row.get("failed") or 0),
+            "source_login": body.get("source_login"),
+            "target_login": body.get("target_login") or row.get("login"),
+            "selected": len(campaign_ids) or total,
+            "created_at": _copy_ts(row.get("created_at")),
+            "updated_at": _copy_ts(row.get("updated_at")),
+            "result": row.get("result"),
+            "error": row.get("error"),
+            "settling": False,
+        }
+
     @bp.route("/api/copy_campaigns")
     @access
     def api_copy_campaigns():
@@ -222,7 +259,7 @@ def register_copy_routes(
         target_feed_url = (body.get("target_feed_url") or copy_default_feed_path).strip()
         # Дефолт geo_mode зависит от режима: у «Прочих сфер» валидны только keep/change, поэтому
         # общий дефолт 'replace' дал бы 400 на запросе без geo_mode. Для «Авто» 'replace' — прежнее.
-        geo_mode = (body.get("geo_mode") or ("keep" if mode == "other" else "replace")).strip()
+        geo_mode = default_geo_mode(body, mode)
         if not source_login or not target_login:
             return jsonify({"error": "source_login и target_login обязательны"}), 400
         if not selected_ids:
@@ -234,34 +271,12 @@ def register_copy_routes(
         if not target_domain:
             return jsonify({"error": "укажите домен целевого аккаунта"}), 400
         # Гео-валидация: проверяем mode и geo_mode по белым спискам перед запуском job.
-        if mode not in ("auto", "other"):
-            return jsonify({"error": f"mode='{mode}' не поддерживается; допустимы: auto, other"}), 400
+        geo_error, _parsed_geo_ids = validate_other_geo(
+            body, mode, geo_mode, geo_validate_id_func=geo_validate_id_func, surface="ui"
+        )
+        if geo_error:
+            return jsonify({"error": geo_error}), 400
         if mode == "other":
-            if geo_mode not in ("keep", "change"):
-                return jsonify({
-                    "error": f"geo_mode='{geo_mode}' недопустим при mode='other'; допустимы: keep, change"
-                }), 400
-            if geo_mode == "change":
-                _raw_ids = body.get("geo_region_ids")
-                if not isinstance(_raw_ids, list) or not _raw_ids:
-                    return jsonify({"error": "geo_mode='change': передайте geo_region_ids (список регионов)"}), 400
-                try:
-                    _parsed = [int(x) for x in _raw_ids if str(x).lstrip("-").isdigit()]
-                except (TypeError, ValueError):
-                    return jsonify({"error": "geo_region_ids: все элементы должны быть целыми числами"}), 400
-                if not _parsed:
-                    return jsonify({"error": "geo_mode='change': geo_region_ids пуст после парсинга"}), 400
-                if any(x == 0 for x in _parsed):
-                    return jsonify({"error": "geo_region_ids: нулевой id недопустим"}), 400
-                _positives = [x for x in _parsed if x > 0]
-                if not _positives:
-                    return jsonify({"error": "geo_mode='change': нет ни одного включённого региона (все минус?)"}), 400
-                if geo_validate_id_func:
-                    _invalid = [x for x in _parsed if not geo_validate_id_func(abs(x))]
-                    if _invalid:
-                        return jsonify({
-                            "error": f"geo_region_ids: неизвестные id: {_invalid[:5]}"
-                        }), 400
             # Картинки: 'copy' — переносим картинки исходного аккаунта 1в1 (дефолт, обратная
             # совместимость со старым payload без image_mode); 'upload' — ставим загруженные
             # round-robin. В режиме 'copy' хэши игнорируем ЖЁСТКО: иначе случайно оставленный
@@ -304,6 +319,7 @@ def register_copy_routes(
         body["mode"] = mode
         body["_kind"] = "copy_campaigns"
         body["login"] = target_login
+        body["created_by"] = (session.get("username") or "").strip()
         resolved_ag = resolve_agency_hint(target_login, (body.get("agency") or "").strip())
         if resolved_ag:
             body["agency"] = resolved_ag
@@ -366,6 +382,13 @@ def register_copy_routes(
     def api_copy_status(job_id: str):
         with copy_jobs_lock:
             job = dict(copy_jobs.get(job_id) or {})
+        if not job and job_db_get_func is not None:
+            try:
+                row = job_db_get_func(job_id)
+            except Exception:  # noqa: BLE001
+                row = None
+            if row and row.get("kind") == "copy_campaigns":
+                job = _copy_status_from_db(row)
         if not job:
             return jsonify({"error": "job не найден"}), 404
         # repair_pending: persistent добивка в direct_delayed_repairs (content_repair).
@@ -377,6 +400,21 @@ def register_copy_routes(
             except Exception:  # noqa: BLE001
                 job["repair_pending"] = False
         return jsonify(job)
+
+    @bp.route("/api/copy_queue")
+    @access
+    def api_copy_queue():
+        """Список последних copy-джоб для вкладки «Очередь» в редакторе контента.
+        Читает из public.direct_automation_jobs (kind='copy_campaigns') — тот же источник,
+        что и UI очереди direct-create; НЕ дублирует хранение, только читает.
+        Автор берётся из body.created_by, область видимости — по directologist-правам."""
+        if copy_queue_func is None:
+            return jsonify({"jobs": []})
+        try:
+            jobs = copy_queue_func()
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"error": str(e)[:200]}), 502
+        return jsonify({"jobs": jobs})
 
     @bp.route("/api/copy_feeds_preview", methods=["POST"])
     @access

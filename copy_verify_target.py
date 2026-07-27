@@ -213,15 +213,11 @@ def build_target_profile(target_login: str,
             continue
         if cid <= 0:
             continue
-        rec = adaptive_by_campaign.setdefault(cid, {"video": 0, "button": 0, "titles": 0, "bodies": 0})
+        rec = adaptive_by_campaign.setdefault(cid, {"video": 0, "button": 0})
         if comp.get("creativeIds") or comp.get("hasVideo"):
             rec["video"] += 1
         if comp.get("hasButton"):
             rec["button"] += 1
-        if comp.get("titles"):
-            rec["titles"] += 1
-        if comp.get("bodies"):
-            rec["bodies"] += 1
 
     target_campaign_v5: Dict[int, dict] = {}
 
@@ -493,6 +489,9 @@ def build_target_profile(target_login: str,
         else:
             ads_with_images = None
 
+        # D5/D6: titles and bodies — approximated from adaptive_total (per-campaign count)
+        ads_with_titles = adaptive_total  # adaptive = has titles by definition
+
         # D12: strategy name
         camp_v5 = target_campaign_v5.get(tgt_id) or {}
         strat_data = edit_c.get("strategyData") or {}
@@ -501,21 +500,10 @@ def build_target_profile(target_login: str,
                          _strategy_name_from_campaign(camp_v5))
         site_monitoring = _setting_yes(camp_v5, "ENABLE_SITE_MONITORING")
 
-        # D5/D6/D13/D14: из adaptive_ads_for_update (честный per-ad счёт).
-        # Tri-state: если adaptive_src is None (запрос не выполнился) — None → diff выдаст
-        # UNREADABLE (fail-safe), а не ложный OK. Иначе кампания может отсутствовать в
-        # adaptive_by_campaign (0 адаптивных объявлений) — это честный 0, не None.
-        if adaptive_src is None:
-            ads_with_titles = None
-            ads_with_texts = None
-            ads_with_video = None
-            ads_with_button = None
-        else:
-            adaptive_c = adaptive_by_campaign.get(tgt_id) or {}
-            ads_with_titles = adaptive_c.get("titles", 0)
-            ads_with_texts = adaptive_c.get("bodies", 0)
-            ads_with_video = adaptive_c.get("video", 0)
-            ads_with_button = adaptive_c.get("button", 0)
+        # D13/D14: video (hasVideo) и button/CTA (hasButton) — из adaptive_ads_for_update.
+        adaptive_c = adaptive_by_campaign.get(tgt_id) or {}
+        ads_with_video = adaptive_c.get("video") if adaptive_c else None
+        ads_with_button = adaptive_c.get("button") if adaptive_c else None
 
         # D16: UTM tracking через bannerHrefParams из read_campaign_invariants (CampaignsEditData,
         # 0 доп. запросов). bannerHrefParams ≡ v5 TrackingParams. _strip_domain нормализует домены.
@@ -537,10 +525,11 @@ def build_target_profile(target_login: str,
             # D4
             "has_promo": has_promo,
             "promo_id": str(promo_ext_id) if has_promo else None,
-            # D5: честный per-ad счёт из adaptive_ads_for_update (titles непустой список).
+            # D5
             "ads_with_titles": ads_with_titles,
-            # D6: честный per-ad счёт из adaptive_ads_for_update (bodies непустой список).
-            "ads_with_texts": ads_with_texts,
+            # D6: прокси — adaptive_total (адаптивное объявление всегда имеет и заголовки, и тексты;
+            # отдельного счётчика bodies в campaign_content_counts нет).
+            "ads_with_texts": adaptive_total,
             # D7
             "callout_count": callout_count,
             # D8

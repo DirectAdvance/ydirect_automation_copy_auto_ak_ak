@@ -10,19 +10,29 @@ Blueprint: copy_api_bp, url_prefix /api/v1/copy
     POST /api/v1/copy/start           — поставить задачу копирования в очередь
     GET  /api/v1/copy/status/<job_id> — статус / прогресс / лог задачи
     GET  /api/v1/copy/campaigns       — список кампаний source-аккаунта
+    GET  /api/v1/copy/health          — health-check внешнего API
 
 Регистрация в copy_main.py — snippet в .claude/sdd/copy-api-report.md.
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
-import ipaddress
+import json
 import sys
-import urllib.parse
+from datetime import date, datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from flask import Blueprint, current_app, jsonify, request
+
+from .copy_request import (
+    default_geo_mode,
+    parse_feed_map,
+    parse_image_hashes,
+    validate_api_campaign_ids,
+    validate_other_geo,
+)
 
 # ── .secret/loader ────────────────────────────────────────────────────────────
 for _p in Path(__file__).resolve().parents:
@@ -61,7 +71,7 @@ def _copy_api_add_cors(response, origin: Optional[str]):
     if origin in _copy_api_allowed_origins():
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Vary"] = "Origin"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-API-Key"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-API-Key, Idempotency-Key"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return response
 
@@ -85,31 +95,165 @@ def _copy_api_key_ok() -> bool:
 
 # ─── Вспомогательные утилиты ─────────────────────────────────────────────────
 
-def _copy_api_parse_ids(body: dict) -> list:
-    """Разбирает campaign_ids из тела запроса; пропускает нечисловые значения."""
-    raw = body.get("campaign_ids") or []
-    return [int(x) for x in raw if str(x).isdigit()]
+def _copy_api_error(message: str, code: str, status: int, origin: Optional[str]):
+    """Единый error envelope для внешних клиентов."""
+    return _copy_api_add_cors(
+        jsonify({"ok": False, "error": message, "error_code": code}),
+        origin,
+    ), status
 
 
-def _is_ssrf_url(url: str) -> bool:
-    """True если URL указывает на localhost или приватную/link-local сеть (SSRF-риск).
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
 
-    Проверяет только literal IP-адреса в hostname и известные опасные имена —
-    DNS-резолвинг намеренно не делается (TOCTOU).
-    """
-    try:
-        host = urllib.parse.urlparse(url).hostname or ""
-    except Exception:
-        return True  # fail-safe: при ошибке разбора — блокировать
-    if not host:
-        return True
-    try:
-        addr = ipaddress.ip_address(host)
-        return addr.is_private or addr.is_loopback or addr.is_link_local
-    except ValueError:
-        # не IP-адрес — проверяем имена
-        h = host.lower()
-        return h == "localhost" or h.endswith(".local")
+
+def _as_dict(value: Any) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:  # noqa: BLE001
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _copy_api_payload_hash(job_body: dict) -> str:
+    """Hash stable public payload fields; internal queue keys are ignored."""
+    public_body = {k: v for k, v in (job_body or {}).items() if not str(k).startswith("_")}
+    raw = json.dumps(public_body, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _copy_api_result_summary(result: Any) -> dict | None:
+    """Stable, sanitized summary instead of raw worker result with internal paths."""
+    data = _as_dict(result)
+    if not data:
+        return None
+    rows = data.get("results") if isinstance(data.get("results"), list) else []
+    summary: dict[str, Any] = {
+        "ok": data.get("ok"),
+        "campaigns": {
+            "total": len(rows),
+            "created": sum(1 for row in rows if isinstance(row, dict) and row.get("ok")),
+            "failed": sum(1 for row in rows if isinstance(row, dict) and row.get("ok") is False),
+        },
+    }
+    if data.get("source_login"):
+        summary["source_login"] = data.get("source_login")
+    if data.get("target_login"):
+        summary["target_login"] = data.get("target_login")
+    for key in ("created_campaign_ids", "target_campaign_ids"):
+        if isinstance(data.get(key), list):
+            summary[key] = data.get(key)
+
+    post = _as_dict(data.get("cookie_postprocess"))
+    verify = _as_dict(data.get("copy_verify") or post.get("copy_verify"))
+    live = _as_dict(data.get("live_verification") or post.get("live_verification"))
+    repair = _as_dict(data.get("auto_repair") or post.get("copy_repair") or post.get("auto_repair"))
+
+    if verify:
+        verify_rows = verify.get("results") or verify.get("diffs") or verify.get("diff") or []
+        summary["verification"] = {
+            "ok": verify.get("ok"),
+            "summary": verify.get("summary"),
+            "diff_count": len(verify_rows) if isinstance(verify_rows, list) else 0,
+        }
+    if live:
+        summary["live_verification"] = {
+            "ok": live.get("ok"),
+            "status": live.get("status"),
+            "summary": live.get("summary"),
+        }
+    if repair:
+        summary["repair"] = {
+            "ok": repair.get("ok"),
+            "status": repair.get("status"),
+            "repairs_count": len(repair.get("repairs") or []),
+            "errors_count": len(repair.get("errors") or []),
+        }
+    errors = []
+    for row in rows:
+        if isinstance(row, dict) and row.get("error"):
+            errors.append({"campaign_id": row.get("source_id") or row.get("campaign_id"), "error": row.get("error")})
+    if data.get("error"):
+        errors.append({"error": data.get("error")})
+    if errors:
+        summary["errors"] = errors[:20]
+    return _json_safe(summary)
+
+
+def _copy_api_job_from_db(row: dict) -> dict:
+    body = _as_dict(row.get("body"))
+    total = int(row.get("total") or len(body.get("campaign_ids") or []) or 0)
+    done = int(row.get("done") or row.get("created") or 0)
+    progress = 100 if row.get("status") in ("done", "error", "cancelled", "interrupted") else (
+        min(99, round(done * 100 / total)) if total else 0
+    )
+    return {
+        "job_id": row.get("job_id"),
+        "status": row.get("status"),
+        "progress": progress,
+        "total": total,
+        "done": done,
+        "created": int(row.get("created") or 0),
+        "failed": int(row.get("failed") or 0),
+        "source_login": body.get("source_login"),
+        "target_login": body.get("target_login") or row.get("login"),
+        "selected": len(body.get("campaign_ids") or []) or total,
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "result": row.get("result"),
+        "error": row.get("error"),
+        "kind": row.get("kind"),
+        "body": body,
+    }
+
+
+def _copy_api_status_payload(job_id: str, job: dict, repair_pending_func: Optional[Callable]) -> dict:
+    status = job.get("status")
+    settling = bool(job.get("settling"))
+    repair_pending = False
+    if status == "done" and repair_pending_func is not None:
+        try:
+            repair_pending = bool(repair_pending_func(job_id))
+        except Exception:  # noqa: BLE001
+            repair_pending = False
+    public_status = "settling" if status == "done" and (settling or repair_pending) else status
+    terminal = public_status in ("done", "error", "cancelled", "interrupted", "superseded")
+
+    safe: dict = {
+        "ok": True,
+        "schema_version": 1,
+        "job_id": job_id,
+        "status": status,
+        "public_status": public_status,
+        "terminal": terminal,
+        "settling": settling,
+        "repair_pending": repair_pending,
+    }
+    for key in (
+        "progress", "total", "done", "created", "failed", "selected",
+        "source_login", "target_login", "created_at", "updated_at", "error",
+    ):
+        if key in job:
+            safe[key] = _json_safe(job[key])
+    if terminal and job.get("updated_at"):
+        safe["finalized_at"] = _json_safe(job.get("updated_at"))
+    result_summary = _copy_api_result_summary(job.get("result"))
+    if result_summary is not None:
+        safe["result_summary"] = result_summary
+    raw_log = job.get("log")
+    if isinstance(raw_log, list):
+        safe["log"] = raw_log[-50:]
+    return safe
 
 
 # ─── Регистрация роутов (DI через параметры, по образцу routes_copy.py) ───────
@@ -131,6 +275,9 @@ def register_copy_api(
     api_campaigns_func: Optional[Callable] = None,
     parse_number: Optional[Callable] = None,
     geo_validate_id_func: Optional[Callable] = None,
+    repair_pending_func: Optional[Callable] = None,
+    job_db_get_func: Optional[Callable] = None,
+    idempotency_lookup_func: Optional[Callable] = None,
 ) -> None:
     """Добавляет роуты /api/v1/copy/* в переданный blueprint.
 
@@ -150,6 +297,8 @@ def register_copy_api(
     counter_foreign_owner = metrika._counter_foreign_owner  (проверка владельца счётчика)
     api_campaigns_func    = accounts._campaigns_response    (список кампаний)
     parse_number          = _parse_number из copy_main.py   (fallback: int(float(v)))
+    job_db_get_func       = job_repository._job_db_get       (fallback статуса после рестарта)
+    idempotency_lookup_func = lookup по Idempotency-Key      (повтор POST без дубля)
 
     Секреты/токены в параметрах не передаются.
     """
@@ -180,6 +329,28 @@ def register_copy_api(
         resp = jsonify({})
         return _copy_api_add_cors(resp, request.headers.get("Origin"))
 
+    @bp.route("/status", methods=["OPTIONS"])
+    def copy_api_status_base_options():
+        """Preflight для клиентов, которые проверяют base status route до подстановки job_id."""
+        resp = jsonify({})
+        return _copy_api_add_cors(resp, request.headers.get("Origin"))
+
+    @bp.route("/health", methods=["OPTIONS"])
+    def copy_api_health_options():
+        resp = jsonify({})
+        return _copy_api_add_cors(resp, request.headers.get("Origin"))
+
+    @bp.route("/health")
+    def copy_api_health():
+        """Health-check внешнего copy API. Не раскрывает секреты и состояние аккаунтов."""
+        origin = request.headers.get("Origin")
+        if not _copy_api_key_ok():
+            return _copy_api_error("неверный или отсутствующий API-ключ", "AUTH_FAILED", 401, origin)
+        return _copy_api_add_cors(
+            jsonify({"ok": True, "service": "direct-copy", "api": "v1"}),
+            origin,
+        )
+
     # ── POST /api/v1/copy/start ───────────────────────────────────────────────
 
     @bp.route("/start", methods=["POST"])
@@ -197,25 +368,23 @@ def register_copy_api(
             target_region   str        (mode=auto) регион
             mode            str        «auto» (дефолт) или «other»
             target_cleanup  str        none / delete_drafts / archive (дефолт: none)
-            target_feed_url str        URL фида (дефолт: _COPY_DEFAULT_FEED_PATH)
+            target_feed_url str        путь фида от / (дефолт: _COPY_DEFAULT_FEED_PATH)
             feed_map        object     (опц.) маппинг фидов источника → цели
             agency          str        (опц.) агентство
 
         Ответ 200:
             {job_id, login, agency, total, kind, ahead, existing?, note?}
 
-        Ошибки: 400 / 401 / 500 с {error: "..."}
+        Ошибки: 400 / 401 / 409 / 500 с {ok:false, error, error_code}
         """
         origin = request.headers.get("Origin")
         if not _copy_api_key_ok():
-            return _copy_api_add_cors(
-                jsonify({"error": "неверный или отсутствующий API-ключ"}), origin
-            ), 401
+            return _copy_api_error("неверный или отсутствующий API-ключ", "AUTH_FAILED", 401, origin)
 
         body = request.get_json(silent=True) or {}
+        campaign_ids, campaign_ids_error = validate_api_campaign_ids(body)
         source_login = (body.get("source_login") or "").strip()
         target_login = (body.get("target_login") or "").strip()
-        campaign_ids = _copy_api_parse_ids(body)
         counter_id = _num(body.get("counter_id"), 0)
         goal_id = _num(body.get("goal_id"), 0)
         target_domain = (body.get("target_domain") or "").strip()
@@ -226,93 +395,67 @@ def register_copy_api(
         mode = (body.get("mode") or "auto").strip()
         # A1: geo_mode с дефолтом как в _copy_start_impl (routes_copy.py:224).
         # mode="other" → keep (нет city/region); mode="auto" → replace (привычный путь).
-        geo_mode = (body.get("geo_mode") or ("keep" if mode == "other" else "replace")).strip()
+        geo_mode = default_geo_mode(body, mode)
 
         # Валидация обязательных полей
         if not source_login or not target_login:
-            return _copy_api_add_cors(
-                jsonify({"error": "source_login и target_login обязательны"}), origin
-            ), 400
-        if not campaign_ids:
-            return _copy_api_add_cors(
-                jsonify({"error": "campaign_ids: выберите хотя бы одну кампанию"}), origin
-            ), 400
+            return _copy_api_error("source_login и target_login обязательны", "VALIDATION_ERROR", 400, origin)
+        if campaign_ids_error:
+            return _copy_api_error(campaign_ids_error, "INVALID_CAMPAIGN_IDS", 400, origin)
         if not counter_id:
-            return _copy_api_add_cors(
-                jsonify({"error": "counter_id обязателен"}), origin
-            ), 400
+            return _copy_api_error("counter_id обязателен", "VALIDATION_ERROR", 400, origin)
         if not goal_id:
-            return _copy_api_add_cors(
-                jsonify({"error": "goal_id обязателен"}), origin
-            ), 400
+            return _copy_api_error("goal_id обязателен", "VALIDATION_ERROR", 400, origin)
         if not target_domain:
-            return _copy_api_add_cors(
-                jsonify({"error": "target_domain обязателен"}), origin
-            ), 400
-        if mode not in ("auto", "other"):
-            return _copy_api_add_cors(
-                jsonify({"error": "mode допустимо: auto, other"}), origin
-            ), 400
+            return _copy_api_error("target_domain обязателен", "VALIDATION_ERROR", 400, origin)
+        geo_error, _geo_region_ids_parsed = validate_other_geo(
+            body, mode, geo_mode, geo_validate_id_func=geo_validate_id_func, surface="api"
+        )
+        if geo_error:
+            return _copy_api_error(geo_error, "INVALID_GEO", 400, origin)
         if mode == "auto" and not (target_city or target_region):
-            return _copy_api_add_cors(
-                jsonify({"error": "target_city или target_region обязательны при mode=auto"}), origin
-            ), 400
-        # A1: geo_mode-валидация для mode="other" (зеркало routes_copy.py:238-263).
-        _geo_region_ids_parsed: list = []
-        if mode == "other":
-            if geo_mode not in ("keep", "change"):
-                return _copy_api_add_cors(
-                    jsonify({"error": "geo_mode при mode='other' допустимо: keep, change"}), origin
-                ), 400
-            if geo_mode == "change":
-                _raw_gids = body.get("geo_region_ids")
-                if not isinstance(_raw_gids, list) or not _raw_gids:
-                    return _copy_api_add_cors(
-                        jsonify({"error": "geo_mode='change': передайте geo_region_ids (список регионов)"}), origin
-                    ), 400
-                try:
-                    _geo_region_ids_parsed = [int(x) for x in _raw_gids if str(x).lstrip("-").isdigit()]
-                except (TypeError, ValueError):
-                    return _copy_api_add_cors(
-                        jsonify({"error": "geo_region_ids: все элементы должны быть целыми числами"}), origin
-                    ), 400
-                if not _geo_region_ids_parsed:
-                    return _copy_api_add_cors(
-                        jsonify({"error": "geo_mode='change': geo_region_ids пуст после парсинга"}), origin
-                    ), 400
-                if any(x == 0 for x in _geo_region_ids_parsed):
-                    return _copy_api_add_cors(
-                        jsonify({"error": "geo_region_ids: нулевой id недопустим"}), origin
-                    ), 400
-                if not [x for x in _geo_region_ids_parsed if x > 0]:
-                    return _copy_api_add_cors(
-                        jsonify({"error": "geo_mode='change': нет ни одного включённого региона (все минус?)"}), origin
-                    ), 400
-                # Валидация id по справочнику GeoRegions (зеркало routes_copy.py:258-263):
-                # внешний клиент не должен слать несуществующие регионы → чистый 400, не падёж джобы.
-                if geo_validate_id_func is not None:
-                    _invalid = [x for x in _geo_region_ids_parsed if not geo_validate_id_func(abs(x))]
-                    if _invalid:
-                        return _copy_api_add_cors(
-                            jsonify({"error": f"geo_region_ids: неизвестные id: {_invalid[:5]}"}), origin
-                        ), 400
+            return _copy_api_error(
+                "target_city или target_region обязательны при mode=auto",
+                "VALIDATION_ERROR",
+                400,
+                origin,
+            )
         if target_cleanup not in ("none", "delete_drafts", "archive"):
-            return _copy_api_add_cors(
-                jsonify({"error": "target_cleanup допустимо: none, delete_drafts, archive"}), origin
-            ), 400
-        if target_feed_url and not (
-            target_feed_url.startswith("/")
-            or target_feed_url.startswith(("http://", "https://"))
-        ):
-            return _copy_api_add_cors(
-                jsonify({"error": "target_feed_url: абсолютный URL или путь от /"}), origin
-            ), 400
-        if target_feed_url and target_feed_url.startswith(("http://", "https://")):
-            if _is_ssrf_url(target_feed_url):
-                return _copy_api_add_cors(
-                    jsonify({"error": "target_feed_url: URL на приватные адреса запрещён"}), origin
-                ), 400
-
+            return _copy_api_error(
+                "target_cleanup допустимо: none, delete_drafts, archive",
+                "VALIDATION_ERROR",
+                400,
+                origin,
+            )
+        if target_feed_url and not target_feed_url.startswith("/"):
+            return _copy_api_error(
+                "target_feed_url: во внешнем API допустим только путь от /",
+                "INVALID_FEED_URL",
+                400,
+                origin,
+            )
+        feed_map = parse_feed_map(body)
+        if mode == "other":
+            image_mode = (body.get("image_mode") or "copy").strip()
+            if image_mode not in ("copy", "upload"):
+                return _copy_api_error(
+                    "image_mode допустимо: copy, upload",
+                    "VALIDATION_ERROR",
+                    400,
+                    origin,
+                )
+            image_hashes = parse_image_hashes(body)
+            if image_mode == "upload":
+                if not isinstance(body.get("image_hashes"), list) or not image_hashes:
+                    return _copy_api_error(
+                        "image_mode='upload': передайте image_hashes как список с хотя бы одним image_hash",
+                        "VALIDATION_ERROR",
+                        400,
+                        origin,
+                    )
+        else:
+            image_mode = ""
+            image_hashes = []
         # Проверка владельца счётчика (если DI подключён)
         if counter_foreign_owner is not None:
             try:
@@ -320,18 +463,20 @@ def register_copy_api(
             except Exception:  # noqa: BLE001
                 owner = None
             if owner:
-                return _copy_api_add_cors(
-                    jsonify({"error": f"счётчик {counter_id} принадлежит «{owner}», а не «{target_login}»"}),
+                return _copy_api_error(
+                    f"счётчик {counter_id} принадлежит «{owner}», а не «{target_login}»",
+                    "COUNTER_FOREIGN_OWNER",
+                    400,
                     origin,
-                ), 400
+                )
 
         # Тело джобы по образцу _copy_start_impl из routes_copy.py
         # Явный allowlist: только известные поля, произвольные ключи клиента не пробрасываются.
         _JOB_BODY_ALLOWLIST = {
             "source_login", "target_login", "campaign_ids", "target_domain",
             "target_city", "target_region", "counter_id", "goal_id",
-            "feed_map", "target_cleanup", "mode", "image_mode", "image_hashes",
-            "geo_mode", "geo_region_ids",
+            "target_feed_url", "feed_map", "target_cleanup", "mode",
+            "image_mode", "image_hashes", "geo_mode",
         }
         job_body = {k: v for k, v in body.items() if k in _JOB_BODY_ALLOWLIST}
         job_body["mode"] = mode              # из валидации роута, не из payload клиента
@@ -340,6 +485,7 @@ def register_copy_api(
             job_body["geo_region_ids"] = _geo_region_ids_parsed  # A1: валидированный список
         job_body["_kind"] = "copy_campaigns"
         job_body["login"] = target_login
+        job_body["created_by"] = "copy-api"
         job_body["source_login"] = source_login
         job_body["target_login"] = target_login
         job_body["counter_id"] = counter_id
@@ -350,10 +496,53 @@ def register_copy_api(
         job_body["target_feed_url"] = target_feed_url
         job_body["target_cleanup"] = target_cleanup
         job_body["campaign_ids"] = campaign_ids
+        job_body["feed_map"] = feed_map
+        if mode == "other":
+            job_body["image_mode"] = image_mode
+            job_body["image_hashes"] = image_hashes if image_mode == "upload" else []
+        else:
+            job_body.pop("image_mode", None)
+            job_body.pop("image_hashes", None)
 
         resolved_ag = resolve_agency_hint(target_login, (body.get("agency") or "").strip())
         if resolved_ag:
             job_body["agency"] = resolved_ag
+
+        idempotency_key = (request.headers.get("Idempotency-Key") or "").strip()
+        if len(idempotency_key) > 128:
+            return _copy_api_error("Idempotency-Key: максимум 128 символов", "INVALID_IDEMPOTENCY_KEY", 400, origin)
+        payload_hash = _copy_api_payload_hash(job_body)
+        if idempotency_key and idempotency_lookup_func is not None:
+            existing_row = idempotency_lookup_func(idempotency_key)
+            if existing_row:
+                existing_body = _as_dict(existing_row.get("body"))
+                existing_hash = existing_body.get("_copy_api_payload_hash")
+                if existing_hash and existing_hash != payload_hash:
+                    return _copy_api_error(
+                        "Idempotency-Key уже использован с другим payload",
+                        "IDEMPOTENCY_CONFLICT",
+                        409,
+                        origin,
+                    )
+                existing_job_id = str(existing_row.get("job_id") or "")
+                return _copy_api_add_cors(
+                    jsonify({
+                        "ok": True,
+                        "job_id": existing_job_id,
+                        "login": existing_row.get("login") or target_login,
+                        "agency": existing_row.get("agency") or resolved_ag or "",
+                        "total": int(existing_row.get("total") or len(campaign_ids or [])),
+                        "kind": "copy_campaigns",
+                        "status": existing_row.get("status"),
+                        "existing": True,
+                        "idempotent": True,
+                        "status_url": f"/api/v1/copy/status/{existing_job_id}",
+                    }),
+                    origin,
+                )
+        if idempotency_key:
+            job_body["_copy_api_idempotency_key"] = idempotency_key
+            job_body["_copy_api_payload_hash"] = payload_hash
 
         # Запустить воркер (идемпотентно) и поставить джобу в очередь
         app = current_app._get_current_object()
@@ -371,6 +560,7 @@ def register_copy_api(
                 ahead = create_jobs_ahead(job_id)
             return _copy_api_add_cors(
                 jsonify({
+                    "ok": True,
                     "job_id": job_id,
                     "login": target_login,
                     "agency": resolved_ag or "",
@@ -378,7 +568,9 @@ def register_copy_api(
                     "kind": "copy_campaigns",
                     "ahead": ahead,
                     "existing": True,
+                    "idempotent": False,
                     "note": "для этого аккаунта уже есть активная задача; дубль не создан",
+                    "status_url": f"/api/v1/copy/status/{job_id}",
                 }),
                 origin,
             )
@@ -398,12 +590,15 @@ def register_copy_api(
 
         return _copy_api_add_cors(
             jsonify({
+                "ok": True,
                 "job_id": job_id,
                 "login": target_login,
                 "agency": resolved_ag or "",
                 "total": len(campaign_ids),
                 "kind": "copy_campaigns",
                 "ahead": ahead,
+                "idempotent": False,
+                "status_url": f"/api/v1/copy/status/{job_id}",
             }),
             origin,
         )
@@ -415,37 +610,31 @@ def register_copy_api(
         """Статус / прогресс / лог задачи копирования.
 
         Ответ 200:
-            {job_id, status, progress, total, selected, source_login, target_login,
-             created_at, updated_at, result, error, log[-50:]}
+            {ok, schema_version, job_id, status, public_status, terminal, settling,
+             repair_pending, progress, total, selected, source_login, target_login,
+             created_at, updated_at, result_summary, error, log[-50:]}
 
         Секреты, session-снапшоты, внутренние поля (_kind, _web_posted и т.п.) — не отдаются.
         """
         origin = request.headers.get("Origin")
         if not _copy_api_key_ok():
-            return _copy_api_add_cors(
-                jsonify({"error": "неверный или отсутствующий API-ключ"}), origin
-            ), 401
+            return _copy_api_error("неверный или отсутствующий API-ключ", "AUTH_FAILED", 401, origin)
 
         with copy_jobs_lock:
             job = dict(copy_jobs.get(job_id) or {})
 
+        if not job and job_db_get_func is not None:
+            try:
+                row = job_db_get_func(job_id)
+            except Exception:  # noqa: BLE001
+                row = None
+            if row and row.get("kind") == "copy_campaigns":
+                job = _copy_api_job_from_db(row)
+
         if not job:
-            return _copy_api_add_cors(
-                jsonify({"error": "job не найден"}), origin
-            ), 404
+            return _copy_api_error("job не найден", "JOB_NOT_FOUND", 404, origin)
 
-        # Безопасная выжимка: только публичные поля
-        _SAFE = (
-            "job_id", "status", "progress", "total", "selected",
-            "source_login", "target_login", "created_at", "updated_at",
-            "result", "error",
-        )
-        safe: dict = {k: job[k] for k in _SAFE if k in job}
-        raw_log = job.get("log")
-        if isinstance(raw_log, list):
-            safe["log"] = raw_log[-50:]    # последние 50 строк, не полотно
-
-        return _copy_api_add_cors(jsonify(safe), origin)
+        return _copy_api_add_cors(jsonify(_copy_api_status_payload(job_id, job, repair_pending_func)), origin)
 
     # ── GET /api/v1/copy/campaigns ────────────────────────────────────────────
 
@@ -461,23 +650,16 @@ def register_copy_api(
         """
         origin = request.headers.get("Origin")
         if not _copy_api_key_ok():
-            return _copy_api_add_cors(
-                jsonify({"error": "неверный или отсутствующий API-ключ"}), origin
-            ), 401
+            return _copy_api_error("неверный или отсутствующий API-ключ", "AUTH_FAILED", 401, origin)
 
         if api_campaigns_func is None:
-            return _copy_api_add_cors(
-                jsonify({"error": "api_campaigns_func не подключена"}),
-                origin,
-            ), 503
+            return _copy_api_error("api_campaigns_func не подключена", "CAMPAIGNS_API_UNAVAILABLE", 503, origin)
 
         # _campaigns_response читает request.args["login"] изнутри (Flask-aware)
         try:
             raw = api_campaigns_func()
         except Exception:  # noqa: BLE001
-            return _copy_api_add_cors(
-                jsonify({"error": "ошибка получения кампаний"}), origin
-            ), 502
+            return _copy_api_error("ошибка получения кампаний", "CAMPAIGNS_FETCH_FAILED", 502, origin)
 
         if hasattr(raw, "headers"):
             return _copy_api_add_cors(raw, origin)

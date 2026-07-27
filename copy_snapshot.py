@@ -109,6 +109,15 @@ def _copy_filter_snapshot(src_dir: Path, selected_campaign_ids: set[int]) -> dic
         if dom and dom in selected_domains:
             promotions.append(p)
 
+    # Пропустить группы без копируемых объявлений (например, все объявления архивные).
+    # Делаем ДО записи json — preflight не увидит пустых групп и не остановит джобу.
+    groups_with_ads = {int(a.get("AdGroupId") or 0) for a in (ads + shopping_ads) if a.get("AdGroupId")}
+    dropped_ids = {int(g.get("Id") or 0) for g in adgroups if int(g.get("Id") or 0) not in groups_with_ads}
+    if dropped_ids:
+        adgroups = [g for g in adgroups if int(g.get("Id") or 0) not in dropped_ids]
+        keywords = [k for k in keywords if int(k.get("AdGroupId") or 0) not in dropped_ids]
+        bidmods = [m for m in bidmods if int(m.get("AdGroupId") or 0) not in dropped_ids]
+
     _copy_write_json(src_dir / "campaigns.json", campaigns)
     _copy_write_json(src_dir / "campaigns_skipped.json", [])
     _copy_write_json(src_dir / "adgroups.json", adgroups)
@@ -138,7 +147,7 @@ def _copy_filter_snapshot(src_dir: Path, selected_campaign_ids: set[int]) -> dic
         "keywords": len(keywords), "sitelinks": len(sitelinks), "callouts": len(callouts),
         "vcards": len(vcards), "adimages_used": len(image_hashes), "promotions": len(promotions),
         "shared_sets": len(shared_sets), "bidmodifiers": len(bidmods), "feeds": len(feeds),
-        "retargeting_lists": len(ret_lists),
+        "retargeting_lists": len(ret_lists), "dropped_empty_adgroups": len(dropped_ids),
     }
     meta_path = src_dir / "_meta.json"
     meta_json = _copy_read_json(meta_path) if meta_path.exists() else {}

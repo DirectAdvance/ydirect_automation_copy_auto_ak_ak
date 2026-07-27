@@ -13,7 +13,9 @@
 """
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 
 from . import grid_finalize as gf
 
@@ -39,47 +41,178 @@ def _feed_url_file(url: str) -> str:
     return (url.split("/")[-1].split("?")[0]).lower()
 
 
+def _feed_identity(feed: dict) -> str:
+    return " ".join(str(feed.get(k) or "") for k in ("name", "url", "href", "source", "SourceUrl"))
+
+
+def _feed_values(feed: dict) -> list[str]:
+    return [
+        str(feed.get(k) or "")
+        for k in ("name", "url", "href", "source", "SourceUrl")
+        if str(feed.get(k) or "").strip()
+    ]
+
+
+def _feed_has_listings(feed: dict) -> bool:
+    return bool(feed.get("listings") or feed.get("Listings"))
+
+
+def _fallback_target_feed(tgt_feeds: list[dict]) -> int | None:
+    """Best-effort target feed when path/file matching fails.
+
+    Used only after exact URL/path matching misses. Feeds with listing categories are already
+    known by Grid and are safer than creating a new default URL feed that may parse as ERROR.
+    """
+    candidates = [f for f in tgt_feeds if _feed_has_listings(f)]
+    if not candidates:
+        return None
+
+    def _score(feed: dict) -> tuple[int, int, int, int]:
+        raw = _feed_identity(feed).lower()
+        return (
+            1 if "yandex" in raw else 0,
+            1 if "used" in raw or "пробег" in raw else 0,
+            1 if "auto" in raw else 0,
+            len(feed.get("listings") or feed.get("Listings") or []),
+        )
+
+    best = sorted(candidates, key=_score, reverse=True)[0]
+    try:
+        fid = int(best.get("id") or 0)
+    except (TypeError, ValueError):
+        return None
+    return fid or None
+
+
 def _feed_auto_match_one(src_feed: dict, tgt_feeds: list[dict]) -> tuple:
     """Сопоставить один фид источника с фидами цели.
 
     Правило 1 'path': совпадение полного пути URL без домена (разные домены, один путь).
     Правило 2 'file': совпадение имени файла (basename, без query).
     Возвращает (tgt_id: int, rule: str) или (None, None) если совпадение не найдено."""
-    src_path = _feed_url_path(src_feed.get("name") or "")
-    src_file = _feed_url_file(src_feed.get("name") or "")
+    def _feed_id(feed: dict) -> int | None:
+        try:
+            fid = int(feed.get("id") or 0)
+        except (TypeError, ValueError):
+            return None
+        return fid or None
+
+    src_paths = {_feed_url_path(v) for v in _feed_values(src_feed) if _feed_url_path(v)}
+    src_files = {_feed_url_file(v) for v in _feed_values(src_feed) if _feed_url_file(v)}
+    first_exact_match: tuple[int, str] | None = None
+
+    path_matches = []
     for tf in tgt_feeds:
-        if src_path and _feed_url_path(tf.get("name") or "") == src_path:
-            return tf["id"], "path"
+        tf_paths = {_feed_url_path(v) for v in _feed_values(tf) if _feed_url_path(v)}
+        if src_paths and tf_paths and src_paths & tf_paths:
+            path_matches.append(tf)
+    if path_matches:
+        for tf in path_matches:
+            fid = _feed_id(tf)
+            if fid is not None and _feed_has_listings(tf):
+                return fid, "path"
+        fid = _feed_id(path_matches[0])
+        if fid is not None:
+            first_exact_match = (fid, "path")
+
+    file_matches = []
     for tf in tgt_feeds:
-        tf_file = _feed_url_file(tf.get("name") or "")
-        if src_file and tf_file and src_file == tf_file:
-            return tf["id"], "file"
+        tf_files = {_feed_url_file(v) for v in _feed_values(tf) if _feed_url_file(v)}
+        if src_files and tf_files and src_files & tf_files:
+            file_matches.append(tf)
+    if file_matches:
+        for tf in file_matches:
+            fid = _feed_id(tf)
+            if fid is not None and _feed_has_listings(tf):
+                return fid, "file"
+        if first_exact_match is None:
+            fid = _feed_id(file_matches[0])
+            if fid is not None:
+                first_exact_match = (fid, "file")
+
+    fallback_id = _fallback_target_feed(tgt_feeds)
+    if fallback_id is not None:
+        return fallback_id, "target_listing_fallback"
+    if first_exact_match is not None:
+        return first_exact_match
     return None, None
 
 
-def _copy_auto_feed_map(source_login: str, target_login: str) -> dict[str, int]:
-    """Автоматическое сопоставление фидов источника → цель по URL/имени файла.
-    Зеркало JS-функции _feedMatchTarget. Использует _feed_auto_match_one."""
+def _copy_grid_feeds_for_login(login: str, agency_hint: str = "") -> list[dict]:
     from . import copy_engine as _ce  # ленивый: copy_engine полностью загружен к этому моменту
 
-    def _feeds_for_login(login: str) -> list[dict]:
-        agency = _ce._resolve_agency_hint(login, "")
-        rows = _ce._grid_feeds(login, agency) or []
-        return [{"id": int(f["id"]), "name": str(f.get("name") or "")}
-                for f in rows if str(f.get("id") or "").strip().isdigit()]
+    agency = (agency_hint or "").strip() or _ce._resolve_agency_hint(login, "")
+    rows = _ce._grid_feeds(login, agency) or []
+    return [{
+        "id": int(f["id"]),
+        "name": str(f.get("name") or ""),
+        "url": str(f.get("url") or ""),
+        "listings": f.get("listings") or [],
+    }
+            for f in rows if str(f.get("id") or "").strip().isdigit()]
 
-    try:
-        source_feeds = _feeds_for_login(source_login)
-        target_feeds = _feeds_for_login(target_login)
-    except Exception:  # noqa: BLE001 — best-effort
-        return {}
 
+def _copy_auto_feed_map_from_feeds(source_feeds: list[dict], target_feeds: list[dict]) -> dict[str, int]:
     feed_map: dict[str, int] = {}
     for sf in source_feeds:
         matched_id, _ = _feed_auto_match_one(sf, target_feeds)
         if matched_id is not None:
             feed_map[str(sf["id"])] = matched_id
     return feed_map
+
+
+def _copy_snapshot_feed_rows(src_dir: Path) -> list[dict]:
+    try:
+        rows = json.loads((Path(src_dir) / "feeds.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+    if not isinstance(rows, list):
+        return []
+    out: list[dict] = []
+    for feed in rows:
+        if not isinstance(feed, dict) or not str(feed.get("Id") or feed.get("id") or "").strip().isdigit():
+            continue
+        url_feed = feed.get("UrlFeed") if isinstance(feed.get("UrlFeed"), dict) else {}
+        out.append({
+            "id": int(feed.get("Id") or feed.get("id")),
+            "name": str(feed.get("Name") or feed.get("name") or ""),
+            "url": str(feed.get("url") or feed.get("Url") or url_feed.get("Url") or ""),
+            "listings": [],
+        })
+    return out
+
+
+def _copy_auto_feed_map_from_snapshot(
+    src_dir: Path,
+    target_login: str,
+    *,
+    target_agency_hint: str = "",
+) -> dict[str, int]:
+    """Auto feed-map using already pulled v5 source feeds instead of source Grid feeds."""
+    try:
+        source_feeds = _copy_snapshot_feed_rows(Path(src_dir))
+        target_feeds = _copy_grid_feeds_for_login(target_login, target_agency_hint)
+    except Exception:  # noqa: BLE001 — best-effort, same contract as _copy_auto_feed_map
+        return {}
+    return _copy_auto_feed_map_from_feeds(source_feeds, target_feeds)
+
+
+def _copy_auto_feed_map(
+    source_login: str,
+    target_login: str,
+    *,
+    source_agency_hint: str = "",
+    target_agency_hint: str = "",
+) -> dict[str, int]:
+    """Автоматическое сопоставление фидов источника → цель по URL/имени файла.
+    Зеркало JS-функции _feedMatchTarget. Использует _feed_auto_match_one."""
+
+    try:
+        source_feeds = _copy_grid_feeds_for_login(source_login, source_agency_hint)
+        target_feeds = _copy_grid_feeds_for_login(target_login, target_agency_hint)
+    except Exception:  # noqa: BLE001 — best-effort
+        return {}
+    return _copy_auto_feed_map_from_feeds(source_feeds, target_feeds)
 
 
 def _copy_feeds_check(source_login: str, target_login: str, selected_ids: set[int]) -> dict:

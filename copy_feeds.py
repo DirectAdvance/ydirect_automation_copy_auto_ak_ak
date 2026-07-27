@@ -61,9 +61,9 @@ def _copy_target_feed_id(target_login: str, target_agency: str, workdir: Path,
         try:
             fid = int(raw)
         except (TypeError, ValueError):
-            fid = 0
-            if fid > 0:
-                return fid
+            continue
+        if fid > 0:
+            return fid
     try:
         rows = _filter_allowed_feed_rows(_grid_feeds(target_login, target_agency))
         wanted_key = _feed_key(_COPY_DEFAULT_FEED_PATH)
