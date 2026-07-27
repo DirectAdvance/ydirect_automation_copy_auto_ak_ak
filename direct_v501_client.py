@@ -57,6 +57,11 @@ V501_BASE = "https://api.direct.yandex.com/json/v501"
 _UC_CHANNEL_MODES = ("search", "network", "network_cpa", "network_payconv", "combined",
                      "search_cpa", "search_payconv")
 
+# Размер пачки для add_feed_ads_batch: ShoppingAd+ListingAd пар за один вызов ads.add.
+# Официальный лимит ads.add не подтверждён (developer-reference не выгружен).
+# Консервативный дефолт = 10 пар (20 объявлений/вызов). Менять здесь при необходимости.
+_FEED_ADS_BATCH_SIZE = 10
+
 
 @dataclass
 class UnifiedCampaignSpec:
@@ -508,6 +513,44 @@ class DirectV501Client:
             raise DirectV501Error("adgroups.add", 0, "нет Id в ответе", str(first))
         return adgroup_id
 
+    def add_product_adgroups_batch(
+        self,
+        campaign_id: int,
+        groups: list[dict],
+    ) -> list[int | None]:
+        """Batch adgroups.add: создать несколько групп одним вызовом.
+
+        groups: [{"name": str, "region_ids": [int]}, ...] (region_ids опционален; дефолт [225])
+        Возвращает позиционный список adgroup_ids (None для групп с ошибкой в AddResults).
+        Позиционное соответствие: result[i] ↔ groups[i].
+
+        Экономия баллов: N×(20+20) → 1×(20+N×20) за вызов при N>1.
+        Официальный лимит adgroups.add: до 1000 групп (как в tp1 hot-path, _AC_CHUNK_AG=100).
+        """
+        if not groups:
+            return []
+        params = {
+            "AdGroups": [
+                {
+                    "Name": g["name"],
+                    "CampaignId": campaign_id,
+                    "RegionIds": g.get("region_ids") or [225],
+                }
+                for g in groups
+            ]
+        }
+        result = self._call("adgroups", "add", params)
+        add_results = result.get("AddResults", [])
+        out: list[int | None] = []
+        for i in range(len(groups)):
+            r = add_results[i] if i < len(add_results) else {}
+            errs = r.get("Errors", [])
+            if errs:
+                out.append(None)
+            else:
+                out.append(r.get("Id") or None)
+        return out
+
     def add_shopping_ad(self, adgroup_id: int, feed_id: int,
                         collection_id: str | None = None, vendor: str | None = None) -> int:
         """Добавить товарное объявление (ShoppingAd) в группу UNIFIED_CAMPAIGN.
@@ -585,6 +628,73 @@ class DirectV501Client:
         if not ad_id:
             raise DirectV501Error("ads.add(ListingAd)", 0, "нет Id в ответе", str(first))
         return ad_id
+
+    def add_feed_ads_batch(
+        self,
+        feed_groups: list[dict],
+    ) -> list[tuple]:
+        """Batch ads.add: создать ShoppingAd+ListingAd пары для N feed-групп одним вызовом.
+
+        feed_groups: [{"adgroup_id": int, "feed_id": int, "vendor"?: str, "collection_id"?: str}, ...]
+        Возвращает позиционный список: [(shop_id, listing_id, error_msg), ...] — result[i] ↔ feed_groups[i].
+        shop_id/listing_id = None если AddResults содержит ошибку для этого объявления.
+        error_msg = None при успехе обоих объявлений; иначе строка с описанием ошибки.
+
+        Порядок в Ads-массиве: Ads[2*i] = ShoppingAd(feed_groups[i]), Ads[2*i+1] = ListingAd(feed_groups[i]).
+        Позиционное соответствие гарантировано: API v501 возвращает AddResults в том же порядке.
+        Чанкование: пачки по _FEED_ADS_BATCH_SIZE пар (дефолт=10, дефолт официального лимита нет).
+
+        Экономия баллов: 2×N вызовов ads.add → ceil(N/_FEED_ADS_BATCH_SIZE) вызовов.
+        """
+        if not feed_groups:
+            return []
+        out: list[tuple] = []
+        for chunk_start in range(0, len(feed_groups), _FEED_ADS_BATCH_SIZE):
+            chunk = feed_groups[chunk_start : chunk_start + _FEED_ADS_BATCH_SIZE]
+            ads_payload: list[dict] = []
+            for fg in chunk:
+                ag = fg["adgroup_id"]
+                fid = fg["feed_id"]
+                vendor = fg.get("vendor")
+                collection_id = fg.get("collection_id")
+                # --- ShoppingAd ---
+                shopping: dict = {"FeedId": fid}
+                if vendor:
+                    shopping["FeedFilterConditions"] = [
+                        {"Operand": "vendor", "Operator": "CONTAINS_ANY", "Arguments": [vendor]}]
+                elif collection_id:
+                    shopping["FeedFilterConditions"] = [
+                        {"Operand": "collectionId", "Operator": "EQUALS_ANY", "Arguments": [collection_id]}]
+                # --- ListingAd ---
+                listing: dict = {"FeedId": fid}
+                if vendor:
+                    listing["FeedFilterConditions"] = [
+                        {"Operand": "vendor", "Operator": "CONTAINS_ANY", "Arguments": [vendor]}]
+                elif collection_id:
+                    listing["FeedFilterConditions"] = [
+                        {"Operand": "collectionId", "Operator": "EQUALS_ANY", "Arguments": [collection_id]}]
+                ads_payload.append({"AdGroupId": ag, "ShoppingAd": shopping})
+                ads_payload.append({"AdGroupId": ag, "ListingAd": listing})
+
+            result = self._call("ads", "add", {"Ads": ads_payload})
+            add_results = result.get("AddResults", [])
+
+            for i, _fg in enumerate(chunk):
+                shop_r = add_results[i * 2] if i * 2 < len(add_results) else {}
+                list_r = add_results[i * 2 + 1] if i * 2 + 1 < len(add_results) else {}
+                shop_errs = shop_r.get("Errors", [])
+                list_errs = list_r.get("Errors", [])
+                shop_id = shop_r.get("Id") if not shop_errs else None
+                listing_id = list_r.get("Id") if not list_errs else None
+                err_msg = None
+                if shop_errs:
+                    e = shop_errs[0]
+                    err_msg = f"ShoppingAd: {e.get('Message', '')} (code={e.get('Code', 0)})"
+                elif list_errs:
+                    e = list_errs[0]
+                    err_msg = f"ListingAd: {e.get('Message', '')} (code={e.get('Code', 0)})"
+                out.append((shop_id, listing_id, err_msg))
+        return out
 
     def get_adgroups(self, campaign_id: int) -> list[dict]:
         """Получить группы объявлений кампании."""
@@ -807,8 +917,29 @@ class DirectV501Client:
         adgroup_id = self.add_product_adgroup(
             campaign_id, name=group_name, region_ids=region_ids
         )
-        text_ad_id = self.add_text_ad(adgroup_id, title=text_title, text=text_body, href=href)
-        shopping_ad_id = self.add_shopping_ad(adgroup_id, feed_id=feed_id)
+        # Batch TextAd + ShoppingAd в одном ads.add (3 вызова → 2)
+        ads_payload = [
+            {"AdGroupId": adgroup_id, "TextAd": {"Title": text_title, "Text": text_body, "Href": href}},
+            {"AdGroupId": adgroup_id, "ShoppingAd": {"FeedId": feed_id}},
+        ]
+        result = self._call("ads", "add", {"Ads": ads_payload})
+        add_results = result.get("AddResults", [])
+        text_r = add_results[0] if add_results else {}
+        shop_r = add_results[1] if len(add_results) > 1 else {}
+        text_errs = text_r.get("Errors", [])
+        if text_errs:
+            raise DirectV501Error("ads.add(TextAd)", text_errs[0].get("Code", 0),
+                                  text_errs[0].get("Message", ""), text_errs[0].get("Details", ""))
+        text_ad_id = text_r.get("Id")
+        if not text_ad_id:
+            raise DirectV501Error("ads.add(TextAd)", 0, "нет Id в ответе", str(text_r))
+        shop_errs = shop_r.get("Errors", [])
+        if shop_errs:
+            raise DirectV501Error("ads.add(ShoppingAd)", shop_errs[0].get("Code", 0),
+                                  shop_errs[0].get("Message", ""), shop_errs[0].get("Details", ""))
+        shopping_ad_id = shop_r.get("Id")
+        if not shopping_ad_id:
+            raise DirectV501Error("ads.add(ShoppingAd)", 0, "нет Id в ответе", str(shop_r))
         return adgroup_id, text_ad_id, shopping_ad_id
 
     def setup_combined_campaign(
@@ -834,16 +965,41 @@ class DirectV501Client:
 
         Возвращает (search_ag_id, text_ad_id, product_ag_id, shopping_ad_id).
         """
-        search_ag = self.add_product_adgroup(
-            campaign_id, name=search_group_name, region_ids=region_ids
-        )
-        text_ad_id = self.add_text_ad(search_ag, title=text_title, text=text_body, href=href)
-
-        product_ag = self.add_product_adgroup(
-            campaign_id, name=product_group_name, region_ids=region_ids
-        )
-        shopping_ad_id = self.add_shopping_ad(product_ag, feed_id=feed_id)
-
+        # Batch: 2 группы в одном adgroups.add, затем TextAd+ShoppingAd в одном ads.add
+        # (4 вызова → 2; AdGroupId из ответа берётся ПОЗИЦИОННО: result[0]=search, result[1]=product)
+        ag_ids = self.add_product_adgroups_batch(campaign_id, [
+            {"name": search_group_name, "region_ids": region_ids},
+            {"name": product_group_name, "region_ids": region_ids},
+        ])
+        search_ag = ag_ids[0]
+        product_ag = ag_ids[1]
+        if not search_ag:
+            raise DirectV501Error("adgroups.add(batch)", 0, "не создана поисковая группа", "")
+        if not product_ag:
+            raise DirectV501Error("adgroups.add(batch)", 0, "не создана товарная группа", "")
+        # Batch: TextAd(search_ag) + ShoppingAd(product_ag) в одном ads.add
+        ads_payload = [
+            {"AdGroupId": search_ag, "TextAd": {"Title": text_title, "Text": text_body, "Href": href}},
+            {"AdGroupId": product_ag, "ShoppingAd": {"FeedId": feed_id}},
+        ]
+        result = self._call("ads", "add", {"Ads": ads_payload})
+        add_results = result.get("AddResults", [])
+        text_r = add_results[0] if add_results else {}
+        shop_r = add_results[1] if len(add_results) > 1 else {}
+        text_errs = text_r.get("Errors", [])
+        if text_errs:
+            raise DirectV501Error("ads.add(TextAd)", text_errs[0].get("Code", 0),
+                                  text_errs[0].get("Message", ""), text_errs[0].get("Details", ""))
+        text_ad_id = text_r.get("Id")
+        if not text_ad_id:
+            raise DirectV501Error("ads.add(TextAd)", 0, "нет Id в ответе", str(text_r))
+        shop_errs = shop_r.get("Errors", [])
+        if shop_errs:
+            raise DirectV501Error("ads.add(ShoppingAd)", shop_errs[0].get("Code", 0),
+                                  shop_errs[0].get("Message", ""), shop_errs[0].get("Details", ""))
+        shopping_ad_id = shop_r.get("Id")
+        if not shopping_ad_id:
+            raise DirectV501Error("ads.add(ShoppingAd)", 0, "нет Id в ответе", str(shop_r))
         return search_ag, text_ad_id, product_ag, shopping_ad_id
 
     def setup_product_campaign(

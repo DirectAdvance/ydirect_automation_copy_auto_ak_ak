@@ -1118,33 +1118,54 @@ def _create_tp3_single(data: dict, token: str, login: str, name: str, mode: str,
     _feeds_for_groups = ([(int(_f[0]), _f[1]) for _f in all_feeds_list if _f and _f[0]]
                          if all_feeds_list else [(feed_id, feed_name)])
     _shops: list = []                                   # [(shop_id, feed_id)] для set_default_text
+    # Phase 1: создаём adgroup для каждого фида (последовательно — нужны Id для phase 2)
+    _adgroup_infos: list = []                           # [(ag_id or None, fid, gn)]
     for _i, (_fid, _fnm) in enumerate(_feeds_for_groups):
         # имя группы уникально в кампании (Яндекс требует) — при >1 фиде добавляем метку фида
         _gn = group_name if len(_feeds_for_groups) == 1 else f"{group_name} · {(_fnm or _fid)}"[:255]
         try:
             ag = cl.add_product_adgroup(cid, name=_gn, region_ids=region_ids)
-            shop = cl.add_shopping_ad(ag, feed_id=_fid) if ag else None
         except Exception:  # noqa: BLE001
-            ag, shop = None, None
-        if not ag or not shop:
-            continue
-        # #ФИКС-8: add_listing_ad вне try оставлял частичную tp3 (cid+ShoppingAd) при raise.
-        # Падение листинга → чистим всю недоделанную кампанию и уходим в defer (как _shops-гейт ниже).
+            ag = None
+        _adgroup_infos.append((ag, _fid, _gn))
+    # Phase 2: batch ShoppingAd+ListingAd для всех валидных adgroup — 2×N → 1 вызов ads.add
+    # СОХРАНЕНА семантика оригинала: ShoppingAd failure → skip; ListingAd failure → delete campaign.
+    _valid_idx = [idx for idx, (ag, _, __) in enumerate(_adgroup_infos) if ag is not None]
+    if _valid_idx:
+        _feed_groups_batch = [
+            {"adgroup_id": _adgroup_infos[idx][0], "feed_id": _adgroup_infos[idx][1]}
+            for idx in _valid_idx
+        ]
         try:
-            cl.add_listing_ad(ag, feed_id=_fid)
-        except Exception as _lae:  # noqa: BLE001
+            _ad_results = cl.add_feed_ads_batch(_feed_groups_batch)
+        except Exception as _be:  # noqa: BLE001 — HTTP-level failure всего batch
             try:
                 _delete_partial_campaign(token, login, cid)
             except Exception:  # noqa: BLE001
                 pass
             return {"ok": False, "name": name, "feed": feed_name, "campaign_id": cid,
                     "partial_deleted": True, "defer": True,
-                    "error": f"tp3 не дозаполнена: ListingAd упал: {str(_lae)[:160]}"}
-        try:
-            cl._call("adgroups", "update", {"AdGroups": [{"Id": ag, "TrackingParams": cmc.UTM_TEMPLATE}]})
-        except Exception:  # noqa: BLE001
-            pass
-        _shops.append((shop, _fid))
+                    "error": f"tp3 не дозаполнена: batch ads.add упал: {str(_be)[:160]}"}
+        for j, idx in enumerate(_valid_idx):
+            ag, _fid, _gn = _adgroup_infos[idx]
+            shop_id, listing_id, _ad_err = _ad_results[j]
+            if shop_id is None:
+                # ShoppingAd упал → пропустить группу (как оригинальный continue)
+                continue
+            if listing_id is None:
+                # ShoppingAd succeeded, ListingAd упал → удалить всю кампанию (#ФИКС-8)
+                try:
+                    _delete_partial_campaign(token, login, cid)
+                except Exception:  # noqa: BLE001
+                    pass
+                return {"ok": False, "name": name, "feed": feed_name, "campaign_id": cid,
+                        "partial_deleted": True, "defer": True,
+                        "error": f"tp3 не дозаполнена: ListingAd упал: {(_ad_err or 'нет деталей')[:160]}"}
+            try:
+                cl._call("adgroups", "update", {"AdGroups": [{"Id": ag, "TrackingParams": cmc.UTM_TEMPLATE}]})
+            except Exception:  # noqa: BLE001
+                pass
+            _shops.append((shop_id, _fid))
     # Защита от пустышек: ни одна группа/товарное не создались → удаляем недоделанную кампанию.
     if not _shops:
         _delete_partial_campaign(token, login, cid)
