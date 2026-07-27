@@ -104,7 +104,9 @@ def victory_conn():
     Guards against stale pooled sockets: Postgres on Victory can silently drop an
     idle connection (SSL EOF) while ``conn.closed`` still reads 0, so a bare
     ``closed`` check passes and the first real I/O (``set_session``/query) raises
-    ``OperationalError: SSL SYSCALL error: EOF detected``. We ping the handed-out
+    ``OperationalError: SSL SYSCALL error: EOF detected``. In practice psycopg2
+    can also surface the same dead socket as a broader ``DatabaseError`` on
+    ``set_session()`` before the ping query even starts. We ping the handed-out
     connection (``SELECT 1``); on failure the dead socket is discarded (never
     returned to the pool as live) and one retry is made on a fresh connection
     before propagating.
@@ -127,7 +129,7 @@ def victory_conn():
                 with conn.cursor() as cur:
                     cur.execute("SELECT 1")
                     cur.fetchone()
-            except psycopg2.OperationalError:
+            except (psycopg2.OperationalError, psycopg2.DatabaseError):
                 # Stale pooled socket (server-side EOF): drop it, never reuse.
                 try:
                     pool.putconn(conn, close=True)

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from .text_norm import _trim_clean
+from .link_check import resolve_or_fallback_url as _resolve_url, resolve_urls_batch as _resolve_urls_batch
 
 import json
+import os
 import re
+import threading
 import time
 from collections import Counter
+from urllib.parse import urlsplit, urlunsplit
 
 _DEPS: dict = {}
 
@@ -19,6 +23,48 @@ def configure(deps: dict) -> None:
     globals().update(deps)
 
 
+def _site_root_href(href: str) -> str:
+    """Root site URL for feed/model links even when campaign landing is /quiz."""
+    raw = str(href or "").strip()
+    try:
+        p = urlsplit(raw)
+        if p.scheme and p.netloc:
+            return urlunsplit((p.scheme, p.netloc, "", "", ""))
+    except Exception:  # noqa: BLE001
+        pass
+    return raw.rstrip("/")
+
+
+def _pack_group_href(ct: str, brand: str, feed_urls: "dict | None", href: str, site_type: str) -> str:
+    """Raw model_href для группы пака (до link_check resolve). Вызывается в pre-pass и основном цикле.
+
+    feed_urls может быть None (tp1_pack_groups при feed_url_by_model=None) — в этом случае
+    фид-URL не ищем и сразу строим формульный слаг.
+    """
+    site_href = _site_root_href(href)
+    raw_feed = (_feed_url_for_model(feed_urls, brand, no_brand_fallback=(_ct_segment(ct) == "Модели"))
+                if feed_urls else None)
+    if raw_feed:
+        return _brand_level_url(raw_feed) if _ct_segment(ct) == "Марки" else _strip_url_query(raw_feed)
+    return _model_page_href(site_href, site_type, brand)
+
+
+def _v5_added_keyword_ids(chunk: list, add_results: list, skip_keyword: str) -> set:
+    """{Id} реально созданных фраз из ответа v5 ``keywords.add`` (без спецключа автотаргета).
+
+    ``AddResults`` позиционно соответствует отправленному chunk (контракт v5). На фразу, которую
+    Директ считает дублем уже существующей, возвращается Id ТОЙ ЖЕ фразы + Warning 10140 —
+    поэтому множество Id и есть число реально осевших ключей."""
+    out: set = set()
+    for it, r in zip(chunk or [], add_results or []):
+        if not isinstance(r, dict) or not isinstance(it, dict):
+            continue
+        kid = r.get("Id")
+        if kid and str(it.get("Keyword") or "") != skip_keyword:
+            out.add(str(kid))
+    return out
+
+
 def _build_minus_mod_by_brand(pairs: list) -> dict:
     """Строит карту {mark_canon: set(model_lower_collapsed)} из пар (mark_canon, model_lower).
     Допущение: марки автодилеров односложные (BAIC/Chery/MG/Lada) — первый токен raw_brand = бренд.
@@ -27,6 +73,15 @@ def _build_minus_mod_by_brand(pairs: list) -> dict:
     for mark_c, model_l in (pairs or []):
         out.setdefault(mark_c, set()).add(model_l)
     return out
+
+
+def _apply_global_feed_minus_for_site(site_type: str) -> bool:
+    """Whether to add account-wide feed minus marks/models.
+
+    For used-car sites these global rules remove offers that are valid used-car inventory, so
+    builders keep only positive brand/model filters.
+    """
+    return (site_type or "").strip() != "С пробегом"
 
 
 def _tp1_group_name(ct: str, r_code: str, brand: str, with_shopping: bool = False,
@@ -107,11 +162,11 @@ def _tp1_video_ads(login: str, created_ad_meta: list, grid_cookie: str | None = 
     # Другие ct продолжаются. Решение Семёна 2026-07-08.
     _failed_cts: set = set()
 
-    def _creatives_for_ct(ct: str, brand_hint: str = "") -> list:
+    def _creatives_for_ct(ct: str, brand_hint: str = "", site_type: str = "") -> list:
         ct = (ct or "").strip().lower()
         if not ct or ct == "ct0000":
             return []
-        _ck = (login, ct, brand_hint)           # brand_hint в ключе: пустой hint не блокирует непустой
+        _ck = (login, ct, brand_hint, site_type)  # hint/site_type в ключе: пустые не блокируют точные
         if _ck in _VIDEO_CREATIVE_CACHE:                  # уже качали/грузили в этом процессе
             return _VIDEO_CREATIVE_CACHE[_ck]
         if ct in _failed_cts:                             # этот ct уже таймаутил — не повторяем
@@ -125,6 +180,11 @@ def _tp1_video_ads(login: str, created_ad_meta: list, grid_cookie: str | None = 
         except Exception as e:  # noqa: BLE001
             paths, _ = [], rep["warnings"].append(f"videos_for_ct {ct}: {str(e)[:80]}")
             _pool_read_ok = False   # транзиентный сбой чтения M3 ≠ «пул пуст» — не кэшировать
+        if not paths:
+            try:
+                paths = (kp.read_videos(site_type, "tp1", ct)[:limit_per_group] if site_type else [])
+            except Exception as e:  # noqa: BLE001
+                rep["warnings"].append(f"read_videos tp1 {ct}: {str(e)[:80]}")
         for p in (paths or [])[:limit_per_group]:
             if not _budget_left() or ct in _failed_cts:
                 break
@@ -157,7 +217,8 @@ def _tp1_video_ads(login: str, created_ad_meta: list, grid_cookie: str | None = 
     attach_items, seen = [], set()
     for _rec in created_ad_meta:
         meta = _rec.get("meta") or {}
-        cids = _creatives_for_ct(meta.get("ct") or "", brand_hint=meta.get("brand") or "")
+        cids = _creatives_for_ct(meta.get("ct") or "", brand_hint=meta.get("brand") or "",
+                                 site_type=meta.get("site_type") or "")
         if not cids:
             continue
         ad_id = _rec.get("id")
@@ -200,6 +261,7 @@ def _build_tp1_adgroups(
     base_sitelinks: list | None = None,
     tp_code: str = "tp1",
     all_feeds_list: list | None = None,
+    site_type: str = "",
 ) -> dict:
     """Наполнить РСЯ (tp1 ЕПК) группами БАТЧЕМ через v501:
     adgroups.add (с TrackingParams и minus) → keywords.add → adimages.add → ads.add(TextAd+Image).
@@ -214,6 +276,7 @@ def _build_tp1_adgroups(
     → {adgroups, keywords, ads, images_uploaded, sitelinks_set, errors, deferred}."""
     rep = {"adgroups": 0, "keywords": 0, "ads": 0, "images_uploaded": 0,
            "sitelinks_set": sitelink_set_id or 0, "errors": [], "deferred": 0}
+    _apply_feed_minus = _apply_global_feed_minus_for_site(site_type)
     rids = [int(r) for r in (region_ids or []) if str(r).lstrip("-").isdigit()] or [225]
     if len(groups) > _AC_GROUP_CAP:
         rep["deferred"] = len(groups) - _AC_GROUP_CAP
@@ -233,7 +296,8 @@ def _build_tp1_adgroups(
             region_ids=rids,
             keywords=[],           # ключи — ТОЛЬКО через Фазу 2 (AddKeywords), без дублей
             minus_keywords=[],     # групповой минус для поиска не ставим (кампанийный уровень)
-            autotargeting_profile="search_tp2",  # EXACT_V2_MARK + WITHOUT_BRAND атомарно
+            autotargeting=bool(autotarget),
+            autotargeting_profile=("search_tp2" if autotarget else ""),  # EXACT_V2_MARK + WITHOUT_BRAND атомарно
         ) for g in groups]
         try:
             ag_ids = _gcl5.add_adgroups(_g5_items)
@@ -285,34 +349,65 @@ def _build_tp1_adgroups(
                 idx += 1
             time.sleep(_AC_BATCH_SLEEP)
 
-    # ── Фаза 2: keywords.add (ключи на группу ≤200) ──────────────────────────
-    # Три режима таргетинга tp1 (разводятся из seg_modes структуры → plan → сюда):
-    #   • autotarget=True,  keep_keywords=False → спецключ "---autotargeting" ВМЕСТО реальных (полный автотаргет).
-    #   • autotarget=False                      → реальные ключи (чистый КС).
-    #   • autotarget=True,  keep_keywords=True  → И спецключ автотаргета, И реальные ключи (КС+Автотаргет).
-    kw_items = []
-    for i, g in enumerate(groups):
-        if not ag_ids[i]:
-            continue
-        if autotarget and tp_code != "tp5":
-            # tp5: автотаргет УЖЕ включён атомарно в Grid build_adgroup(search_tp2) с категориями
-            # EXACT_V2_MARK+WITHOUT_BRAND (Фаза 1). v501-ключ "---autotargeting" повторно включил бы
-            # автотаргет с ДЕФОЛТными категориями (все 5 + 3 бренда) → WRONG_AUTOTARGET на
-            # -Автотаргетинг tp5 (пофикшено 2026-07-09) → на tp5 спецключ НЕ ставим.
-            # ⚠ На tp1 РСЯ "---autotargeting" даёт ШИРОКИЙ автотаргет (без категорийного сужения);
-            # для tp1 РСЯ пока приемлемо (в отличие от tp5, где сужаем через Grid-профиль).
-            kw_items.append({"Keyword": _AUTOTARGET_KW, "AdGroupId": int(ag_ids[i])})
-        # Реальные ключи: чистый КС (not autotarget) ИЛИ комбинированный КС+Автотаргет (keep_keywords).
-        if (not autotarget) or keep_keywords:
+    # ── Фаза 2: keywords — транспорт по tp_code ──────────────────────────────
+    # TP5: Grid-транспорт (тот же _gcl5 из Фазы 1) — смешанный транспорт (Grid группы + v5
+    # keywords.add) даёт лаг репликации Grid→v5 → ключи-фантомы (LIVE=0).
+    # Класс бага DMP_TP2_KEYWORDS_LOST_MIXED_TRANSPORT (ERRORS_JOURNAL ~строка 3127): уже
+    # исправлен для tp2/tp4 в create_set_text_builders.py:96-119 — тот же паттерн здесь.
+    # ---autotargeting спецключ на tp5 не ставим: профиль search_tp2 (relevanceMatch) атомарно
+    # активен из Фазы 1; gc.GridCreateClient.add_keywords сам режет ---autotargeting.
+    # TP1 РСЯ: v5-путь без изменений (v501-группы, нет межтранспортного лага).
+    if tp_code == "tp5":
+        kw_g5: list = []
+        for i, g in enumerate(groups):
+            if not ag_ids[i]:
+                continue
+            # Группы чистого автотаргета (autotarget=True, keep_keywords=False) не несут ключей:
+            # таргетинг = relevanceMatch search_tp2 из Фазы 1 (EXACT_V2_MARK+WITHOUT_BRAND).
+            if autotarget and not keep_keywords:
+                continue
             for k in _kw_clean(g.get("keywords") or [], 200):
-                kw_items.append({"Keyword": k, "AdGroupId": int(ag_ids[i])})
-    for chunk in _chunks(kw_items, _AC_CHUNK_KW):
-        jk = _v5_call("keywords", "add", token, login, {"Keywords": chunk})
-        if "error" not in jk:
-            rep["keywords"] += sum(1 for r in (jk.get("result") or {}).get("AddResults", []) if r.get("Id"))
-        else:
-            rep["errors"].append(f"keywords.add {_v5_err(jk)}")
-        time.sleep(_AC_BATCH_SLEEP)
+                kw_g5.append({"adGroupId": str(ag_ids[i]), "keyword": k})
+        if kw_g5:
+            try:
+                # unique_keyword_ids считает РАЗНЫХ keywordId (Директ схлопывает дубли,
+                # как на v5-пути; len(addedItems) давал BUILD_LIVE_UNDERCOUNT — porg-ozge4ntu).
+                rep["keywords"] = gc.unique_keyword_ids(_gcl5.add_keywords(kw_g5))
+            except Exception as _kw5e:  # noqa: BLE001 — ключи единственный путь; сбой = группы без ключей
+                rep["errors"].append(f"keywords(Grid AddKeywords tp5): {str(_kw5e)[:200]}")
+    else:
+        # ── tp1 РСЯ: v5 keywords.add (v501-группы, нет межтранспортного лага) ─────────────────
+        # Три режима таргетинга tp1:
+        #   • autotarget=True,  keep_keywords=False → спецключ "---autotargeting" ВМЕСТО реальных.
+        #   • autotarget=False                      → реальные ключи (чистый КС).
+        #   • autotarget=True,  keep_keywords=True  → И спецключ автотаргета, И реальные ключи.
+        kw_items = []
+        for i, g in enumerate(groups):
+            if not ag_ids[i]:
+                continue
+            if autotarget:
+                # tp5 исключён if-ветки выше; здесь всегда tp1 — спецключ допустим.
+                # ⚠ "---autotargeting" на tp1 РСЯ даёт ШИРОКИЙ автотаргет (без сужения категорий);
+                # для tp1 РСЯ приемлемо (в отличие от tp5, где сужаем через Grid-профиль).
+                kw_items.append({"Keyword": _AUTOTARGET_KW, "AdGroupId": int(ag_ids[i])})
+            # Реальные ключи: чистый КС (not autotarget) ИЛИ комбинированный КС+Автотаргет.
+            if (not autotarget) or keep_keywords:
+                for k in _kw_clean(g.get("keywords") or [], 200):
+                    kw_items.append({"Keyword": k, "AdGroupId": int(ag_ids[i])})
+        # build-счётчик = число РАЗНЫХ Id (Директ схлопывает дубли, отдаёт Id существующей
+        # фразы + Warning 10140). Счёт отправленных давал BUILD_LIVE_UNDERCOUNT (porg-ozge4ntu).
+        _kw_ids: set = set()
+        for chunk in _chunks(kw_items, _AC_CHUNK_KW):
+            jk = _v5_call("keywords", "add", token, login, {"Keywords": chunk})
+            if "error" not in jk:
+                # Спецключ "---autotargeting" в счётчик НЕ кладём: он оседает как relevanceMatch,
+                # не как GdKeyword → ложный BUILD_LIVE_MISSING на автотаргетинговых кампаниях.
+                _kw_ids |= _v5_added_keyword_ids(
+                    chunk, (jk.get("result") or {}).get("AddResults", []), _AUTOTARGET_KW)
+            else:
+                rep["errors"].append(f"keywords.add {_v5_err(jk)}")
+            time.sleep(_AC_BATCH_SLEEP)
+        rep["keywords"] += len(_kw_ids)
 
     # ── Фаза 3: ads.add без предварительной token-загрузки картинок ──────────
     # Живой баг 2026-06-28: v501 upload_image на больших tp1 мог зависать до стадии ads.add.
@@ -335,7 +430,10 @@ def _build_tp1_adgroups(
         img_paths = g.get("image_paths") or ([g.get("image_path")] if g.get("image_path") else [])
         ra = _responsive_ad(g.get("titles") or [g.get("title"), g.get("brand"), g.get("name")],
                             g.get("texts") or [g.get("text")], ad_href,
-                            image_hashes=None)
+                            image_hashes=None,
+                            # site_type нужен финальной сборке: `_upgrade_credit_*` подставляет
+                            # хардкод-варианты про «новые авто» уже ПОСЛЕ всех `_cf`.
+                            site_type=site_type or g.get("site_type") or "")
         if not ra:
             rep["errors"].append(f"{g.get('name', '?')}: пропущено объявление (нет заголовков/текстов/href)")
             continue
@@ -355,6 +453,7 @@ def _build_tp1_adgroups(
         ad_meta.append({"brand": g.get("brand") or g.get("name") or "", "href": ad_href,
                         "seg": _ct_segment(g.get("ct") or ""),   # 'Марки' → цена = МИН по марке
                         "ct": g.get("ct") or "",                 # для видео РСЯ (creativeIds по ct)
+                        "site_type": site_type or g.get("site_type") or "",
                         "titles": ra.get("Titles") or [], "bodies": ra.get("Texts") or [],
                         "image_hashes": [],
                         "image_paths": img_paths[:5]})
@@ -421,7 +520,8 @@ def _build_tp1_adgroups(
                 _upd_items.append(_upd)
             if _upd_items:
                 repair_items = list(_upd_items)
-                rep["ads_repaired"] = _grid_update_adaptive_ads(login, _upd_items)
+                rep["ads_repaired"] = _grid_update_adaptive_ads(
+                    login, _upd_items, campaign_ids=[campaign_id] if campaign_id else None)
                 # Считаем группы С КАРТИНКАМИ (как в остальных путях: :2252, text/feed builders),
                 # а не все item'ы — иначе отчёт показывал 27/27 при реальных 25.
                 rep["image_groups"] = sum(1 for _it in _upd_items if _it.get("image_hashes"))
@@ -538,7 +638,8 @@ def _build_tp1_adgroups(
             _grid_shop_items.append({"adgroup_id": int(ag_ids[i]), "feed_id": int(feed_id),
                                      "vendor": _vendor, "collection_id": None, "model": _model_vals,
                                      "name": groups[i].get("name", "?"),
-                                     "brand_field": _brand_field, "model_field": _model_field})
+                                     "brand_field": _brand_field, "model_field": _model_field,
+                                     "apply_global_minus": _apply_feed_minus})
             rep["listing_build_items"].append({
                 "adgroup_id": int(ag_ids[i]),
                 "feed_id": int(feed_id),
@@ -583,11 +684,12 @@ def _build_tp1_adgroups(
                     # collectionId-фолбэк удалён (2026-07-07): collection_id всегда None;
                     # ListingAd фильтр = name CONTAINS_ANY [марка] через _grid_add_listings_with_name_filters.
                     # Для Общих/несегментированных групп без name_value — листинг без фильтра (весь каталог).
-                    try:                                 # глобальные минус-марки: используем тот же brand_field
-                        from . import create_set_feeds as _csf
-                        _conds.extend(_csf._minus_marks_grid_conditions(brand_field=_bf, model_field=_mf))
-                    except Exception:  # noqa: BLE001
-                        pass
+                    if _src.get("apply_global_minus", True) is not False:
+                        try:                             # глобальные минус-марки: используем тот же brand_field
+                            from . import create_set_feeds as _csf
+                            _conds.extend(_csf._minus_marks_grid_conditions(brand_field=_bf, model_field=_mf))
+                        except Exception:  # noqa: BLE001
+                            pass
                     if _conds:
                         rep["shopping_filters"][int(_raw_id)] = {"tab": "CONDITION", "conditions": _conds}
             except Exception as e:  # noqa: BLE001
@@ -647,7 +749,8 @@ def _build_tp1_adgroups(
             # ShoppingAd + ListingAd через Grid (без баллов). Без brand-фильтра — весь фид.
             _af_shop_item = [{"adgroup_id": int(_new_ag), "feed_id": _fid,
                               "vendor": None, "collection_id": None, "model": [],
-                              "name": _gn_af, "brand_field": "vendor", "model_field": "model"}]
+                              "name": _gn_af, "brand_field": "vendor", "model_field": "model",
+                              "apply_global_minus": _apply_feed_minus}]
             _af_build: dict = {"listing_name_by_shop": {}}
             try:
                 _gcl_afs = gf.get_grid_client(login, cookie=grid_cookie)
@@ -662,7 +765,8 @@ def _build_tp1_adgroups(
                         pass
                     _grid_add_listings_with_name_filters(
                         gf.get_grid_client(login, cookie=grid_cookie),
-                        _af_shop, _af_build, _fid, _af_default_text)
+                        _af_shop, _af_build, _fid, _af_default_text,
+                        apply_global_minus=_apply_feed_minus)
                     rep["listing_ads"] += _af_build.get("listing_ads", 0)
             except Exception as _e:  # noqa: BLE001
                 rep.setdefault("errors", []).append(f"all_feeds shop({_fid}): {str(_e)[:120]}")
@@ -686,6 +790,27 @@ def _pack_read_glitch(key: str, site_type: str, pack_tp: str) -> bool:
         return False   # сосед читается непустым → инфра жива, целевой пак легитимно пуст
     # сосед тоже пуст — различаем реальный сбой инфры vs легитимно нет пака у слепка
     return not kp.m3_reachable()
+
+
+def _drop_tp1_groups_without_images(groups: list, tp_code: str, products_only: bool = False) -> tuple[list, dict]:
+    """For tp1 ResponsiveAd requires own images. Groups with no image pool are a data gap:
+    skip them instead of creating naked РСЯ ads that live verification flags as NO_IMAGES_LIVE."""
+    if tp_code != "tp1" or products_only:
+        return groups, {}
+    kept: list = []
+    skipped: list = []
+    for g in groups or []:
+        if g.get("image_hashes") or g.get("image_paths") or g.get("image_path"):
+            kept.append(g)
+        else:
+            skipped.append(str(g.get("ct") or "").strip() or "ct?")
+    if not skipped:
+        return groups, {}
+    return kept, {
+        "image_no_pool": True,
+        "groups_skipped_no_images": len(skipped),
+        "image_no_pool_cts": sorted(set(skipped)),
+    }
 
 
 def _build_tp1_from_pack(
@@ -783,7 +908,7 @@ def _build_tp1_from_pack(
     _sc_titles = _slepok_campaign_content(slepok, site_type).get("titles") or []  # пул слепка — 1 раз на кампанию
     # URL страниц моделей: account-level мёрж (все фиды, как цены) → покрывает марки без URL
     # в конкретном feed_id (#ФИКС-8).
-    _feed_urls_tp1 = _account_offer_urls(login, href)
+    _feed_urls_tp1 = _account_offer_urls(login, _site_root_href(href))
 
     # Строим группы ТОЛЬКО для ct-папок у которых есть ключи слепка
     groups = []
@@ -847,6 +972,22 @@ def _build_tp1_from_pack(
                 _multi = True   # group_name берётся из _uname (структурный item.t), а не авто-ct
         except Exception:       # noqa: BLE001 — фолбэк не должен ронять создание
             pass
+    # Pre-pass: прогрев кэша link_check параллельно (6 потоков). Основной цикл ниже
+    # вызывает _resolve_url(model_href) — теперь это будет cache-hit. (#LINK_CHECK_404_FALLBACK)
+    _batch_hrefs: list[str] = []
+    for _pct, _pgk, _puname in _units:
+        _pgrp_pack = (pack.get(_pct, {}).get("_groups") or {}).get(_pgk) if _pgk else None
+        _pdata = _pgrp_pack or pack.get(_pct) or {}
+        if not _pdata.get("positive") and not (_pct == "ct0000" and _pgk):
+            continue
+        if segment and _ct_segment(_pct) != segment:
+            continue
+        _praw = ((_struct_names.get(_pct) or ct_name.get(_pct) or _pct) if _struct_names
+                 else (ct_name.get(_pct) or ct_model.get(_pct) or _pct))
+        _pbrand = _valid_pack_brand_name(_pct, _praw)
+        _batch_hrefs.append(_pack_group_href(_pct, _pbrand, _feed_urls_tp1, href, site_type))
+    _resolve_urls_batch(_batch_hrefs)
+
     for ct, _gk, _uname in _units:
         _grp_pack = (pack.get(ct, {}).get("_groups") or {}).get(_gk) if _gk else None
         data = _grp_pack or pack.get(ct) or {}
@@ -871,9 +1012,13 @@ def _build_tp1_from_pack(
                 continue
         brand = _valid_pack_brand_name(ct, raw_brand)   # логический бренд: пустой для «Общее»
         group_label = _pack_group_display_name(ct, raw_brand, brand)
-        group_name = (_uname if (_multi and _uname)
-                      else _tp1_group_name(ct, r_code, group_label, with_shopping=with_shopping,
-                                           autotarget=autotarget, tp_code=tp_code))
+        # multi-путь (camp_names/per-модель, tp5 «Товарная галерея - Модели»): _uname = структурное
+        # имя модели («Jetta», «GAC Gs4»…) — используем как БРЕНД в кодере, а не как сырое имя.
+        # Это гарантирует кодер-префикс первым (правило CODER.md: «кодер всегда первый в имени»).
+        # До фикса: _uname отдавался напрямую как group_name — кодер пропадал в multi-ветке.
+        _group_brand = (_uname if (_multi and _uname) else group_label)
+        group_name = _tp1_group_name(ct, r_code, _group_brand, with_shopping=with_shopping,
+                                     autotarget=autotarget, tp_code=tp_code)
         # Картинки: общие ct0000-ct0014 → общий пул ct0000; кузова ct0015-ct0018 → свой ct;
         # модели/марки → свой ct.
         all_images = _creative_images_for_ct(site_type, tp_code, ct, key)
@@ -881,19 +1026,13 @@ def _build_tp1_from_pack(
         # image_path — первая из ротации (совместимость); image_paths — все (для мульти-upload в Фазе 3).
         image_path = all_images[_img_rr % len(all_images)] if all_images else None
         _img_rr += 1
-        # deep-link: сначала реальный URL из фида (targetUrl), фолбэк на формульный слаг (#ФИКС-2).
-        # ФИКС A: Марки → /auto/{brand} (первые 2 сегмента), Модели → полный путь без query. (#ФИКС-A)
-        _raw_feed_url = _feed_url_for_model(_feed_urls_tp1, brand,
-                                            no_brand_fallback=(_ct_segment(ct) == "Модели"))
-        if _raw_feed_url:
-            model_href = (_brand_level_url(_raw_feed_url) if _ct_segment(ct) == "Марки"
-                          else _strip_url_query(_raw_feed_url))
-        else:
-            model_href = _model_page_href(href, site_type, brand)
+        # deep-link: фид → формульный слаг. ФИКС-A: Марки→/auto/{brand}, Модели→полный путь.
+        # 404-фолбэк: кэш прогрет pre-pass (batch 6 потоков) → cache-hit. (#LINK_CHECK_404_FALLBACK)
+        model_href = _resolve_url(_pack_group_href(ct, brand, _feed_urls_tp1, href, site_type))
         # Title: шаблон «Новые {brand} в {город}. {акция}» (≤35 симв.) — фолбэк brand[:35].
         # ai_title2 — ИИ-заголовок (если дан), иначе round-robin из пула.
         is_brand_group = _ct_segment(ct) in ("Марки", "Модели")
-        title = (_title_from_template(brand, city, slepok=slepok) if (is_brand_group and not ai_title2)
+        title = (_title_from_template(brand, city, slepok=slepok, site_type=site_type) if (is_brand_group and not ai_title2)
                  else (_GENERIC_AT_TITLES[0] if not is_brand_group else brand[:35]))
         ttl2 = (ai_title2[:30] if ai_title2 else _next_title2())   # ИИ-title2 или round-robin из пула
         # Внутри pack-групп не вызываем M3 per-ct: ИИ уже сгенерировал контент кампании/item.
@@ -931,18 +1070,34 @@ def _build_tp1_from_pack(
         return {"skipped": f"пак пуст для сегмента {segment} ({tp_code}) — сбой чтения M3, "
                            "отложено на докрутку",
                 "defer": True}
+    if not groups and with_shopping and feed_id and (only_gks or only_cts or segment):
+        _wanted = []
+        if only_gks:
+            _wanted.append("gk=[" + ", ".join(sorted(str(x) for x in only_gks if x)) + "]")
+        if only_cts:
+            _wanted.append("ct=[" + ", ".join(sorted(str(x) for x in only_cts if x)) + "]")
+        if segment:
+            _wanted.append(f"segment={segment}")
+        return {"skipped": "content-gap: для структурной tp5 не найдены группы/ключи "
+                           + ("; ".join(_wanted) if _wanted else ""),
+                "defer": _pack_read_glitch(key, site_type, tp_code)}
     if not groups and with_shopping and feed_id:
         # Бренд-пак слепка для tp_code ПУСТ (напр. у pavlov нет tp5-пака), НО это товарная галерея
         # по фиду — фид-товарка (ShoppingAd/ListingAd) НЕ зависит от бренд-пака. Чтобы tp5/tp3 не
         # выходили пустыми, создаём ОДНУ товарную-галерею группу по всему фиду: автотаргет + общие
         # заголовки/тексты + товарные объявления (with_shopping ниже добавит ShoppingAd+ListingAd).
+        # site_type-фильтр: сырой `_GENERIC_AT_TITLES`/`_GENERIC_TEXT_FILLERS` на Б/У-сайте
+        # («С пробегом») протаскивал «Купить новое авто…»/«Кредит без взноса на новое авто…».
+        # На не-Б/У `_drop_new_car` — no-op. После фильтра остаётся ≥5 заголовков / ≥3 текста.
+        _gg_titles = _drop_new_car(list(_GENERIC_AT_TITLES), site_type)
+        _gg_texts = _drop_new_car(list(_GENERIC_TEXT_FILLERS), site_type)
         groups = [{
             "name": "Товарная галерея", "ct": "ct0000", "brand": "",
             "keywords": [], "minus": [],
-            "titles": list(_GENERIC_AT_TITLES),
-            "texts": list(_GENERIC_TEXT_FILLERS),
-            "title": _GENERIC_AT_TITLES[0], "title2": "",
-            "text": (_GENERIC_TEXT_FILLERS[0] if _GENERIC_TEXT_FILLERS else ""),
+            "titles": _gg_titles,
+            "texts": _gg_texts,
+            "title": (_gg_titles[0] if _gg_titles else ""), "title2": "",
+            "text": (_gg_texts[0] if _gg_texts else ""),
             "href": href, "image_path": None, "callouts": [],
         }]
         autotarget = True                                 # товарная галерея по фиду = автотаргет (нет бренд-ключей)
@@ -951,6 +1106,16 @@ def _build_tp1_from_pack(
         # безусловный defer гонял бы «ядовитый» пункт по 3 ресума (ревью 03.07 #22).
         return {"skipped": f"пак пуст: нет ct-папок с ключами слепка {key} для {tp_code}",
                 "defer": _pack_read_glitch(key, site_type, tp_code)}
+    groups, _img_skip = _drop_tp1_groups_without_images(groups, tp_code, products_only)
+    if _img_skip:
+        _cts_s = ", ".join((_img_skip.get("image_no_pool_cts") or [])[:12])
+        _more = len(_img_skip.get("image_no_pool_cts") or []) - 12
+        _note = (f"tp1: пропущено групп без картинок: {_img_skip['groups_skipped_no_images']} "
+                 f"(ct: {_cts_s}{'; +' + str(_more) if _more > 0 else ''})")
+        if not groups:
+            return {**_img_skip, "skipped": _note}
+    else:
+        _note = ""
 
     # Быстрые ссылки: создаём набор ОДИН раз → SitelinkSetId на каждое объявление.
     # Важно: v5-only путь здесь молча оставлял tp1 без ссылок при пустом kind='sitelinks'.
@@ -959,8 +1124,6 @@ def _build_tp1_from_pack(
     base_sitelinks: list = []   # нормализованные ссылки для per-group наборов (#ФИКС-3)
     asset_warns = []
     try:
-        if not sitelinks:
-            sitelinks = _ai_common_sitelinks(login, slepok, site_type, city, tp_code)
         _assets = _resolve_campaign_assets(token, login, href, sitelinks=sitelinks,
                                            slepok=slepok, site_type=site_type, grid_cookie=grid_cookie)
         sitelink_set_id = _assets.get("sitelink_set_id")
@@ -1020,11 +1183,14 @@ def _build_tp1_from_pack(
                                autotarget=autotarget, keep_keywords=keep_keywords,
                                products_only=_skip_text_ads,
                                grid_cookie=grid_cookie, tp_code=tp_code,
-                               all_feeds_list=all_feeds_list)
+                               all_feeds_list=all_feeds_list, site_type=site_type)
     rep["cts"] = len(pack)
     rep["groups_built"] = len(groups)
     rep["callouts_pool"] = len(co_pool)
     rep["sitelinks_set_id"] = sitelink_set_id
+    if _img_skip:
+        rep.update(_img_skip)
+        rep.setdefault("warnings", []).append(_note)
     if asset_warns:
         rep.setdefault("warnings", []).extend(asset_warns)
     # Видео РСЯ (tp1 ЕПК): загрузка по ct из пула M3 + attach creativeIds (Grid) — Фаза 3.6
@@ -1035,7 +1201,8 @@ def _build_tp1_from_pack(
     return rep
 
 def _grid_add_listings_with_name_filters(gcl, shop_ids: list, build: dict,
-                                         feed_id: int, default_text: str) -> None:
+                                         feed_id: int, default_text: str,
+                                         apply_global_minus: bool = True) -> None:
     """Листинги «Страницы каталога» через Grid by-shopping (без баллов) + name-фильтры.
 
     Общий путь tp1/tp5 (#ФИКС-1): создаём ListingAd по shopping_ad_ids, затем ставим
@@ -1053,13 +1220,14 @@ def _grid_add_listings_with_name_filters(gcl, shop_ids: list, build: dict,
         _name_by_shop = {int(k): v for k, v in (build.get("listing_name_by_shop") or {}).items() if v}
         # Глобальные минус-марки для ListingAd — тот же brand_field/model_field что у ShoppingAd.
         _lad_minus_conds: list = []
-        try:
-            from . import create_set_feeds as _csf
-            _lad_bf = _csf._resolve_feed_field(gcl.login, feed_id, "brand") or "vendor"
-            _lad_mf = _csf._resolve_feed_field(gcl.login, feed_id, "model") or "model"
-            _lad_minus_conds = _csf._minus_marks_grid_conditions(brand_field=_lad_bf, model_field=_lad_mf)
-        except Exception:  # noqa: BLE001
-            pass
+        if apply_global_minus:
+            try:
+                from . import create_set_feeds as _csf
+                _lad_bf = _csf._resolve_feed_field(gcl.login, feed_id, "brand") or "vendor"
+                _lad_mf = _csf._resolve_feed_field(gcl.login, feed_id, "model") or "model"
+                _lad_minus_conds = _csf._minus_marks_grid_conditions(brand_field=_lad_bf, model_field=_lad_mf)
+            except Exception:  # noqa: BLE001
+                pass
         _lf_items = []
         _lad_general_lids: list = []   # listing ad IDs без name-фильтра (Общее группы)
         for _row in _rows:
@@ -1224,15 +1392,11 @@ def _create_tp1_single(
             except Exception as e:  # noqa: BLE001
                 counter_note = f"счётчик {counter_id} не привязался: {str(e)[:120]}"
 
-        # Глобальные минус-слова campaign-level через v5 campaigns.update (все режимы).
-        # UnifiedCampaignSpec не имеет поля minus_keywords → закрываем дыру здесь (best-effort).
-        # _build_tp1_adgroups игнорирует g["minus"] (РСЯ: минуса режут охват без пользы) →
-        # единственный надёжный путь для tp1 v5 = прямой v5 campaigns.update после создания.
-        _minus_note = None
-        try:
-            _minus_note = _apply_campaign_direct_minus(token, login, campaign_id, slepok, site_type, "tp1", city=city)
-        except Exception as _me:  # noqa: BLE001 — best-effort, не валим кампанию
-            _minus_note = f"minus upd упал: {str(_me)[:120]}"
+        # Минус-слова campaign-level для tp1 (РСЯ) — НЕ ставятся по правилу проекта.
+        # Семён: «в tp1 минус-слова не выставляются» (фикс F3 2026-07-22).
+        # _apply_campaign_direct_minus пропускается намеренно; для других tp (tp2/tp4/tp5)
+        # вызов остаётся в create_set_feed_builders.py и create_set_minus.py.
+        _minus_note = None  # tp1: не ставим campaign-level минуса
 
         # Наполняем бренд-группами из пака M3.
         tp1_build = _build_tp1_from_pack(
@@ -1244,8 +1408,33 @@ def _create_tp1_single(
             products_only=products_only, sitelinks=sitelinks, grid_cookie=grid_cookie,
             only_gks=only_gks, only_cts=only_cts,
             all_feeds_list=all_feeds_list)
+        if tp1_build.get("skipped") and tp1_build.get("image_no_pool"):
+            _fail = _cleanup_partial(str(tp1_build.get("skipped")))
+            _deleted_cid = _fail.get("campaign_id")
+            _fail.update({
+                "ok": True,
+                "skipped": True,
+                "image_no_pool": True,
+                "campaign_id": None,
+                "deleted_campaign_id": _deleted_cid,
+                "url": "",
+                "tp1_build": tp1_build,
+            })
+            return _fail
         if tp1_build.get("error") or tp1_build.get("skipped") or not tp1_build.get("adgroups"):
-            _fail = _cleanup_partial("tp1 не дозаполнена: " + str(tp1_build.get("error") or tp1_build.get("skipped") or "группы не созданы"))
+            _details = []
+            for _k in ("adgroups", "groups_built", "cts", "keywords", "ads"):
+                if tp1_build.get(_k) is not None:
+                    _details.append(f"{_k}={tp1_build.get(_k)}")
+            _errs = [str(x) for x in (tp1_build.get("errors") or []) if str(x).strip()]
+            _warns = [str(x) for x in (tp1_build.get("warnings") or []) if str(x).strip()]
+            if _errs:
+                _details.append("errors: " + "; ".join(_errs[:3]))
+            if _warns:
+                _details.append("warnings: " + "; ".join(_warns[:2]))
+            _reason = str(tp1_build.get("error") or tp1_build.get("skipped")
+                          or ("группы не созданы" + (f" ({'; '.join(_details)})" if _details else "")))
+            _fail = _cleanup_partial("tp1 не дозаполнена: " + _reason)
             if tp1_build.get("defer"):
                 _fail["defer"] = True   # пустой пак M3 (временный сбой) → докрутка, не permanent-fail
             return _fail
@@ -1298,7 +1487,10 @@ def _create_tp1_single(
                 tp1_build.setdefault("warnings", []).append(f"shopping text: {str(_e)[:120]}")
             # Листинги «Страницы каталога» — НЕЗАВИСИМО от текста (Grid by-shopping, без баллов), затем
             # name-фильтр CONTAINS_ANY [марка|марка+модель] (HAR36 updateListingAds; by-shopping не наследует).
-            _grid_add_listings_with_name_filters(_gcl, _shop_ids, tp1_build, feed_id, _tp1_default_text)
+            _grid_add_listings_with_name_filters(
+                _gcl, _shop_ids, tp1_build, feed_id, _tp1_default_text,
+                apply_global_minus=_apply_global_feed_minus_for_site(site_type),
+            )
         if with_shopping and feed_id and _shop_ids and not int(tp1_build.get("listing_ads") or 0):
             # Bug2 graceful: ShoppingAd есть, а листинги «Страницы каталога» пусты (фид-каталог без
             # готовых офферов) → НЕ удаляем кампанию, оставляем товарку без листингов + warning.
@@ -1331,8 +1523,7 @@ def _create_tp1_single(
         # try → GridFinalizeError → except Exception → _cleanup_partial УДАЛЯЛ кампанию с
         # 34+ объявлениями!). Теперь финализация best-effort: кампания остаётся, ошибка
         # пишется в result_d["finalize_warn"]. Grid принимает goalId="0" (проверено live).
-        _ai_sitelinks = sitelinks or _ai_common_sitelinks(login, slepok, site_type, city, "tp1")
-        a = _resolve_campaign_assets(token, login, href, sitelinks=_ai_sitelinks,
+        a = _resolve_campaign_assets(token, login, href, sitelinks=sitelinks,
                                      slepok=slepok, site_type=site_type,
                                      prefer_callout_texts=callout_texts,
                                      prefer_callout_ids=callout_ids,
@@ -1452,14 +1643,19 @@ def _create_tp1_campaign(
         )
     # Сводный результат: ok=True если хоть одна создалась
     ok = cpc_result.get("ok") or (bool(cpa_result) and cpa_result.get("ok"))
+    _children = [c for c in ([cpc_result] + ([cpa_result] if cpa_result else [])) if c]
+    _all_skipped = bool(_children) and all(bool(c.get("skipped")) for c in _children)
     # Обратная совместимость с api_create_set: возвращаем campaign_id первой созданной
     first_id = cpc_result.get("campaign_id") or (cpa_result.get("campaign_id") if cpa_result else None)
     out = {
         "ok": ok, "name": name, "campaign_id": first_id,
         "launched": False,
-        "campaigns": [cpc_result] + ([cpa_result] if cpa_result else []),
+        "campaigns": _children,
         "url": (cpc_result.get("url") or (cpa_result.get("url") if cpa_result else "") or ""),
     }
+    if _all_skipped:
+        out["skipped"] = True
+        out["image_no_pool"] = any(bool(c.get("image_no_pool")) for c in _children)
     if not ok:
         # Обе кампании пары упали → поднимаем РЕАЛЬНУЮ причину наверх (иначе UI показывает пустое «()»).
         _errs = [c.get("error") for c in out["campaigns"] if c and c.get("error")]
@@ -1528,14 +1724,112 @@ def _grid_account_image_hashes(login: str) -> dict:
     return out
 
 
+# ── Кэш account-map картинок {basename: imageHash} ПО ЛОГИНУ (процесс-глобальный) ──────────
+# Зачем: `_grid_account_image_hashes` читает ВСЕ кампании + ВСЕ объявления аккаунта, а звался
+# на КАЖДОЙ cookie-кампании набора (tp1 :_create_tp1_via_cookie, tp2/tp4 :_create_search_via_cookie)
+# → стоимость росла квадратично по ходу набора (аккаунт пухнет с каждой созданной РК).
+# Теперь чтение одно на логин/TTL, а результаты доливаются мёржем.
+#
+# Почему МЁРЖ, а не замена: `_grid_account_image_hashes` видит только картинки, ПРИВЯЗАННЫЕ К
+# ОБЪЯВЛЕНИЯМ. После `delete_drafts` объявлений нет → чтение отдаёт ~0, хотя сами картинки
+# остаются в БИБЛИОТЕКЕ логина и их imageHash по-прежнему валиден. Замена обнулила бы карту и
+# заставила перезаливать весь набор (живой профиль: 829 файлов / 134 с на прогон). Мёрж это чинит.
+#
+# Инвалидация — TTL (по умолчанию 30 мин, env `DIRECT_ACC_IMG_MAP_TTL`) + явный `_account_image_map_drop`.
+# ⚠️ Осознанный риск: imageHash, удалённый из кабинета ВРУЧНУЮ между чтением и использованием,
+# останется в кэше до истечения TTL и даст отказ Директа на создании объявления. TTL ограничивает
+# окно; `_account_image_map_drop(login)` — принудительный сброс. Автосброс по тексту ошибки Директа
+# НЕ реализован: сигнатура отказа «неизвестный imageHash» не подтверждена фактом (гадать не стал).
+_ACC_IMG_MAP: dict[str, dict] = {}
+_ACC_IMG_MAP_TS: dict[str, float] = {}
+_ACC_IMG_MAP_LOCK = threading.Lock()
+_ACC_IMG_MAP_TTL = float(os.environ.get("DIRECT_ACC_IMG_MAP_TTL", "1800"))
+_ACC_IMG_MAP_STATS = {"hit": 0, "read": 0}
+
+
+def _account_image_map(login: str, force: bool = False) -> dict:
+    """Кэшированная {basename: imageHash} по логину. Возвращает КОПИЮ (вызывающие мутируют карту).
+    force=True — принудительно перечитать аккаунт (мёрж поверх накопленного)."""
+    if not login:
+        return {}
+    if not force:
+        _snap = _msg = None
+        with _ACC_IMG_MAP_LOCK:
+            _m = _ACC_IMG_MAP.get(login)
+            if _m is not None and (time.time() - _ACC_IMG_MAP_TS.get(login, 0.0)) < _ACC_IMG_MAP_TTL:
+                _ACC_IMG_MAP_STATS["hit"] += 1
+                _hn = _ACC_IMG_MAP_STATS["hit"]
+                _snap = dict(_m)
+                # HIT частый — печатаем каждый 25-й (как [img-cache]): журнал не засоряем,
+                # но видно, что кэш живой. print — ВНЕ лока (блокирующий write в забитый pipe
+                # держал бы общий лок кэша).
+                _msg = ((f"[img-accmap] HIT total={_hn} reads={_ACC_IMG_MAP_STATS['read']} "
+                         f"{login} entries={len(_snap)}") if _hn % 25 == 0 else None)
+        if _snap is not None:                  # промах/протухший TTL → падаем в чтение аккаунта ниже
+            if _msg:
+                try:
+                    print(_msg, flush=True)
+                except Exception:  # noqa: BLE001
+                    pass
+            return _snap
+    try:
+        fresh = _grid_account_image_hashes(login) or {}
+    except Exception:  # noqa: BLE001 — мягкая деградация как у сырого читателя
+        fresh = {}
+    with _ACC_IMG_MAP_LOCK:
+        base = dict(_ACC_IMG_MAP.get(login) or {})
+        base.update(fresh)                     # мёрж: пережить обнуление после delete_drafts
+        _ACC_IMG_MAP[login] = base
+        _ACC_IMG_MAP_TS[login] = time.time()
+        _ACC_IMG_MAP_STATS["read"] += 1
+        _rn = _ACC_IMG_MAP_STATS["read"]
+        _snap = dict(base)
+    try:
+        print(f"[img-accmap] READ total={_rn} hits={_ACC_IMG_MAP_STATS['hit']} {login} "
+              f"account={len(fresh)} merged={len(_snap)}", flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return _snap
+
+
+def _account_image_map_merge(login: str, mapping: dict | None) -> int:
+    """Долить в кэш логина только что ЗАЛИТЫЕ картинки {basename: imageHash}, чтобы следующая
+    кампания набора переиспользовала их без сетевой заливки. → сколько новых записей добавлено."""
+    if not login or not mapping:
+        return 0
+    added = 0
+    with _ACC_IMG_MAP_LOCK:
+        base = _ACC_IMG_MAP.setdefault(login, {})
+        for bn, h in (mapping or {}).items():
+            if bn and h and base.get(bn) != h:
+                base[bn] = h
+                added += 1
+        if login not in _ACC_IMG_MAP_TS:
+            _ACC_IMG_MAP_TS[login] = time.time()
+    return added
+
+
+def _account_image_map_drop(login: str | None = None) -> None:
+    """Сбросить кэш account-map: конкретного логина или весь. Звать, если Директ отказал по
+    неизвестному imageHash или картинки чистили в кабинете вручную."""
+    with _ACC_IMG_MAP_LOCK:
+        if login:
+            _ACC_IMG_MAP.pop(login, None)
+            _ACC_IMG_MAP_TS.pop(login, None)
+        else:
+            _ACC_IMG_MAP.clear()
+            _ACC_IMG_MAP_TS.clear()
+
+
 def _preupload_tp1_images(login: str, items: list, site_type: str, slepok: str,
                           grid_cookie: str | None = None) -> dict:
     """Набор-level ПРЕД-ЗАЛИВКА картинок tp1 (РСЯ) в библиотеку аккаунта ОДИН раз, ДО цикла
     создания РК, чтобы создание каждой РК не блокировалось на аплоаде ассетов.
 
-    Собирает уникальные пути картинок ВСЕХ tp1-пунктов набора ТЕМ ЖЕ резолвером, что и цикл
-    (_creative_images_for_ct по ct пака M3, лимит 5/ct — резолвинг НЕ меняем, переносим только
-    момент заливки раньше), дедупит против уже залитых в аккаунт (_grid_account_image_hashes,
+    Собирает уникальные пути картинок tp1-пунктов набора ТЕМ ЖЕ резолвером, что и цикл:
+    если план уже содержит camp_names-routing ``tp1_only_cts`` — берём только реально выбранные
+    ct; иначе используем безопасный segment-filter. На каждый ct берём максимум 5 картинок.
+    Дедупит против уже залитых в аккаунт (_grid_account_image_hashes,
     0 баллов) и догружает недостающее параллельно через _parallel_upload_images (Grid/куки,
     без баллов). Побочный эффект — прогрев процесс-глобального _GRID_IMG_HASH_CACHE
     (ключ login+realpath): per-РК заливка в цикле (Фаза 3.4 _build_tp1_adgroups и куки-путь
@@ -1547,13 +1841,16 @@ def _preupload_tp1_images(login: str, items: list, site_type: str, slepok: str,
     Грациозность: любой сбой = частичный/пустой прогрев, а цикл сам зальёт недостающее per-РК
     (кэш-промах → штатная заливка, НЕ падаем). Идемпотентно и почти no-op на «созревшем»
     аккаунте (всё уже в account_map)."""
-    out = {"cts": 0, "paths": 0, "resolved": 0}
+    out = {"cts": 0, "paths": 0, "resolved": 0, "explicit_cts": 0}
     try:
         tp1_items = [it for it in (items or [])
                      if isinstance(it, dict) and (it.get("type") or "") == "tp1_rsy"]
         if not tp1_items:
             return out
         key = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
+        explicit_cts: set[str] = set()
+        for it in tp1_items:
+            explicit_cts.update(str(x).strip() for x in (it.get("tp1_only_cts") or []) if str(x).strip())
         # Сегменты, реально запрошенные пунктами (None = без сегментного фильтра → все ct).
         segments = {it.get("tp1_segment") for it in tp1_items}
         want_all = None in segments
@@ -1567,6 +1864,8 @@ def _preupload_tp1_images(login: str, items: list, site_type: str, slepok: str,
         seen_ct: set = set()
         all_paths: list = []
         for ct in pack.keys():
+            if explicit_cts and ct not in explicit_cts:
+                continue
             data = pack.get(ct) or {}
             if not data.get("positive"):
                 continue                                      # цикл пропускает ct без ключей — тоже
@@ -1582,19 +1881,23 @@ def _preupload_tp1_images(login: str, items: list, site_type: str, slepok: str,
             all_paths.extend(paths[:5])                       # лимит 5 картинок/ct — как в цикле
         out["cts"] = len(seen_ct)
         out["paths"] = len(all_paths)
+        out["explicit_cts"] = len(explicit_cts)
         if not all_paths:
             return out
         # Дедуп против уже залитых В АККАУНТ (0 баллов): _parallel_upload_images(account_map=…)
         # переиспользует их хэши без сетевой заливки, догружает только недостающее.
-        try:
-            account_map = _grid_account_image_hashes(login) or {}
-        except Exception:  # noqa: BLE001
-            account_map = {}
+        # Прогрев набора — единственное место, где account-map читается ПРИНУДИТЕЛЬНО (force=True):
+        # набор начинается, аккаунт мог измениться с прошлого прогона. Дальше по циклу создания все
+        # берут кэш (`_account_image_map` без force) — раньше каждая cookie-кампания перечитывала
+        # весь аккаунт заново.
+        account_map = _account_image_map(login, force=True)
         gc_img = gf.get_grid_client(login, cookie=grid_cookie)    # per-thread клиент (как per-РК)
         resolved = _parallel_upload_images(gc_img, login, all_paths, account_map=account_map)
         out["resolved"] = len(resolved or {})
+        # Свежезалитое — сразу в кэш логина: следующая кампания набора возьмёт хэш отсюда, а не по сети.
+        _account_image_map_merge(login, resolved)
         try:
-            print(f"[img-preupload] {login}: tp1 набор — ct={out['cts']} paths={out['paths']} "
+            print(f"[img-preupload] {login}: tp1 набор — ct={out['cts']} explicit_cts={out['explicit_cts']} paths={out['paths']} "
                   f"resolved={out['resolved']} (account_lib={len(account_map)}) — кэш прогрет", flush=True)
         except Exception:  # noqa: BLE001
             pass
@@ -1704,8 +2007,10 @@ def _tp1_pack_groups(login: str, slepok: str, site_type: str, r_code: str, href:
                      segment: str | None = None, ai_title2: str = "", city: str = "",
                      with_shopping: bool = False, tp_code: str = "tp1",
                      image_map: dict | None = None, autotarget: bool = False,
+                     keep_keywords: bool = False,
                      feed_url_by_model: dict | None = None,
-                     only_cts: list[str] | None = None) -> list:
+                     only_cts: list[str] | None = None,
+                     only_gks: set | None = None) -> list:
     """Бренд-группы tp1/tp5 из пака M3 — ЧИСТО данные (без API-вызовов, без баллов). Зеркало
     группо-сборки _build_tp1_from_pack (см. там), вынесено для куки-пути (grid_create.create_full).
     image_map (РСЯ tp1): {basename→imageHash} уже залитых картинок аккаунта — переиспользуем хэши
@@ -1735,21 +2040,72 @@ def _tp1_pack_groups(login: str, slepok: str, site_type: str, r_code: str, href:
     # из плана (create_set_plan "tp2_split_cts"). Без него cookie-путь брал ВСЕ ct пака (34 у dmp)
     # в каждую split-кампанию. None → авто-слепки, поведение неизменно (весь пул × segment-фильтр).
     _only_cts = {c for c in (only_cts or []) if c} or None
+    _only_gks = {g for g in (only_gks or []) if g} or None
     _struct_names = _struct_ct_names(slepok, site_type)   # не-авто: имя группы из структуры/выгрузки, не авто-фид
+    _units: list[tuple[str, str, str]] = []
+    if _only_gks is not None:
+        try:
+            from .create_set_structure import _load_struct as _ls_gk, _slepok_key as _sk_gk
+            _sd_gk = _ls_gk()
+            _dl_gk = next((x for x in (_sd_gk.get("directologists") or [])
+                           if x.get("key") == _sk_gk(slepok)), None)
+            _st_gk = next((s for s in ((_dl_gk.get("site_types") or []) if _dl_gk else [])
+                           if s.get("name") == site_type), None)
+            for _tp_gk in ((_st_gk.get("tp") or []) if _st_gk else []):
+                if _tp_gk.get("code") != tp_code:
+                    continue
+                for _grp_gk in (_tp_gk.get("groups") or []):
+                    for _it_gk in (_grp_gk.get("items") or []):
+                        _igk = (_it_gk.get("gk") or kp._group_slug(_it_gk.get("gc") or "") or "").strip()
+                        if _igk not in _only_gks:
+                            continue
+                        _m_ct = re.search(r"ct\d{4}", _it_gk.get("gc") or "")
+                        _ct_gk = _m_ct.group(0) if _m_ct else ""
+                        if not _ct_gk:
+                            continue
+                        if _only_cts is not None and _ct_gk not in _only_cts:
+                            continue
+                        _units.append((_ct_gk, _igk,
+                                       _norm_struct_name(_it_gk.get("t") or _grp_gk.get("name") or "")))
+                break
+        except Exception:  # noqa: BLE001 — structure read failure falls back to ct-based route
+            _units = []
+    if not _units:
+        _units = [(ct, "", "") for ct in sorted(pack.keys())
+                  if (_only_cts is None or ct in _only_cts)]
     groups = []
-    for ct in sorted(pack.keys()):
-        data = pack.get(ct) or {}
-        if not data.get("positive"):
+    # Pre-pass: прогрев кэша link_check параллельно (6 потоков). Основной цикл ниже
+    # вызывает _resolve_url(model_href) — теперь это будет cache-hit. (#LINK_CHECK_404_FALLBACK)
+    _batch_hrefs: list[str] = []
+    for _pct, _pgk, _puname in _units:
+        _pgrp_pack = (pack.get(_pct, {}).get("_groups") or {}).get(_pgk) if _pgk else None
+        _pdata = _pgrp_pack or pack.get(_pct) or {}
+        if not _pdata.get("positive"):
             continue
-        if _only_cts is not None and ct not in _only_cts:
+        if segment and _ct_segment(_pct) != segment:
+            continue
+        _praw = ((_struct_names.get(_pct) or ct_name.get(_pct) or _pct) if _struct_names
+                 else (_puname or ct_name.get(_pct) or ct_model.get(_pct) or _pct))
+        _pbrand = _valid_pack_brand_name(_pct, _praw)
+        _batch_hrefs.append(_pack_group_href(_pct, _pbrand, feed_url_by_model, href, site_type))
+    _resolve_urls_batch(_batch_hrefs)
+
+    for ct, _gk, _uname in _units:
+        _grp_pack = (pack.get(ct, {}).get("_groups") or {}).get(_gk) if _gk else None
+        data = _grp_pack or pack.get(ct) or {}
+        if not data.get("positive"):
             continue
         if segment and _ct_segment(ct) != segment:
             continue
         # не-авто (dmp): имя = структура t(выгрузка) → leadgen(описание кодера) → ct; НИКОГДА авто-фид «Авто».
         # Структура ПЕРВАЯ: _ag_part1_map мёржит авто-справочник gsheet_naming, и авто-ct может
         # совпасть с темой слепка (ct0084: авто «Faw Bestune T77» ↔ dmp «Конкуренты») → тема стала бы маркой.
-        raw_brand = ((_struct_names.get(ct) or ct_name.get(ct) or ct) if _struct_names
-                     else (ct_name.get(ct) or ct_model.get(ct) or ct))
+        if _struct_names:
+            raw_brand = _struct_names.get(ct) or _uname or ct_name.get(ct) or ct
+        elif _gk:
+            raw_brand = _uname or ct_name.get(ct) or ct_model.get(ct) or ct
+        else:
+            raw_brand = ct_name.get(ct) or ct_model.get(ct) or ct
         # Минус-фильтр групп: марка/модель отмечена в «Глобальных правилах» → группа не создаётся
         if _minus_m_set or _minus_mod_by_brand:
             _rb_tok = (raw_brand or "").strip().split()[0].lower()
@@ -1772,18 +2128,11 @@ def _tp1_pack_groups(login: str, slepok: str, site_type: str, r_code: str, href:
                       if _is_search_tp
                       else _tp1_group_name(ct, r_code, group_label, with_shopping=with_shopping,
                                            autotarget=autotarget, tp_code=tp_code))
-        # deep-link: сначала реальный URL из фида, фолбэк на формульный слаг (#ФИКС-2).
-        # ФИКС A: Марки → /auto/{brand} (первые 2 сегмента), Модели → полный путь без query. (#ФИКС-A)
-        _raw_feed_url = (_feed_url_for_model(feed_url_by_model, brand,
-                                             no_brand_fallback=(_ct_segment(ct) == "Модели"))
-                         if feed_url_by_model else None)
-        if _raw_feed_url:
-            model_href = (_brand_level_url(_raw_feed_url) if _ct_segment(ct) == "Марки"
-                          else _strip_url_query(_raw_feed_url))
-        else:
-            model_href = _model_page_href(href, site_type, brand)
+        # deep-link: фид → формульный слаг. ФИКС-A: Марки→/auto/{brand}, Модели→полный путь.
+        # 404-фолбэк: кэш прогрет pre-pass (batch 6 потоков) → cache-hit. (#LINK_CHECK_404_FALLBACK)
+        model_href = _resolve_url(_pack_group_href(ct, brand, feed_url_by_model, href, site_type))
         is_brand_group = _ct_segment(ct) in ("Марки", "Модели")
-        title = (_title_from_template(brand, city, slepok=slepok) if (is_brand_group and not ai_title2)
+        title = (_title_from_template(brand, city, slepok=slepok, site_type=site_type) if (is_brand_group and not ai_title2)
                  else (_GENERIC_AT_TITLES[0] if not is_brand_group else brand[:35]))
         ttl2 = (ai_title2[:30] if ai_title2 else _next_title2())
         # Cookie/Grid-путь не должен делать M3-вызов на каждую ct-группу: это и было источником
@@ -1795,10 +2144,14 @@ def _tp1_pack_groups(login: str, slepok: str, site_type: str, r_code: str, href:
                            pool=_sc_titles, is_brand=is_brand_group)
         _gx = _rsya_texts([t for t in (list(texts or []) + ([text0] if text0 else [])) if t], site_type, city, brand)
         _gt, _gx, _sl_dummy, _pay_changed = _coherent_payments(_gt, _gx, [])
+        _keywords = _filter_group_keywords(data.get("positive", []), _ct_segment(ct), brand, city, site_type,
+                                           model=(_uname if (_gk and _uname) else brand))
+        if _is_search_tp and ((not autotarget) or keep_keywords) and not _keywords:
+            continue
         g = {
             "name": group_name, "ct": ct, "brand": brand, "seg": _ct_segment(ct),  # 'Марки' → цена=МИН по марке
             # БАГ-13: для «Марки» — убрать ключи «марка+модель»; model= защищает «Модели» от чужих моделей
-            "keywords": _filter_group_keywords(data.get("positive", []), _ct_segment(ct), brand, city, site_type, model=brand),
+            "keywords": _keywords,
             "minus": [],   # группа: минуса сняты — campaign-level через spec (tp1 куки) / _apply_campaign_direct_minus (tp1/tp5 v5)
             "titles": _gt or [t for t in ([title, brand] if brand else [title]) if t],
             "texts": _gx or ([text0] if text0 else []),
@@ -1853,10 +2206,12 @@ def _create_tp1_via_cookie(
     region_ids: list, href: str, slepok: str, site_type: str, r_code: str,
     titles: list | None, texts: list, budget_rub: int = 0, segment: str | None = None,
     ai_title2: str = "", city: str = "", autotarget: bool = False, no_cpa: bool = False,
+    keep_keywords: bool = False,
     token: str = "", corr: dict | None = None, ret_map: dict | None = None,
     callout_texts: list | None = None, sitelinks: list | None = None,
     callout_ids: list | None = None,
     feed_id: int = 0, with_shopping: bool = False, feed_models: dict | None = None,
+    products_only: bool = False,
     job=None, only_gks: set | None = None, only_cts: set | None = None,
     all_feeds_list: list | None = None,
 ) -> dict:
@@ -1867,23 +2222,36 @@ def _create_tp1_via_cookie(
     import datetime as _dt
     # РСЯ-картинки по куке: переиспользуем хэши уже залитых в аккаунт картинок (basename→hash).
     # При 0 баллов залить новую нельзя (adimages.add=152), но reuse — без баллов. Best-effort: {} → без картинок.
-    _img_map = _grid_account_image_hashes(login)
+    _img_map = _account_image_map(login)          # кэш по логину (было: перечитывание аккаунта на КАЖДОЙ РК)
     # URL страниц моделей: account-level мёрж (все фиды, как цены) — покрывает марки без URL
     # в конкретном feed_id (#ФИКС-8).
-    _feed_url_map = _account_offer_urls(login, href)
+    _feed_url_map = _account_offer_urls(login, _site_root_href(href))
     groups, _m3_alive = _pack_groups_with_retry(login, slepok, site_type, r_code, href, titles, texts,
                                                 segment=segment, ai_title2=ai_title2, city=city, tp_code="tp1",
                                                 image_map=_img_map, autotarget=autotarget,
+                                                keep_keywords=keep_keywords,
                                                 with_shopping=with_shopping,
                                                 feed_url_by_model=_feed_url_map or None,
-                                                only_cts=only_cts)
+                                                only_cts=only_cts, only_gks=only_gks)
     if not groups:
         seg_note = f", segment={segment}" if segment else ""
-        # Пак пуст после ретраев → НЕ permanent-fail: помечаем defer (пункт уйдёт на отложенную
-        # докрутку позже, когда M3/пак восстановится), а не считаем окончательной ошибкой.
+        # Keyword pack пуст после ретраев → НЕ permanent-fail: помечаем defer (пункт уйдёт на
+        # отложенную докрутку позже, когда локальное зеркало/M3-источник восстановится),
+        # а не считаем окончательной ошибкой.
         return {"ok": False, "defer": True, "name": name,
-                "error": (f"tp1(куки): пак M3 пуст/недоступен (M3_alive={_m3_alive}) для "
+                "error": (f"tp1(куки): keyword pack пуст/недоступен "
+                          f"(local/M3 source alive={_m3_alive}) для "
                           f"slepok={slepok}, site_type={site_type}, tp=tp1{seg_note} → отложено на докрутку")}
+    groups, _img_skip = _drop_tp1_groups_without_images(groups, "tp1", products_only)
+    if _img_skip:
+        _cts_s = ", ".join((_img_skip.get("image_no_pool_cts") or [])[:12])
+        _more = len(_img_skip.get("image_no_pool_cts") or []) - 12
+        _note = (f"tp1(куки): пропущено групп без картинок: {_img_skip['groups_skipped_no_images']} "
+                 f"(ct: {_cts_s}{'; +' + str(_more) if _more > 0 else ''})")
+        if not groups:
+            return {"ok": True, "skipped": True, "name": name,
+                    "image_no_pool": True, "tp1_build": _img_skip,
+                    "error": _note}
     # РСЯ-картинки ПО КУКЕ до create_full: ЗАЛИТЬ картинки набора Grid-ом (upload_image — БЕЗ баллов,
     # допустимо даже при 0 units; НЕ путать с v5 adimages.add=152) и проставить imageHashes группам,
     # ЧТОБЫ create_full строил объявления СРАЗУ С картинками. Свежий ct (первая РК бренда в аккаунте)
@@ -1896,6 +2264,7 @@ def _create_tp1_via_cookie(
         if _all_paths:
             _gc_img_pre = gf.get_grid_client(login)
             _uploaded_pre = _parallel_upload_images(_gc_img_pre, login, _all_paths, account_map=_img_map)
+            _account_image_map_merge(login, _uploaded_pre)   # свежее — в кэш для следующих РК набора
             for g in groups:
                 _hh = list(dict.fromkeys(g.get("image_hashes") or []))
                 for p in (g.get("image_paths") or []):
@@ -1924,7 +2293,6 @@ def _create_tp1_via_cookie(
     # Грузим один раз; v5-GET'ы и Grid-докрутка баллов НЕ стоят (units тратят только add/update РК/объяв).
     # БАГ-1 FIX: ассеты загружаем ВСЕГДА при наличии токена, не только при goal_id.
     # Grid принимает goalId="0" (проверено live 2026-06-24): кампания обновляется, callouts/sitelinks ставятся.
-    _ai_sitelinks = sitelinks or _ai_common_sitelinks(login, slepok, site_type, city, "tp1")
     # ФИКС B: Сайтлинки → href первой брендовой группы, а не базовый сайт. Cookie-путь создаёт
     # сайтлинки на уровне кампании (gc.create_full не поддерживает per-group). Берём первую
     # группу с не-базовым href как представителя. Для полноценных per-group сайтлинков нужен
@@ -1934,7 +2302,7 @@ def _create_tp1_via_cookie(
         href
     )
     _assets = _resolve_campaign_assets(
-        token, login, _sl_href, sitelinks=_ai_sitelinks,
+        token, login, _sl_href, sitelinks=sitelinks,
         slepok=slepok, site_type=site_type, prefer_callout_texts=callout_texts,
         prefer_callout_ids=callout_ids)
     _slset = _assets.get("sitelink_set_id")
@@ -1953,6 +2321,9 @@ def _create_tp1_via_cookie(
                                  region_ids=region_ids, href=href, goal_id=goal_id or 0,
                                  autotargeting=bool(autotarget),
                                  price_map=_price_map, brand_price_fn=_group_ad_price)
+            if _img_skip:
+                rep.update(_img_skip)
+                rep.setdefault("warnings", []).append(_note)
             cid = rep.get("campaign_id")
             ok = bool(cid) and bool(rep.get("ads")) and not (rep.get("errors") and not rep.get("groups"))
             if cid and not rep.get("ads"):
@@ -2027,6 +2398,7 @@ def _create_tp1_via_cookie(
                         "name": _grp.get("name", "?"),
                         "brand_field": _ck_brand_field,
                         "model_field": _ck_model_field,
+                        "apply_global_minus": _apply_global_feed_minus_for_site(site_type),
                     })
                     _shop_name_vals.append(_name_val)
                 if _grid_shop_items:
@@ -2064,11 +2436,12 @@ def _create_tp1_via_cookie(
                                     if _mvals:
                                         _conds.append({"field": _mf2, "operator": "CONTAINS_ANY",
                                                        "stringValue": json.dumps(_mvals, ensure_ascii=False)})
-                                try:                     # глобальные минус-марки: используем тот же brand_field/model_field
-                                    from . import create_set_feeds as _csf
-                                    _conds.extend(_csf._minus_marks_grid_conditions(brand_field=_bf2, model_field=_mf2))
-                                except Exception:  # noqa: BLE001
-                                    pass
+                                if _src.get("apply_global_minus", True) is not False:
+                                    try:                 # глобальные минус-марки: используем тот же brand_field/model_field
+                                        from . import create_set_feeds as _csf
+                                        _conds.extend(_csf._minus_marks_grid_conditions(brand_field=_bf2, model_field=_mf2))
+                                    except Exception:  # noqa: BLE001
+                                        pass
                                 if _conds:
                                     _shop_filters[int(_sid)] = {"tab": "CONDITION", "conditions": _conds}
                             # G review: set_default_text в СВОЁМ try — падение (Яндекс 500) НЕ блокирует
@@ -2168,7 +2541,8 @@ def _create_tp1_via_cookie(
                         _af_gcl2 = gc.GridCreateClient(login)
                         _af_shop_items = [{"adgroup_id": int(_af_new_ag), "feed_id": _af_fid,
                                            "vendor": None, "collection_id": None, "model": [],
-                                           "name": _af_gn, "brand_field": "vendor", "model_field": "model"}]
+                                           "name": _af_gn, "brand_field": "vendor", "model_field": "model",
+                                           "apply_global_minus": _apply_global_feed_minus_for_site(site_type)}]
                         _af_sids = _af_gcl2.add_shopping_ads(_af_shop_items)
                         _af_sids = [int(x) for x in _af_sids if x]
                         if _af_sids:
@@ -2178,7 +2552,8 @@ def _create_tp1_via_cookie(
                                 pass
                             _af_b2: dict = {"listing_name_by_shop": {}}
                             _grid_add_listings_with_name_filters(
-                                _af_gcl2, _af_sids, _af_b2, _af_fid, _af_ck_default)
+                                _af_gcl2, _af_sids, _af_b2, _af_fid, _af_ck_default,
+                                apply_global_minus=_apply_global_feed_minus_for_site(site_type))
                             _shop_ids.extend(_af_sids)
                     except Exception as _afse:  # noqa: BLE001
                         rep.setdefault("warnings", []).append(
@@ -2262,7 +2637,8 @@ def _create_tp1_via_cookie(
                         # Не используем suggest_images: Яндекс может предложить чужую/модельную картинку.
                         # Если своих картинок нет или они запрещены вкладкой «Контент», объявление остаётся без картинки.
                         if _upd_items:
-                            _imgs_applied = _grid_update_adaptive_ads(login, _upd_items)
+                            _imgs_applied = _grid_update_adaptive_ads(
+                                login, _upd_items, campaign_ids=[cid] if cid else None)
                             if _fin and isinstance(_fin, dict):
                                 _fin["ads_repaired"] = _imgs_applied
                                 _fin["image_groups"] = sum(1 for _it in _upd_items if _it.get("image_hashes"))
@@ -2288,6 +2664,7 @@ def _create_tp1_via_cookie(
                         "id": _vaid,
                         "meta": {
                             "ct": _vgrp.get("ct") or "",
+                            "site_type": site_type or _vgrp.get("site_type") or "",
                             "href": _vgrp.get("href") or href,
                             "titles": _vgrp.get("titles") or [],
                             "bodies": _vgrp.get("texts") or [],

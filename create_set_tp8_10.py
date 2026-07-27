@@ -14,7 +14,15 @@
 from __future__ import annotations
 
 import json
+import re
+import urllib.error
 import urllib.parse
+import urllib.request
+import gzip
+import html
+import subprocess
+import warnings
+import zlib
 from datetime import date
 
 # Константы лимитов формата — единый источник правды в ai_agents.py.
@@ -52,7 +60,7 @@ _TIME_BOARD_24x7 = [[100] * 24 for _ in range(7)]
 # Константы кодера для имени кампании / группы
 _AUD_CODE = "aon"            # всегда aon (SPEC §1a)
 _N_CODE = "n000"
-_G_CODE = "g00"              # суффикс для первой группы; g01/g02 для остальных
+_G_CODE = "g00"              # пол: g00=Все; g01/g02 только при gender-корректировке
 _PAY_CODE = "cpc"            # посевы — только CPC
 _SQ_CODE = "site"
 
@@ -74,6 +82,24 @@ _UTM_CAMPAIGN_LEVEL = (
 )
 
 _DEPS: dict = {}
+_PHONE_CACHE: dict[str, str] = {}
+_SITE_TEXT_CACHE: dict[str, str] = {}
+_PHONE_FETCH_UA = "Mozilla/5.0"
+
+_POST_BODY_FILLERS = (
+    "Сверим наличие и комплектацию до визита, чтобы расчёт был привязан к реальному автомобилю.",
+    "Подберём кредитную программу под ваш бюджет и заранее расскажем, какие бонусы доступны по выбранной модели.",
+    "Можно сравнить комплектации и платежи до визита в автосалон.",
+    "Менеджер уточнит наличие, комплектацию и ориентировочный ежемесячный платёж по выбранному автомобилю.",
+    "Если модель уже выбрана, проверим наличие и предложим близкие варианты по цене, году и комплектации.",
+    "Расскажем, какие документы нужны для заявки, и поможем заранее оценить комфортный срок кредита.",
+    "Подскажем, какие автомобили подходят под выбранный платёж, и покажем варианты без лишнего ожидания.",
+    "Зафиксируем условия обращения и передадим заявку менеджеру, чтобы быстрее вернуться с расчётом.",
+    "Перед визитом сверим условия и поможем выбрать удобное время для звонка.",
+    "Уточним детали до визита.",
+    "Покажем доступные варианты по платежу.",
+)
+_POST_BODY_TARGET_FREE = 30
 
 
 def configure(deps: dict) -> None:
@@ -81,6 +107,188 @@ def configure(deps: dict) -> None:
     _DEPS.clear()
     _DEPS.update(deps)
     globals().update(deps)
+
+
+def _post_disabled_places_for_geo(geo: str) -> list[str]:
+    """Минус-площадки Посевов: общий geo='*' + geo конкретной кампании."""
+    fn = _DEPS.get("_enabled_post_minus_places")
+    if not callable(fn):
+        return []
+    try:
+        return list(fn(geo) or [])
+    except Exception as exc:  # noqa: BLE001
+        print(f"[post-engine] disabledPlaces load failed geo={geo!r}: {exc!s:.120}", flush=True)
+        return []
+
+
+def _post_feed_url_map(login: str, href: str) -> dict:
+    fn = _DEPS.get("_account_offer_urls")
+    if not callable(fn):
+        return {}
+    try:
+        return dict(fn(login, href) or {})
+    except Exception as exc:  # noqa: BLE001
+        print(f"[post-engine] feed urls load failed login={login!r}: {exc!s:.120}", flush=True)
+        return {}
+
+
+def _post_feed_url_for_label(urls: dict, label: str) -> str:
+    if not urls:
+        return ""
+    fn = _DEPS.get("_feed_url_for_model")
+    if callable(fn):
+        try:
+            return str(fn(urls, label, no_brand_fallback=(" " in str(label or "").strip())) or "")
+        except TypeError:
+            try:
+                return str(fn(urls, label) or "")
+            except Exception:  # noqa: BLE001
+                return ""
+        except Exception:  # noqa: BLE001
+            return ""
+    key = re.sub(r"\s+", " ", str(label or "").strip().lower())
+    return str(urls.get(key) or "")
+
+
+def _post_ct_segment(ct: str) -> str:
+    fn = _DEPS.get("_ct_segment") or globals().get("_ct_segment")
+    if callable(fn):
+        try:
+            return str(fn(ct) or "")
+        except Exception:  # noqa: BLE001
+            pass
+    return ""
+
+
+def _strip_url_query_local(u: str) -> str:
+    try:
+        p = urllib.parse.urlsplit(str(u or "").strip())
+        return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path.rstrip("/") or "/", "", ""))
+    except Exception:  # noqa: BLE001
+        return str(u or "").strip()
+
+
+def _post_label_is_brand_level(label: str, ct: str, urls: dict) -> bool:
+    seg = _post_ct_segment(ct)
+    if seg == "Марки":
+        return True
+    if seg == "Модели":
+        return False
+    label_norm = re.sub(r"\s+", " ", str(label or "").strip().lower())
+    return bool(label_norm and " " not in label_norm and label_norm in (urls or {}))
+
+
+def _post_href_for_label(login: str, base_href: str, label: str,
+                         ct: str = "", site_type: str = "") -> str:
+    """Deep-link post button to brand/model URL from feed when available.
+
+    Посевы бывают brand-level и model-level. Для brand-level нельзя оставлять URL первого
+    товара марки (`/auto/haval/m6/...`): кнопка должна вести на страницу марки (`/auto/haval`).
+    """
+    if not label or str(label).lower() == "посевы":
+        return base_href.rstrip("/")
+    try:
+        from .model_urls import _brand_level_url, _model_page_href  # noqa: PLC0415
+    except ImportError:
+        from model_urls import _brand_level_url, _model_page_href  # type: ignore[no-redef]  # noqa: PLC0415
+
+    urls = _post_feed_url_map(login, base_href)
+    raw = _post_feed_url_for_label(urls, label)
+    if raw:
+        if _post_label_is_brand_level(label, ct, urls):
+            return _brand_level_url(raw)
+        return _strip_url_query_local(raw)
+    fallback = _model_page_href(base_href, site_type, label)
+    return fallback.rstrip("/") if fallback else base_href.rstrip("/")
+
+
+def _title_case_vehicle_name(s: str) -> str:
+    parts = []
+    for p in re.split(r"\s+", str(s or "").strip()):
+        if not p:
+            continue
+        parts.append(p.upper() if re.search(r"\d", p) else p[:1].upper() + p[1:])
+    return " ".join(parts)
+
+
+def _post_allowed_models_from_feed(login: str, base_href: str, label: str, limit: int = 6) -> list[str]:
+    """Whitelist vehicle names for LLM. Feed keys only; no generated names."""
+    urls = _post_feed_url_map(login, base_href)
+    if not urls:
+        return []
+    label_norm = re.sub(r"\s+", " ", str(label or "").strip().lower())
+    generic = not label_norm or label_norm == "посевы"
+    out: list[str] = []
+    seen: set[str] = set()
+    for key in urls.keys():
+        k = re.sub(r"\s+", " ", str(key or "").strip().lower())
+        if not k or len(k) < 3:
+            continue
+        if not generic and not (k == label_norm or k.startswith(label_norm + " ")):
+            continue
+        # Для брендовой кампании не отдаём один только бренд как "модель" в списке.
+        if not generic and k == label_norm:
+            continue
+        val = _title_case_vehicle_name(k)
+        if val.lower() in seen:
+            continue
+        seen.add(val.lower())
+        out.append(val)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _extend_post_body_after_finalize(text: str, brand_label: str, href: str) -> str:
+    """Fill remaining body space before CTA/phone with safe generic facts."""
+    try:
+        from . import ai_agents as A  # noqa: PLC0415
+    except ImportError:
+        import ai_agents as A  # type: ignore[no-redef]  # noqa: PLC0415
+    body = _ensure_post_phone_last(_trim_post_body_preserve_phone(text, POST_BODY_MAX))
+    if len(body) >= A.POST_BODY_TARGET_MIN:
+        return body
+    before_phone, phone_line, tail = _split_post_phone_line(body)
+    base = before_phone if phone_line else body
+    if tail and _should_keep_post_tail(base, tail):
+        candidate = _normalize_post_body_structure(_insert_post_paragraph_before_cta(base, tail))
+        if len(candidate) + (len("\n\n") + len(phone_line) if phone_line else 0) <= POST_BODY_MAX:
+            base = candidate
+    brand = "" if str(brand_label or "").lower() == "посевы" else str(brand_label or "").strip()
+    subject = brand or "авто в наличии"
+    supplements = [
+        f"Подберём {subject} под комфортный ежемесячный платёж и заранее сверим наличие.",
+        "Проверим одобрение в банках-партнёрах без визита в салон.",
+        "Зафиксируем условия акции до визита.",
+        ":b:Что можно уточнить по заявке::bb:\n"
+        "— актуальное наличие и комплектацию;\n"
+        "— размер первого взноса и срок кредита;\n"
+        "— платёж с учётом трейд-ин и бонусов.",
+        "Оставьте контакт — подготовим расчёт под ваш бюджет и покажем доступные варианты без лишнего ожидания.",
+        ":b:Почему лучше обратиться сейчас::bb:\n"
+        "— условия акции могут измениться после обновления склада;\n"
+        "— часть автомобилей доступна в ограниченном количестве;\n"
+        "— предварительный расчёт ускоряет выбор программы.",
+        "Уточним детали до визита.",
+        "Покажем варианты по платежу.",
+    ]
+    existing_topics = {_post_benefit_topic(line) for line in base.splitlines()}
+    existing_topics.discard("")
+    for sup in supplements:
+        current = _append_existing_post_phone_line(base, phone_line) if phone_line else base
+        if len(current) >= A.POST_BODY_TARGET_MIN:
+            break
+        sup_topic = _post_benefit_topic(sup)
+        if sup_topic and sup_topic in existing_topics:
+            continue
+        candidate_base = _normalize_post_body_structure(_insert_post_paragraph_before_cta(base, sup))
+        candidate = _append_existing_post_phone_line(candidate_base, phone_line) if phone_line else candidate_base
+        if len(candidate) > POST_BODY_MAX or len(candidate) <= len(current):
+            continue
+        base = candidate_base
+        if sup_topic:
+            existing_topics.add(sup_topic)
+    return _append_existing_post_phone_line(base, phone_line) if phone_line else _trim_post_body(base, POST_BODY_MAX)
 
 
 # ── GraphQL-запросы (структура из HAR porg-gcegsszl 2026-07-21) ─────────────
@@ -128,8 +336,8 @@ mutation AddPostAds($addPostInput: GdAddPostAdsInput!) {
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-# Grid-коды возраста для GdPostCampaign bidModifierDemographics (по аналогии с
-# create_set_corrections._GRID_AGE_MAP). Grid GdAgeTypeInput не содержит AGE_0_17.
+# Grid-коды возраста для GdPostCampaign bidModifierDemographics.
+# Post-группы принимают младший возраст как "_0_17".
 _GRID_AGE_MAP_TP810 = {
     "AGE_0_17":  "_0_17",
     "AGE_18_24": "_18_24",
@@ -139,21 +347,32 @@ _GRID_AGE_MAP_TP810 = {
     "AGE_55":    "_55_",
 }
 
+_POST_DEMOGRAPHY_MIN_DELTA = -50
+_POST_DEMOGRAPHY_MIN_MULTIPLIER = 50
+_POST_DEMOGRAPHY_MAX_MULTIPLIER = 1300
+
 
 def _dem_adjustments_for_corr(corr: dict | None) -> list:
     """Список demographic-adjustments для Grid AddPostAdGroups.bidModifierDemographics.
 
-    По аналогии с create_set_corrections._correction_bidmodifiers (строки 144-178).
-    pct <= 0 пропускается — Grid валидирует percent > 0.
+    ``corr`` приходит в v5-конвенции дельты. Для посевов Direct не даёт уменьшать
+    ставку сильнее чем на 50%, поэтому -100/-75 сначала зажимаем до -50. Grid
+    ``percent`` для demographics — мультипликатор: -50 -> 50, +30 -> 130.
+    Нулевую дельту пропускаем как нейтральную.
     """
     if not corr:
         return []
     dem_adj: list = []
     for d in corr.get("demographic", []):
         pct = int(d.get("pct") or 0)
-        if pct <= 0:
+        if pct == 0:
             continue
-        adj_entry: dict = {"percent": pct, "id": None}
+        pct = max(_POST_DEMOGRAPHY_MIN_DELTA, pct)
+        multiplier = max(
+            _POST_DEMOGRAPHY_MIN_MULTIPLIER,
+            min(_POST_DEMOGRAPHY_MAX_MULTIPLIER, 100 + pct),
+        )
+        adj_entry: dict = {"percent": multiplier, "id": None}
         if d.get("kind") == "age":
             _grid_age = _GRID_AGE_MAP_TP810.get(d["key"])
             if not _grid_age:
@@ -178,6 +397,677 @@ def _ag_code_for_corr(corr: dict | None) -> str:
     return "ag011" if _dem_adjustments_for_corr(corr) else "ag001"
 
 
+def _g_code_for_corr(corr: dict | None) -> str:
+    """Кодер пола для post-групп: индекс картинки/варианта не влияет на `g`.
+
+    g00 = все, g01 = мужчины, g02 = женщины. Если в одной группе правил есть
+    несколько gender-корректировок, имя остаётся общим g00: один кодер не может
+    честно выразить два разных пола одновременно.
+    """
+    genders: set[str] = set()
+    for d in (corr or {}).get("demographic", []):
+        if d.get("kind") != "gender" or int(d.get("pct") or 0) == 0:
+            continue
+        key = str(d.get("key") or "").upper()
+        if "MALE" in key and "FEMALE" not in key:
+            genders.add("g01")
+        elif "FEMALE" in key:
+            genders.add("g02")
+    return next(iter(genders)) if len(genders) == 1 else _G_CODE
+
+
+def _strip_post_markup(text: str) -> str:
+    """Remove all Direct post formatting tags.
+
+    Kept for tests/backward compatibility. Runtime uses _prepare_post_body()
+    so valid highlights remain in created posts.
+    """
+    text = str(text or "")
+    return re.sub(r":(?:b|bb|i|ii|s|ss):", "", text)
+
+
+def _normalize_post_markup(text: str) -> str:
+    """Keep only balanced Direct post formatting tags.
+
+    Grid rejects malformed markup in ``GdPostAd.body`` with INVALID_MARKUP.
+    This parser removes orphan closers/duplicate openers and auto-closes open
+    tags at the end, while preserving valid :b:/:i:/:s: highlights.
+    """
+    text = re.sub(r"(?m)(^|[\s(])([bis]):", r"\1:\2:", str(text or ""))
+    pairs = {"b": "bb", "i": "ii", "s": "ss"}
+    closers = {v: k for k, v in pairs.items()}
+    tokens = re.split(r"(:(?:b|bb|i|ii|s|ss):)", text)
+    open_stack: list[str] = []
+    out: list[str] = []
+    for tok in tokens:
+        m = re.fullmatch(r":(b|bb|i|ii|s|ss):", tok or "")
+        if not m:
+            out.append(tok)
+            continue
+        tag = m.group(1)
+        if tag in pairs:
+            if tag in open_stack:
+                continue
+            open_stack.append(tag)
+            out.append(tok)
+            continue
+        opener = closers[tag]
+        if opener not in open_stack:
+            continue
+        while open_stack:
+            cur = open_stack.pop()
+            out.append(f":{pairs[cur]}:")
+            if cur == opener:
+                break
+    while open_stack:
+        out.append(f":{pairs[open_stack.pop()]}:")
+    return "".join(out)
+
+
+def _strip_post_italic_markup(text: str) -> str:
+    """Post body read-path is fragile on italic wrapped around bold highlights."""
+    text = re.sub(r":(?:i|ii):", "", str(text or ""))
+    text = re.sub(r"(?m)(^|[\s(])i:", r"\1", text)
+    return text
+
+
+def _finalize_post_markup(text: str) -> str:
+    """Normalize supported post markup and keep only safe bold/strike tags."""
+    return _normalize_post_markup(_strip_post_italic_markup(_normalize_post_markup(text)))
+
+
+def _post_plain_line(line: str) -> str:
+    return re.sub(r"\s+", " ", _strip_post_markup(line).strip())
+
+
+def _is_post_phone_line(line: str) -> bool:
+    plain = _post_plain_line(line)
+    return bool(re.fullmatch(r"(?i)Подробности\s+по\s+телефону\s*:\s*\+?\d[\d\s()\-]{7,}", plain))
+
+
+def _post_section_or_cta_starts(line: str) -> bool:
+    plain = _post_plain_line(line).lower()
+    if not plain:
+        return False
+    if plain.endswith(":"):
+        return True
+    return bool(re.match(
+        r"^(?:при\s+оформлении|бонусы|оставьте\s+заявк|оставляйте\s+заявк|подбер[её]м|"
+        r"можно\s+сравнить|подробности\s+по\s+телефону)\b",
+        plain,
+    ))
+
+
+def _collapse_post_blank_lines(text: str) -> str:
+    text = re.sub(r"[ \t]+\n", "\n", str(text or ""))
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _remove_empty_post_inventory_sections(text: str) -> str:
+    """Drop heading-only inventory blocks such as ``В наличии:`` with no items below."""
+    lines = str(text or "").splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        plain = _post_plain_line(line).lower()
+        if re.fullmatch(r"в\s+наличии:?", plain):
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            if j >= len(lines) or _post_section_or_cta_starts(lines[j]):
+                i = j
+                continue
+        out.append(line)
+        i += 1
+    return _collapse_post_blank_lines("\n".join(out))
+
+
+def _post_benefit_topic(line: str) -> str:
+    plain = _post_plain_line(line).lower()
+    if "каско" in plain:
+        return "kasko"
+    if re.search(r"\b(?:трейд-?ин|trade-?in)\b", plain):
+        return "tradein"
+    if re.search(r"\b(?:шин|резин)", plain):
+        return "tires"
+    if re.search(r"перв(?:ый|ого)\s+взнос|0\s*₽\s+перв", plain):
+        return "downpayment"
+    if "одобрени" in plain or "банк" in plain:
+        return "approval"
+    return ""
+
+
+def _dedupe_post_benefit_lines(text: str) -> str:
+    """Keep one visible benefit per topic so late fillers do not become separate duplicates."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in str(text or "").splitlines():
+        topic = _post_benefit_topic(line)
+        if topic and topic in seen:
+            continue
+        if topic:
+            seen.add(topic)
+        out.append(line)
+    return _collapse_post_blank_lines("\n".join(out))
+
+
+def _should_keep_post_tail(base: str, tail: str) -> bool:
+    """Keep moved phone-tail only when it is not a duplicate standalone benefit."""
+    tail = str(tail or "").strip()
+    if not tail:
+        return False
+    topic = _post_benefit_topic(tail)
+    if not topic:
+        return True
+    if re.match(r"^\s*[—-]", _strip_post_markup(tail)):
+        return False
+    existing_topics = {_post_benefit_topic(line) for line in str(base or "").splitlines()}
+    existing_topics.discard("")
+    return topic not in existing_topics
+
+
+def _normalize_post_language(text: str) -> str:
+    text = str(text or "")
+    text = re.sub(r"(?i)\bновый\s+авто\b", "новое авто", text)
+    return text
+
+
+def _split_post_phone_line(text: str) -> tuple[str, str, str]:
+    """Return text before phone, the phone line, and any tail after it."""
+    lines = str(text or "").splitlines()
+    phone_idx = -1
+    for idx, line in enumerate(lines):
+        if _is_post_phone_line(line):
+            phone_idx = idx
+    if phone_idx < 0:
+        return str(text or "").rstrip(), "", ""
+    before = "\n".join(lines[:phone_idx]).rstrip()
+    phone = lines[phone_idx].strip()
+    after_lines = [ln for ln in lines[phone_idx + 1:] if ln.strip() and not _is_post_phone_line(ln)]
+    return before, phone, "\n".join(after_lines).strip()
+
+
+def _insert_post_paragraph_before_cta(src: str, paragraph: str) -> str:
+    paragraph = str(paragraph or "").strip()
+    if not paragraph:
+        return str(src or "").strip()
+    parts = str(src or "").strip().split("\n\n") if str(src or "").strip() else []
+    if parts and re.search(r"(?i)^\s*(?::b:)?остав(?:ьте|ляйте)\s+заявк", _strip_post_markup(parts[-1]).strip()):
+        parts.insert(len(parts) - 1, paragraph)
+        return "\n\n".join(parts)
+    return f"{src.rstrip()}\n\n{paragraph}" if str(src or "").strip() else paragraph
+
+
+def _append_existing_post_phone_line(base: str, phone_line: str) -> str:
+    base = _trim_post_body(base, POST_BODY_MAX)
+    phone_line = str(phone_line or "").strip()
+    if not phone_line:
+        return base
+    sep = "\n\n" if base else ""
+    if len(base) + len(sep) + len(phone_line) <= POST_BODY_MAX:
+        return _finalize_post_markup(f"{base}{sep}{phone_line}")
+    room = POST_BODY_MAX - len(sep) - len(phone_line)
+    if room <= 0:
+        return phone_line[:POST_BODY_MAX]
+    prefix = _trim_post_body(base, room)
+    return _finalize_post_markup(f"{prefix}{sep}{phone_line}")
+
+
+def _normalize_post_body_structure(text: str) -> str:
+    text = _normalize_post_language(text)
+    text = _remove_empty_post_inventory_sections(text)
+    text = _dedupe_post_benefit_lines(text)
+    return _collapse_post_blank_lines(_finalize_post_markup(text))
+
+
+def _ensure_post_phone_last(text: str) -> str:
+    before, phone_line, tail = _split_post_phone_line(text)
+    if not phone_line:
+        return _normalize_post_body_structure(text)
+    before = _normalize_post_body_structure(before)
+    tail = _normalize_post_body_structure(tail)
+    if tail and _should_keep_post_tail(before, tail):
+        candidate = _insert_post_paragraph_before_cta(before, tail)
+        candidate = _normalize_post_body_structure(candidate)
+        if len(candidate) + len("\n\n") + len(phone_line) <= POST_BODY_MAX:
+            before = candidate
+    return _append_existing_post_phone_line(before, phone_line)
+
+
+def _strip_dangling_post_tail(text: str) -> str:
+    """Drop CTA fragments that became incomplete after LLM generation/trimming."""
+    text = str(text or "").rstrip()
+    text = re.sub(
+        r"(?is)([.!?…])\s+(?:не\s+упустите|успейте|спешите|оставьте\s+заявку)\b[^.!?…]*$",
+        r"\1",
+        text,
+    ).rstrip()
+    lines = text.splitlines()
+    last_idx = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].strip()), None)
+    if last_idx is not None:
+        last = lines[last_idx].strip()
+        last_plain = re.sub(r":(?:b|bb|i|ii|s|ss):", "", last).strip()
+        if last_plain.endswith(":") and "Подробности по телефону" not in last:
+            candidate = "\n".join(lines[:last_idx]).rstrip()
+            if len(candidate) >= 20:
+                text = candidate
+                lines = text.splitlines()
+                last_idx = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].strip()), None)
+                last = lines[last_idx].strip() if last_idx is not None else ""
+        if (
+            "Подробности по телефону" not in last
+            and not re.search(r"[.!?…:]$", last)
+            and re.search(r"(?i)\b(оставьте|перезвоним|зафиксируем|не\s+упустите|спешите|успейте)\b", last)
+        ):
+            candidate = "\n".join(lines[:last_idx]).rstrip()
+            if len(candidate) >= 80:
+                text = candidate
+    text = re.sub(
+        r"(?i)(?:\s+(?:и\s+)?(?:перезвоним|зафиксируем)(?:\s+\S+){0,6})$",
+        "",
+        text,
+    ).rstrip()
+    text = re.sub(
+        r"(?i)(?:\s+(?:в|во|на|и|с|со|за|для|по|до|от|без|при|о|об|к|ко|не|мы|вы|уже|сейчас))+$",
+        "",
+        text,
+    )
+    return text.rstrip(" \t\n,;—-")
+
+
+def _trim_post_body(text: str, max_len: int = POST_BODY_MAX) -> str:
+    """Trim post body without leaving a dangling word, phrase, or broken markup."""
+    text = _strip_dangling_post_tail(text)
+    if len(text) <= max_len:
+        return _finalize_post_markup(text)
+    prefix = text[:max_len].rstrip()
+    min_keep = max(80, int(max_len * 0.62))
+    sentence_ends = [m.end() for m in re.finditer(r"[.!?…](?=\s|$)", prefix)]
+    paragraph_ends = [m.start() for m in re.finditer(r"\n\n", prefix)]
+    candidates = [pos for pos in sentence_ends + paragraph_ends if pos >= min_keep]
+    if candidates:
+        prefix = prefix[:max(candidates)].rstrip()
+    else:
+        lines = prefix.splitlines()
+        while len(lines) > 1 and lines[-1].strip() and not re.search(r"[.!?…:]$", lines[-1].strip()):
+            candidate = "\n".join(lines[:-1]).rstrip()
+            if len(candidate) < min_keep:
+                break
+            lines = lines[:-1]
+            prefix = candidate
+        cut = prefix.rfind(" ")
+        if cut > min_keep:
+            prefix = prefix[:cut].rstrip()
+    return _finalize_post_markup(_strip_dangling_post_tail(prefix))
+
+
+def _trim_post_body_preserve_phone(text: str, max_len: int = POST_BODY_MAX) -> str:
+    """Trim body while preserving an existing phone line as the final line."""
+    before, phone_line, tail = _split_post_phone_line(text)
+    if not phone_line:
+        return _trim_post_body(text, max_len)
+    base = _normalize_post_body_structure(before)
+    if tail and _should_keep_post_tail(base, tail):
+        candidate = _normalize_post_body_structure(_insert_post_paragraph_before_cta(base, tail))
+        if len(candidate) + len("\n\n") + len(phone_line) <= max_len:
+            base = candidate
+    return _append_existing_post_phone_line(base, phone_line)
+
+
+def _remove_post_site_mentions(text: str, href: str = "") -> str:
+    """Remove website/domain mentions from post copy.
+
+    The URL still goes into the button href; post body should not spell out the
+    website or domain.
+    """
+    text = str(text or "")
+    netloc = urllib.parse.urlparse(href or "").netloc.lower()
+    domains = {netloc, netloc.removeprefix("www.")} if netloc else set()
+    for domain in [d for d in domains if d]:
+        text = re.sub(
+            rf"(?i)\b(?:https?://)?(?:www\.)?{re.escape(domain)}(?:/[^\s]*)?",
+            "",
+            text,
+        )
+    text = re.sub(r"(?i)\b(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:/[^\s]*)?", "", text)
+    text = re.sub(r"(?i)\bперей(?:ти|дите)\s+на\s+сайт\b", "оставить заявку", text)
+    text = re.sub(r"(?i)\bна\s+сайт(?:е|)\b", "по кнопке", text)
+    text = re.sub(r"(?i)\bсайт(?:е|а|у|ом)?\b", "", text)
+    text = re.sub(r"[ \t]+([,.;!?]|:(?!(?:b|bb|i|ii|s|ss):))", r"\1", text)
+    text = re.sub(r"([—-])\s*([—-])+", r"\1", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip(" \t\n,.;—-")
+
+
+def _ensure_post_highlights(text: str, brand_label: str = "") -> str:
+    """Add conservative bold highlights for model lines and UTP lines."""
+    text = str(text or "")
+    utp_re = re.compile(
+        r"(?i)\b(КАСКО|трейд-?ин|перв(?:ый|ого)\s+взнос|одобрени[ея]|платеж(?:а|ей|и)?|"
+        r"подар(?:ок|ки)|шин[ыа]?|резин[аы]|кредит|без\s+переплат)\b"
+    )
+    brand_words = [w for w in re.split(r"\s+", brand_label or "") if len(w) > 2 and brand_label != "Посевы"]
+    out: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or ":b:" in stripped:
+            out.append(line)
+            continue
+        model_match = re.match(r"^([•\-—]?\s*[A-ZА-ЯЁ][\wА-Яа-яЁё-]*(?:\s+[A-ZА-ЯЁ0-9][\wА-Яа-яЁё./-]*){1,5})(\s+[—-]\s+.+)$", stripped)
+        if model_match and (re.search(r"\d", model_match.group(2)) or any(w in stripped for w in brand_words)):
+            prefix = line[:len(line) - len(line.lstrip())]
+            out.append(f"{prefix}:b:{model_match.group(1).strip()}:bb:{model_match.group(2)}")
+            continue
+        if stripped.startswith(("—", "-")) and utp_re.search(stripped):
+            prefix = line[:len(line) - len(line.lstrip())]
+            marker = stripped[0]
+            rest = stripped[1:].strip()
+            out.append(f"{prefix}{marker} :b:{rest}:bb:")
+            continue
+        out.append(line)
+    highlighted = "\n".join(out)
+    if brand_words and ":b:" not in highlighted:
+        pattern = re.compile(rf"\b({re.escape(brand_words[0])}(?:\s+[A-ZА-ЯЁ0-9][\wА-Яа-яЁё./-]*)?)\b")
+        highlighted = pattern.sub(r":b:\1:bb:", highlighted, count=1)
+    return highlighted
+
+
+def _prepare_post_body(text: str, href: str = "", brand_label: str = "") -> str:
+    """Final body sanitizer before AddPostAds."""
+    text = _remove_post_site_mentions(text, href)
+    text = _ensure_post_highlights(text, brand_label)
+    text = _normalize_post_body_structure(text)
+    return _ensure_post_phone_last(text)
+
+
+def _normalize_phone_candidate(raw: str, context: str = "") -> str:
+    digits = re.sub(r"\D+", "", urllib.parse.unquote(str(raw or "")))
+    if len(digits) == 10:
+        digits = "7" + digits
+    elif len(digits) == 11 and digits.startswith("8"):
+        digits = "7" + digits[1:]
+    if len(digits) != 11 or not digits.startswith("7"):
+        return ""
+    if digits in {"79000000000", "79999999999", "71111111111", "70000000000"}:
+        return ""
+    if re.search(r"(?i)\b(?:placeholder|js-phone-mask|name=['\"]telephone|маск[аи]|пример)\b", context or ""):
+        return ""
+    return "+" + digits
+
+
+def _extract_phone_from_html(page_html: str) -> str:
+    """Return the first real phone from tel-href or visible page text."""
+    src = html.unescape(str(page_html or ""))
+    for m in re.finditer(r'''(?is)(?:href\s*=\s*["']\s*)?tel:\s*([^"'\s<>]+)''', src):
+        phone = _normalize_phone_candidate(m.group(1), src[max(0, m.start() - 80):m.end() + 80])
+        if phone:
+            return phone
+
+    visible = re.sub(r"(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)>", " ", src)
+    visible = re.sub(r"(?is)<input\b[^>]*>", " ", visible)
+    visible = re.sub(r"(?is)<[^>]+>", " ", visible)
+    visible = re.sub(r"\s+", " ", visible)
+    for m in re.finditer(r"(?:\+7|8)\s*(?:\(\s*\d{3}\s*\)|\d{3})\s*\d{3}[\s-]*\d{2}[\s-]*\d{2}", visible):
+        phone = _normalize_phone_candidate(m.group(0), visible[max(0, m.start() - 80):m.end() + 80])
+        if phone:
+            return phone
+    return ""
+
+
+def _decode_phone_page_response(resp) -> str:
+    raw = resp.read(700_000)
+    enc = (resp.headers.get("Content-Encoding") or "").lower()
+    if enc == "gzip":
+        raw = gzip.decompress(raw)
+    elif enc == "deflate":
+        raw = zlib.decompress(raw)
+    return raw.decode(resp.headers.get_content_charset() or "utf-8", "ignore")
+
+
+def _fetch_phone_page_html(fetch_url: str) -> str:
+    try:
+        import requests  # noqa: PLC0415
+        session = requests.Session()
+        session.trust_env = False
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = session.get(
+                fetch_url,
+                headers={"User-Agent": _PHONE_FETCH_UA},
+                timeout=(3, 5),
+                verify=False,
+            )
+        if r.text:
+            return r.text
+    except Exception:  # noqa: BLE001 - curl fallback below
+        pass
+
+    try:
+        r = subprocess.run(
+            [
+                "curl", "-k", "-L", "--connect-timeout", "3", "--max-time", "5",
+                "-A", _PHONE_FETCH_UA, "-sS", fetch_url,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            check=False,
+            timeout=7,
+        )
+        if r.stdout:
+            return r.stdout
+    except Exception:  # noqa: BLE001 - urllib fallback below
+        pass
+
+    req = urllib.request.Request(
+        fetch_url,
+        headers={"Accept-Encoding": "identity", "User-Agent": _PHONE_FETCH_UA},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=2) as resp:  # noqa: S310 - user-owned landing page
+            return _decode_phone_page_response(resp)
+    except urllib.error.HTTPError as e:
+        try:
+            return _decode_phone_page_response(e)
+        except Exception:  # noqa: BLE001 - fail-open without phone
+            pass
+    except Exception:  # noqa: BLE001 - fail-open without phone
+        pass
+    return ""
+
+
+def _phone_from_site(href: str) -> str:
+    """Read the landing page and return the first phone as +digits."""
+    parsed = urllib.parse.urlparse(href or "")
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    cache_key = parsed.netloc.lower()
+    if cache_key in _PHONE_CACHE:
+        return _PHONE_CACHE[cache_key]
+    alt_scheme = "http" if parsed.scheme == "https" else "https"
+    paths = []
+    original_path = parsed.path or "/"
+    path_order = (original_path, "/", "/auto", "/contacts", "/credit")
+    if original_path == "/":
+        path_order = ("/auto", "/contacts", "/credit", "/")
+    for path in path_order:
+        if path not in paths:
+            paths.append(path)
+    urls = []
+    for scheme in (parsed.scheme, alt_scheme):
+        for path in paths:
+            url = urllib.parse.urlunparse((scheme, parsed.netloc, path, "", "", ""))
+            if url not in urls:
+                urls.append(url)
+    phone = ""
+    for fetch_url in urls:
+        page_html = _fetch_phone_page_html(fetch_url)
+        phone = _extract_phone_from_html(page_html)
+        if phone:
+            break
+    _PHONE_CACHE[cache_key] = phone
+    return phone
+
+
+def _norm_brand_text(text: str) -> str:
+    return re.sub(r"[^a-zа-яё0-9]+", " ", str(text or "").lower()).strip()
+
+
+def _brand_label_matches(label: str, ref: str) -> bool:
+    """Loose match for brand/model label against coder/site reference."""
+    lab = _norm_brand_text(label)
+    target = _norm_brand_text(ref)
+    if not lab or not target:
+        return False
+    if lab == target or target.startswith(lab + " ") or lab.startswith(target + " "):
+        return True
+    lab_first = lab.split()[0] if lab.split() else ""
+    target_first = target.split()[0] if target.split() else ""
+    return bool(lab_first and len(lab_first) >= 3 and lab_first == target_first)
+
+
+def _coder_brand_for_ct(ct: str) -> str:
+    """Return real brand/model name from ag_part1 for post ct, if ct is a real auto entity."""
+    ctn = str(ct or "").strip().lower()
+    if not re.fullmatch(r"ct\d{4}", ctn) or ctn == "ct0000":
+        return ""
+    try:
+        from .campaign_naming import _ag_part1_map, _coder_name_real_brand  # noqa: PLC0415
+    except ImportError:
+        from campaign_naming import _ag_part1_map, _coder_name_real_brand  # type: ignore[no-redef]  # noqa: PLC0415
+    try:
+        name = str((_ag_part1_map() or {}).get(ctn) or "").strip()
+        if name and _coder_name_real_brand(name):
+            return name
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
+
+
+def _site_text_for_brand_guard(href: str) -> str:
+    parsed = urllib.parse.urlparse(href or "")
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    cache_key = f"{parsed.scheme}://{parsed.netloc}".lower()
+    if cache_key in _SITE_TEXT_CACHE:
+        return _SITE_TEXT_CACHE[cache_key]
+    paths: list[str] = []
+    original_path = parsed.path or "/"
+    for path in (original_path, "/", "/auto", "/catalog", "/cars", "/used", "/contacts"):
+        if path not in paths:
+            paths.append(path)
+    chunks: list[str] = []
+    for path in paths:
+        url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+        page_html = _fetch_phone_page_html(url)
+        if page_html:
+            visible = re.sub(r"(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)>", " ", page_html)
+            visible = re.sub(r"(?is)<[^>]+>", " ", html.unescape(visible))
+            chunks.append(visible)
+        if sum(len(x) for x in chunks) >= 500_000:
+            break
+    text = re.sub(r"\s+", " ", " ".join(chunks)).strip().lower()
+    _SITE_TEXT_CACHE[cache_key] = text
+    return text
+
+
+def _site_mentions_brand(href: str, brand_label: str) -> bool:
+    text = _site_text_for_brand_guard(href)
+    if not text:
+        return False
+    words = [w for w in _norm_brand_text(brand_label).split() if len(w) >= 2]
+    return bool(words) and all(re.search(rf"(?<![a-zа-яё0-9]){re.escape(w)}(?![a-zа-яё0-9])", text)
+                               for w in words)
+
+
+def _safe_post_brand_label(brand_label: str, ct: str, href: str) -> str:
+    """Allow post brand only when it is backed by coder ct or visible site text."""
+    label = re.sub(r"\s+", " ", str(brand_label or "").strip())
+    if not label or label.lower() == "посевы":
+        return "Посевы"
+    coder_brand = _coder_brand_for_ct(ct)
+    if coder_brand and _brand_label_matches(label, coder_brand):
+        return coder_brand
+    if _site_mentions_brand(href, label):
+        return label
+    print(
+        f"[post-engine] brand_label {label!r} is not present in coder ct={ct!r} or site; "
+        "fallback to generic Посевы",
+        flush=True,
+    )
+    return "Посевы"
+
+
+def _sanitize_post_brand_content(title: str, body: str, brand_label: str) -> tuple[str, str]:
+    """Drop foreign auto brands from a branded post ad and keep own brand in title."""
+    brand = "" if str(brand_label or "").lower() == "посевы" else str(brand_label or "").strip()
+    if not brand:
+        return title, body
+    try:
+        from .text_gen import _brand_in_text, _drop_foreign_brand_mentions  # noqa: PLC0415
+    except ImportError:
+        from text_gen import _brand_in_text, _drop_foreign_brand_mentions  # type: ignore[no-redef]  # noqa: PLC0415
+    title_rows = _drop_foreign_brand_mentions([title], brand)
+    clean_title = (title_rows[0] if title_rows else "").strip()
+    if not clean_title or not _brand_in_text(clean_title, brand):
+        clean_title = f"{brand} в кредит. Первый взнос 0 ₽"
+    body_rows = _drop_foreign_brand_mentions(str(body or "").splitlines(), brand)
+    clean_body = "\n".join(body_rows).strip()
+    return clean_title, clean_body or body
+
+
+def _append_post_phone_line(text: str, href: str = "") -> str:
+    """Append required phone line and still use body room if phone is unavailable."""
+    phone = _phone_from_site(href)
+    line = f"Подробности по телефону: {phone}" if phone else ""
+    existing_base, existing_phone, existing_tail = _split_post_phone_line(text)
+    base = _normalize_post_body_structure(existing_base if existing_phone else text)
+    if existing_tail and _should_keep_post_tail(base, existing_tail):
+        candidate = _normalize_post_body_structure(_insert_post_paragraph_before_cta(base, existing_tail))
+        if len(candidate) + (len("\n\n") + len(line or existing_phone) if (line or existing_phone) else 0) <= POST_BODY_MAX:
+            base = candidate
+    base = _expand_post_body_before_phone(base, line)
+    if not phone:
+        return _ensure_post_phone_last(base)
+    return _append_existing_post_phone_line(base, line)
+
+
+def _expand_post_body_before_phone(text: str, phone_line: str) -> str:
+    """Use meaningful free body room before the required phone line."""
+    base = _trim_post_body(text)
+    def _reserved_len(src: str) -> int:
+        if not phone_line:
+            return 0
+        return len(("\n\n" if src else "") + phone_line)
+
+    if POST_BODY_MAX - (len(base) + _reserved_len(base)) < _POST_BODY_TARGET_FREE:
+        return base
+
+    existing_topics = {_post_benefit_topic(line) for line in base.splitlines()}
+    existing_topics.discard("")
+    for paragraph in _POST_BODY_FILLERS:
+        if paragraph.lower() in base.lower():
+            continue
+        topic = _post_benefit_topic(paragraph)
+        if topic and topic in existing_topics:
+            continue
+        candidate = _normalize_post_body_structure(_insert_post_paragraph_before_cta(base, paragraph))
+        if len(candidate) + _reserved_len(candidate) <= POST_BODY_MAX:
+            base = candidate
+            if topic:
+                existing_topics.add(topic)
+        if POST_BODY_MAX - (len(base) + _reserved_len(base)) < _POST_BODY_TARGET_FREE:
+            break
+    return _trim_post_body(base)
+
+
 def _build_platforms(tp_code: str) -> dict:
     """Все ~17 platform-флагов для AddCampaigns; специфичные для tp устанавливаются в True."""
     base = {k: False for k in _ALL_PLATFORM_KEYS}
@@ -186,30 +1076,29 @@ def _build_platforms(tp_code: str) -> dict:
 
 
 def _campaign_name(tp_code: str, ct: str, r_code: str, oblast: str,
-                   brand_label: str = "Посевы", ag_code: str = _AG_CODE) -> str:
+                   brand_label: str = "Посевы", ag_code: str = _AG_CODE,
+                   g_code: str = _G_CODE) -> str:
     """Имя кампании по кодеру (SPEC §4.1).
 
-    Формат: tp8_cpc_site_{ct}_aon_n000_{r_code}_ct018_{ag_code}_g00 — {brand_label} Telegram - {oblast}
+    Формат: tp8_cpc_site_{ct}_aon_n000_{r_code}_ct018_{ag_code}_{g_code} — {brand_label} Telegram - {oblast}
     brand_label: "Посевы" (мультибренд, дефолт), "Tenet", "Lada", "Haval" (монобренд).
     ag_code: "ag001" (Все) / "ag011" (возрастная/гендерная корректировка).
     """
     _tp_labels = {"tp8": "Telegram", "tp9": "Max", "tp10": "Telegram+Max"}
     label = _tp_labels.get(tp_code, tp_code.upper())
-    codes = f"{tp_code}_{_PAY_CODE}_{_SQ_CODE}_{ct}_{_AUD_CODE}_{_N_CODE}_{r_code}_{_FMT_CODE}_{ag_code}_{_G_CODE}"
+    codes = f"{tp_code}_{_PAY_CODE}_{_SQ_CODE}_{ct}_{_AUD_CODE}_{_N_CODE}_{r_code}_{_FMT_CODE}_{ag_code}_{g_code}"
     return f"{codes} — {brand_label} {label} - {oblast}"
 
 
 def _group_name(ct: str, r_code: str, idx: int, brand_label: str = "Посевы",
-                ag_code: str = _AG_CODE) -> str:
+                ag_code: str = _AG_CODE, g_code: str = _G_CODE) -> str:
     """Имя группы объявлений по кодеру (SPEC §2.12, live-test §9.1).
 
     Формат (1:1 с _tp1_group_name):
-    {ct}_aon_n000_{r_code}_ct018_{ag_code}_g{idx:02d} — {brand_label} v{idx+1}
+    {ct}_aon_n000_{r_code}_ct018_{ag_code}_{g_code} — {brand_label} v{idx+1}
 
-    idx=0 → g00/v1, idx=1 → g01/v2, idx=2 → g02/v3 (0-indexed).
     ag_code: "ag001" (Все) / "ag011" (возрастная/гендерная корректировка).
     """
-    g_code = f"g{idx:02d}"
     return f"{ct}_{_AUD_CODE}_{_N_CODE}_{r_code}_{_FMT_CODE}_{ag_code}_{g_code} — {brand_label} v{idx+1}"
 
 
@@ -372,6 +1261,18 @@ def run_create_set_post(
     _bj = bump_job or (lambda _j: None)
     _bi = bump_item or (lambda _j: None)
     _jdp = job_db_progress or (lambda _j: None)
+    raw_brand_label = re.sub(r"\s+", " ", str(brand_label or "").strip())
+    brand_label = _safe_post_brand_label(raw_brand_label, ct, href)
+    feed_url_map = _post_feed_url_map(login, href)
+    if (
+        raw_brand_label
+        and raw_brand_label.lower() != "посевы"
+        and brand_label == "Посевы"
+        and _post_feed_url_for_label(feed_url_map, raw_brand_label)
+    ):
+        brand_label = raw_brand_label
+    post_href = _post_href_for_label(login, href, brand_label, ct=ct, site_type=site_type)
+    allowed_models = _post_allowed_models_from_feed(login, href, brand_label)
 
     def _fail(err: str, **extra) -> list[dict]:
         _aje(job, f"{name}: {err}")
@@ -399,14 +1300,17 @@ def run_create_set_post(
     img_paths = _posevy_images_for_ct(img_ct, limit=POST_IMAGE_LIMIT)
     print(f"[post-engine] {login} {tp_code}: img_ct={img_ct!r} paths_found={len(img_paths)}", flush=True)
 
-    image_hashes: list[str] = []
-    for path in img_paths:
-        try:
-            h = cli.upload_image(path)
-            if h and h not in image_hashes:
-                image_hashes.append(h)
-        except Exception as e:  # noqa: BLE001
-            print(f"[post-engine] {login} {tp_code}: upload_image failed {path!r}: {e!s:.80}", flush=True)
+    image_hashes: list[str] = [
+        str(h).strip() for h in (it.get("preloaded_post_image_hashes") or []) if str(h).strip()
+    ]
+    if not image_hashes:
+        for path in img_paths:
+            try:
+                h = cli.upload_image(path)
+                if h and h not in image_hashes:
+                    image_hashes.append(h)
+            except Exception as e:  # noqa: BLE001
+                print(f"[post-engine] {login} {tp_code}: upload_image failed {path!r}: {e!s:.80}", flush=True)
 
     # 0 хэшей допустимо (API принимает multicards:[], SPEC §2.11 п.5)
     n_groups = max(1, len(image_hashes))
@@ -425,7 +1329,7 @@ def run_create_set_post(
         except ImportError:
             from ai_content import generate_post_ad_content as _gpac  # type: ignore[no-redef]  # noqa: PLC0415
         try:
-            _domain = urllib.parse.urlparse(href or "").netloc or ""
+            _domain = urllib.parse.urlparse(post_href or href or "").netloc or ""
             # brand_label: если "Посевы" (дефолт) → нет конкретного бренда → передаём ""
             _brand = brand_label if (brand_label and brand_label != "Посевы") else ""
             _content = _gpac(
@@ -435,6 +1339,7 @@ def run_create_set_post(
                 city=oblast or "",
                 domain=_domain,
                 avoid=avoid or [],
+                allowed_models=allowed_models,
             )
             if not title_text:
                 title_text = _content.get("title", "")
@@ -443,24 +1348,33 @@ def run_create_set_post(
         except Exception as _ce:  # noqa: BLE001
             print(f"[post-engine] {login} {tp_code}: generate_post_ad_content failed: {_ce!s:.120}",
                   flush=True)
+    title_text, body_text = _sanitize_post_brand_content(title_text, body_text, brand_label)
 
     # Финальная страховка лимитов (generate_post_ad_content их уже применяет; fallback — ниже)
     if not title_text:
         title_text = "Широкий выбор автомобилей"
     if not body_text:
         body_text = "Узнайте актуальные предложения и запишитесь на тест-драйв."
+    body_text = _prepare_post_body(body_text, post_href, brand_label)
+    body_text = _append_post_phone_line(body_text, post_href)
     title_text = title_text[:POST_TITLE_MAX]
-    body_text  = body_text[:POST_BODY_MAX]
+    body_text = _trim_post_body_preserve_phone(body_text, POST_BODY_MAX)
+    body_text = _finalize_post_markup(body_text)
+    body_text = _extend_post_body_after_finalize(body_text, brand_label, post_href)
+    body_text = _finalize_post_markup(_trim_post_body_preserve_phone(body_text, POST_BODY_MAX))
 
-    # ── ag_code, dem_adj — ДО AddCampaigns (нужны для name и useBidModifiers) ──
+    # ── dem_adj — ДО AddCampaigns (нужны для useBidModifiers) ──
     # _bid_mod_dem строится ПОСЛЕ AddCampaigns: требует campaignId (NonNull в Grid-схеме).
-    ag_code = _ag_code_for_corr(corr)
     dem_adj = _dem_adjustments_for_corr(corr)
-    # Пересчитываем name с правильным ag_code (план строил имя с жёстким ag001)
-    name = _campaign_name(tp_code, ct, r_code, oblast, brand_label, ag_code)
+    # Имена Посевов должны совпадать со структурой `direct/slepki/posevy.json` и CODER.md:
+    # POST-семья кодируется как ct018_ag001_g00. Демографические bid modifiers применяются
+    # отдельно и не переписывают structural name/code.
+    ag_code = _AG_CODE
+    g_code = _G_CODE
 
     # ── Шаг 1: AddCampaigns ────────────────────────────────────────────────
     platforms = _build_platforms(tp_code)
+    disabled_places = _post_disabled_places_for_geo(oblast)
     add_camp_vars = {
         "input": {
             "campaignAddItems": [{
@@ -483,7 +1397,7 @@ def run_create_set_post(
                     "meaningfulGoals": [],
                     "startDate": date.today().isoformat(),
                     "endDate": None,
-                    "disabledPlaces": [],
+                    "disabledPlaces": disabled_places,
                     "bannerHrefParams": _UTM_CAMPAIGN_LEVEL,
                     "broadMatch": {
                         "broadMatchFlag": False,
@@ -554,7 +1468,7 @@ def run_create_set_post(
     ad_group_ids: list = []
 
     for idx in range(n_groups):
-        grp_name = _group_name(ct, r_code, idx, brand_label, ag_code)
+        grp_name = _group_name(ct, r_code, idx, brand_label, ag_code, g_code)
         grp_vars = {
             "postAddInput": [{
                 "name": grp_name,
@@ -590,6 +1504,14 @@ def run_create_set_post(
     if not ad_group_ids:
         return _fail("AddPostAdGroups: все группы не созданы",
                      campaign_id=campaign_id, partial=True)
+    if len(ad_group_ids) != n_groups:
+        return _fail(
+            f"AddPostAdGroups: недобор групп {len(ad_group_ids)}/{n_groups}",
+            campaign_id=campaign_id,
+            ad_group_ids=ad_group_ids,
+            partial=True,
+            build={"adgroups": n_groups, "ads": n_groups},
+        )
 
     # ── Шаг 3: AddPostAds × len(ad_group_ids) ─────────────────────────────
     ad_items = []
@@ -599,13 +1521,13 @@ def run_create_set_post(
             multicard = [{"imageHash": image_hashes[gidx]}]
         ad_items.append({
             "adGroupId":      str(gid),
-            "href":           href,
+            "href":           post_href,
             "domain":         None,
             "body":           body_text,
             "title":          title_text,
             "titleExtension": None,
             "creativeId":     None,
-            "button":         {"action": POST_DEFAULT_BUTTON, "href": href},
+            "button":         {"action": POST_DEFAULT_BUTTON, "href": post_href},
             "isMobile":       False,
             "multicards":     multicard,
             "inheritableCallouts":   None,
@@ -630,6 +1552,15 @@ def run_create_set_post(
         added_a = (((resp.get("data") or {}).get("addPostAds") or {}).get("addedAds") or [])
         ad_ids = [a.get("id") for a in added_a if a.get("id")]
         print(f"[post-engine] {login} {tp_code}: {len(ad_ids)} ads created ids={ad_ids}", flush=True)
+        if len(ad_ids) != len(ad_items):
+            return _fail(
+                f"AddPostAds: недобор объявлений {len(ad_ids)}/{len(ad_items)}",
+                campaign_id=campaign_id,
+                ad_group_ids=ad_group_ids,
+                ad_ids=ad_ids,
+                partial=True,
+                build={"adgroups": len(ad_group_ids), "ads": len(ad_items)},
+            )
     except Exception as e:
         return _fail(f"AddPostAds exception: {e!s:.200}",
                      campaign_id=campaign_id, ad_group_ids=ad_group_ids, partial=True)
@@ -646,6 +1577,7 @@ def run_create_set_post(
         "ad_ids":       ad_ids,
         "tp":           tp_code,
         "n_groups":     len(ad_group_ids),
+        "build":        {"adgroups": len(ad_group_ids), "ads": len(ad_ids)},
         "images_used":  len(image_hashes),
         "save_draft":   save_draft,
         "title":        title_text,   # для накопления avoid между tp8/9/10 одного набора

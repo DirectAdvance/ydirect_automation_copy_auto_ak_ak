@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time as _time
 from typing import Callable
 
@@ -44,6 +45,25 @@ def register_job_routes(
     job_db_list_recent: Callable | None = None,
     cancel_children: Callable | None = None,
 ) -> None:
+    def _elapsed_for_row(row: dict, status: str | None):
+        """Live elapsed for UI cards.
+
+        created_at = когда job поставили в очередь; started_at = когда worker реально начал аккаунт.
+        Для running показываем именно время выполнения текущего аккаунта, а не ожидание всей очереди.
+        """
+        if status in job_terminal:
+            return (row.get("result") or {}).get("elapsed_seconds") if isinstance(row.get("result"), dict) else None
+        if status == "running":
+            anchor = row.get("started_at") or row.get("created_at")
+        elif status == "awaiting_feed_decision":
+            anchor = row.get("created_at")
+        else:
+            return None
+        try:
+            return max(0, int(_time.time() - anchor.timestamp())) if anchor else None
+        except Exception:  # noqa: BLE001
+            return None
+
     def _launch_prefetch(job_id: str, login: str, body: dict) -> None:
         """Фаза 1: греем queued-джобу в фоне. is_cancelled смотрит статус в
         _CREATE_JOBS (НЕ через Flask-объекты) — прогрев прекращается, как только
@@ -67,13 +87,58 @@ def register_job_routes(
         body = dict(request.json or {})
         items = body.get("items") or []
         login = (body.get("login") or "").strip()
+        agent = (body.get("agent") or "").strip()
+        site_type = (body.get("site_type") or "").strip()
         if not items:
             return jsonify({"error": "items обязательны"}), 400
+        mismatches: list[str] = []
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            plan_agent = str(item.get("_plan_agent") or item.get("plan_agent") or "").strip()
+            plan_site_type = str(item.get("_plan_site_type") or item.get("plan_site_type") or "").strip()
+            if plan_agent and plan_agent != agent:
+                mismatches.append(f"#{idx + 1}: plan_agent={plan_agent!r}, request_agent={agent!r}")
+            if plan_site_type and plan_site_type != site_type:
+                mismatches.append(
+                    f"#{idx + 1}: plan_site_type={plan_site_type!r}, request_site_type={site_type!r}")
+            name = str(item.get("name") or "")
+            if item.get("renamed") or re.search(r"_v\d{2}(?:\b|$)", name):
+                mismatches.append(f"#{idx + 1}: versioned campaign name is forbidden: {name!r}")
+            if len(mismatches) >= 5:
+                break
+        if mismatches:
+            return jsonify({
+                "error": "План устарел или не соответствует выбранному слепку/типу сайта. "
+                         "Нажмите «Обновить/посчитать план» и запускайте создание только после пересчёта. "
+                         + "; ".join(mismatches),
+                "plan_mismatch": True,
+            }), 409
         if any(isinstance(item, dict) and item.get("pre_draft_only") for item in items):
             return jsonify({
                 "error": "Этот набор подготовлен только до этапа создания черновиков: "
                          "source-aware builder ещё не включён, запуск намеренно заблокирован."
             }), 409
+        if body.get("stream_content") and body.get("single_feed"):
+            return jsonify({
+                "error": "Потоковый полный ИИ-прогон не должен запускаться с single_feed=true. "
+                         "Обновите страницу и запустите полный прогон заново: новый интерфейс "
+                         "пересчитает полный план без сужения до профильного фида.",
+                "stale_client_single_feed": True,
+            }), 409
+        if body.get("stream_content"):
+            item_types = {
+                str((item or {}).get("type") or (item or {}).get("variant") or "").strip()
+                for item in items
+                if isinstance(item, dict)
+            }
+            if item_types and item_types <= {"product"}:
+                return jsonify({
+                    "error": "Потоковый полный ИИ-прогон получил только товарные tp7/product "
+                             "кампании. Это похоже на устаревший или частичный фронтовый план. "
+                             "Обновите страницу и запустите полный прогон заново.",
+                    "stale_client_product_only_stream": True,
+                }), 409
         # Провайдер генерации из попапа (m3 | openrouter) — в КАЖДЫЙ item: генерация читает
         # item.llm_provider, а докрутки/деферреды наследуют body как есть (Семён 03.07).
         _llmp = str(body.get("llm_provider") or "").strip().lower()
@@ -92,6 +157,14 @@ def register_job_routes(
             return jsonify({"error": f"счётчик Метрики {_cid_pf} принадлежит аккаунту «{_owner_pf}», "
                                      f"а не «{login}» — Яндекс отклонит цель как «не найдена». "
                                      f"Укажите счётчик и цель самого «{login}»."}), 400
+
+        try:
+            from .create_set_content_preflight import create_set_pack_gap_note
+            _gap_note = create_set_pack_gap_note(body)
+        except Exception:  # noqa: BLE001
+            _gap_note = ""
+        if _gap_note:
+            return jsonify({"error": _gap_note, "content_gap_preflight": True}), 409
 
         resolved_ag = resolve_agency_hint(login, (body.get("agency") or "").strip())
         if resolved_ag:
@@ -133,12 +206,15 @@ def register_job_routes(
                         "busy_agent": _busy_body.get("agent"),
                         "busy_site_type": _busy_body.get("site_type"),
                     }), 409
+                _resp_agency = (_busy_row or {}).get("agency") or _busy_body.get("agency") or body.get("agency") or ""
                 resp = {"job_id": job_id, "total": len(items), "login": login,
+                        "agency": _resp_agency,
                         "ahead": job_db_ahead(job_id) if job_db_ahead else 0,
                         "existing": True,
                         "note": "для аккаунта уже есть активная задача; дубль не создан"}
                 return jsonify(resp)
             resp = {"job_id": job_id, "total": len(items), "login": login,
+                    "agency": body.get("agency") or "",
                     "ahead": job_db_ahead(job_id) if job_db_ahead else 0}
             _fa = body.get("feed_alert") or {}
             if _fa.get("needed") and not body.get("feed_confirmed") and job_db_web_await_feed:
@@ -168,9 +244,11 @@ def register_job_routes(
                             "busy_agent": _busy_body.get("agent"),
                             "busy_site_type": _busy_body.get("site_type"),
                         }), 409
+                    _resp_agency = _j.get("agency") or _busy_body.get("agency") or body.get("agency") or ""
                     return jsonify({
                         "job_id": _jid, "total": int(_j.get("total") or len(items)),
-                        "login": login, "ahead": create_jobs_ahead(_jid),
+                        "login": login, "agency": _resp_agency,
+                        "ahead": create_jobs_ahead(_jid),
                         "existing": True,
                         "note": "для аккаунта уже есть активная задача; дубль не создан",
                     })
@@ -197,7 +275,8 @@ def register_job_routes(
             _launch_prefetch(job_id, login, body)
         with create_jobs_lock:
             ahead = create_jobs_ahead(job_id)
-        resp = {"job_id": job_id, "total": len(items), "login": login, "ahead": ahead}
+        resp = {"job_id": job_id, "total": len(items), "login": login,
+                "agency": body.get("agency") or "", "ahead": ahead}
         if deduped:
             resp["existing"] = True
             resp["note"] = "для аккаунта уже есть активная задача; дубль не создан"
@@ -228,19 +307,7 @@ def register_job_routes(
                 except (TypeError, ValueError):
                     _fd = None
             _res = row.get("result") if _status in job_terminal else None
-            # elapsed (таймер очереди): terminal → точное result.elapsed_seconds; running →
-            # серверное now - created_at. Считаем на СЕРВЕРЕ, чтобы таймер стартовал с создания и
-            # переживал обновление страницы (клиент якорит runningFrom от этого значения). (Семён 2026-07-08)
-            if _status in job_terminal:
-                _el = (row.get("result") or {}).get("elapsed_seconds") if isinstance(row.get("result"), dict) else None
-            elif _status in ("running", "awaiting_feed_decision"):
-                _ca = row.get("created_at")
-                try:
-                    _el = max(0, int(_time.time() - _ca.timestamp())) if _ca else None
-                except Exception:  # noqa: BLE001
-                    _el = None
-            else:
-                _el = None
+            _el = _elapsed_for_row(row, _status)
             _skipped_ex = (row.get("result") or {}).get("skipped_existing", 0) if isinstance(row.get("result"), dict) else 0
             _active_ch = (row.get("result") or {}).get("_active_children") if isinstance(row.get("result"), dict) else None
             return jsonify({"status": _status, "login": row.get("login") or "",
@@ -354,14 +421,7 @@ def register_job_routes(
                         or _body.get("_repair_parent_job_id")):
                     continue
                 _total = int(r.get("total") or 0)
-                # elapsed для running = серверное now - created_at (таймер переживает reload; см. create_set_status)
-                _el_list = None
-                if st in ("running", "awaiting_feed_decision"):
-                    _ca = r.get("created_at")
-                    try:
-                        _el_list = max(0, int(_time.time() - _ca.timestamp())) if _ca else None
-                    except Exception:  # noqa: BLE001
-                        _el_list = None
+                _el_list = _elapsed_for_row(r, st)
                 out.append({"job_id": r.get("job_id"), "status": st, "login": r.get("login") or "",
                             "agency": r.get("agency") or "",
                             "done": int(r.get("done") or 0), "total": _total,
@@ -422,6 +482,11 @@ def register_job_routes(
                 return jsonify({"ok": True, "status": st, "removed": True,
                                 "cancelled_children": _kids, "note": "убрана из очереди"})
             if st in ("queued", "claimed", "awaiting_feed_decision"):
+                # A web-posted job can already be adopted into the worker's in-memory queue while the
+                # DB still shows queued/claimed. Persist the terminal UI state, and also send a
+                # worker control command so the in-memory copy is removed before it can run.
+                if job_control_set:
+                    job_control_set(jid, "cancel")
                 job_db_set_status(jid, "cancelled", "отменено пользователем")
                 return jsonify({"ok": True, "status": "cancelled", "cancelled_children": _kids})
             job_control_set(jid, "cancel")               # running → остановка после текущей кампании

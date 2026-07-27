@@ -46,6 +46,7 @@ _RECREATE_CODES = {
     "UAC_TEXTS_MISSING",
     "UAC_SITELINKS_MISSING",
     "UAC_MEDIA_MISSING",
+    "UAC_IMAGES_LOW",
     "UAC_VIDEO_MISSING",   # D3-UAC 2026-07-09: видео-марка без видео → recreate с довложением видео
     "UAC_FEED_MISSING",
     "UAC_PRODUCT_MODEL_FILTER_MISSING",
@@ -88,6 +89,10 @@ def _action_for_issue(issue: dict[str, Any]) -> dict[str, Any] | None:
     code = str(issue.get("code") or "")
     name = _name(issue)
     cid = _cid(issue)
+    # Происхождение находки едет в действие как есть: `source="resume_skip"` (проход
+    # `live_verifier` по УЖЕ СУЩЕСТВУЮЩИМ tp6/tp7) — признак «кампания не наша, разрушительное
+    # действие по ней запрещено», его читает `repair_gate.executable_uac_replace_campaigns`.
+    src = str(issue.get("source") or "").strip()
 
     if code in _RECREATE_CODES:
         action = {
@@ -99,6 +104,8 @@ def _action_for_issue(issue: dict[str, Any]) -> dict[str, Any] | None:
             "uses_direct_units": False,
             "note": "создать/докрутить через cookie/Grid, v5 не использовать без отдельной необходимости",
         }
+        if src:
+            action["source"] = src
         if code in _SEARCH_RECREATE_CODES:
             # Пустые кампании (future codes): нужен destructive recreate.
             action["requires_campaign_delete"] = True
@@ -216,8 +223,8 @@ def _action_for_issue(issue: dict[str, Any]) -> dict[str, Any] | None:
             "name": name,
             "issue_code": code,
             "uses_direct_units": False,
-            "note": "проставить feed_filters товарной UAC (бренд → позитив+минус-марки, ct0000 → "
-                    "минус-марки; PATCH uac/campaign, исполняется в fix_feed_filters_uac)",
+            "note": "проставить feed_filters товарной UAC только для марочной/модельной tp7 "
+                    "(positive по марке/модели; ct0000/общие без фильтра; PATCH uac/campaign)",
         }
 
     if code == "NO_LISTING":

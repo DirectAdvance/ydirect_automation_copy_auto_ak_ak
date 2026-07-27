@@ -64,6 +64,14 @@ def gw_cookie(login: str, *, accounts=None, force_refresh: bool = False,
     params = {"login": login, "force_refresh": "1" if force_refresh else "0"}
     if accounts:
         params["accounts"] = ",".join(accounts)   # подсказка агентств брокеру
+    # Cookie-pick may intentionally wait 30s and re-fetch Glavpotok on need_reset/login-page
+    # signals. The generic 4s gateway timeout would otherwise fire, then the caller would repeat
+    # the same slow path locally. Keep the longer timeout scoped to /gw/cookie only.
+    if timeout == _DEFAULT_TIMEOUT:
+        try:
+            timeout = max(timeout, float(os.environ.get("DIRECT_GATEWAY_COOKIE_TIMEOUT", "150")))
+        except (TypeError, ValueError):
+            timeout = 150.0
     try:
         data = _get("/gw/cookie", params, timeout)
         cookie = data.get("cookie")

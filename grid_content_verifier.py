@@ -103,8 +103,11 @@ def verify_grid_content(name: str, campaign_id: int | None,
             repair.append(_keywords_repair(nm, cid))
         # WRONG_AUTOTARGET — только поисковые: профиль EXACT_V2_MARK/WITHOUT_BRAND обязателен
         # на tp2/4/5; у tp1 РСЯ автотаргет намеренно широкий (create_set_tp1_builders.py:302).
+        # Severity: в in-job фазе — warn (лаг чтения реплики; живьём всегда 0 после отстоя);
+        # в delayed — error (реальный дефект). Аналог BUILD_LIVE_UNDERCOUNT (строки 499-506).
         if tp in (2, 4, 5) and isinstance(wrong_at, int) and wrong_at > 0:
-            issues.append({"severity": "error", "code": "WRONG_AUTOTARGET",
+            _at_sev = "error" if str(exp.get("phase") or "in_job") == "delayed" else "warn"
+            issues.append({"severity": _at_sev, "code": "WRONG_AUTOTARGET",
                            "name": nm, "id": cid, "groups": wrong_at,
                            "note": "неверный профиль автотаргета (нужен EXACT_V2_MARK/WITHOUT_BRAND)"})
             repair.append(_keywords_repair(nm, cid))
@@ -122,6 +125,22 @@ def verify_grid_content(name: str, campaign_id: int | None,
         issues.append({"severity": "warn", "code": "DYNAMIC_PLACES_ON",
                        "name": nm, "id": cid, "actual": True,
                        "note": "динамические места на поиске включены у tp2 (report-only)"})
+
+    # ── NAME_SEGMENT_DUPE (report-only): сегмент имени кампании повторён ──────
+    # ОБОБЩЁННЫЙ детект класса «дубль подстроки в имени» (ТК - Автосалон - ТК - Автосалон,
+    # МК - МК, домен фида дважды). Литералы НЕ зашиваем: сравниваем имя с результатом того же
+    # дедупа, которым имя собирается (create_set_context.dedup_name_segments) — разошлись,
+    # значит какой-то сегмент приклеился дважды. 0 запросов, чистая строка.
+    try:
+        from .create_set_context import dedup_name_segments as _dedup_nm
+        _nm_clean = _dedup_nm(str(nm or ""))
+    except Exception:  # noqa: BLE001
+        _nm_clean = str(nm or "")
+    if nm and _nm_clean != str(nm):
+        issues.append({"severity": "warn", "code": "NAME_SEGMENT_DUPE",
+                       "name": nm, "id": cid, "expected": _nm_clean,
+                       "note": "имя кампании отличается от канонического: повтор сегмента "
+                               "или лишние пробелы (report-only)"})
 
     # ── MINUS_PLACES_MISSING (report-only): tp1 РСЯ without disabled places ───
     dp = counts.get("disabled_places")
@@ -368,13 +387,12 @@ def _verify_campaign_spec(nm: str, cid: int | None, tp: int | None,
                     "name": nm, "id": cid,
                     "note": "нет цели ни в meaningfulGoals, ни в стратегии (strategy.goalId)"})
 
-    # Разметка ссылок Метрикой (hasAddMetrikaTagToUrl) — тумблер кампании, tri-state.
-    # ⚠️ bannerHrefParams НЕ проверяем: по DoD #2 UTM у tp1–tp5 живёт на ГРУППАХ
-    # (UTM_MISSING_LIVE выше), пустой параметр кампании там — норма, а не дефект.
-    if counts.get("has_add_metrika_tag_to_url") is False:
-        out.append({"severity": "error", "code": "METRIKA_TAG_OFF_LIVE",
-                    "name": nm, "id": cid,
-                    "note": "разметка ссылок для Метрики выключена (hasAddMetrikaTagToUrl=False)"})
+    # ⚠️ hasAddMetrikaTagToUrl (авторазметка Яндекса, yclid) НЕ проверяем — решение Семёна
+    # 2026-07-19 по разбору прогона 2b9d58d01e28 (18 из 20 ложных METRIKA_TAG_OFF_LIVE):
+    # билдер намеренно ставит False (grid_create_payloads.py:77, как и браузерный эталон
+    # grid_uc_template.json:286), а наши UTM живут на ГРУППАХ (trackingParams, UTM_MISSING_LIVE
+    # выше) и с yclid не пересекаются. Канон (DoD §3.0, инварианты #1/#2) авторазметки не требует.
+    # bannerHrefParams не проверяем по той же причине: пустой параметр кампании — норма.
 
     # Недельный бюджет: сумма должна быть > 0, период — WEEK.
     bsum = counts.get("budget_sum")
@@ -413,8 +431,10 @@ def _verify_campaign_spec(nm: str, cid: int | None, tp: int | None,
 # лежит в результате джобы, поэтому сверка бесплатна (0 новых запросов). Сравниваем ТОЛЬКО
 # одноимённые измерения и ТОЛЬКО в сторону НЕДОБОРА (live < build):
 #   * live == 0 при build > 0 → error + rebuild_missing_content (существующий ремонтёр);
-#   * 0 < live < build        → warn в in-job фазе (отложенный демон ещё доливает контент)
-#                               и error в отложенной фазе (phase="delayed").
+#   * 0 < live < build        → warn в in-job фазе и error в отложенной (phase="delayed").
+#     ⚠️ Недобор НЕ означает «демон дольёт»: замер 2026-07-19 (прогон 2b9d58d01e28) показал, что
+#     спустя ~12 ч живые счётчики идентичны in-job. Реальные причины — схлопывание Директом
+#     дублей фраз (билдер считает AddResults с Id) и лаг индексации Grid на in-job-моменте.
 # Перебор (live > build) НЕ флагаем: Grid-счётчик ``ads`` считает ВСЕ типы объявлений, а
 # build.ads — только текстовые, поэтому «больше» — нормальная форма, а не дефект.
 # Ловушки (проверено): товарная кампания c build.ads=0/shopping_ads>0 сравнивается по СУММЕ
@@ -467,6 +487,12 @@ def _verify_build_vs_live(nm: str, cid: int | None, counts: dict[str, Any],
         live = counts.get(live_key)
         if not isinstance(live, int):
             continue
+        if (live_key == "keywords_count" and live <= 0
+                and int(counts.get("at_by_design_kw_groups") or 0) > 0):
+            # Автотаргетинговая кампания: группы живут на relevanceMatch, реальных ключей 0 —
+            # это НЕ дефект (тот же признак, что гасит NO_KEYWORDS_LIVE, grid_read.py). Без гейта
+            # прогон 2b9d58d01e28 дал 3 ложных BUILD_LIVE_MISSING и 3 лишних keyword-ремонта.
+            continue
         if live <= 0:
             issues.append({"severity": "error", "code": "BUILD_LIVE_MISSING",
                            "name": nm, "id": cid, "dimension": label,
@@ -479,7 +505,8 @@ def _verify_build_vs_live(nm: str, cid: int | None, counts: dict[str, Any],
                            "expected": expected, "actual": live, "phase": phase,
                            "note": (f"{label}: билдер создал {expected}, в кабинете {live}"
                                     + ("" if phase == "delayed"
-                                       else " (in-job: отложенный демон ещё доливает контент)"))})
+                                       else " (часть ключей/объявлений может схлопнуться Директом "
+                                            "как дубли; на in-job возможен лаг индексации Grid)"))})
             if phase == "delayed":
                 repair.append(_keywords_repair(nm, cid) if rkind == "keywords" else _repair(nm, cid))
     issues.extend(_verify_build_ads_by_type(nm, cid, counts, build, phase))
@@ -503,6 +530,10 @@ def _verify_build_ads_by_type(nm: str, cid: int | None, counts: dict[str, Any],
     будет 0 при живых объявлениях и код даст ложняк. Поднимать до ``error`` — только после того,
     как живой прогон покажет чистый ноль этого кода на здоровом наборе (см. DOD.md §1.b).
     """
+    if _tp(nm) in (8, 9, 10):
+        # Посевы are GdPostCampaigns: build.ads counts GdPostAd, not GdAdaptiveTextAd.
+        # The total ads dimension above already verifies the post-ad count.
+        return []
     if not counts.get("adaptive_images_read"):
         return []                       # типы не прочитаны → молчим (tri-state fail-safe)
     if counts.get("ads_truncated"):

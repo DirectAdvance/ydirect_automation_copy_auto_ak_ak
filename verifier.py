@@ -100,6 +100,28 @@ def _feed_present(item: dict[str, Any]) -> bool:
     )
 
 
+def _result_feed_present(result: dict[str, Any]) -> bool:
+    """Return True when a created result proves a feed was resolved downstream.
+
+    Some plan items (notably tp5/search_gallery) intentionally do not carry a
+    concrete feed_id in the request body.  The builder fans out/resolves the
+    actual URL feed later and records it in the result.  Static verification must
+    not report ITEM_FEED_MISSING_LOCAL for such successfully-created campaigns.
+    """
+    if not isinstance(result, dict) or not _created_result(result):
+        return False
+    if _feed_present(result):
+        return True
+    name = _name(result).lower()
+    if re.search(r"\s[—-]\s[^—-]*\.xml\b", name):
+        return True
+    build = result.get("build") or result.get("tp1_build") or result.get("tp5_build") or {}
+    if not isinstance(build, dict):
+        return False
+    return any(int(build.get(key) or 0) > 0
+               for key in ("shopping_ads", "listing_ads", "smart_ads", "feed_filters"))
+
+
 def _item_type(item: dict[str, Any]) -> str:
     return str(item.get("type") or item.get("campaign_type") or "").strip()
 
@@ -122,6 +144,15 @@ def _is_feed_item(item: dict[str, Any]) -> bool:
 
 
 _POSEVY_TYPES = {"post_tp8", "post_tp9", "post_tp10"}
+_STRUCT_TP_BY_TYPE = {
+    "tp1_rsy": "tp1",
+    "search_test": "tp2",
+    "rsya_gallery": "tp3",
+    "search_dynamic": "tp4",
+    "search_gallery": "tp5",
+    "master": "tp6",
+    "product": "tp7",
+}
 
 
 def _is_posevy_item(item: dict[str, Any]) -> bool:
@@ -130,6 +161,78 @@ def _is_posevy_item(item: dict[str, Any]) -> bool:
     return (tp in _POSEVY_TYPES
             or tp.startswith(("tp8", "tp9", "tp10"))
             or name.startswith(("tp8_", "tp9_", "tp10_")))
+
+
+def _verify_items_against_slepok_structure(items: list[dict[str, Any]],
+                                           body: dict[str, Any] | None,
+                                           issues: list[dict[str, Any]]) -> None:
+    """Guard create-plan items against the same slepok structure shown in the UI.
+
+    This intentionally checks only explicit structure keys (`camp_key`) in regular auto
+    tp1-tp5 items. Full missing-parity is a live audit concern: partial/profile-gated
+    create requests can legally build a subset, but a planned campaign must not point to
+    a campaign key absent from the selected slepok/site/tp structure.
+    """
+    if not items:
+        return
+    body = body or {}
+    agent = str(body.get("agent") or "").strip()
+    site_type = str(body.get("site_type") or body.get("site") or "").strip()
+    if not agent or not site_type:
+        for it in items:
+            agent = agent or str((it or {}).get("_plan_agent") or "").strip()
+            site_type = site_type or str((it or {}).get("_plan_site_type")
+                                         or (it or {}).get("_plan_struct_site_type") or "").strip()
+            if agent and site_type:
+                break
+    if not agent or not site_type:
+        return
+    expected_cache: dict[str, set[str]] = {}
+    try:
+        from .create_set_structure import structure_to_campaigns
+    except Exception as e:  # noqa: BLE001
+        issues.append({"severity": "warn", "code": "STRUCTURE_PARITY_SKIPPED",
+                       "message": f"structure_to_campaigns import failed: {str(e)[:160]}"})
+        return
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        camp_key = str(item.get("camp_key") or "").strip()
+        if not camp_key:
+            continue
+        tp_code = str(item.get("tp") or _STRUCT_TP_BY_TYPE.get(_item_type(item), "")).strip()
+        if tp_code not in {"tp1", "tp2", "tp3", "tp4", "tp5"}:
+            continue
+        if tp_code not in expected_cache:
+            try:
+                expected_cache[tp_code] = {
+                    str(c.get("name") or "").strip()
+                    for c in (structure_to_campaigns(agent, site_type, tp_code) or [])
+                    if str(c.get("name") or "").strip()
+                }
+            except Exception as e:  # noqa: BLE001
+                issues.append({"severity": "warn", "code": "STRUCTURE_PARITY_SKIPPED",
+                               "tp": tp_code,
+                               "message": f"structure read failed: {str(e)[:160]}"})
+                expected_cache[tp_code] = set()
+        expected = expected_cache.get(tp_code) or set()
+        if expected and camp_key not in expected:
+            issues.append({"severity": "error", "code": "ITEM_NOT_IN_SLEPOK_STRUCTURE",
+                           "name": _name(item), "tp": tp_code, "camp_key": camp_key,
+                           "message": "planned campaign key is absent from UI slepok structure"})
+
+
+def structure_preflight_issues(items: list[dict[str, Any]],
+                               body: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Read-only precreate guard for the UI slepok structure contract.
+
+    The post-create verifier uses the same helper, but create-set must reject stale
+    or hand-edited payloads before any Direct objects are created.
+    """
+    issues: list[dict[str, Any]] = []
+    _verify_items_against_slepok_structure(items or [], body or {}, issues)
+    return issues
 
 
 def _callouts_relevant(items: list[dict[str, Any]], results: list[dict[str, Any]]) -> bool:
@@ -203,11 +306,6 @@ def _verify_body(body: dict[str, Any] | None, issues: list[dict[str, Any]]) -> d
 
     if bool(body.get("launch")):
         checked["draft_only"] = False
-        issues.append({
-            "severity": "warn",
-            "code": "BODY_LAUNCH_IGNORED_DRAFT_ONLY",
-            "message": "body.launch=true игнорируется: сервис создает только черновики",
-        })
     return checked
 
 
@@ -239,8 +337,18 @@ def verify_create_set(*, login: str, items: list[dict[str, Any]], results: list[
     issues: list[dict[str, Any]] = []
     repair_candidates: list[dict[str, Any]] = []
     checked = _verify_body(body, issues)
+    _verify_items_against_slepok_structure(items, body, issues)
 
     result_names = [_name(r) for r in results]
+    result_by_item_name: dict[str, list[dict[str, Any]]] = {}
+    for r in results:
+        rn = _name(r)
+        if not rn:
+            continue
+        for item in items:
+            item_name = _name(item)
+            if item_name and _item_matches_result(item_name, rn):
+                result_by_item_name.setdefault(item_name, []).append(r)
     for item in items:
         item_name = _name(item)
         tp = _item_type(item)
@@ -266,7 +374,8 @@ def verify_create_set(*, login: str, items: list[dict[str, Any]], results: list[
                 issues.append({"severity": "warn", "code": "CONTENT_TEXTS_LOW", "name": item_name, "count": texts_n})
         elif titles_n <= 0 and texts_n <= 0 and not _is_feed_item(item) and not _is_posevy_item(item):
             issues.append({"severity": "warn", "code": "ITEM_CONTENT_MISSING_LOCAL", "name": item_name})
-        if _is_feed_item(item) and not _feed_present(item):
+        result_feed_ok = any(_result_feed_present(r) for r in result_by_item_name.get(item_name, []))
+        if _is_feed_item(item) and not _feed_present(item) and not result_feed_ok:
             issues.append({"severity": "warn", "code": "ITEM_FEED_MISSING_LOCAL", "name": item_name})
         if sitelinks_n and sitelinks_n < 8:
             issues.append({"severity": "warn", "code": "CONTENT_SITELINKS_LOW", "name": item_name, "count": sitelinks_n})

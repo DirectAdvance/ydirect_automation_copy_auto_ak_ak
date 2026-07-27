@@ -11,21 +11,15 @@ from typing import Any, Callable, Optional
 from .create_set_resume import already_in_direct, force_recreate
 
 
-def _skip_domain_fname(f_name: str, href: str) -> bool:
-    """True если f_name совпадает с hostname аккаунта → не добавлять в имя кампании.
-    Защищает от вставки домена (напр. «autos-kemerovo.site») вместо контентного имени фида."""
-    if not f_name or not href:
-        return False
-    nm = f_name.strip().lower()
-    if nm.startswith("www."):
-        nm = nm[4:]
-    h = href.lower()
-    for pfx in ("https://www.", "http://www.", "https://", "http://"):
-        if h.startswith(pfx):
-            h = h[len(pfx):]
-            break
-    host = h.split("/")[0].split("?")[0]
-    return bool(host and nm == host)
+def _feed_name_label(f_name: str, href: str) -> str:
+    """Метка фида для имени кампании: домен аккаунта срезан, остаток — контентная часть.
+
+    Было `_skip_domain_fname` — резал только ТОЧНОЕ равенство имени хосту, а в кабинете имя
+    фида идёт с доменом-ПРЕФИКСОМ («carsklad-126.site — yandex-catalog-model-…») → домен
+    проезжал в имя кампании. Пусто на выходе = имя было только доменом → суффикс не добавлять.
+    """
+    from .model_urls import _strip_site_domain_label
+    return _strip_site_domain_label(f_name, href)
 
 
 def run_create_set_tp1(*, it: dict[str, Any], name: str,
@@ -79,7 +73,10 @@ def run_create_set_tp1(*, it: dict[str, Any], name: str,
     _only_cts = set(it.get("tp1_only_cts") or ()) or None
     # tp1_catalog: тег «каталоги» вручную назначен на кампанию → форсить ShoppingAd+ListingAd.
     # Catalog-role гейт (catalog_only=True в account_model_feeds) блокирует лендинг/оффер-фиды — guard цел.
-    tp1_shopping = slepok_uses_shopping(slepok, "tp1") or tp1_products_only or bool(it.get("tp1_catalog"))
+    # ПРАВИЛО: shopping-решение принимается per-кампания (tp1_catalog), а НЕ по общему slepok-флагу.
+    # slepok_uses_shopping("tp1") специально убран: он форсил shopping на ВСЕ tp1 слепка-Щербакова
+    # независимо от tp1_catalog, из-за чего «Комби» (без Фид, tp1_catalog=None) получал 3 объявл. вместо 1.
+    tp1_shopping = tp1_products_only or bool(it.get("tp1_catalog"))
     # FAN-OUT (CODER.md: фидовые tp мультиплицируются по ВСЕМ фидам аккаунта, имя += фид).
     # Товарные с фильтром по модели — фиды С модельными коллекциями (listings 'model_N').
     tp1_mf = account_model_feeds(login, w_agency or "") if tp1_shopping else []
@@ -121,8 +118,9 @@ def run_create_set_tp1(*, it: dict[str, Any], name: str,
             break                                 # (текущая фид-кампания уже достроена)
         f_shopping = tp1_shopping and bool(f_id)
         # Имя кампании несёт название фида (мультиплицирование по фидам).
-        # ФИКС C: пропускаем f_name если он совпадает с доменом аккаунта (не контентный суффикс). (#ФИКС-C)
-        nm = f"{name} — {f_name}" if (f_name and not _skip_domain_fname(f_name, href) and (multi or f_shopping)) else name
+        # ФИКС C: домен аккаунта в суффикс не пускаем — срезаем его из метки (не только точное равенство).
+        _f_label = _feed_name_label(f_name, href)
+        nm = f"{name} — {_f_label}" if (_f_label and (multi or f_shopping)) else name
         # RESUME-SKIP ПОФИДОВО: эта фид-кампания уже есть в Директе → пропускаем именно её
         # (а не весь пункт), чтобы недосозданные фиды дозаполнились при докрутке.
         if already_in_direct(nm, existing_names) and not force_recreate(nm, repair_force_names):
@@ -140,12 +138,14 @@ def run_create_set_tp1(*, it: dict[str, Any], name: str,
                 budget_rub=tp1_budget, segment=it.get("tp1_segment"),
                 ai_title2=(it.get("title2") or ""), city=(city or ""),
                 autotarget=bool(it.get("autotarget")), no_cpa=no_cpa,
+                keep_keywords=bool(it.get("autotarget_keep_keywords")),
                 only_gks=_only_gks, only_cts=_only_cts,
                 token=st_token or "", corr=corr, ret_map=ret_map,
                 callout_texts=callouts,
                 callout_ids=callout_ids,
                 sitelinks=(it.get("sitelinks") if isinstance(it.get("sitelinks"), list) else None),
                 feed_id=f_id, with_shopping=f_shopping, feed_models=f_models,
+                products_only=tp1_products_only,
                 job=job,                          # отмена: проверка cancel между cpc/cpa внутри
                 all_feeds_list=_all_feeds_list,   # «все фиды»: per-feed shopping groups в одной кампании
             )

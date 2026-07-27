@@ -13,6 +13,31 @@ PROMO_FIELDS = ["Id", "Type", "Name", "Description", "Amount", "AmountPrefix", "
 _UAC_TP_PREFIXES = ("tp6_", "tp7_", "tp8_", "tp9_", "tp10_")
 
 
+def _parse_attach_response(resp: dict, attempted: list) -> tuple[list[int], list, str]:
+    """Parse updateCampaignsPromoExtension response → (confirmed_ids, errors, note_suffix).
+
+    ``resp`` — сырой dict, который вернул ``PromoClient.attach()``.
+    ``attempted`` — список id, переданных в attach (уже БЕЗ tp6/tp7).
+    """
+    if not isinstance(resp, dict):
+        return [], [], f"привязка: нет ответа API ({len(attempted)} кампаний)"
+    res = ((resp.get("data") or {}).get("updateCampaignsPromoExtension") or {})
+    confirmed_ids = [int(c["id"]) for c in (res.get("updatedCampaigns") or []) if c.get("id")]
+    errors = ((res.get("validationResult") or {}).get("errors") or
+              resp.get("errors") or [])
+    n_ok = len(confirmed_ids)
+    n_att = len(attempted)
+    if n_ok == n_att:
+        suffix = f"привязано к {n_ok} кампаниям"
+    elif n_ok:
+        suffix = f"привязано к {n_ok} из {n_att} кампаний"
+    else:
+        suffix = f"привязка не подтверждена API ({n_att} попыток)"
+    if errors:
+        suffix += f"; ошибки API: {str(errors)[:120]}"
+    return confirmed_ids, errors, suffix
+
+
 def attach_or_create_promo(*, login: str, items: list[dict[str, Any]], results: list[dict[str, Any]],
                            token: str | None, client: Any, account: dict[str, Any],
                            site_type: str, agent: str, precreated_promo_id: int | None,
@@ -34,16 +59,20 @@ def attach_or_create_promo(*, login: str, items: list[dict[str, Any]], results: 
     """
     # #5 review GAP B: tp2/tp4-возврат по куке несёт campaign_id без ключа id → раньше выпадал из
     # created_ids и промо к нему не привязывалось. Берём id ИЛИ campaign_id.
+    # Бизнес-правило: МК (tp6) и Товарные кампании (tp7) — прomo привязывать НЕЛЬЗЯ.
+    # Имя кампании определяет тип: tp6_*/tp7_* — исключаем из привязки.
     created_ids = [(row.get("id") or row.get("campaign_id")) for row in results
-                   if row.get("ok") and (row.get("id") or row.get("campaign_id"))]
+                   if row.get("ok") and (row.get("id") or row.get("campaign_id"))
+                   and not str(row.get("name") or "").startswith(_UAC_TP_PREFIXES)]
     if not created_ids or not token:
         return None, None
     try:
         promo_client = PromoClient(client, login)
         if precreated_promo_id:
             # precreate уже нашёл пригодное промо в библиотеке ИЛИ создал новое → библиотека непуста.
-            promo_client.attach(precreated_promo_id, created_ids)
-            return f"{precreated_promo_note}; привязано к {len(created_ids)} кампаниям", True
+            _attach_resp = promo_client.attach(precreated_promo_id, created_ids)
+            _, _, _attach_sfx = _parse_attach_response(_attach_resp, created_ids)
+            return f"{precreated_promo_note}; {_attach_sfx}", True
 
         jp = v5_get("promotions", token, login, PROMO_FIELDS, criteria={})
         promos_all = [p for p in (jp.get("result") or {}).get("Promotions", []) if p.get("Id")]
@@ -57,9 +86,10 @@ def attach_or_create_promo(*, login: str, items: list[dict[str, Any]], results: 
             else:
                 skipped_promos.append((promo.get("Id"), why))
         if usable_promos:
-            promo_client.attach(usable_promos[0]["Id"], created_ids)
+            _attach_resp = promo_client.attach(usable_promos[0]["Id"], created_ids)
+            _, _, _attach_sfx = _parse_attach_response(_attach_resp, created_ids)
             return (
-                f"привязано промо аккаунта (id {usable_promos[0]['Id']}) к {len(created_ids)} кампаниям"
+                f"привязано промо аккаунта (id {usable_promos[0]['Id']}): {_attach_sfx}"
                 + (f"; в аккаунте промо: {len(promos_all)}" if len(promos_all) > 1 else "")
                 + (f"; пропущено кривых/конфликтных: {len(skipped_promos)}" if skipped_promos else "")
             ), True
@@ -74,11 +104,12 @@ def attach_or_create_promo(*, login: str, items: list[dict[str, Any]], results: 
             content_lines,
         )
         if pid:
-            promo_client.attach(pid, created_ids)
+            _attach_resp = promo_client.attach(pid, created_ids)
+            _, _, _attach_sfx = _parse_attach_response(_attach_resp, created_ids)
             base = "в аккаунте не было пригодных промо" if promos_all else "в аккаунте не было промо"
             # Промо только что создано в библиотеке клиента → она непуста.
             return (
-                f"{base}; {note}; привязано к {len(created_ids)} кампаниям"
+                f"{base}; {note}; {_attach_sfx}"
                 + (f"; пропущено кривых/конфликтных: {len(skipped_promos)}" if skipped_promos else "")
             ), True
         if promos_all:

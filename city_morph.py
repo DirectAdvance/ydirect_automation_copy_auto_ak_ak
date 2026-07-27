@@ -143,11 +143,15 @@ def _replace_foreign_city(items: list, own_city: str, cities: set) -> list:
             out.append(s)
             continue
         for c in pool:
-            if c == own_l or c in own_l or own_l in c or len(c) < 4 or c not in s.lower():
+            known_city = c in _RU_CITIES or any(c == k.lower() for k in _CITY_LOCATIVE)
+            if c == own_l or c in own_l or own_l in c or (len(c) < 5 and not known_city):
                 continue
-            s2 = re.sub(r"(?i)(\bво?\s+)" + re.escape(c) + r"[а-яё\-]*", r"\1" + prep, s)
+            city_pat = r"(?<![a-zа-яё0-9])" + re.escape(c) + r"(?:[а-яё\-]{0,10})?(?![a-zа-яё0-9])"
+            if not re.search(city_pat, s, flags=re.I):
+                continue
+            s2 = re.sub(r"(?i)(\bво?\s+)" + city_pat, r"\1" + prep, s)
             if s2 == s:                                   # без предлога → именительный
-                s2 = re.sub(r"(?i)" + re.escape(c) + r"[а-яё\-]*", own, s)
+                s2 = re.sub(r"(?i)" + city_pat, own, s)
             s = s2
         out.append(s)
     return out
@@ -202,6 +206,5 @@ def _drop_foreign_city_keywords(keywords: list, own_city: str) -> list:
             continue
         out.append(k)
     return out
-
 
 

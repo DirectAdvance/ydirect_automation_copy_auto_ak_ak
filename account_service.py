@@ -475,6 +475,35 @@ def _preflight_creds(login: str, agency_hint: str, need_cookie: bool) -> dict:
     if not tokens:
         return {"ok": False, "token": None, "agency": None, "cookie": None,
                 "error": "нет агентских токенов (loader.load_yandex_direct вернул пусто)"}
+    requested_agency = (agency_hint or "").strip()
+    # Для create/deferred job agency_hint — это не просто подсказка для OAuth-токена, а ключ
+    # очереди и cookie-аккаунт Grid/UAC. `_token_for_login()` может вернуть другой token-owner из
+    # кэша/перебора токенов (например, если один OAuth открывает клиента), но Grid-cookie при этом
+    # должна проверяться строго под agency из job. Иначе deferred сохраняется с чужим agency и
+    # докрутка потом идёт через неправильную куку: 403 "Нет прав" / "создано 0".
+    if need_cookie and requested_agency:
+        cookie = None
+        try:
+            # Explicit job agency is a hard routing decision for Grid/UAC. Do not accept
+            # a stale per-process/gateway cache here: preflight must reflect the current
+            # Glavpotok session and current rights for this exact ulogin.
+            cookie = cmc.pick_working_cookie(login, accounts=(requested_agency,), force_refresh=True)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "token": None, "agency": requested_agency, "cookie": None,
+                    "error": (f"кука агентства {requested_agency} не прошла UAC/linkinfo "
+                              f"для {login}: {str(e)[:140]}")}
+        if not cookie:
+            return {"ok": False, "token": None, "agency": requested_agency, "cookie": None,
+                    "error": f"нет куки агентства {requested_agency} — grid/uac-типы создать нельзя"}
+        if _block_bootstrap(cookie, requested_agency) is None:
+            return {"ok": False, "token": None, "agency": requested_agency, "cookie": cookie,
+                    "error": (f"кука агентства {requested_agency} не отвечает в grid "
+                              f"(протухла/нет доступа) — обновите куки; grid/uac-типы создать нельзя")}
+        cmc.remember_working_cookie(login, cookie)
+        token, _token_agency = _token_for_login(login, requested_agency, tokens)
+        return {"ok": True, "token": token or "", "agency": requested_agency, "cookie": cookie,
+                "cookie_only": not bool(token), "error": None}
+
     token, agency = _token_for_login(login, agency_hint, tokens)
     if not token:
         # Нет рабочего токена (error 53 / аккаунт porg-* без агентского OAuth) — пробуем

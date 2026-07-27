@@ -15,6 +15,7 @@ Direct Automation runtime — domain wiring without Flask route registration.
 ./ai_agents.py (профили агентов + промпты). Папка самодостаточна; нужен .secret/loader.py
 выше по дереву (куки главпотока, токены Директа/Метрики, креды БД Victory).
 """
+import copy
 import json
 import os
 import re
@@ -50,7 +51,8 @@ from .llm_providers import (           # ре-экспорт: внутренни
     _M3_LLM_URL, _M3_LLM_TIMEOUT, _M3_LLM_URLS_14B, _M3_LLM_URL_72B,
     _M3_LLM_TIMEOUT_14B, _M3_LLM_REPAIR_TIMEOUT, _M3_CONTENT_IDLE_TIMEOUT, _OPENROUTER_LLM_MODEL,
     _m3_llm_probe, _m3_complete, _m3_complete_url, _m3_complete_parallel,
-    _openrouter_api_key, _openrouter_probe, _or_complete_url, _llm_pair_for,
+    _openrouter_api_key, _openrouter_probe, _openrouter_completion_probe,
+    _or_complete_url, _llm_pair_for,
     _strip_error_leak, _has_error_leak,
 )
 from . import text_norm as _tn        # анти-AI санитайзеры (вынесено; _bad_credit_payment_range инъектим ниже)
@@ -113,6 +115,7 @@ from .blueprint_targeting import (         # ре-экспорт: внутр. в
     _segment_donor, _targeting_profile, _slepok_tp_modes, _slepok_profile_excludes_tp,
     _slepki_structure_for_ui, _donor_tp4_models_map, _pack_for_item,
     _slepok_is_auto, _non_auto_slepki, _non_auto_site_types, _slepki_pack_facts,
+    _slepki_pack_signature,
 )
 from . import blueprint_metrika as _bmt    # Метрика (счётчики/цели) + гео-справочник Директа (DI ниже)
 from .blueprint_metrika import (           # ре-экспорт: внутр. вызовы (routes/DI-словари)
@@ -620,28 +623,72 @@ _UI_STRUCTURE_CACHE: dict = {"signature": None, "data": None}
 _UI_STRUCTURE_CACHE_LOCK = threading.Lock()
 
 
-def _ui_structure_payload() -> dict:
+def _slepki_structure_for_ui_from_struct(struct: dict) -> dict:
+    """Apply the UI-only filters/manifest expansion to an already selected structure slice."""
+    out = copy.deepcopy(struct)
+    for d in out.get("directologists", []):
+        key = d.get("key") or ""
+        source_manifest = d.get("source_manifest")
+        source_campaigns_by_site: dict[str, list] = {}
+        if source_manifest:
+            try:
+                manifest = _json(source_manifest)
+                if manifest.get("slepok") == key:
+                    source_campaigns_by_site[manifest.get("site_type") or ""] = copy.deepcopy(
+                        manifest.get("campaigns") or [])
+            except Exception:  # noqa: BLE001 — broken manifest is reported by preflight, UI still opens
+                source_campaigns_by_site = {}
+        for st in d.get("site_types", []):
+            stype = st.get("name") or ""
+            if st.get("tp"):
+                st["tp"] = [t for t in st.get("tp", [])
+                            if not _slepok_profile_excludes_tp(key, stype, t.get("code") or "")]
+            if source_campaigns_by_site.get(stype):
+                st["source_campaigns"] = source_campaigns_by_site[stype]
+    return out
+
+
+def _ct_segment_map_for_light_ui() -> dict:
+    """Fast ct→segment map for the isolated slepki page; avoids Victory DB on refresh."""
+    try:
+        data = _json("ct_segments_cache.json")
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return _ct_segment_map()
+
+
+def _donor_tp4_models_map_for_light_ui() -> dict:
+    """Fast donor tp4 map for the isolated slepki page; avoids Victory DB on refresh."""
+    try:
+        data = _json("donor_tp4_models_cache.json")
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return _donor_tp4_models_map()
+
+
+def _ui_structure_payload(*, selected_slepok: str = "", light: bool = False) -> dict:
     """Heavy structure data loaded only by UI panels that actually need it."""
     from . import slepki_store as _sstore  # noqa: PLC0415
-    struct = _json("slepki_structure.json")
+    struct = (_sstore.assemble_light_for_selected(selected_slepok)
+              if light else _json("slepki_structure.json"))
     # Структура слепков живёт в per-slepok файлах (direct/slepki/*.json) — монолита
     # slepki_structure.json на диске НЕТ. Брать его stat() нельзя: `if exists()` молча
     # выбрасывал структуру из сигнатуры → правка ЛЮБОГО слепка не меняла ETag → браузер
     # получал 304 и рисовал старое дерево (регрессия инцидента 2026-07-16). Сигнатуру частей
     # даёт сам store — тот же ключ, по которому он инвалидирует свой кэш assemble().
-    names = ["targeting_profile.json"]
+    names = ["targeting_profile.json", "tp67_real_keywords.json"]
     names.extend(
         d.get("source_manifest") for d in (struct.get("directologists") or [])
         if d.get("source_manifest")
     )
-    signature = (("slepki_parts", _sstore._signature()),) + tuple(
+    signature = (("light", bool(light), selected_slepok or ""), ("slepki_parts", _sstore._signature()),) + tuple(
         (name, (_HERE / name).stat().st_mtime_ns, (_HERE / name).stat().st_size)
         for name in names if (_HERE / name).exists()
-    )
+    ) + (("pack_files", _slepki_pack_signature(struct)),)
     with _UI_STRUCTURE_CACHE_LOCK:
         if _UI_STRUCTURE_CACHE.get("signature") == signature:
             return _UI_STRUCTURE_CACHE["data"]
-    struct_ui = _slepki_structure_for_ui()
+    struct_ui = (_slepki_structure_for_ui_from_struct(struct) if light else _slepki_structure_for_ui())
     packs = _slepki_pack_facts(struct_ui)
     data = {
         "slepki_structure": struct_ui,
@@ -653,10 +700,10 @@ def _ui_structure_payload() -> dict:
         # Счётчик «≈N ключевых слов» карточки обзора — тоже с сервера (тот же обход, 0 доп. чтений).
         # Раньше клиент ради него слал по запросу НА ГРУППУ (522 запроса / 21 МБ на открытие).
         "kw_totals": packs["kw_totals"],
-        "model_cts": _model_cts(),
-        "ct_segments": _ct_segment_map(),
+        "model_cts": [] if light else _model_cts(),
+        "ct_segments": _ct_segment_map_for_light_ui() if light else _ct_segment_map(),
         "non_auto_slepki": _non_auto_slepki(),
-        "donor_tp4_models": _donor_tp4_models_map(),
+        "donor_tp4_models": _donor_tp4_models_map_for_light_ui() if light else _donor_tp4_models_map(),
         # Версия среза = та же signature (mtime+size источников). Уходит в ETag: браузер
         # ревалидирует и получает 304, пока структура не поменялась. Без этого вкладка,
         # открытая часами, рисует старое дерево из памяти (инцидент 2026-07-16: UI показывал
@@ -958,13 +1005,12 @@ def _enabled_minus_words() -> list[str]:
     return _minus_words_all("*")
 
 
-# ── Минус-площадки РСЯ (#21): per-слепок список URL, добавляется в disabledPlaces tp1 ─────────
+# ── Минус-площадки РСЯ (#21): общий список URL, добавляется в disabledPlaces tp1 ────────────────
 _MINUS_PLACES_ENSURED = False                            # DDL глобальной таблицы — 1 раз на процесс
-_SLEPOK_MINUS_PLACES_ENSURED = False                     # DDL per-слепок таблицы — 1 раз на процесс
 
 
 def _minus_places_ensure(cur) -> None:
-    """DDL глобальной таблицы (legacy, нужна для UI обратной совместимости)."""
+    """DDL глобальной таблицы минус-площадок."""
     global _MINUS_PLACES_ENSURED
     if _MINUS_PLACES_ENSURED:
         return
@@ -976,24 +1022,8 @@ def _minus_places_ensure(cur) -> None:
     _MINUS_PLACES_ENSURED = True
 
 
-def _slepok_minus_places_ensure(cur) -> None:
-    """DDL per-слепок таблицы минус-площадок (строго per-слепок, без глобального слоя)."""
-    global _SLEPOK_MINUS_PLACES_ENSURED
-    if _SLEPOK_MINUS_PLACES_ENSURED:
-        return
-    cur.execute(
-        "CREATE TABLE IF NOT EXISTS public.direct_slepok_minus_places ("
-        "slepok text NOT NULL, url text NOT NULL, "
-        "enabled boolean NOT NULL DEFAULT true, "
-        "sort integer NOT NULL DEFAULT 0, "
-        "updated_at timestamptz NOT NULL DEFAULT now(), "
-        "PRIMARY KEY (slepok, url))"
-    )
-    _SLEPOK_MINUS_PLACES_ENSURED = True
-
-
 def _global_minus_places() -> list[dict]:
-    """Legacy read глобальной таблицы (для UI / миграции). НЕ используется движком создания РК."""
+    """Read глобальной таблицы: UI показывает её целиком, движок берёт enabled-домены."""
     import psycopg2.extras
     conn = _victory_conn_rw()
     try:
@@ -1001,24 +1031,6 @@ def _global_minus_places() -> list[dict]:
         _minus_places_ensure(cur)
         conn.commit()
         cur.execute("SELECT url, enabled, sort FROM public.direct_global_minus_places ORDER BY sort, url")
-        return [dict(r) for r in cur.fetchall()]
-    finally:
-        conn.close()
-
-
-def _slepok_minus_places(slepok: str) -> list[dict]:
-    """Список минус-площадок конкретного слепка → [{url, enabled, sort}]. [] при сбое."""
-    import psycopg2.extras
-    conn = _victory_conn_rw()
-    try:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        _slepok_minus_places_ensure(cur)
-        conn.commit()
-        cur.execute(
-            "SELECT url, enabled, sort FROM public.direct_slepok_minus_places "
-            "WHERE slepok=%s ORDER BY sort, url",
-            (slepok,),
-        )
         return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -1043,8 +1055,7 @@ def _enabled_minus_places(slepok: str = "") -> list[str]:
 
 
 def _enabled_global_minus_places() -> list[str]:
-    """Хосты включённых минус-площадок из ГЛОБАЛЬНОЙ таблицы (для copy/legacy: клон 1:1 без слепка).
-    Тело = _enabled_minus_places ДО per-слепок правки: домен (не URL), только enabled, дедуп. [] при сбое."""
+    """Глобальный список минус-площадок: домен (не URL), только enabled, дедуп. [] при сбое."""
     try:
         out: list[str] = []
         seen: set[str] = set()
@@ -1057,6 +1068,64 @@ def _enabled_global_minus_places() -> list[str]:
                 out.append(h)
         return out
     except Exception:  # noqa: BLE001 — недоступность БД не валит копирование
+        return []
+
+
+_POST_MINUS_PLACES_ENSURED = False
+
+
+def _post_minus_places_ensure(cur) -> None:
+    """DDL минус-площадок для tp8/tp9/tp10 (Посевы): общий geo='*' + городские срезы."""
+    global _POST_MINUS_PLACES_ENSURED
+    if _POST_MINUS_PLACES_ENSURED:
+        return
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS public.direct_post_minus_places ("
+        "geo text NOT NULL DEFAULT '*', "
+        "url text NOT NULL, "
+        "enabled boolean NOT NULL DEFAULT true, "
+        "sort integer NOT NULL DEFAULT 0, "
+        "updated_at timestamptz NOT NULL DEFAULT now(), "
+        "PRIMARY KEY(geo, url))"
+    )
+    _POST_MINUS_PLACES_ENSURED = True
+
+
+def _post_minus_places_slice(geo: str = "*") -> list[dict]:
+    """UI-read минус-площадок Посевов в пределах одного geo-среза."""
+    import psycopg2.extras
+    g = (geo or "*").strip() or "*"
+    conn = _victory_conn_rw()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        _post_minus_places_ensure(cur)
+        conn.commit()
+        cur.execute(
+            "SELECT geo, url, enabled, sort FROM public.direct_post_minus_places "
+            "WHERE geo=%s ORDER BY sort, url",
+            (g,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _enabled_post_minus_places(geo: str = "*") -> list[str]:
+    """Хосты disabledPlaces для Посевов: общий пак geo='*' + конкретное geo, с дедупом."""
+    try:
+        g = (geo or "*").strip() or "*"
+        out: list[str] = []
+        seen: set[str] = set()
+        for source_geo in (["*"] if g == "*" else ["*", g]):
+            for r in _post_minus_places_slice(source_geo):
+                if not r.get("enabled"):
+                    continue
+                h = _place_host(r.get("url"))
+                if h and h not in seen:
+                    seen.add(h)
+                    out.append(h)
+        return out
+    except Exception:  # noqa: BLE001 — недоступность БД не валит создание посевов
         return []
 
 
@@ -1419,11 +1488,11 @@ def _resolve_region(city: str | None):
 _GENERIC_TITLE_FILLERS = [
     "Кредит на новый авто. Первый взнос 0 ₽. Ключи за 1 день",  # [55]
     "Авто в кредит от 9 000 ₽/мес. КАСКО на 1 год бесплатно",   # [54]
-    "Кредит на авто. КАСКО на 1 год. Подбор от 15 банков",       # [51]
+    "Кредит на авто. КАСКО на 1 год. Подбор условий",            # [51]
     "Оценим авто в трейд-ин. Платеж от 9 000 ₽/мес онлайн",     # [52]
-    "Первый взнос 0 ₽. Подбор кредита от 15 банков онлайн",      # [52]
-    "Новые авто в наличии. Кредит от 15 банков за 1 день",       # [51]
-    "Автокредит от 15 банков. Решение за 30 минут онлайн",       # [51]
+    "Первый взнос 0 ₽. Подбор кредита онлайн за 1 день",         # [52]
+    "Новые авто в наличии. Кредитное решение за 1 день",         # [51]
+    "Автокредит по заявке. Решение за 30 минут онлайн",          # [51]
 ]
 # Заголовки под АВТОТАРГЕТ общих запросов (tp7 Товарка ct0000): ключевая фраза запроса СТОИТ ПЕРВОЙ -
 # до точки/запятой (купить/новый/авто/цена/кредит), движок автотаргета цепляет её как ключ. БЕЗ марок/моделей
@@ -1431,15 +1500,15 @@ _GENERIC_TITLE_FILLERS = [
 # БАГ 9: кредитные УТП приоритетом (2-3 из 5); БАГ 4→исправлен: разделитель — точка, не дефис.
 _GENERIC_AT_TITLES = [
     # 8 строк: все с цифрой, разные первые слова, разные УТП-бакеты
-    # (платёж / взнос / КАСКО / банки+срок / скидка / трейд-ин / наличие / одобрение)
+    # (платёж / взнос / КАСКО / решение+срок / скидка / трейд-ин / наличие / одобрение)
     "Авто в кредит от 9 000 ₽/мес. Одобрение за 30 минут",     # [51] платёж
     "Кредит на авто. Первый взнос 0 ₽. Ключи за 1 день",       # [50] взнос
-    "Купить новое авто в кредит. КАСКО на 1 год бесплатно",     # [52] КАСКО
-    "Автокредит от 15 банков-партнеров. Решение за 30 минут",   # [54] банки+срок
-    "Выгода до 45% на новые авто. Кредит от 15 банков",         # [48] скидка%
+    "Кредит на новое авто. КАСКО на 1 год бесплатно",           # [52] КАСКО
+    "Автокредит по заявке. Решение за 30 минут онлайн",         # [54] решение+срок
+    "Выгода до 45% на новые авто. Кредитное решение",           # [48] скидка%
     "Трейд-ин выше рынка. Платеж от 9 000 ₽/мес в кредит",      # [51] трейд-ин
     "Новые авто в наличии. Первый взнос 0 ₽. Ключи за 1 день",  # [55] наличие+взнос
-    "Одобрение за 30 минут. Кредит на авто от 15 банков",       # [50] одобрение
+    "Одобрение за 30 минут. Кредитное решение онлайн",          # [50] одобрение
 ]
 # Брендонейтральные фоллбэки текстов/ссылок - ГАРАНТ полноты tp6/tp7 (5 заголовков / 3 текста / 8 ссылок),
 # когда контента слепка/шаблонов не хватило. Без марок - годятся для любой общей (ct0000) кампании.
@@ -1448,8 +1517,8 @@ _GENERIC_AT_TITLES = [
 _GENERIC_TEXT_FILLERS = [
     # 4 строки: все с цифрой, без «автокредит» (блокируется _bad_ad_text)
     # УТП-бакеты: платёж+банки / взнос+КАСКО / трейд-ин+срок / наличие+срок
-    "Кредит на авто от 9 000 ₽/мес. Подберем условия от 15 банков. Одобрение за 1 час.",  # [81] платёж
-    "Кредит без первого взноса на новое авто. Одобрение за 1 день. 15 банков онлайн.",    # [79] взнос
+    "Кредит на авто от 9 000 ₽/мес. Подберем условия. Одобрение за 1 час.",               # [81] платёж
+    "Кредит без первого взноса на новое авто. Одобрение за 1 день онлайн.",               # [79] взнос
     "КАСКО на 1 год бесплатно при покупке в кредит. Ключи в день покупки. Одобрение.",    # [79] КАСКО
     "Трейд-ин выше рынка. Оценим авто за 30 минут и зачтём в счёт нового кредита.",       # [76] трейд-ин
 ]
@@ -1472,14 +1541,17 @@ _GENERIC_SITELINK_FILLERS = [  # все заголовки 22–30 симв (fix
     # Backup-филлеры (позиции 9–10): используются когда _title_has_pct=True фильтрует позиции 5–6
     # (с «до 30%»/«до 20%»), иначе UAC tp7 получает 6/8 сайтлинков (UAC_SITELINKS_MISSING, psm5h7q6).
     # Без % → не фильтруются при _title_has_pct=True. Темы: rассрочка + гарантия (новые бакеты).
-    {"title": "Рассрочка без переплат", "description": "Оформим рассрочку без скрытых платежей и комиссий"},
+    {"title": "Кредитное решение онлайн", "description": "Оформим заявку без скрытых комиссий"},
     {"title": "Гарантия на автомобиль", "description": "Расширенная гарантия при покупке нового автомобиля"},
 ]
 
 
 def _build_name(is_master: bool, is_auto: bool, pay: str, r_code: str, oblast: str,
-                sq: str = "site", cat: str | None = None, ct: str = "ct0000") -> str:
-    return _create_set_plan_module()._build_name(is_master, is_auto, pay, r_code, oblast, sq, cat, ct)
+                sq: str = "site", cat: str | None = None, ct: str = "ct0000",
+                targeting_label: str | None = None) -> str:
+    return _create_set_plan_module()._build_name(
+        is_master, is_auto, pay, r_code, oblast, sq, cat, ct, targeting_label
+    )
 
 
 def _rule_sets(site_type: str, city: str) -> dict:
@@ -1520,6 +1592,8 @@ def _prefetch_start(login, body, *, is_cancelled=lambda: False):
     """Прогрев queued-джобы в фоне (Фаза 1). Конфигурируем модуль лениво (все
     инъектируемые хелперы — _account_offer_prices и т.п. — определены ниже по
     файлу, резолвятся в момент вызова, а не определения)."""
+    if os.getenv("DIRECT_CREATE_QUEUE_PREFETCH", "0").strip().lower() not in ("1", "true", "yes", "on"):
+        return
     try:
         from . import ai_agents as _A
         from . import create_set_prefetch as _pf
@@ -1532,6 +1606,10 @@ def _prefetch_start(login, body, *, is_cancelled=lambda: False):
             "content_cache_lock": _CONTENT_CACHE_LOCK,
             "brand_ct_from_coder": _brand_ct_from_coder,
             "account_offer_prices": _account_offer_prices,
+            "account_content_put": _account_content_put,
+            "preupload_tp1_images": _preupload_tp1_images,
+            "creative_images_for_ct": _creative_images_for_ct,
+            "image_ct_for_content": _image_ct_for_content,
             "get_agent": _A.get_agent,
             "pick_working_cookie": _cmc.pick_working_cookie,
             "videos_pool_for_ct": kp.videos_pool_for_ct,
@@ -1619,8 +1697,18 @@ def _tp67_keywords_from_real_library(slepok: str, site_type: str, tp: str, ct: s
 
 
 def _tp67_keywords_for(slepok: str, site_type: str, tp: str, ct: str, city: str,
-                       position_name: str | None = None, sq: str | None = None) -> tuple[list[str], list[str]]:
-    return _create_set_context_module()._tp67_keywords_for(slepok, site_type, tp, ct, city, position_name, sq)
+                       position_name: str | None = None, sq: str | None = None,
+                       group: str = "") -> tuple[list[str], list[str]]:
+    return _create_set_context_module()._tp67_keywords_for(
+        slepok, site_type, tp, ct, city, position_name, sq, group=group
+    )
+
+def _tp67_keywords_for_groups(slepok: str, site_type: str, tp: str, ct: str, city: str,
+                              position_name: str | None = None, sq: str | None = None,
+                              groups=None) -> tuple[list[str], list[str]]:
+    return _create_set_context_module()._tp67_keywords_for_groups(
+        slepok, site_type, tp, ct, city, position_name, sq, groups=groups
+    )
 
 
 def _slepok_uses_shopping(slepok: str, tp: str) -> bool:
@@ -1782,6 +1870,9 @@ def _feed_models_from_collections(*args, **kwargs):
 
 def _tp7_product_feed_filters(*args, **kwargs):
     return _create_set_feeds_module()._tp7_product_feed_filters(*args, **kwargs)
+
+def _tp7_listing_plus_filter(*args, **kwargs):
+    return _create_set_feeds_module()._tp7_listing_plus_filter(*args, **kwargs)
 
 def _tp7_listings_minus_filters(*args, **kwargs):
     return _create_set_feeds_module()._tp7_listings_minus_filters(*args, **kwargs)
@@ -2035,6 +2126,11 @@ def _create_set_assets_deps() -> dict:
         "_RA_TITLE_MAX": _RA_TITLE_MAX,
         "_coder_name_real_brand": _coder_name_real_brand,
         "_coherent_discounts": _coherent_discounts,
+        # Финальная сборка адаптива (_upgrade_credit_*) идёт ПОСЛЕ всех `_cf`, поэтому
+        # site_type-фильтр нужен и здесь — иначе хардкод-варианты про «новые авто»
+        # уезжают в Б/У-кампании мимо любой фильтрации выше (tp1–tp5).
+        "_drop_new_car": _drop_new_car,
+        "_is_bu_site": _is_bu_site,
         "_fill_title": _fill_title,
         "_trim_to_word": _trim_to_word,
         "_v5_call": _v5_call,
@@ -2225,6 +2321,7 @@ _sed.configure({
     # Карточка ключей tp6/tp7 обязана показывать то, что реально уедет в кабинет → читает ключи
     # ТЕМ ЖЕ путём, что и создание (пак → tp67_real_keywords.json → цепочка tp7↦tp6).
     "_tp67_keywords_for": _tp67_keywords_for,
+    "_tp67_keywords_for_groups": _tp67_keywords_for_groups,
     "_tp67_targeting_mode": _tp67_targeting_mode,   # гейт: ключи только у keyword-позиций, как в создании
 })
 
@@ -2273,6 +2370,7 @@ def _create_set_tp1_builder_deps() -> dict:
         "_touch_running_jobs_heartbeat": _touch_running_jobs_heartbeat,
         "_creative_images_for_ct": _creative_images_for_ct,
         "_ct_segment": _ct_segment,
+        "_drop_new_car": _drop_new_car,   # круг 4: фид-товарка галерея на Б/У режет «новые авто» (create_set_tp1_builders.py:980-981); без deps → NameError
         "_enabled_minus_marks": _enabled_minus_marks,
         "_enabled_minus_models": _enabled_minus_models,
         "_enabled_minus_model_pairs": _enabled_minus_model_pairs,
@@ -2612,6 +2710,41 @@ def _drop_used_car(items: list, site_type: str) -> list:
     return [x for x in items if not _BU_RE.search(str(x.get("title", "") if isinstance(x, dict) else x))]
 
 
+# Парный фильтр к _BU_RE: лексика НОВЫХ авто, недопустимая на сайте «С пробегом».
+# Матчим ТОЛЬКО связку «новый+авто/автомобиль» — прилагательное само по себе легитимно
+# («новый год», «как новый», «новинка», «обновление» НЕ должны попадать под нож).
+#   • левая граница (?<![а-яё]) режет «обНОВление»;
+#   • окончание сразу после «нов» режет «НОВинка» (после «нов» идёт «и», не «ое/ые/ый/ых»);
+#   • обязательный хвост «авто»/«автомобил» режет «новый год» (нет авто-слова);
+#   • «авто(?![а-яё-])» — только отдельное слово: «новый автокредит» / «новый автосалон» ЖИВУТ,
+#     а дефис в lookahead добавлен 2026-07-19: без него «новый авто-кредит» / «новые авто-услуги»
+#     ложно матчились (после «авто» шёл дефис, не буква → lookahead проходил);
+#   • до 2 промежуточных слов («новые китайские авто»); класс букв не пускает точку,
+#     поэтому «Новый год. Авто в кредит» не схлопывается в матч.
+# ⚠️ ИЗВЕСТНЫЕ ГРАНИЦЫ (не баг, а осознанный объём — см. ERRORS_JOURNAL NEW_CAR_LEXICON_ON_BU_SITE):
+# НЕ ловятся синонимы без слова «авто/автомобиль» («новые машины», «новый кроссовер»,
+# «новые модели», «новые иномарки») и инверсный порядок («Автомобили новые в наличии»).
+# В текущих пулах таких строк нет; расширять регулярку вслепую нельзя (`нов\w+\s+[A-Z]`
+# начнёт резать легитимное «Новый Haval» на сайтах НОВЫХ авто).
+_NEW_RE = re.compile(
+    r"(?i)(?<![а-яё])нов(?:ое|ые|ый|ых|ым|ыми|ого|ому|ой|ую)"
+    r"(?:\s+[а-яёa-z]+){0,2}"
+    r"\s+(?:авто(?![а-яё-])|автомобил[а-яё]*)"
+)
+
+
+def _drop_new_car(items: list, site_type: str) -> list:
+    """Если сайт Б/У («С пробегом») — выкинуть варианты про НОВЫЕ авто («новое авто»,
+    «новые авто», «новый автомобиль», «выгода на новые авто»): на Б/У-сайте такие УТП врут.
+
+    ⚖️ Симметрия с `_drop_used_car`: тот режет Б/У-лексику, когда сайт НЕ Б/У; этот режет
+    новое-авто-лексику, когда сайт Б/У. Условия ВЗАИМОИСКЛЮЧАЮЩИЕ (`_is_bu_site` истинно
+    ровно для одного из двух) — на любом site_type работает максимум ОДИН из фильтров,
+    выкосить набор вдвоём они не могут.
+    """
+    if not _is_bu_site(site_type):
+        return list(items)
+    return [x for x in items if not _NEW_RE.search(str(x.get("title", "") if isinstance(x, dict) else x))]
 
 
 
@@ -2728,6 +2861,16 @@ def _creative_images_for_ct(site_type: str, tp: str, ct: str, slepok: str,
             )
             imgs += [p for p in slepok_imgs if p not in imgs]
         if len(imgs) < limit:
+            any_slepok_imgs = kp.read_any_slepok_images(
+                site_type, tp, "ct0000", prefer=slepok,
+                exclude_bu_slepoks=not _is_bu_site(site_type)) or []
+            any_slepok_imgs = _prioritized_content_assets(
+                any_slepok_imgs or [], ct,
+                source_segment=site_type, source_tp=tp, source_ct="ct0000",
+                target_slepok=slepok, source_slepok="", limit=limit,
+            )
+            imgs += [p for p in any_slepok_imgs if p not in imgs][:limit - len(imgs)]
+        if len(imgs) < limit:
             extra = _explicit_content_assets_for(ct, target_slepok=slepok,
                                                  asset_types={"image", "image_slepki"}, limit=limit)
             imgs += [p for p in extra if p not in imgs]
@@ -2759,6 +2902,15 @@ def _creative_images_for_ct(site_type: str, tp: str, ct: str, slepok: str,
             target_slepok=slepok, source_slepok=slepok, limit=limit,
         )
         imgs += [p for p in slepok_imgs if p not in imgs][:limit - len(imgs)]
+    if len(imgs) < limit:
+        any_slepok_imgs = kp.read_any_slepok_images(
+            site_type, tp, img_ct, prefer=slepok,
+            exclude_bu_slepoks=not _is_bu_site(site_type)) or []
+        any_slepok_imgs = _prioritized_content_assets(
+            any_slepok_imgs or [], ct, source_segment=site_type, source_tp=tp, source_ct=img_ct,
+            target_slepok=slepok, source_slepok="", limit=limit,
+        )
+        imgs += [p for p in any_slepok_imgs if p not in imgs][:limit - len(imgs)]
     if len(imgs) < limit:
         explicit = _explicit_content_assets_for(ct, target_slepok=slepok,
                                                 asset_types={"image", "image_slepki"}, limit=limit)
@@ -2987,6 +3139,12 @@ def _grid_account_image_hashes(*args, **kwargs):
     return _create_set_tp1_builder_module()._grid_account_image_hashes(*args, **kwargs)
 
 
+def _account_image_map(*args, **kwargs):
+    """Кэшированная (по логину) account-map {basename: imageHash}. Обёртка над сырым
+    `_grid_account_image_hashes`, который читает ВСЕ кампании+объявления аккаунта."""
+    return _create_set_tp1_builder_module()._account_image_map(*args, **kwargs)
+
+
 def _preupload_tp1_images(*args, **kwargs):
     # Обёртка гарантирует, что cstp1.configure() (globals().update(deps)) исполнён ДО вызова
     # _preupload_tp1_images — иначе набор-level прогрев в фон-потоке падал NameError на первом
@@ -3037,6 +3195,7 @@ def _create_set_feed_builder_deps() -> dict:
         "_finalize_search_via_grid": _finalize_search_via_grid,
         "_get_or_reuse_sitelink_set": _get_or_reuse_sitelink_set,
         "_grid_account_image_hashes": _grid_account_image_hashes,
+        "_account_image_map": _account_image_map,   # кэш по логину — cookie tp2/tp4 звали сырой читатель на КАЖДОЙ РК
         "_grid_ad_price_payload": _grid_ad_price_payload,
         "_grid_bid_modifiers": _grid_bid_modifiers,
         "_grid_callout_ids": _grid_callout_ids,
@@ -3165,19 +3324,19 @@ def _master_product_deps() -> dict:
     names = [
         "_BU_RE", "_GENERIC_AT_TITLES", "_GENERIC_SITELINK_FILLERS", "_GENERIC_TEXT_FILLERS",
         "_GENERIC_TITLE_FILLERS", "_SLEPOK_KEY", "_TP67_MIN_TEXT_LEN", "_TP67_OPTIMAL_CATEGORIES",
-        "_TP67_RELEVANCE_CATEGORIES", "_account_model_feeds", "_add_job_err", "_audience_objects",
+        "_TP67_RELEVANCE_CATEGORIES", "_account_model_feeds", "_account_offer_urls", "_add_job_err", "_audience_objects",
         "_bad_ad_sitelink", "_bad_ad_text", "_bad_ad_title", "_brand_ct_from_coder", "_brand_title_set",
         "_build_name", "_bump_item", "_bump_job", "_cached_campaign_content", "_catalog_feed",
         "_coherent_discounts", "_coherent_payments", "_creative_images_for_ct", "_dedup_prefix_absorb",
-        "_discount_pcts", "_diverse_text_offers", "_drop_used_car", "_enabled_minus_words",
-        "_fallback_master_titles",
+        "_discount_pcts", "_diverse_text_offers", "_drop_new_car", "_drop_used_car", "_enabled_minus_words",
+        "_fallback_master_titles", "_first_url_feed",
         "_fill_title", "_fill_variants", "_has_number", "_image_ct_for_content", "_is_bad_start",
         "_is_bu_site", "_is_common_ct", "_is_site_domain_name", "_job_db_progress", "_lines",
-        "_match_collection", "_num", "_own_brand_tokens", "_replace_emdash", "_replace_foreign_city",
+        "_feed_url_for_model", "_match_collection", "_num", "_own_brand_tokens", "_replace_emdash", "_replace_foreign_city",
         "_replace_sep_hyphen", "_resolve_region", "_rsya_texts", "_rsya_titles", "_sanitize_content",
         "_sitelink_has_pct", "_slepok_audiences_for", "_slepok_campaign_content", "_strip_credit_rate",
         "_title2_blocklist", "_tp67_keywords_for", "_tp67_targeting_mode", "_tp7_product_feed_filters",
-        "_tp7_listings_minus_filters",
+        "_tp7_listing_plus_filter", "_tp7_listings_minus_filters",
         "_trim_to_word", "_variant_norm_key",
         "_slepok_is_auto",  # не-авто признак (B2B dmp и будущие): переключает базу заголовков/текстов
     ]
@@ -3208,13 +3367,16 @@ def _create_set_orchestrator_deps() -> dict:
         "_attach_minus_set_to_text_campaign", "_attach_post_repair_verification", "_bump_item", "_bump_job",
         "_busy_response", "_cached_campaign_content", "_callout_semantic_key", "_content_cache_key",
         "_account_content_get", "_account_content_put",   # #16: account-level content reuse (в пределах прохода)
-        "_content_copy", "_counter_foreign_owner", "_create_account_promo_from_slepok",
+        "_content_copy", "_counter_foreign_owner", "_create_account_promo_from_slepok", "_ct_segment",
         "_create_set_live_verification", "_create_shopping_via_cookie", "_create_text_via_cookie",
         "_create_text_via_token",   # DIRECT_API_FIRST: tp2/tp4 через баллы (token), фолбэк на cookie
         "_create_tp1_campaign", "_create_tp1_via_cookie", "_create_tp3_campaign", "_create_tp5_campaign",
         "_dedup_callouts", "_deferred_save", "_deferred_set_status", "_first_url_feed",
+        "_account_offer_urls", "_feed_url_for_model",
+        "_account_offer_prices", "_brand_ct_from_coder", "_creative_images_for_ct",
         "_get_or_create_minus_set", "_goal_vse_formy", "_grid_list_campaigns", "_ints", "_job_db_progress",
         "_job_new", "_m3_gate_wait", "_slepok_profile_excludes_tp",
+        "_set_llm_heartbeat_job", "_current_llm_heartbeat_job",
         "_lines", "_load_corrections", "_metrika_goals_for", "_next_units_reset_utc", "_normalize_callout_text",
         "_num", "_preflight_creds", "_promo_content_lines", "_promo_usable_for_content",
         "_preupload_tp1_images",   # набор-level прогрев картинок tp1 через configured-модуль (DI-инъекции)
@@ -3223,6 +3385,8 @@ def _create_set_orchestrator_deps() -> dict:
         "_slepok_uses_shopping", "_templates_for",
         "_auth_error_in_result", "_units_in_result", "_v5_get", "_v5_call",
         "_units_alive_for_login",   # баллы живы → сегментный tp5 добиваем токеном сразу (не ждём полночь)
+        # DI для create_set_tp8_10 (Посевы): Manual-пул + ct→img_ct
+        "_manual_creative_paths", "_image_ct_for_content", "_enabled_post_minus_places",
     ]
     g = globals()
     return {name: g[name] for name in names}
@@ -3332,7 +3496,7 @@ _ce.configure({
     "_geo_id": _geo_id, "_geo_name_by_id": _geo_name_by_id, "_geo_type_by_id": _geo_type_by_id,
     "_enabled_minus_places": _enabled_minus_places,
     "_enabled_global_minus_places": _enabled_global_minus_places,   # copy → глобальная таблица (не per-слепок)
-    "_enabled_baseline_minus_places": _enabled_baseline_minus_places,   # copy → baseline анти-фрод список (стандартный)
+    "_enabled_baseline_minus_places": _enabled_baseline_minus_places,   # legacy DI; copy disabledPlaces теперь 1в1
     "_filter_allowed_feed_rows": _filter_allowed_feed_rows, "_feed_key": _feed_key,
     "_create_set_live_verification": _create_set_live_verification,
     "_attach_post_repair_verification": _attach_post_repair_verification, "_repair_deps": _repair_deps,
@@ -3631,30 +3795,83 @@ def _legacy_create_response():
 # первому фингерпринту, а если осмысленного префикса не осталось — считаем генерацию неудачной.
 
 
+_LLM_HEARTBEAT_CONTEXT = threading.local()
+_LLM_HEARTBEAT_DB_LAST: dict[str, float] = {}
+_LLM_HEARTBEAT_DB_INTERVAL = 30.0
+
+
+def _set_llm_heartbeat_job(job_id: str | None) -> None:
+    """Ограничить LLM-heartbeat текущей worker job в этом thread.
+
+    Без контекста heartbeat не должен трогать все running jobs: при параллельных агентствах
+    активная LLM-генерация одного аккаунта иначе маскирует зависание другого аккаунта.
+    """
+    if job_id:
+        _LLM_HEARTBEAT_CONTEXT.job_id = str(job_id)
+        return
+    try:
+        delattr(_LLM_HEARTBEAT_CONTEXT, "job_id")
+    except AttributeError:
+        pass
+
+
+def _current_llm_heartbeat_job() -> str | None:
+    """Текущий scoped heartbeat job-id; нужен для переноса контекста в LLM thread-pool."""
+    return getattr(_LLM_HEARTBEAT_CONTEXT, "job_id", None)
+
+
 def _touch_running_jobs_heartbeat() -> None:
-    """LLM-запрос = прогресс: бампаем _heartbeat всех running-джоб.
+    """LLM-запрос = прогресс: бампаем _heartbeat только текущей worker job.
 
     Root cause watchdog-киллов 2026-07-02 (jobs 9126bf12fb3a/ac6d98864aa4/c8c444a166d4):
     _M3_LLM_TIMEOUT=480с × несколько запросов на item — при перегруженном M3 (sshfs-выкачка
     видео душила Мак) генерация ПЕРВОГО item шла >15 мин, item-heartbeat не тикал → watchdog
-    убивал ЖИВУЮ джобу. Теперь каждый M3-вызов (включая ретраи) отмечает активность."""
+    убивал ЖИВУЮ джобу. Теперь каждый M3-вызов (включая ретраи) отмечает активность своей job,
+    не продлевая чужие зависшие jobs."""
+    _jid = getattr(_LLM_HEARTBEAT_CONTEXT, "job_id", None)
+    if not _jid:
+        return
+    flush_job = None
+    if not _JOB_MUT_LOCK.acquire(blocking=False):
+        return
     try:
         now = time.time()
-        with _CREATE_JOBS_LOCK:
-            for _j in _CREATE_JOBS.values():
-                if _j.get("status") == "running":
-                    _j["_heartbeat"] = now
+        # Best-effort: не берём _CREATE_JOBS_LOCK из горячего SSE-пути. Этот lock обслуживает
+        # queue condition/claim, и ожидание его из LLM-потоков может повесить as_completed().
+        _j = _CREATE_JOBS.get(str(_jid))
+        if _j is not None and _j.get("status") == "running":
+            _j["_heartbeat"] = now
+            mono = time.monotonic()
+            if mono - _LLM_HEARTBEAT_DB_LAST.get(str(_jid), 0.0) >= _LLM_HEARTBEAT_DB_INTERVAL:
+                _LLM_HEARTBEAT_DB_LAST[str(_jid)] = mono
+                flush_job = _j
     except Exception:  # noqa: BLE001
         pass
+    finally:
+        try:
+            _JOB_MUT_LOCK.release()
+        except Exception:  # noqa: BLE001
+            pass
+    if flush_job is not None:
+        try:
+            _job_db_progress(flush_job)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # heartbeat очереди определён — инъектим его в llm_providers (каждый M3/OpenRouter-вызов
-# бампает _heartbeat running-джоб; иначе долгая генерация выглядела бы «зависанием» для watchdog).
-_llmp.configure({"_touch_running_jobs_heartbeat": _touch_running_jobs_heartbeat})
+# бампает _heartbeat текущей job; иначе долгая генерация выглядела бы «зависанием» для watchdog).
+_llmp.configure({"_touch_running_jobs_heartbeat": _touch_running_jobs_heartbeat,
+                 "_set_llm_heartbeat_job": _set_llm_heartbeat_job,
+                 "_current_llm_heartbeat_job": _current_llm_heartbeat_job})
 
-# 7 DI для text_gen (генерация текстов): 3 функции blueprint + 4 константы-пула.
+# DI для text_gen (генерация текстов): функции blueprint + константы-пула.
+# `_is_bu_site` нужен `_title_from_template`: шаблон «Новые {brand} в {city}» уходит в Title
+# МИМО `_cf`, а `_NEW_RE` его и не поймал бы («новые BAIC» — марка, а не слово «авто»).
 _tg.configure({
-    "_drop_used_car": _drop_used_car, "_brand_canon": _brand_canon, "_ct_segment": _ct_segment,
+    "_drop_used_car": _drop_used_car, "_drop_new_car": _drop_new_car,
+    "_is_bu_site": _is_bu_site,
+    "_brand_canon": _brand_canon, "_ct_segment": _ct_segment,
     "_GENERIC_TITLE_FILLERS": _GENERIC_TITLE_FILLERS, "_GENERIC_AT_TITLES": _GENERIC_AT_TITLES,
     "_RA_TITLES_CAP": _RA_TITLES_CAP, "_RA_TEXTS_CAP": _RA_TEXTS_CAP,
     "_NON_AUTO_SITE_TYPES": _non_auto_site_types(),   # B2B site_type → без авто-фильтра ключей
@@ -3695,6 +3912,8 @@ def _content_copy(content: dict | None) -> dict:
 
 def _ai_common_sitelinks(login: str, slepok: str, site_type: str, city: str,
                          tp_code: str) -> list[dict]:
+    if os.environ.get("DIRECT_CREATE_AI_COMMON_SITELINKS", "0").lower() not in ("1", "true", "yes", "on"):
+        return []
     item = {
         "brand": "",
         "gc": "ct0000",
@@ -3938,6 +4157,7 @@ _queue_server.configure({
     "_create_set_response": _create_set_response,
     "_auto_queue_recreate_after_done": _auto_queue_recreate_after_done,
     "_prefetch_start": _prefetch_start,
+    "_set_llm_heartbeat_job": _set_llm_heartbeat_job,
 })
 _job_repository.configure({
     "_child_parent_ref": _child_parent_ref,
@@ -3949,6 +4169,7 @@ _pack_resolver.configure({
     "_ct_segment_map": _ct_segment_map,
     "_m3_llm_probe": _m3_llm_probe,
     "_openrouter_probe": _openrouter_probe,
+    "_openrouter_completion_probe": _openrouter_completion_probe,
     "_touch_running_jobs_heartbeat": _touch_running_jobs_heartbeat,
 })
 _account_service.configure({

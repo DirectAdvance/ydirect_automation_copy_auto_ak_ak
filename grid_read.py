@@ -33,6 +33,19 @@ class GridReadClient:
         self.sess.verify = False
 
     def _post(self, op: str, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        def _remember_csrf(resp: requests.Response) -> None:
+            m = re.search(r"_direct_csrf_token=([^;,\s]+)", resp.headers.get("Set-Cookie", ""))
+            token = resp.cookies.get("_direct_csrf_token") or (m.group(1) if m else None)
+            if token:
+                self.csrf = token
+
+        def _looks_like_login_page(resp: requests.Response) -> bool:
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if "json" in ctype:
+                return False
+            head = (resp.text or "")[:500].lower()
+            return "<html" in head and ("<title>log in</title>" in head or "passport.yandex" in head)
+
         headers = {
             "Cookie": self.cookie,
             "dna-operation-name": op,
@@ -61,13 +74,18 @@ class GridReadClient:
             raise _exc  # type: ignore[misc]
 
         r = _do_post(headers)
-        m = re.search(r"_direct_csrf_token=([^;,\s]+)", r.headers.get("Set-Cookie", ""))
-        token = r.cookies.get("_direct_csrf_token") or (m.group(1) if m else None)
-        if token:
-            self.csrf = token
+        _remember_csrf(r)
         if r.status_code == 403 and self.csrf:
             headers["x-csrf-token"] = self.csrf
             r = _do_post(headers)
+            _remember_csrf(r)
+        if r.status_code == 403 or _looks_like_login_page(r):
+            self.csrf = None
+            self.cookie = cmc.pick_working_cookie(self.login, force_refresh=True)
+            headers["Cookie"] = self.cookie
+            headers.pop("x-csrf-token", None)
+            r = _do_post(headers)
+            _remember_csrf(r)
         try:
             data = r.json()
         except Exception as e:  # noqa: BLE001
@@ -295,6 +313,10 @@ class GridReadClient:
         _kw_trunc: set[int] = set()
         real_kw = self._show_condition_kw_counts(search_cids, truncated=_kw_trunc)
         zero_kw: dict[int, int] = defaultdict(int)
+        # Группы, пустые по ключам ПО ДИЗАЙНУ (тот же признак, что гасит zero_kw): набор
+        # «- Автотаргетинг -» ИЛИ tp1/tp3 с активным relevanceMatch. Нужен верификатору, чтобы
+        # не выдавать BUILD_LIVE_MISSING по ключам на автотаргетинговых кампаниях.
+        at_kw: dict[int, int] = defaultdict(int)
         wrong_at: dict[int, int] = defaultdict(int)
         kw_total: dict[int, int] = defaultdict(int)   # для keywords_count
         geo_missing: dict[int, int] = defaultdict(int)
@@ -311,15 +333,16 @@ class GridReadClient:
             grp_kw = max(int(real_kw.get(gid, 0)), int(edit_kw)) if real_kw is not None else int(edit_kw)
             kw_total[cid] += grp_kw
             _rm_active = bool(rm.get("isActive"))
-            if tp in (1, 3):
-                # tp1 РСЯ / tp3: режим «полный автотаргет» создаёт группу БЕЗ реальных ключей
-                # (спецключ "---autotargeting" оседает как relevanceMatch, а не как GdKeyword —
-                # create_set_tp1_builders.py:297-304). Такая группа пуста ПО ДИЗАЙНУ → активный
-                # relevanceMatch гасит zero-kw. Fail-safe: молчание дороже ложного keywords_repair.
-                if grp_kw == 0 and cid not in at_by_design and not _rm_active:
+            # tp1 РСЯ / tp3: режим «полный автотаргет» создаёт группу БЕЗ реальных ключей
+            # (спецключ "---autotargeting" оседает как relevanceMatch, а не как GdKeyword —
+            # create_set_tp1_builders.py:297-304). Такая группа пуста ПО ДИЗАЙНУ → активный
+            # relevanceMatch гасит zero-kw. Fail-safe: молчание дороже ложного keywords_repair.
+            _by_design = (cid in at_by_design) or (tp in (1, 3) and _rm_active)
+            if grp_kw == 0:
+                if _by_design:
+                    at_kw[cid] += 1
+                else:
                     zero_kw[cid] += 1
-            elif grp_kw == 0 and cid not in at_by_design:
-                zero_kw[cid] += 1
             cats = {str(x).upper() for x in (rm.get("relevanceMatchCategories") or [])}
             brands = {str(x).upper() for x in (rm.get("autotargetingBrandSettings") or [])}
             if not (_rm_active and cats == {"EXACT_V2_MARK"} and brands == {"WITHOUT_BRAND"}):
@@ -350,6 +373,7 @@ class GridReadClient:
                 if _ag_trunc_batch:
                     counts[cid]["adgroups_truncated"] = True
                 counts[cid]["search_zero_kw_groups"] = int(zero_kw.get(cid, 0))
+                counts[cid]["at_by_design_kw_groups"] = int(at_kw.get(cid, 0))
                 counts[cid]["wrong_autotarget_groups"] = int(wrong_at.get(cid, 0))
                 counts[cid]["groups_edit_read"] = True
                 # keywords_count заполняется здесь (GdKeywordsContainerInput FieldUndefined)
@@ -516,11 +540,54 @@ class GridReadClient:
             # BUILD_LIVE_UNDERCOUNT. Признак чисто локальный, ноль новых запросов.
             _ag_trunc = len(ag_rows) >= 5000
             _ad_trunc = len(ad_rows) >= 5000
+            # Если общий запрос по пачке упёрся в окно Grid, сортировка по ID может полностью
+            # вытеснить ранние кампании из rowset. Тогда они получают ложный core-counter ads=0
+            # и live-verifier флагает NO_ADS_LIVE, хотя объявления есть. На trunc перечитываем
+            # каждую РК отдельно: это дороже, но срабатывает только на больших наборах и даёт
+            # корректный per-campaign счётчик (или честный per-campaign trunc, если одна РК >5000).
+            _ag_trunc_by_cid: dict[int, bool] = {cid: _ag_trunc for cid in chunk}
+            _ad_trunc_by_cid: dict[int, bool] = {cid: _ad_trunc for cid in chunk}
+            if _ag_trunc:
+                ag_counts = defaultdict(int)
+                bad_ag_counts = defaultdict(int)
+                bad_ag_examples = defaultdict(list)
+                for _cid in chunk:
+                    _one = dict(common)
+                    _one["filter"] = {"campaignIdIn": [str(_cid)]}
+                    _data = self._post("AdGroups", ag_q, {"login": self.login, "inp": _one})
+                    _rows = ((((_data.get("data") or {}).get("client") or {})
+                              .get("adGroups") or {}).get("rowset") or [])
+                    _ag_trunc_by_cid[_cid] = len(_rows) >= 5000
+                    for row in _rows:
+                        try:
+                            cid = int(row.get("campaignId"))
+                        except (TypeError, ValueError):
+                            continue
+                        ag_counts[cid] += 1
+                        name = row.get("name")
+                        if self._bad_adgroup_name(name):
+                            bad_ag_counts[cid] += 1
+                            if len(bad_ag_examples[cid]) < 5:
+                                bad_ag_examples[cid].append(str(name or ""))
+            if _ad_trunc:
+                ad_counts = defaultdict(int)
+                for _cid in chunk:
+                    _one = dict(common)
+                    _one["filter"] = {"campaignIdIn": [str(_cid)]}
+                    _data = self._post("Ads", ads_q, {"login": self.login, "inp": _one})
+                    _rows = ((((_data.get("data") or {}).get("client") or {})
+                              .get("ads") or {}).get("rowset") or [])
+                    _ad_trunc_by_cid[_cid] = len(_rows) >= 5000
+                    for row in _rows:
+                        try:
+                            ad_counts[int(row.get("campaignId"))] += 1
+                        except (TypeError, ValueError):
+                            continue
             for cid in chunk:
                 counts[cid]["adgroups"] = int(ag_counts[cid])
                 counts[cid]["ads"] = int(ad_counts[cid])
-                counts[cid]["adgroups_truncated"] = _ag_trunc
-                counts[cid]["ads_truncated"] = _ad_trunc
+                counts[cid]["adgroups_truncated"] = bool(_ag_trunc_by_cid.get(cid))
+                counts[cid]["ads_truncated"] = bool(_ad_trunc_by_cid.get(cid))
                 counts[cid]["bad_adgroup_names"] = int(bad_ag_counts[cid])
                 counts[cid]["bad_adgroup_name_examples"] = bad_ag_examples.get(cid, [])[:5]
 

@@ -664,13 +664,17 @@ def _combo_button(href: str) -> dict | None:
     туда же, куда объявление, а не на главную). Только для комбинаторных (адаптивных) объявлений
     (GdBannerButton, HAR39). action=GET_DISCOUNT = предустановленный текст «Получить скидку».
     href = ссылка объявления (as-is, чтобы совпадала точь-в-точь). None если href пуст."""
-    h = (href or "").strip()
+    try:
+        from .link_check import strip_quiz_url as _strip_quiz_url
+        h = _strip_quiz_url(href or "")
+    except Exception:  # noqa: BLE001
+        h = (href or "").strip()
     # href обязан быть абсолютным (scheme://host…) — иначе кнопка Директа отклонит невалидный URL.
     # Относительный/без схемы → кнопку не вешаем (как раньше _homepage_url возвращал '' → она пропускалась).
     return {"action": "GET_DISCOUNT", "href": h} if re.match(r"https?://", h) else None
 
 
-def _grid_set_ad_prices(login: str, items: list) -> int:
+def _grid_set_ad_prices(login: str, items: list, *, apply_combo_button: bool = True) -> int:
     """Проставить adPrice пачкой на комбинаторные объявления (Grid UpdateAdaptiveTextAds, по куке).
     items: [{id, href, titles, bodies, image_hashes, current, old}]. → число обновлённых.
     Поля inheritableCallouts/inheritableSitelinkSet НЕ шлём — иначе их policy=CLEAR затрёт
@@ -686,6 +690,13 @@ def _grid_set_ad_prices(login: str, items: list) -> int:
             _payload = _grid_ad_price_payload(it.get("current"), _old)
             if _payload:
                 _item["adPrice"] = _payload
+        btn = it.get("button")
+        if isinstance(btn, dict) and btn.get("action"):
+            _btn_href = btn.get("href") or _item["href"]
+            if _btn_href:
+                _item["button"] = {"action": btn["action"], "href": _btn_href}
+                if btn.get("customText"):
+                    _item["button"]["customText"] = btn["customText"]
         # current=0 (модели/марки НЕТ в фиде) → item БЕЗ adPrice: full-replace ОЧИЩАЕТ
         # bannerPrice (verified live 2026-07-02 — апдейт без adPrice затирает цену).
         # ПРАВИЛО СЕМЁНА 2026-07-05: цены из слепков НЕ берём НИКОГДА — только из фида;
@@ -707,20 +718,28 @@ def _grid_set_ad_prices(login: str, items: list) -> int:
             import logging as _lg
             _lg.getLogger("direct.feeds").warning(
                 "adPrice UpdateAdaptiveTextAds warns login=%s: %s", login, str(_vr["warnings"])[:400])
-        _apply_combo_button(gc, upd)   # price-phase wiping fix (2026-07-06): full-replace цены стирал кнопку → переставляем её после
+        if apply_combo_button:
+            # price-phase wiping fix (2026-07-06): full-replace цены стирал кнопку → переставляем её после.
+            # Copy-путь отключает это: CTA должен совпадать с источником, а не добавляться стандартом create-set.
+            _apply_combo_button(gc, upd)
         return len(_mut.get("updatedAds") or [])
     except Exception:  # noqa: BLE001
         return 0
 
 
 def _grid_update_adaptive_ads(login: str, items: list[dict],
-                               campaign_ids: list[int] | None = None) -> int:
+                               campaign_ids: list[int] | None = None,
+                               *,
+                               apply_combo_button: bool = True,
+                               preserve_button: bool = True) -> int:
     """Обновить комбинаторные объявления через Grid UpdateAdaptiveTextAds.
     items: [{id, href, titles, bodies, image_hashes?, creative_ids?, adPrice?}, ...]
     campaign_ids: если передан — выполняем read-modify-write: читаем текущее состояние объявлений
     и для полей отсутствующих/пустых в item берём значение из Grid. Это предотвращает затирание
     imageHashes/adPrice/creativeIds полем full-replace при частичном обновлении (напр. видео-attach).
-    При сбое чтения — fall-safe: отправляем как раньше (не ломаем создание кампании)."""
+    При сбое чтения — fall-safe: отправляем как раньше (не ломаем создание кампании).
+    apply_combo_button/preserve_button оставлены включёнными по умолчанию для create-set.
+    Copy-путь выключает авто-кнопку, чтобы CTA был 1:1 с источником."""
     # RMW: читаем текущее состояние если знаем campaign_ids
     current_map: dict[int, dict] = {}
     if campaign_ids:
@@ -788,9 +807,13 @@ def _grid_update_adaptive_ads(login: str, items: list[dict],
         # Ревью 03.07 #17: СУЩЕСТВУЮЩУЮ кнопку проносим в основной payload (full-replace её стирал,
         # а повторная установка _apply_combo_button — best-effort). НОВУЮ кнопку по-прежнему ставит
         # отдельный апдейт ПОСЛЕ (изоляция отказов, code-review #4).
-        _btn = it.get("button") or (cur.get("button") if isinstance(cur.get("button"), dict) else None)
-        if _btn and _btn.get("action") and _btn.get("href"):
-            item["button"] = {"action": _btn["action"], "href": _btn["href"]}
+        _btn = it.get("button") or (cur.get("button") if preserve_button and isinstance(cur.get("button"), dict) else None)
+        if _btn and _btn.get("action"):
+            _btn_href = _btn.get("href") or href
+            if _btn_href:
+                item["button"] = {"action": _btn["action"], "href": _btn_href}
+                if _btn.get("customText"):
+                    item["button"]["customText"] = _btn["customText"]
         upd.append(item)   # КНОПКА (новая) — отдельным апдейтом ПОСЛЕ (изоляция, code-review #4)
     if skipped_bare:
         print(f"[rmw-guard] {skipped_bare} голых item'ов пропущено (RMW-чтение не дало current) "
@@ -813,7 +836,9 @@ def _grid_update_adaptive_ads(login: str, items: list[dict],
         if _val_errs:
             print(f"[rmw-update] validationResult: {len(_val_errs)} ошибок, применено {n}/{len(upd)}: "
                   f"{json.dumps(_val_errs[:3], ensure_ascii=False)[:300]} login={login}", flush=True)
-        _apply_combo_button(gc, upd)   # кнопка ОТДЕЛЬНО: её отказ (напр. чистый Поиск) не роняет картинки/цену
+        if apply_combo_button:
+            # кнопка ОТДЕЛЬНО: её отказ (напр. чистый Поиск) не роняет картинки/цену
+            _apply_combo_button(gc, upd)
         return n
     except Exception:  # noqa: BLE001
         return 0
@@ -1169,7 +1194,7 @@ def _brand_collection_ids(brand_name: str, feed_models: dict) -> list[str]:
 # _grid_feeds возвращает listings УРЕЗАННО (areListingsTruncated), поэтому для резолва нужен этот
 # точечный per-feed запрос. Коллекции двухуровневые: бренд-уровень (id числовой, имя «Новые
 # автомобили BAIC …») и модельные (id 'model_N', имя «BAIC BJ40 …»).
-_FEED_LISTINGS_QUERY = ("query Listings($login:String!$feedId:String!){reqId:getReqId "
+_FEED_LISTINGS_QUERY = ("query Listings($login:String!,$feedId:String!){reqId:getReqId "
                         "client(searchBy:{login:$login}){feeds(limitOffset:{limit:1 offset:0}"
                         "filter:{searchBy:$feedId}){rowset{areListingsTruncated "
                         "listings{id name offerCount}}}}}")
@@ -1292,6 +1317,24 @@ def _is_brand_canon(tok_canon: str) -> bool:
         return False
     known = _known_brand_canons()
     return (not known) or (tok_canon in known)
+
+
+def _coder_name_real_brand(name: str) -> bool:
+    """Standalone fallback для feed-helper'ов.
+
+    В runtime это имя обычно переинжектится из campaign_naming. Для прямых тестов/аудитов
+    достаточно той же семантики первого токена: он должен быть известной маркой.
+    """
+    b = (name or "").strip()
+    if not b:
+        return False
+    first = re.split(r"[\s/]+", b.lower())[0]
+    try:
+        return _is_brand_canon(_brand_canon(first))
+    except NameError:
+        # Прямой импорт без runtime-DI: справочник ct ещё не подключён. Для helper-тестов
+        # пермиссивно считаем нормализованный первый токен маркой.
+        return bool(_brand_canon(first))
 
 
 def _vendor_value(brand: str) -> str | None:
@@ -1511,7 +1554,8 @@ _FEED_FIELDS_TTL = 600          # 10 мин
 
 _FEED_FIELDS_QUERY = ("query FeedsFields($login:String!$lo:GdLimitOffsetInput$f:GdFeedsFilterInput)"
                       "{reqId:getReqId client(searchBy:{login:$login}){feeds(limitOffset:$lo filter:$f)"
-                      "{rowset{fieldsForUseAs}}}}")
+                      "{rowset{name url fieldsForUseAs listings{id name}}}}}")
+_FEED_META_CACHE: dict = {}     # (login, feed_id) → (dict row, ts)
 
 
 def _feed_filter_fields(login: str, feed_id: int) -> frozenset:
@@ -1536,11 +1580,37 @@ def _feed_filter_fields(login: str, feed_id: int) -> frozenset:
                          "f": {"searchBy": str(feed_id)}})
         _rows = ((((_r.json().get("data") or {}).get("client") or {}).get("feeds") or {})
                  .get("rowset") or [])
-        flds = frozenset((_rows[0] if _rows else {}).get("fieldsForUseAs") or [])
+        row = (_rows[0] if _rows else {}) or {}
+        flds = frozenset(row.get("fieldsForUseAs") or [])
+        _FEED_META_CACHE[key] = (row, time.time())
     except Exception:  # noqa: BLE001 — best-effort, фолбэк на primary синоним
         pass
     _FEED_FIELDS_CACHE[key] = (flds, time.time())
     return flds
+
+
+def _feed_meta(login: str, feed_id: int) -> dict:
+    key = (str(login), int(feed_id))
+    cached = _FEED_META_CACHE.get(key)
+    if cached:
+        row, ts = cached
+        if time.time() - ts < _FEED_FIELDS_TTL:
+            return row or {}
+    _feed_filter_fields(login, int(feed_id))
+    cached = _FEED_META_CACHE.get(key)
+    return (cached[0] if cached else {}) or {}
+
+
+def _feed_looks_auto_ru(login: str, feed_id: int, available: frozenset | None = None) -> bool:
+    """AUTO_RU feeds use ``mark_id``/``folder_id``; used-auto may return empty fieldsForUseAs."""
+    if available and ({"mark_id", "folder_id"} & set(available)):
+        return True
+    row = _feed_meta(login, int(feed_id))
+    blob = f"{row.get('name') or ''} {row.get('url') or ''}".lower()
+    if "used-auto" in blob or "yandex-used-auto" in blob:
+        return True
+    listing_ids = {str((x or {}).get("id") or "") for x in (row.get("listings") or [])}
+    return any(x.startswith(("mark_", "model_")) for x in listing_ids)
 
 
 def _resolve_feed_field(login: str, feed_id: int, semantic: str) -> str | None:
@@ -1555,7 +1625,13 @@ def _resolve_feed_field(login: str, feed_id: int, semantic: str) -> str | None:
     else:
         synonyms = _MODEL_FIELD_SYNONYMS
     available = _feed_filter_fields(login, int(feed_id))
-    if not available:                  # probe failed → assume primary, let UNKNOWN_FIELD retry handle
+    if not available:                  # probe failed → fallback by feed kind
+        if login and feed_id and _feed_looks_auto_ru(login, int(feed_id), available):
+            if semantic == "brand":
+                return "mark_id"
+            if semantic == "model":
+                return "folder_id"
+            return "name"
         return synonyms[0]
     for s in synonyms:
         if s in available:
@@ -1581,30 +1657,72 @@ def _tp7_product_feed_filters(brand_model: str, ct: str,
         _mf = _resolve_feed_field(login, int(feed_id), "model") or "model"
     else:
         _bf, _mf = "vendor", "model"
-    # Глобальные минус-марки применяются ДАЖЕ к товарке по всему фиду (ct0000/общий ст) —
-    # это и есть «во всех кампаниях с фидами не показывать эти марки».
-    minus = _minus_marks_uac_conditions(brand_field=_bf, model_field=_mf)
+    # Tp7 товарка не использует глобальные минус-фильтры: фильтр задаётся только позитивно
+    # по конкретной марке/модели из ct кампании. Общие ct0000-кампании идут без feed_filters.
     base = (brand_model or "").strip()
-    real_brand = bool(base) and bool(ct) and ct not in ("ct0000", "ct0111") and _coder_name_real_brand(base)
+    real_brand = bool(base) and bool(ct) and ct != "ct0000" and _coder_name_real_brand(base)
     conditions: list[dict] = []
     if real_brand:
         parts = [p for p in re.split(r"\s+", base) if p]
-        variants: list[str] = []
-        for cand in (base, " ".join(parts[1:]) if len(parts) > 1 else ""):
-            cand = re.sub(r"\s+", " ", str(cand or "").strip())
-            if cand and len(cand) >= 3 and cand not in variants:
-                variants.append(cand)
-        if variants:
-            # Дв. формат UAC (values + value) — как минус-условия (HAR-эталон 712694743), иначе
-            # позитив по модели тоже потеряется и товарка уйдёт по всему фиду.
-            conditions.append({"field": _mf, "operator": "CONTAINS",
-                               "values": variants,
-                               "value": json.dumps(variants, ensure_ascii=False)})
-    conditions.extend(minus)                 # минус-марки К бренд-условию (AND) или самостоятельно
+        if len(parts) == 1:
+            # Марочная tp7 (например ct0111 Haval): товарную часть фильтруем по МАРКЕ.
+            # До 2026-07-24 ct0111 был исключён из real_brand → feed_filters содержали только
+            # минус-марки, и UAC выбирал случайный товар другой марки из общего фида (Chery).
+            try:
+                vendor = _vendor_value(base) or base
+            except NameError:
+                vendor = base
+            variants = _vendor_filter_values(vendor)
+            if variants:
+                conditions.append({"field": _bf, "operator": "CONTAINS",
+                                   "values": variants,
+                                   "value": json.dumps(variants, ensure_ascii=False)})
+        else:
+            variants: list[str] = []
+            for cand in (base, " ".join(parts[1:])):
+                cand = re.sub(r"\s+", " ", str(cand or "").strip())
+                if cand and len(cand) >= 3 and cand not in variants:
+                    variants.append(cand)
+            if variants:
+                # Дв. формат UAC (values + value) — как минус-условия (HAR-эталон 712694743), иначе
+                # позитив по модели тоже потеряется и товарка уйдёт по всему фиду.
+                conditions.append({"field": _mf, "operator": "CONTAINS",
+                                   "values": variants,
+                                   "value": json.dumps(variants, ensure_ascii=False)})
     conditions = _dedup_conditions(conditions)
     if not conditions:
         return []
     return [{"conditions": conditions}]
+
+
+def _tp7_listing_plus_filter(login: str, feed_id: int, brand_model: str, ct: str,
+                             agency: str = "") -> list[dict]:
+    """Точный positive collectionId для «Страниц каталога» tp7.
+
+    Марки → только подтверждённая непустая коллекция текущего фида.
+    Модели → модельная коллекция (`model_*`) по имени модели.
+    Пустой результат означает «не нашли безопасный plus-фильтр»; caller решает fallback.
+    """
+    base = re.sub(r"\s+", " ", str(brand_model or "").strip())
+    if not base or not feed_id or not ct or ct == "ct0000" or not _coder_name_real_brand(base):
+        return []
+    cols = _feed_collections(login, int(feed_id), agency)
+    if not cols:
+        return []
+    parts = [p for p in re.split(r"\s+", base) if p]
+    offers_by_id = {str(c.get("id") or ""): int(c.get("offers") or 0) for c in cols}
+    if len(parts) == 1:
+        cid = _brand_level_collection_id(base, cols)
+        if cid and offers_by_id.get(str(cid), 0) <= 0:
+            cid = None
+    else:
+        cid = _match_collection(base, _feed_models_from_collections(cols))
+        if cid and offers_by_id.get(str(cid), 0) <= 0:
+            cid = None
+    if not cid:
+        return []
+    return [{"conditions": [{"field": "collectionId", "operator": "CONTAINS",
+                             "value": json.dumps([str(cid)], ensure_ascii=False)}]}]
 
 
 def _tp7_listings_minus_filters(login: str, feed_id: int, agency: str = "") -> list[dict]:

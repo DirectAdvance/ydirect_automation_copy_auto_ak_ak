@@ -24,6 +24,77 @@ def _index_by_name(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {result_name(row): row for row in rows or [] if result_name(row)}
 
 
+def _skipped_struct_rows(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """SKIP-строки результата, несущие эталон структуры (`struct`) — рекурсивно, как
+    `created_campaigns`. Именно они описывают tp6/tp7, которые УЖЕ существуют в кабинете и
+    поэтому не пересоздавались: без отдельного прохода их структура не проверяется вообще."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def walk(row: dict[str, Any]) -> None:
+        if not isinstance(row, dict):
+            return
+        for child in row.get("campaigns") or []:
+            walk(child)
+        if not row.get("skipped") or not isinstance(row.get("struct"), dict):
+            return
+        nm = result_name(row)
+        if nm and nm not in seen:
+            seen.add(nm)
+            out.append(row)
+
+    for row in results or []:
+        walk(row)
+    return out
+
+
+def _grid_rows_by_prefix(grid_by_name: dict[str, dict[str, Any]], nm: str) -> list[dict[str, Any]]:
+    """ВСЕ кампании кабинета для позиции: имя с фид-суффиксом/_vNN («…site — yandex», «… _v02»).
+
+    Та же нормализация, что у RESUME-SKIP (`queue_server._position_live_in_names`), иначе
+    tp6/tp7 fan-out по фидам не резолвится и сверка структуры молча пропускается.
+    ⚠️ Именно СПИСОК, а не первое совпадение: одна позиция разворачивается по фидам в НЕСКОЛЬКО
+    РК («— feedA», «— feedB»), и при выборе одной потерянные ключи остальных не видны.
+    Точное совпадение имени — первым (приоритет прежнего поведения)."""
+    from .create_set_resume import FANOUT_SEP, _VNN_RE
+    pref = nm + FANOUT_SEP
+    exact: list[dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
+    for cand, row in grid_by_name.items():
+        base = _VNN_RE.sub("", cand).strip()
+        if cand == nm or base == nm:
+            exact.append(row)
+        elif cand.startswith(pref) or base.startswith(pref):
+            out.append(row)
+    return exact + out
+
+
+def _verify_skipped_struct(nm: str, lid: int, struct: dict[str, Any],
+                           uac_detail_rows: dict[int, dict[str, Any]],
+                           issues: list[dict[str, Any]]) -> None:
+    """Сверка структуры ОДНОЙ уже существующей (RESUME-SKIP) tp6/tp7-кампании. Report-only."""
+    detail = uac_detail_rows.get(int(lid))
+    if not detail:
+        issues.append({"severity": "warn", "code": "UAC_DETAIL_SKIPPED", "name": nm, "id": lid})
+        return
+    from .uac_verifier import verify_uac_detail
+    uac_issues, _uac_repair = verify_uac_detail(nm, int(lid), detail, {"struct": struct})
+    # 🛑 ПРЕДОХРАНИТЕЛЬ (2026-07-19). Эти кампании УЖЕ существуют в кабинете и намеренно НЕ
+    # пересоздавались (`already_in_direct`-skip). Полный набор проверок для них НЕПРИМЕНИМ:
+    # мы их не собирали, поэтому «недостача» титулов/сайтлинков/медиа/счётчика — это НЕ наш
+    # дефект, а свойство пред-существующей кампании. А коды `UAC_*` из этого набора ∈ `repair_gate.
+    # _UAC_REPLACE_CODES` → `repair_auto.queue_recreate_repair_job` → `delete_uac(...)`, то есть
+    # skip «не трогать существующее» превратился бы в «удалить существующее». Живой DRAFT-gate
+    # в `create_set_repairing._delete_uac_repair_campaigns` спасает только от удаления ЗАПУЩЕННЫХ;
+    # пред-существующий ЧЕРНОВИК он пропускает — его закрывает только этот фильтр.
+    # Пропускаем ТОЛЬКО `UAC_STRUCT_*` (сверка «структура слепка → кабинет»: потерянные ключи и
+    # аудитории), и НИ ОДНОГО repair-кандидата: проход строго report-only.
+    for _iss in uac_issues:
+        if not str(_iss.get("code") or "").startswith("UAC_STRUCT_"):
+            continue
+        issues.append({**_iss, "source": "resume_skip"})
+
+
 def _account_has_promo(content_counts: dict[int, dict[str, Any]] | None) -> bool | None:
     """ФОЛБЭК ступени 1 промо-гейта — прокси по кампаниям набора (tri-state).
 
@@ -125,7 +196,13 @@ def verify_live_create_set(*, login: str, results: list[dict[str, Any]],
                     issues.append({"severity": "warn", "code": "UAC_DETAIL_SKIPPED", "name": nm, "id": cid})
                 else:
                     from .uac_verifier import verify_uac_detail
-                    uac_issues, uac_repair = verify_uac_detail(nm, int(cid), detail)
+                    # struct — эталон СТРУКТУРЫ слепка для позиции, положенный создателем в
+                    # result-строку (create_set_master_product `_res["struct"]`). 0 новых запросов.
+                    _uac_row = c.get("result") or {}
+                    _uac_struct = _uac_row.get("struct") if isinstance(_uac_row, dict) else None
+                    uac_issues, uac_repair = verify_uac_detail(
+                        nm, int(cid), detail,
+                        {"struct": _uac_struct} if isinstance(_uac_struct, dict) else None)
                     issues.extend(uac_issues)
                     repair.extend(uac_repair)
         else:
@@ -169,6 +246,30 @@ def verify_live_create_set(*, login: str, results: list[dict[str, Any]],
             issues.extend(grid_issues)
             repair.extend(grid_repair)
 
+    # ── Сверка структуры по УЖЕ СУЩЕСТВУЮЩИМ tp6/tp7 (RESUME-SKIP) ───────────────────────────
+    # `created_campaigns` отбрасывает строки со `skipped` → кампании, созданные ДО починки, под
+    # теми же именами дают skip и НИКОГДА не попадали под UAC_STRUCT_*: их потерянные ключи и
+    # аудитории оставались потерянными молча (Д7 2026-07-19). Проверяем их отдельным проходом,
+    # id резолвим ПО ИМЕНИ из уже прочитанного Grid-снимка → ноль новых запросов.
+    skipped_struct = 0
+    for row in _skipped_struct_rows(results or []):
+        nm = result_name(row)
+        _struct = row.get("struct")
+        if not nm or not isinstance(_struct, dict):
+            continue
+        skipped_struct += 1
+        # ВСЕ РК позиции: фан-аут по фидам даёт несколько кампаний на одну строку плана.
+        _lids: list[int] = []
+        for _live in _grid_rows_by_prefix(grid_by_name, nm):
+            _v = as_int(_live.get("id") or _live.get("Id"))
+            if _v is not None and _v > 0 and _v not in _lids:
+                _lids.append(_v)
+        if not _lids:
+            issues.append({"severity": "warn", "code": "UAC_STRUCT_SKIP_NOT_RESOLVED", "name": nm})
+            continue
+        for _lid in _lids:
+            _verify_skipped_struct(nm, _lid, _struct, uac_detail_rows, issues)
+
     errors = sum(1 for x in issues if x.get("severity") == "error")
     warnings = sum(1 for x in issues if x.get("severity") == "warn")
     status = "fail" if errors else ("warn" if warnings else "pass")
@@ -180,6 +281,7 @@ def verify_live_create_set(*, login: str, results: list[dict[str, Any]],
         "prefer_grid": bool(prefer_grid),
         "summary": {
             "created_results": len(created),
+            "skipped_struct_checked": skipped_struct,
             "v5_rows": len(v5_campaigns or []),
             "grid_rows": len(grid_campaigns or []),
             "grid_content_rows": len(grid_content_counts or {}),

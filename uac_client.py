@@ -85,6 +85,7 @@ class MasterCampaignSpec:
     image_files: list[str] = field(default_factory=list)  # отдельные локальные файлы картинок
     image_urls: list[str] = field(default_factory=list)   # прямые ссылки на картинки (по URL)
     image_limit: int = 5                                  # грузим до N успешно принятых картинок
+    content_ids: list[str] = field(default_factory=list)  # уже загруженные UAC content ids (prepare-фаза)
     visual_dedup: bool = True                             # pHash-дедуп картинок. False → ТОЛЬКО path+md5
     #   (для dmp/не-авто лидогена: баннеры одного шаблона с разным текстом — РАЗНЫЕ объявления, Директ их
     #   принимает; pHash их ошибочно схлопывал → в UAC доезжало 2 из ~50). Авто tp6/tp7 = True (защита от клонов).
@@ -270,11 +271,10 @@ def _norm_sitelinks(spec: MasterCampaignSpec) -> list[dict]:
         seen_titles.add(tk)
         if dk:
             seen_descs.add(dk)
-        out.append({
-            "title": title,
-            "description": desc,
-            "href": s.get("href") or base_href,
-        })
+        item = {"title": title, "href": s.get("href") or base_href}
+        if desc:
+            item["description"] = desc
+        out.append(item)
     return out
 
 
@@ -647,14 +647,15 @@ class UacClient:
             if spec.listings_feed_filters:
                 payload["listings_feed_filters"] = spec.listings_feed_filters
         # Аудитории → ca_retargeting_condition
-        # Яндекс лимит: не более 100 goals в одном condition_rules.
-        # _slepok_audiences_for объединяет все категории → может дать 200+ id → INVALID_COLLECTION_SIZE.
+        # Яндекс лимит блока «Интересы и поисковые запросы» в МК/UAC: не более 30 интересов.
+        # (API condition_rules принимает до 100, но UI Яндекса и кабинет ограничивают блок до 30:
+        # превышение даёт "-52" и «интересов больше разрешённого».)
         _all_goals = _audience_goals(spec)
-        goals = _all_goals[:100]
-        if len(_all_goals) > 100:                 # реальный лимит API — режем, но НЕ молча
+        goals = _all_goals[:30]
+        if len(_all_goals) > 30:                 # UI-лимит МК/UAC — режем safety-net, но НЕ молча
             print(
-                f"WARNING build_payload: аудиторных сегментов {len(_all_goals)} > лимита Яндекса 100 "
-                f"в одном condition_rules — {len(_all_goals) - 100} отброшено "
+                f"WARNING build_payload: аудиторных сегментов {len(_all_goals)} > лимита Яндекса 30 "
+                f"в блоке «Интересы и поисковые запросы» МК/UAC — {len(_all_goals) - 30} отброшено "
                 f"(display_name={spec.display_name or DEFAULT_DISPLAY_NAME!r}).",
                 file=sys.stderr,
             )
@@ -674,41 +675,42 @@ class UacClient:
         self.link_info(spec.href)
 
         # 2. креативы → content_ids
-        content_ids: list[str] = []
+        content_ids: list[str] = [str(x).strip() for x in (spec.content_ids or []) if str(x).strip()]
         image_limit = max(0, int(getattr(spec, "image_limit", 5) or 0))
         image_count = 0
-        for path in collect_image_files(spec):          # локальные картинки (папка/файлы)
-            if image_limit and image_count >= image_limit:
-                break
-            try:
-                content_ids.append(self.upload_image_file(path, spec.adv_type))
-                image_count += 1
-            except UacApiError:
-                # Direct иногда отклоняет отдельный файл (битый/неподходящий баннер/500 на upload).
-                # Картинка не должна валить весь черновик: пробуем следующий файл до image_limit.
-                pass
-            time.sleep(0.3)
-        for u in spec.image_urls:                       # картинки по URL
-            if image_limit and image_count >= image_limit:
-                break
-            try:
-                content_ids.append(self.upload_content(u, "image", spec.adv_type))
-                image_count += 1
-            except UacApiError:
-                pass
-            time.sleep(0.3)
-        for u in spec.video_urls:                       # видео по URL
-            try:
-                content_ids.append(self.upload_content(u, "video", spec.adv_type))
-            except UacApiError:
-                pass
-            time.sleep(0.3)
-        for path in spec.video_files[:2]:               # ЛОКАЛЬНЫЕ видео (multipart, лимит 2)
-            try:
-                content_ids.append(self.upload_video_file(path, spec.adv_type))
-            except UacApiError:
-                pass
-            time.sleep(0.3)
+        if not content_ids:
+            for path in collect_image_files(spec):          # локальные картинки (папка/файлы)
+                if image_limit and image_count >= image_limit:
+                    break
+                try:
+                    content_ids.append(self.upload_image_file(path, spec.adv_type))
+                    image_count += 1
+                except UacApiError:
+                    # Direct иногда отклоняет отдельный файл (битый/неподходящий баннер/500 на upload).
+                    # Картинка не должна валить весь черновик: пробуем следующий файл до image_limit.
+                    pass
+                time.sleep(0.3)
+            for u in spec.image_urls:                       # картинки по URL
+                if image_limit and image_count >= image_limit:
+                    break
+                try:
+                    content_ids.append(self.upload_content(u, "image", spec.adv_type))
+                    image_count += 1
+                except UacApiError:
+                    pass
+                time.sleep(0.3)
+            for u in spec.video_urls:                       # видео по URL
+                try:
+                    content_ids.append(self.upload_content(u, "video", spec.adv_type))
+                except UacApiError:
+                    pass
+                time.sleep(0.3)
+            for path in spec.video_files[:2]:               # ЛОКАЛЬНЫЕ видео (multipart, лимит 2)
+                try:
+                    content_ids.append(self.upload_video_file(path, spec.adv_type))
+                except UacApiError:
+                    pass
+                time.sleep(0.3)
 
         # 3. создание черновика
         payload = self.build_payload(spec, content_ids)
@@ -735,9 +737,11 @@ class UacClient:
                         _dead_feed_ids.add(int(_bad_fid))
                     except (TypeError, ValueError):
                         pass
-            elif e.status == 400 and "DUPLICATE_SITELINK_DESCS" in e.body:
-                # UAC API отклонил набор быстрых ссылок как содержащий дубли description.
-                # Sitelinks не критичны — retry без них (кампания создаётся, ссылки добавить позже).
+            elif (e.status == 400 and
+                  ("DUPLICATE_SITELINK_DESCS" in e.body
+                   or "SITELINK_DESCRIPTION_CANNOT_BE_EMPTY" in e.body)):
+                # UAC API отклонил набор быстрых ссылок. Sitelinks не критичны — retry без них
+                # (кампания создаётся, ссылки можно добавить позже).
                 payload["sitelinks"] = []
                 campaign_id = self.create_campaign(payload)
             elif (e.status == 400 and "MUST_BE_NULL" in e.body

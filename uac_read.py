@@ -7,6 +7,7 @@ not mutate campaigns.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from . import campaign as cmc
@@ -28,6 +29,34 @@ def _count_list(row: dict[str, Any], *keys: str) -> int:
         if isinstance(value, list):
             return len(value)
     return 0
+
+
+_AUTOTARGET_MARKER_RE = re.compile(r"-{2,}\s*autotargeting", re.I)
+
+
+def _count_real_keywords(row: dict[str, Any]) -> int | None:
+    """Число РЕАЛЬНЫХ ключей кампании. ``---autotargeting`` — маркер автотаргета, не ключ.
+    ``None`` — поле не отдано ответом (tri-state: проверка обязана молчать, а не флагать 0)."""
+    value = row.get("keywords")
+    if not isinstance(value, list):
+        return None
+    return sum(1 for w in value
+               if str(w).strip() and not _AUTOTARGET_MARKER_RE.search(str(w)))
+
+
+def _count_audiences(row: dict[str, Any]) -> int | None:
+    """Число аудиторий кампании (``ca_retargeting_condition.goals``). ``None`` — не отдано."""
+    cond = row.get("ca_retargeting_condition")
+    if isinstance(cond, dict):
+        goals = cond.get("goals")
+        if isinstance(goals, list):
+            return len(goals)
+        return None
+    for key in ("audiences", "interest_ids"):
+        value = row.get(key)
+        if isinstance(value, list):
+            return len(value)
+    return None
 
 
 def _has_feed(row: dict[str, Any]) -> bool:
@@ -66,11 +95,13 @@ def _filter_summary(row: dict[str, Any]) -> dict[str, Any]:
         if field:
             fields.append(field)
     norm_fields = {f.lower() for f in fields}
+    model_fields = {"model", "modelname", "model_name", "folder_id", "modification"}
+    vendor_fields = {"vendor", "vendorname", "manufacturer", "mark_id", "brand", "make"}
     return {
         "feed_filter_conditions": len(conditions),
         "feed_filter_fields": sorted(set(fields)),
-        "has_model_filter": any(f in {"model", "modelname", "model_name"} for f in norm_fields),
-        "has_vendor_filter": any(f in {"vendor", "vendorname", "manufacturer"} for f in norm_fields),
+        "has_model_filter": any(f in model_fields for f in norm_fields),
+        "has_vendor_filter": any(f in vendor_fields for f in norm_fields),
         "has_collection_filter": any(f in {"collectionid", "collection_id"} for f in norm_fields),
     }
 
@@ -141,6 +172,9 @@ class UacReadClient:
 def summarize_uac_detail(row: dict[str, Any] | None) -> dict[str, Any]:
     """Normalize UAC detail into counters used by live verification."""
     row = _unwrap(row or {})
+    contents = row.get("contents") if isinstance(row.get("contents"), list) else []
+    content_images = sum(1 for item in contents if str((item or {}).get("type") or "").lower() == "image")
+    content_videos = sum(1 for item in contents if str((item or {}).get("type") or "").lower() == "video")
     summary = {
         "status": _status(row),
         "pricing": _pricing(row),
@@ -148,8 +182,8 @@ def summarize_uac_detail(row: dict[str, Any] | None) -> dict[str, Any]:
         "texts": _count_list(row, "texts", "text_items"),
         "sitelinks": _count_list(row, "sitelinks"),
         "content": _count_list(row, "content_ids", "contents", "media"),
-        "images": _count_list(row, "image_content_ids", "images"),
-        "videos": _count_list(row, "video_content_ids", "videos"),
+        "images": _count_list(row, "image_content_ids", "images") or content_images,
+        "videos": _count_list(row, "video_content_ids", "videos") or content_videos,
         "week_limit": _number(row, "week_limit", "weekly_budget", "weekBudget"),
         "limit_period": str(row.get("limit_period") or row.get("limitPeriod") or "").strip().lower(),
         "regions": _count_list(row, "regions", "region_ids", "geo", "geos"),
@@ -157,6 +191,11 @@ def summarize_uac_detail(row: dict[str, Any] | None) -> dict[str, Any]:
         "goals": _count_list(row, "goals"),
         "has_tracking_params": bool(row.get("tracking_params") or row.get("href_params") or row.get("banner_href_params")),
         "has_feed": _has_feed(row),
+        # Ключи/аудитории КАБИНЕТА (tri-state: None = поле не отдано → проверка молчит).
+        # Нужны для сверки «структура слепка → кабинет» (uac_verifier.UAC_STRUCT_*_MISSING):
+        # сверка build↔live была слепа к обрывам на этапе плана, т.к. build уже пустой (0 == 0).
+        "keywords": _count_real_keywords(row),
+        "audiences": _count_audiences(row),
         "yandex_maps_enabled": _flag(row, "yandex_maps_enabled", "maps_enabled", "is_yandex_maps_enabled"),
         "alternative_texts_enabled": row.get("alternative_texts_enabled"),
         "recommendations_management_enabled": row.get("recommendations_management_enabled"),

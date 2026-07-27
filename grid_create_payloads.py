@@ -69,7 +69,7 @@ def build_unified_campaign(*, name: str, counter_id: int, goal_id: int, cpa: int
         },
         "brandSafetyCategories": [],
         "broadMatch": {"broadMatchFlag": False, "broadMatchGoalId": None, "broadMatchLimit": 0},
-        "contextLimit": 100, "dayBudget": "0",
+        "dayBudget": "0",
         "defaultPermalinkId": None, "defaultTrackingPhoneId": None, "deliveryId": None,
         "disabledIps": None, "disabledPlaces": list(disabled_places or []), "dynamicPlacesAdvTextsOnly": False,
         "enableCompanyInfo": True, "enableCpcHold": False, "endDate": None,

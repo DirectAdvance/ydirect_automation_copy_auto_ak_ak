@@ -33,6 +33,40 @@ def _created_ids(results: list[dict[str, Any]], *, kind: Optional[str] = None) -
     return ids
 
 
+def _skipped_uac_ids(results: list[dict[str, Any]],
+                     grid_rows: Optional[list[dict[str, Any]]]) -> list[int]:
+    """id УЖЕ СУЩЕСТВУЮЩИХ tp6/tp7 (RESUME-SKIP со `struct`), отрезолвленные ПО ИМЕНИ из Grid-снимка.
+
+    Зачем: `_created_ids` строится через `campaign_result.created_campaigns`, а тот отбрасывает
+    строки со `skipped` (`campaign_result.py:49`). Без этого списка деталей по пропущенным
+    кампаниям не запрашивается вовсе, и проход `live_verifier` по SKIP-строкам вырождается в
+    счётчик + пачку `UAC_DETAIL_SKIPPED` — сверка `UAC_STRUCT_*` была инертна ПО ПОСТРОЕНИЮ.
+
+    Резолв — тем же `_grid_rows_by_prefix` по УЖЕ прочитанному Grid-снимку (фид-суффиксы/`_vNN`),
+    поэтому ноль новых запросов. Считать ОБЯЗАТЕЛЬНО ДО `UacReadClient.campaign_details`.
+    """
+    if not grid_rows:
+        return []
+    from .campaign_result import as_int, result_name
+    from .live_verifier import _grid_rows_by_prefix, _index_by_name, _skipped_struct_rows
+
+    by_name = _index_by_name(grid_rows)
+    ids: list[int] = []
+    seen: set[int] = set()
+    for row in _skipped_struct_rows(results or []):
+        nm = result_name(row)
+        # UacReadClient обслуживает только tp6/tp7 — чужие имена в него не отправляем.
+        if not nm or not nm.lower().startswith(("tp6_", "tp7_")):
+            continue
+        # ВСЕ РК позиции, а не первая: фан-аут по фидам даёт несколько кампаний на одну строку.
+        for live in _grid_rows_by_prefix(by_name, nm):
+            cid = as_int(live.get("id") or live.get("Id"))
+            if cid is not None and cid > 0 and cid not in seen:
+                seen.add(cid)
+                ids.append(cid)
+    return ids
+
+
 def verify_create_set_live(login: str, results: list[dict[str, Any]], *,
                            agency: str = "", use_v5: bool = False,
                            grid_campaigns_getter: Optional[GridCampaignsGetter] = None,
@@ -81,6 +115,24 @@ def verify_create_set_live(login: str, results: list[dict[str, Any]], *,
             uac_details = {}
     except Exception as e:  # noqa: BLE001
         live_errors.append(f"uac-detail: {str(e)[:180]}")
+
+    # + УЖЕ СУЩЕСТВУЮЩИЕ tp6/tp7 из RESUME-SKIP: без них проход сверки структуры в
+    # `live_verifier` не получает ни одной детали (см. `_skipped_uac_ids`). `grid_rows`
+    # прочитан выше, поэтому резолв по имени бесплатный.
+    # ⚠️ ОТДЕЛЬНЫЙ try — НЕ в одном с нашими id: это кампании, которые МЫ НЕ СОЗДАВАЛИ (нет прав,
+    # не видна, Grid отдал мусор). В общем try их отказ оставлял `uac_details = None` и глушил
+    # детальную UAC-проверку ВСЕГО набора, включая свежесозданные кампании.
+    if uac_details is not None:
+        try:
+            skip_ids = [i for i in _skipped_uac_ids(results or [], grid_rows)
+                        if i not in uac_details]
+            if skip_ids:
+                from .uac_read import UacReadClient, summarize_uac_detail
+                raw_skip = UacReadClient(login, agency=agency).campaign_details(skip_ids)
+                uac_details.update({cid: summarize_uac_detail(row)
+                                    for cid, row in raw_skip.items()})
+        except Exception as e:  # noqa: BLE001
+            live_errors.append(f"uac-detail-skip: {str(e)[:180]}")
 
     if use_v5:
         try:

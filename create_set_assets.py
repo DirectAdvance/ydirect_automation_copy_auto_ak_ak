@@ -6,9 +6,23 @@ import re
 import time                                    # _v5_callout_pool троттлит adextensions.add (стр.687); без импорта — NameError, уточнения молча не привязывались
 
 from .text_norm import _trim_clean, _bad_ad_title as _text_norm_bad_title
-from .text_gen import _brand_first_reorder
+from .text_gen import (
+    _brand_first_reorder, _brand_isolated_first_phrase,
+    _NEUTRAL_CREDIT_TITLES, _NEUTRAL_CREDIT_TEXTS,
+)
 
 _DEPS: dict = {}
+
+
+# ── DI из blueprint (заглушки падают громко, если configure не отработал) ──
+# Нужны, потому что `_upgrade_credit_*` — ФИНАЛЬНАЯ сборка адаптива, ПОСЛЕ всех `_cf`:
+# хардкод-варианты про «новые авто» иначе уезжают в Б/У-кампании tp1–tp5 мимо всей фильтрации.
+def _drop_new_car(*a, **k):
+    raise RuntimeError("create_set_assets._drop_new_car не инъектирован (configure)")
+
+
+def _is_bu_site(*a, **k):
+    raise RuntimeError("create_set_assets._is_bu_site не инъектирован (configure)")
 
 MANUAL_CREATIVES_DIR = "/opt/creatives/Manual"
 
@@ -332,8 +346,15 @@ def _needs_credit_title_upgrade(items: list[str]) -> bool:
     return len(buckets - {"other"}) < 5 or same_prefix >= 4 or missing_numbers > 0
 
 
-def _upgrade_credit_titles(items: list[str], cap: int = _RA_TITLES_CAP) -> list[str]:
+def _upgrade_credit_titles(items: list[str], cap: int = _RA_TITLES_CAP,
+                           site_type: str = "") -> list[str]:
     seq = [str(x or "").strip() for x in (items or []) if str(x or "").strip()]
+    # ПОСЛЕДНИЙ РУБЕЖ по типу сайта. Раньше `_drop_new_car` (стр. ниже) чистил только СВОЙ
+    # хардкод `variants`, а входящий `seq` уходил в live как есть — и early-return, и цикл
+    # `variants + seq` протаскивали «новые авто» на Б/У. Режем `seq` ДО ветвления: обе ветки
+    # теперь отдают набор без новой-авто-лексики. На не-Б/У — no-op. Если фильтр опустошил seq,
+    # `_needs_credit_title_upgrade([])` → True → апгрейд с нейтральным floor (пустым не выйдет).
+    seq = _drop_new_car(seq, site_type)
     if not _needs_credit_title_upgrade(seq):
         # Safety-net: даже в early-return прогоняем каждый через стоп-фильтр —
         # AI мог сгенерировать «До 150% цены авто» в иначе разнообразном наборе.
@@ -367,18 +388,31 @@ def _upgrade_credit_titles(items: list[str], cap: int = _RA_TITLES_CAP) -> list[
         # ДЕФЕКТ: «Belgee. Авто в наличии» (brand + точка + рублёный УТП) = НЕПРИЕМЛЕМО.
         # НОРМА: «Belgee в наличии», «Новый Belgee», «Купить Belgee в кредит» — brand в составе фразы.
         variants = [
-            f"{anchor}. Кредит и первый взнос 0 ₽",                   # 0: brand+город интегр. [OK]
+            f"{brand} в кредит. Первый взнос 0 ₽",                    # 0: brand интегрирован [OK]
             f"{brand} в наличии. Кредит от 9 000 ₽/мес",              # 1: AUTO-CONTEXT, brand интегр. (исп. «{brand}. Авто в наличии…»)
-            f"{anchor}. Платеж от 9 000 ₽/мес",                       # 2: brand+город интегр. [OK]
+            f"{brand} с платежом от 9 000 ₽/мес",                     # 2: brand интегрирован [OK]
             f"Купить {brand} в кредит. Одобрение за 30 мин",          # 3: action+brand интегр. [OK]
-            f"Новый {brand}. Выгода до 45%",                           # 4: AUTO-CONTEXT, brand интегр. (исп. «{brand}. Новые автомобили…»)
-            f"{anchor}. Выгода до 45% при покупке",                   # 5: brand+город интегр. [OK]
+            # 4: AUTO-CONTEXT. На Б/У «Новый {brand}» ВРЁТ про товар, а `_drop_new_car` это не
+            # снимет — `_NEW_RE` требует хвост «авто»/«автомобил», здесь же МАРКА («Новый Haval»).
+            # Поэтому подменяем по site_type явно, а не фильтром.
+            (f"{brand} с пробегом. Выгода до 45%" if _is_bu_site(site_type)
+             else f"Новый {brand}. Выгода до 45%"),
+            f"{brand} с выгодой до 45% при покупке",                  # 5: brand интегрирован [OK]
             f"{brand} трейд-ин. Оценка онлайн",                         # 6: brand интегр. (был «До 150% цены авто» — inflated, убран 2026-07-15)
             f"{brand} и КАСКО на 1 год бесплатно",                    # 7: brand интегр., резерв (исп. «{brand}. КАСКО…»)
             f"{brand} в кредит. Кредит от 15 банков",                 # 8: резерв [OK]
             f"{brand} по госпрограмме 2026. Кредит",                  # 9: brand интегр., резерв (исп. «{brand}. Госпрограмма…»)
             f"Купить {brand}. Заявка за 1 минуту",                    # 10: action+brand интегр. [OK]
         ]
+    # Б/У-сайт: выкинуть хардкод-варианты про НОВЫЕ авто («Новые авто в кредит…», «Купить новое
+    # авто…», «Выгода до 45% на новые авто…»). Это ПОСЛЕДНЯЯ точка, где их ещё можно снять:
+    # `_upgrade_credit_titles` работает после всех `_cf`, и её результат уходит прямо в ads.add.
+    # На сайтах НОВЫХ авто `_drop_new_car` — no-op (`_is_bu_site` ложно), набор не меняется.
+    variants = _drop_new_car(variants, site_type)
+    # Floor: в non-brand-ветке фильтр срезает 6 из 8 вариантов — добираем нейтральным пулом
+    # (он не режется ни `_drop_used_car`, ни `_drop_new_car`), чтобы комплект не просел.
+    # Добавляем ВСЕГДА в хвост: дедуп ниже и `cap` отбросят лишнее, на не-Б/У порядок не меняется.
+    variants = variants + _drop_new_car(list(_NEUTRAL_CREDIT_TITLES), site_type)
     _fill = globals().get("_fill_title")
     out: list[str] = []
     seen: set[str] = set()
@@ -389,9 +423,13 @@ def _upgrade_credit_titles(items: list[str], cap: int = _RA_TITLES_CAP) -> list[
         # brand-first детерминированно (страховка для pass-through seq: «Платеж … BAIC» → «BAIC. …»)
         if brand_real:
             line = _trim_ad_line(_brand_first_reorder(line, brand), _RA_TITLE_MAX)
+            if _brand_isolated_first_phrase(line, brand):
+                continue
         # §2.2 короткие: добить до ≥ hi-2 (54), чтобы не оставлять 13-18 свободных символов
         if callable(_fill) and line and len(line) < _RA_TITLE_MAX - 2:
             line = _trim_ad_line(_fill(line, _RA_TITLE_MAX - 2, _RA_TITLE_MAX), _RA_TITLE_MAX)
+            if brand_real and _brand_isolated_first_phrase(line, brand):
+                continue
         if not line:
             continue
         # Safety-net: стоп-фразы «нельзя в live» (трейд-ин+big%, без документов и др.) не пропускаем
@@ -422,8 +460,13 @@ def _has_dup_clause(text: str) -> bool:
     return len(parts) != len(set(parts))
 
 
-def _upgrade_credit_texts(items: list[str], cap: int = _RA_TEXTS_CAP) -> list[str]:
+def _upgrade_credit_texts(items: list[str], cap: int = _RA_TEXTS_CAP,
+                          site_type: str = "") -> list[str]:
     seq = [str(x or "").strip() for x in (items or []) if str(x or "").strip()]
+    # Последний рубеж по типу сайта: входящий seq мог принести «новые авто» на Б/У (сырой
+    # generic-фолбэк выше `_cf`). Режем ДО цикла `seq + variants`; на не-Б/У — no-op. Опустел —
+    # `variants` (хардкод + `_NEUTRAL_CREDIT_TEXTS`) добьют комплект, пустым набор не станет.
+    seq = _drop_new_car(seq, site_type)
     anchor, brand = _credit_title_anchor(seq or ["Авто в кредит"])
     brand_low = (brand or "").strip().lower()
     # Если «brand» — это УТП-фраза (содержит цифры / слова взнос/платёж/КАСКО/…), а не марка авто,
@@ -441,6 +484,10 @@ def _upgrade_credit_texts(items: list[str], cap: int = _RA_TEXTS_CAP) -> list[st
             f"{anchor}. Платеж от 9 000 ₽/мес. Одобрение за 30 минут. Узнайте условия.",
             f"{brand} в кредит от 15 банков. Трейд-ин выше рынка. Выберите авто.",
         ]
+    # Б/У-сайт: снять хардкод-тексты про НОВЫЕ авто («Новые авто в кредит. Первый взнос 0 ₽…»,
+    # «Выгода до 45% на новые авто…») и добрать нейтральным пулом до полного комплекта из 3.
+    # На сайтах НОВЫХ авто `_drop_new_car` — no-op, набор и его порядок не меняются.
+    variants = _drop_new_car(variants, site_type) + _drop_new_car(list(_NEUTRAL_CREDIT_TEXTS), site_type)
     out: list[str] = []
     seen: set[str] = set()
     for cand in seq + variants:
@@ -473,14 +520,15 @@ def _upgrade_credit_texts(items: list[str], cap: int = _RA_TEXTS_CAP) -> list[st
     return out[:cap]
 
 
-def _responsive_ad(titles, texts, href: str, image_hashes=None, display_path: str = "") -> dict | None:
+def _responsive_ad(titles, texts, href: str, image_hashes=None, display_path: str = "",
+                   site_type: str = "") -> dict | None:
     """Собрать ResponsiveAd (Комбинаторное): несколько заголовков + текстов в одном объявлении.
     → dict для ads.add ИЛИ None, если нет обязательных Titles/Texts/Href."""
     # #5/#6 Когерентность скидок в ОДНОМ объявлении (заголовки+тексты): одно ₽/%-значение (эталон —
     # самое частое) → заголовок и текст согласованы, почти-дубли с разными суммами схлопнутся дедупом.
     titles, texts = _coherent_discounts(list(titles or []), list(texts or []))
-    titles = _upgrade_credit_titles(list(titles or []), _RA_TITLES_CAP)
-    texts = _upgrade_credit_texts(list(texts or []), _RA_TEXTS_CAP)
+    titles = _upgrade_credit_titles(list(titles or []), _RA_TITLES_CAP, site_type)
+    texts = _upgrade_credit_texts(list(texts or []), _RA_TEXTS_CAP, site_type)
     t = _dedup_cap(_combo_fill_titles(titles), _RA_TITLE_MAX, _RA_TITLES_CAP)
     x = _dedup_cap(_combo_fill_texts(texts), _RA_TEXT_MAX, _RA_TEXTS_CAP)
     if len(t) < _RA_TITLES_CAP:
@@ -535,7 +583,7 @@ def _chunks(seq: list, n: int):
 # Упорядочены: сначала длиннее (предпочитаем максимально заполненный вариант).
 # Все ≤ _CALLOUT_POOL_TEXT_MAX (25). Правило Семёна: уточнения заполнять ≤8 свободных.
 _CALLOUT_EXPAND_POOL = [
-    "Рассрочка без переплат",   # 22
+    "Гарантия на автомобиль",   # 22
     "Гарантия производителя",   # 22
     "Трейд-ин выше рынка",      # 20
     "Одобрение за 5 минут",     # 20

@@ -311,6 +311,7 @@ def _audit_search_keywords(groups: list[dict], login: str, slepok: str, site_typ
     try:
         from .text_gen import (_foreign_model_discriminators as _fmd,
                                _model_subtokens as _mst,
+                               _kw_positive_tokens as _kwpt,
                                _auto_brand_tokens as _abt)
         ct_name_fm: dict = {}
         ct_model_fm: dict = {}
@@ -347,9 +348,16 @@ def _audit_search_keywords(groups: list[dict], login: str, slepok: str, site_typ
                 # набор пуст (kp/feeds недоступны) → не флагаем вслепую.
                 if not all_brand_toks:
                     continue
+                # Если display-суффикс (после " — ") группы — известная марка/модель, то группа
+                # брендовая под общим ct (напр. ct0000 в «С пробегом»: 25+ марок под одним ct).
+                # Флагать её как «тема без права на марку» — ложняк (FOREIGN_MODEL_KEYWORDS_CT_LEVEL_FALSEPOS).
+                _ag_nm_sfx = str(g.get("adgroup_name") or "")
+                _ag_nm_sfx = _ag_nm_sfx.split(" — ", 1)[1].strip() if " — " in _ag_nm_sfx else ""
+                if _ag_nm_sfx and _mst(_ag_nm_sfx) & all_brand_toks:
+                    continue  # брендовая группа под «Общим» ct — не флагаем
                 foreign_kws = []
                 for kw in live_kws:
-                    if _mst(str(kw)) & all_brand_toks:
+                    if _kwpt(str(kw)) & all_brand_toks:
                         foreign_kws.append(kw)
                 brand_fm = "тема/Общее"
                 if foreign_kws:
@@ -370,15 +378,25 @@ def _audit_search_keywords(groups: list[dict], login: str, slepok: str, site_typ
                                    f"v5 keywords.delete"),
                     })
                 continue
-            raw_brand = ct_name_fm.get(own_ct) or ct_model_fm.get(own_ct) or ""
-            brand_fm = ((_valid_brand(own_ct, raw_brand) if _valid_brand else raw_brand)
-                        if raw_brand else "")
+            # Берём модель из display-суффикса имени группы (после " — "), как делает
+            # create-сторона (_text_group_name, create_set_text_builders.py:344-350 / _filter_group_keywords
+            # model=_uname). ct-уровневый справочник даёт одну марку на ct0000, а в «С пробегом»
+            # под ct0000 живут 25+ разных брендовых групп — ct-lookup давал ложный детект
+            # (FOREIGN_MODEL_KEYWORDS_CT_LEVEL_FALSEPOS).
+            _ag_name_raw = str(g.get("adgroup_name") or "")
+            _sfx_brand = _ag_name_raw.split(" — ", 1)[1].strip() if " — " in _ag_name_raw else ""
+            if _sfx_brand:
+                brand_fm = _sfx_brand
+            else:
+                raw_brand = ct_name_fm.get(own_ct) or ct_model_fm.get(own_ct) or ""
+                brand_fm = ((_valid_brand(own_ct, raw_brand) if _valid_brand else raw_brand)
+                            if raw_brand else "")
             if not brand_fm or brand_fm == "Авто":
                 continue
             disc = _fmd(brand_fm)
             if not disc:
                 continue  # единственная модель марки — нет чужих
-            foreign_kws = [kw for kw in live_kws if _mst(str(kw)) & disc]
+            foreign_kws = [kw for kw in live_kws if _kwpt(str(kw)) & disc]
             if foreign_kws:
                 cid_fm = g.get("campaign_id")
                 issues.append({
@@ -584,8 +602,7 @@ def _audit_product_feed_filters(rc: gr.GridReadClient, login: str, campaign_id: 
 # ── tp5 placements audit (PLACEMENTS_WRONG) ───────────────────────────────────────
 def _audit_placements(rc: gr.GridReadClient, login: str, campaign_id: int,
                       campaign_name: str) -> list[dict]:
-    """tp5: «Места показа» = Ручная настройка ровно PLACEMENTS_TP5 (Товарная галерея +
-    Продвижение в поисковой выдаче). finalize ставит их при создании, но падает на server
+    """tp5: «Места показа» = placementTypes null + platforms без РСЯ. finalize ставит их при создании, но падает на server
     error Яндекса → кампания остаётся с дефолтом (лишние «Динамические места» и «РСЯ» —
     скрин #90, camp 712120488). placementTypes читаем у GdUnifiedCampaign (live 03.07)."""
     q = ("query SpecPlc($login:String!,$inp:GdCampaignsContainerInput!){"
@@ -606,13 +623,13 @@ def _audit_placements(rc: gr.GridReadClient, login: str, campaign_id: int,
     if not row or str(row.get("__typename") or "") != "GdUnifiedCampaign":
         return []
     cur = sorted(set(row.get("placementTypes") or []))
-    want = sorted(set(gf.PLACEMENTS_TP5))
+    want = []
     network_on = bool(((row.get("strategy") or {}).get("platforms") or {}).get("network"))
     if cur == want and not network_on:
         return []
     parts = []
     if cur != want:
-        parts.append(f"места показа {cur or 'дефолт (все)'} вместо {want} — добить узким UpdateCampaigns")
+        parts.append(f"места показа {cur or 'дефолт (все)'} вместо placementTypes=null — добить узким UpdateCampaigns")
     if network_on:
         # РСЯ у tp5 = ошибка спеки (скрин #90); чинится только полным finalize (strategyData) —
         # авто-фикс не трогает стратегию, только репортим
@@ -686,14 +703,21 @@ def _audit_plan_vs_slepok(account_campaigns: list[dict], slepok: str, site_type:
     if not present_tps or not _struct_has_tp:
         return []
     key = _selected_slepok_key(slepok)
-    tp_map = {1: "tp1", 2: "tp2", 3: "tp3", 4: "tp4", 5: "tp5", 6: "tp6", 7: "tp7"}
+    struct_site_type = site_type
+    if str(site_type or "").strip().lower() == "посевы":
+        # Post campaigns are defined in the dedicated posevy slepok tree shown in the UI.
+        # The JSON keeps its site_type as "Мультибренд"; the create form label is "Посевы".
+        key = "posevy"
+        struct_site_type = "Мультибренд"
+    tp_map = {1: "tp1", 2: "tp2", 3: "tp3", 4: "tp4", 5: "tp5", 6: "tp6", 7: "tp7",
+              8: "tp8", 9: "tp9", 10: "tp10"}   # Посевы (GdPostCampaign, SPEC 2026-07-21)
     issues: list[dict] = []
     for tp in sorted(present_tps):
         code = tp_map.get(tp)
         if not code:
             continue
         try:
-            declared = bool(_struct_has_tp(key, site_type, code))
+            declared = bool(_struct_has_tp(key, struct_site_type, code))
         except Exception:  # noqa: BLE001
             continue  # структура нечитаема → не флагаем
         if not declared:
@@ -1380,7 +1404,9 @@ def _audit_uac_video_missing(login: str, campaign_id: int, campaign_name: str,
 # ── tp7 UAC feed-filter audit (report-only) ──────────────────────────────────────
 def _audit_uac_feed_filters(login: str, campaign_id: int, campaign_name: str,
                             agency: str | None, detail: dict | None = None) -> list[dict]:
-    """tp7 товарная UAC: должен присутствовать хотя бы один feed-фильтр (модель/вендор).
+    """tp7 товарная UAC: марочные/модельные кампании должны иметь positive feed-фильтр.
+
+    Общие/ct0000 tp7 идут без feed_filters: глобальные минус-фиды для них запрещены.
     Detail читается через uac_read (best-effort) или берётся переданный."""
     if detail is None:
         try:
@@ -1394,13 +1420,16 @@ def _audit_uac_feed_filters(login: str, campaign_id: int, campaign_name: str,
     if not summ.get("has_feed"):
         return []  # не товарная UAC
     if int(summ.get("feed_filter_conditions") or 0) <= 0:
-        # Правило Семёна 03.07.2026: у некоторых фидов НЕТ поля фильтра (brand-синонима в
-        # fieldsForUseAs) — такие пропускаем, минус-марки там не проставить никак.
+        ct = _ct_of_name(campaign_name or detail.get("title") or "")
+        if ct == "ct0000" or "общ" in _norm(campaign_name):
+            return []  # общая tp7 по контракту не получает feed_filters
         feed_id = 0
         try:
             feed_id = int(detail.get("feed_id") or 0)
         except (TypeError, ValueError):
             feed_id = 0
+        # Правило Семёна 03.07.2026: у некоторых фидов НЕТ поля фильтра (brand-синонима в
+        # fieldsForUseAs) — такие пропускаем, positive-фильтр там не проставить никак.
         if feed_id:
             try:
                 from . import create_set_feeds as csf
@@ -2335,8 +2364,8 @@ def fix_button_missing(login: str, ctx: dict, issues: list[dict]) -> dict:
 
 # ── fixer (FEED_FILTER_MISSING_UAC): проставить feed_filters товарной UAC ─────────
 def fix_feed_filters_uac(login: str, ctx: dict, issues: list[dict]) -> dict:
-    """PATCH ``feed_filters`` на товарные UAC без фильтров: брендовый ct → позитив по
-    марке/модели + минус-марки, ct0000/общая → только глобальные минус-марки. Условия
+    """PATCH ``feed_filters`` на товарные UAC без фильтров: брендовый/модельный ct →
+    positive по марке/модели; ct0000/общая не чинится и остаётся без feed_filters. Условия
     строит боевой ``_tp7_product_feed_filters`` (создание и починка — один код), запись —
     generic ``_uac_patch_campaign_texts`` (PATCH /uac/campaign/{id}), read-back по счётчику
     conditions. Закрывает и старые UAC (report-only ранее), и недо-созданные."""
@@ -2379,11 +2408,14 @@ def fix_feed_filters_uac(login: str, ctx: dict, issues: list[dict]) -> dict:
                 skipped.append({"campaign_id": cid, "reason": "у фида нет поля фильтра"})
                 continue
             ct = _ct_of_name(it.get("name") or detail.get("title") or "")
+            if ct == "ct0000" or "общ" in _norm(it.get("name") or detail.get("title") or ""):
+                skipped.append({"campaign_id": cid, "reason": "общая tp7 не требует feed_filters"})
+                continue
             raw_brand = ct_name.get(ct) or ""
             brand = (_valid_brand(ct, raw_brand) if (_valid_brand and raw_brand) else raw_brand) or ""
             filters = csf._tp7_product_feed_filters(brand, ct, login=login, feed_id=feed_id)
             if not filters:
-                skipped.append({"campaign_id": cid, "reason": "условия пустые (минус-марки выключены?)"})
+                skipped.append({"campaign_id": cid, "reason": "условия пустые (нет positive марки/модели)"})
                 continue
             # ПРЯМОЙ partial PATCH (НЕ _uac_patch_campaign_texts: его full-detail retry
             # «успешно» шлёт весь detail, UAC молча игнорит feed_filters → MUST_BE_NULL терялся).
@@ -2678,7 +2710,7 @@ def fix_listing_positive_filter(login: str, ctx: dict, issues: list[dict]) -> di
 
 # ── fixer (PLACEMENTS_WRONG): места показа tp5 узким UpdateCampaigns ──────────────
 def fix_placements_wrong(login: str, ctx: dict, issues: list[dict]) -> dict:
-    """Выставить «Ручную настройку» мест показа PLACEMENTS_TP5 узкой мутацией (шаблон
+    """Выставить placementTypes=null для tp5 узкой мутацией (шаблон
     set_campaign_sitelink_set: базовый скелет + эхо broadMatch). Read-back — повторный детект."""
     pw_issues = [it for it in (issues or []) if it.get("code") == "PLACEMENTS_WRONG"]
     if not pw_issues:
@@ -2696,7 +2728,7 @@ def fix_placements_wrong(login: str, ctx: dict, issues: list[dict]) -> dict:
         if it.get("placements_ok"):
             continue   # только network_on (report-only) — placementTypes уже эталонные
         try:
-            gcl.set_campaign_placement_types([cid], list(gf.PLACEMENTS_TP5))
+            gcl.set_campaign_placement_types([cid], None)
             after = _audit_placements(rc, login, cid, str(it.get("name") or ""))
             still_bad = bool(after) and not (after[0].get("placements_ok"))
             fixed.append({"campaign_id": cid, "was": it.get("current"),

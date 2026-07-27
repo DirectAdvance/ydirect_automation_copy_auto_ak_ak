@@ -19,6 +19,7 @@ _json = _missing
 _ct_segment_map = _missing
 _m3_llm_probe = _missing
 _openrouter_probe = _missing
+_openrouter_completion_probe = _missing
 _touch_running_jobs_heartbeat = _missing
 
 
@@ -146,32 +147,50 @@ _M3_STATUS_TTL = 300                                      # кэш статус�
 
 
 
-# Одна короткая перепроверка ИИ перед фолбэком на слепок (Семён 09.07): раньше при обоих
-# лёгших провайдерах гейт висел 6×10мин+1ч и потом останавливал набор — часовой висяк.
-# Теперь: одна быстрая перепроверка (вдруг мигнуло), затем продолжаем создание на слепке.
+# Одна короткая перепроверка ИИ перед остановкой: раньше при обоих лёгших провайдерах гейт висел
+# 6×10мин+1ч. Теперь: одна быстрая перепроверка (вдруг мигнуло), затем стоп до создания брака.
 _M3_GATE_RECHECK_SEC = 20
+
+
+def _m3_completion_gate_ok() -> bool:
+    """True when M3 can actually generate at least one token."""
+    try:
+        from .llm_providers import m3_completion_preflight_ok  # noqa: PLC0415
+    except ImportError:
+        from llm_providers import m3_completion_preflight_ok  # type: ignore[no-redef]  # noqa: PLC0415
+    try:
+        return bool(m3_completion_preflight_ok(retries=1))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _m3_or_openrouter_gate_ok() -> bool:
+    if _m3_llm_probe():
+        return True
+    if _m3_completion_gate_ok():
+        print("[m3-gate] M3 health моргнул, но completion-probe OK — продолжаем", flush=True)
+        return True
+    if _openrouter_probe() and _openrouter_completion_probe():
+        print("[m3-gate] M3 недоступен, OpenRouter жив → контент пойдёт через "
+              "DeepSeek V4 Flash (платно)", flush=True)
+        return True
+    return False
 
 
 def _m3_gate_wait(job: dict | None = None) -> bool:
     """Гейт создания РК. Провайдеров два (каскад _llm_pair_for): M3 и OpenRouter.
     - M3 жив → True.
-    - M3 лёг, OpenRouter жив → True (фолбэк переключит генерацию на OpenRouter сам).
-    - Оба легли → НЕ висим 6×10мин+1ч (правило Семёна 09.07): делаем ОДНУ короткую
-      перепроверку (_M3_GATE_RECHECK_SEC) на случай моргания и продолжаем создание —
-      контент возьмётся из СЛЕПКА (run_gen_campaign_content: assemble_campaign + слепковый
-      фолбэк дают titles/texts/sitelinks детерминированно, без LLM).
-    True = продолжаем создание (на ИИ или на слепке); False = ТОЛЬКО если джобу отменили."""
-    if _m3_llm_probe():
+    - M3 лёг, OpenRouter completion жив → True (фолбэк переключит генерацию на OpenRouter сам).
+    - Оба недоступны → НЕ висим 6×10мин+1ч; делаем ОДНУ короткую перепроверку
+      (_M3_GATE_RECHECK_SEC) на случай моргания и возвращаем False.
+    True = продолжаем создание на доступном ИИ; False = джобу отменили или оба LLM недоступны."""
+    if _m3_or_openrouter_gate_ok():
         return True
-    if _openrouter_probe():
-        print("[m3-gate] M3 недоступен, OpenRouter жив → контент пойдёт через "
-              "DeepSeek V4 Flash (платно)", flush=True)
-        return True
-    # Оба провайдера легли. Короткая перепроверка, затем — на слепок (не висим часами).
+    # Оба провайдера легли. Короткая перепроверка, затем стоп до создания Direct-объектов.
     print(f"[m3-gate] M3 и OpenRouter недоступны — короткая перепроверка "
-          f"{_M3_GATE_RECHECK_SEC} с перед фолбэком на слепок", flush=True)
+          f"{_M3_GATE_RECHECK_SEC} с перед остановкой создания", flush=True)
     if job is not None:
-        job["note"] = "ИИ недоступен (M3+OpenRouter) — перепроверка перед контентом из слепка"
+        job["note"] = "ИИ недоступен (M3+OpenRouter) — перепроверка перед остановкой создания"
     _t_end = time.time() + _M3_GATE_RECHECK_SEC
     while time.time() < _t_end:
         time.sleep(5)
@@ -183,12 +202,11 @@ def _m3_gate_wait(job: dict | None = None) -> bool:
             return False
     if job is not None:
         job.pop("note", None)
-    if _m3_llm_probe() or _openrouter_probe():
+    if _m3_or_openrouter_gate_ok():
         print("[m3-gate] ИИ снова доступен после перепроверки — продолжаем на ИИ", flush=True)
         return True
-    print("[m3-gate] ИИ по-прежнему недоступен — НЕ ждём, продолжаем создание на контенте "
-          "из слепка (детерминированный фолбэк run_gen_campaign_content)", flush=True)
-    return True
+    print("[m3-gate] ИИ по-прежнему недоступен — стоп до создания кампании", flush=True)
+    return False
 
 
 _COOKIES_STATUS_CACHE: dict = {"at": 0.0, "data": None}

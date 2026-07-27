@@ -129,7 +129,8 @@ def _repair_text_content_context(login: str, ctx: dict, action: dict) -> dict:
     )
     if not groups:
         raise RuntimeError(
-            f"{tp_code} content-repair: пак M3 пуст/недоступен (M3_alive={m3_alive})"
+            f"{tp_code} content-repair: keyword pack пуст/недоступен "
+            f"(local/M3 source alive={m3_alive})"
         )
     goal_id = _num(body.get("goal_id"), 0)
     try:
@@ -337,19 +338,24 @@ def _campaign_images_repair(login: str, campaign_id: int, ctx: dict) -> dict:
                                       "запусти аудит с --agent", "no_image_ads": len(ads_need_images)}
     site_type = (body.get("site_type") or acc.get("site_type") or "").strip()
     ct_hashes: dict[str, list[str]] = {}
-    # Раздельный учёт двух разных причин «объявление без картинок» (ревью 2026-07-13):
-    #  • content_gap_cts — резолвер вернул [] (нет НИ ОДНОГО пути к файлу: пусто в Manual/<ct>,
-    #    паке слепка, explicit; cross-слепок fallback выключен) → грузить нечего, это НЕ ошибка.
-    #  • upload_fail_cts — пути БЫЛИ, но upload/хеши не получились → реальная ошибка загрузки.
+    # Раздельный учёт ТРЁХ причин «объявление без картинок» (ревью 2026-07-13 + доп. 2026-07-22):
+    #  • content_gap_cts  — резолвер вернул [] БЕЗ исключения: структурно пустой пул
+    #    (нет файлов в Manual/<ct>, паке слепка, explicit) → IMAGE_NO_POOL, нечинимо.
+    #  • resolver_fail_cts — резолвер бросил exception (M3/сеть временно недоступны) →
+    #    ретраебл; не структурный gap, image_no_pool НЕ выставляется.
+    #  • upload_fail_cts  — пути БЫЛИ, но upload/хеши не получились → реальная ошибка загрузки.
     content_gap_cts: list[str] = []
     upload_fail_cts: list[str] = []
+    resolver_fail_cts: list[str] = []  # транзиентный сбой резолвера (M3/сеть)
     for ct in {row["ct"] for row in ads_need_images}:
         try:
             paths = _creative_images_for_ct(site_type, "tp1", ct, slepok) or []
         except Exception:  # noqa: BLE001
-            paths = []
+            # ТРАНЗИЕНТ: резолвер недоступен (M3/сеть) — НЕ структурный gap, ретраебл.
+            resolver_fail_cts.append(ct)
+            continue
         if not paths:
-            # КОНТЕНТ-ГЭП: нет путей к креативам — это не upload-fail, добивать нечем.
+            # СТРУКТУРНЫЙ ГЭП: пул пуст (нет файлов в Manual/<ct> или паке слепка).
             content_gap_cts.append(ct)
             continue
         # Репейр — сознательная повторная попытка: снимаем 15-мин blacklist ТОЧЕЧНО по путям
@@ -386,21 +392,25 @@ def _campaign_images_repair(login: str, campaign_id: int, ctx: dict) -> dict:
         if ct_hashes.get(ad["ct"])
     ]
     if not items:
-        # Ни один ct не дал хеши. Разделяем причину: upload-fail (были картинки) — hard-fail;
-        # чистый контент-гэп — НЕ ошибка (грузить нечего), ok=True со списком gap-ct, чтобы
-        # авто-добивка не считала это провалом и не гоняла reschedule вхолостую.
-        if upload_fail_cts:
+        # Ни один ct не дал хеши. Разделяем причину:
+        # – upload_fail_cts / resolver_fail_cts непусты → ретраебл, ok=False (повтор поможет);
+        # – чистый content_gap (только структурно пустые пулы) → ok=True + skipped_content_gap=True,
+        #   чтобы авто-добивка не считала это провалом. IMAGE_NO_POOL будет выставлен в
+        #   execute_images_repair только для этого случая (без resolver/upload ошибок).
+        if upload_fail_cts or resolver_fail_cts:
             return {"ok": False,
-                    "error": ("upload-fail: не удалось загрузить картинки для ct "
-                              f"{sorted(upload_fail_cts)} (пути есть, хеши не получены)"),
+                    "error": ("upload/resolver-fail: не удалось получить картинки для ct "
+                              f"upload={sorted(upload_fail_cts)} resolver={sorted(resolver_fail_cts)}"),
                     "no_image_ads": len(ads_need_images),
                     "content_gap_cts": sorted(content_gap_cts),
-                    "upload_fail_cts": sorted(upload_fail_cts)}
+                    "upload_fail_cts": sorted(upload_fail_cts),
+                    "resolver_fail_cts": sorted(resolver_fail_cts)}
         return {"ok": True, "ads_updated": 0, "skipped_content_gap": True,
                 "note": ("контент-гэп: нет креативов для ct "
                          f"{sorted(content_gap_cts)} (нужны картинки в Manual/<ct> или паке слепка)"),
                 "no_image_ads": len(ads_need_images),
-                "content_gap_cts": sorted(content_gap_cts)}
+                "content_gap_cts": sorted(content_gap_cts),
+                "resolver_fail_cts": []}
     try:
         updated = _grid_update_adaptive_ads(login, items, campaign_ids=[campaign_id])
     except Exception as e:  # noqa: BLE001
@@ -412,6 +422,7 @@ def _campaign_images_repair(login: str, campaign_id: int, ctx: dict) -> dict:
         "attempted": len(items), "no_image_ads": len(ads_need_images),
         "content_gap_cts": sorted(content_gap_cts),
         "upload_fail_cts": sorted(upload_fail_cts),
+        "resolver_fail_cts": sorted(resolver_fail_cts),
     }
     if upload_fail_cts:
         out["error"] = ("upload-fail: картинки есть, но загрузка не удалась для ct "

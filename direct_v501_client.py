@@ -20,6 +20,11 @@ from typing import Any
 import requests
 import urllib3
 
+try:
+    from .text_norm import _strip_href_fragment
+except ImportError:                     # плоский запуск (локальные тесты из direct/)
+    from text_norm import _strip_href_fragment
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── Direct API v501 (UNIFIED_CAMPAIGN / ЕПК) ────────────────────────────────
@@ -618,7 +623,8 @@ class DirectV501Client:
                     "Sitelinks": [
                         {
                             "Title": s.get("Title", s.get("title", "")),
-                            "Href": s.get("Href", s.get("href", "")),
+                            # #якорь — внутренняя метка этапа сборки, в живой Href не уходит.
+                            "Href": _strip_href_fragment(s.get("Href", s.get("href", ""))),
                             "Description": s.get("Description", s.get("description", "")),
                         }
                         for s in sitelinks

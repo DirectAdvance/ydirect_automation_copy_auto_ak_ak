@@ -63,8 +63,13 @@ def _finalize_rsya(login: str, campaign_id: int, *, name: str, goal_id: int,
     uc["isRecommendationsManagementEnabled"] = False     # инвариант #6
     uc["isPriceRecommendationsManagementEnabled"] = False
     uc["enableCompanyInfo"] = False                      # «Карты/Организация» НЕ включаем (шаблон шлёт True)
-    r = gc._post("UpdateCampaigns", gf._MUTATION,
-                 {"input": {"campaignUpdateItems": [{"unifiedCampaign": uc}]}, "login": login})
+    # UpdateCampaigns идемпотентна по id (перезапись полей существующей кампании) → транзиентный
+    # сбой ретраится. Живой инцидент 2026-07-19 (job b0d25ad114c5, кампания 712885317): Grid отдал
+    # «Внутренняя ошибка сервера … reqId», финализация не прошла → кампания осталась БЕЗ недельного
+    # бюджета и без ассетов, а позиция отрапортовала ok. ⛔ add*-мутации Grid тут не ретраятся.
+    r = gc.post_idempotent("UpdateCampaigns", gf._MUTATION,
+                           {"input": {"campaignUpdateItems": [{"unifiedCampaign": uc}]},
+                            "login": login})
     data = r.json()
     res = (data.get("data") or {}).get("updateCampaigns") or {}
     vr = res.get("validationResult") or {}

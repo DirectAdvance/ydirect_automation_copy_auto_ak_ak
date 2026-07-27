@@ -105,6 +105,36 @@ def _ct_for_name(name: str) -> str:
     raw = (name or "").strip()
     low = raw.lower()
     rev = _ag_part1_rev()
+
+    # DFM — рыночная/слепочная короткая форма Dongfeng. В кодере модели заведены как
+    # Dongfeng/DFSK; без алиаса DFM-группы падают в generic ct0001 и не находят pack-контент
+    # (живой кейс: scherbakova/Мультибренд/tp2 "dfm_shine_max", "dfm_ix5"...).
+    def _dfm_alias(s: str) -> str:
+        t = re.sub(r"[_-]+", " ", (s or "").strip().lower())
+        t = re.sub(r"\s+", " ", t).strip()
+        if not (t == "dfm" or t.startswith("dfm ")):
+            return s
+        tail = t[3:].strip()
+        if not tail:
+            return "dongfeng"
+        if tail in {"500", "ix5", "ix7"}:
+            return f"dongfeng dfsk {tail}"
+        return f"dongfeng {tail}"
+
+    aliased = _dfm_alias(low)
+    if aliased != low:
+        if aliased in rev:
+            return rev[aliased]
+        alias_base = re.split(r"\s+-\s+", aliased, maxsplit=1)[0].strip()
+        if alias_base in rev:
+            return rev[alias_base]
+        alias_norm = re.sub(r"[^a-zа-яё0-9]+", " ", alias_base).strip()
+        for nm, ct in sorted(rev.items(), key=lambda x: len(x[0]), reverse=True):
+            nn = re.sub(r"[^a-zа-яё0-9]+", " ", nm).strip()
+            if nn and (alias_norm == nn or alias_norm.startswith(nn + " ")
+                       or (" " + nn + " ") in (" " + alias_norm + " ")):
+                return ct
+
     if low in rev:
         return rev[low]
     base = re.split(r"\s+-\s+", low, maxsplit=1)[0].strip()
@@ -235,12 +265,14 @@ def _brand_ct_from_coder(item: dict) -> tuple[str, str]:
     if not isinstance(item, dict):
         return "", ""
     explicit_ct = str(item.get("coder_ct") or item.get("ct") or "").strip()
+    explicit_invalid_ct = ""
     if explicit_ct:
         name = _ag_part1_map().get(explicit_ct)
         if (explicit_ct == "ct0000" or not name or name.startswith("кластер запросов не определен")
                 or name == "полное отсутствие ключей" or not _coder_name_real_brand(name)):
-            return "", explicit_ct
-        return name, explicit_ct
+            explicit_invalid_ct = explicit_ct
+        else:
+            return name, explicit_ct
     for key in ("coder_ct", "ct"):
         ct = str(item.get(key) or "").strip()
         if ct and ct != "ct0000":
@@ -248,8 +280,10 @@ def _brand_ct_from_coder(item: dict) -> tuple[str, str]:
             if (name and not name.startswith("кластер запросов не определен")
                     and name != "полное отсутствие ключей" and _coder_name_real_brand(name)):
                 return name, ct
-    direct_brand = str(item.get("coder_brand") or item.get("brand") or "").strip()
-    if direct_brand:
+    for key in ("coder_brand", "brand", "position_name", "audience_cat", "t"):
+        direct_brand = str(item.get(key) or "").strip()
+        if not direct_brand:
+            continue
         direct_ct = _ct_for_name(direct_brand)
         if direct_ct and direct_ct != "ct0000":
             _nm = _ag_part1_map().get(direct_ct, direct_brand)
@@ -258,7 +292,7 @@ def _brand_ct_from_coder(item: dict) -> tuple[str, str]:
         code = str(item.get(key) or "")
         all_ct = _CT4_RE.findall(code)
         if len(set(all_ct)) > 1:
-            return "", explicit_ct or ""
+            return "", explicit_ct or explicit_invalid_ct or ""
         for mt in _CT4_RE.finditer(code):
             ct = mt.group(0)
             if ct == "ct0000":
@@ -267,7 +301,7 @@ def _brand_ct_from_coder(item: dict) -> tuple[str, str]:
             if (name and not name.startswith("кластер запросов не определен")
                     and name != "полное отсутствие ключей" and _coder_name_real_brand(name)):
                 return name, ct
-    return "", ""
+    return "", explicit_invalid_ct
 
 
 def _brand_from_coder(item: dict) -> str:
@@ -280,4 +314,3 @@ def _brand_from_coder(item: dict) -> str:
     if direct:
         return direct
     return _brand_ct_from_coder(item)[0]
-

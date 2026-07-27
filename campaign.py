@@ -171,12 +171,38 @@ def _glavpotok_cfg() -> dict:
         }
 
 
+def _cookie_retry_delay_seconds() -> float:
+    try:
+        return max(0.0, float(os.environ.get("DIRECT_COOKIE_RETRY_DELAY_SECONDS", "30")))
+    except (TypeError, ValueError):
+        return 30.0
+
+
+def _cookie_retryable_auth_text(text: str) -> bool:
+    """True only for stale/login-page signals, not for per-client rights errors.
+
+    ``No rights``/``Нет прав`` means the agency session is alive but does not manage the
+    requested ``ulogin``; waiting/re-fetching the same agency cookie will not fix that.
+    """
+    s = (text or "").lower()
+    return (
+        "need_reset" in s
+        or "passport.yandex" in s
+        or "истек срок" in s
+        or "истёк срок" in s
+        or "<title>log in</title>" in s
+        or ("<html" in s and "login" in s and "direct.yandex" not in s)
+    )
+
+
 def fetch_cookie_glavpotok(login: str) -> str | None:
     """Свежая строка кук агентского аккаунта из главпотока — ОСНОВНОЙ источник.
 
     GET <base_url>/<login> с Authorization: Bearer <token> → cookie_string.
     None, если конфиг недоступен / у главпотока нет куки (404) / пустой ответ.
     (cookies.json быстро протухает — потому по умолчанию берём отсюда.)
+    Транспортные сбои/5xx главпотока ретраятся один раз после 30с (env:
+    DIRECT_COOKIE_RETRY_DELAY_SECONDS). 404/пустой ответ не ретраим.
     """
     try:
         cfg = _glavpotok_cfg()
@@ -184,15 +210,27 @@ def fetch_cookie_glavpotok(login: str) -> str | None:
         return None
     if not cfg.get("token"):
         return None
-    r = requests.get(f"{cfg['base_url']}/{login}",
-                     headers={"Authorization": f"Bearer {cfg['token']}"}, timeout=20)
-    if r.status_code != 200:
+    for attempt in range(2):
+        try:
+            r = requests.get(f"{cfg['base_url']}/{login}",
+                             headers={"Authorization": f"Bearer {cfg['token']}"},
+                             timeout=20)
+        except requests.RequestException:
+            if attempt == 0:
+                time.sleep(_cookie_retry_delay_seconds())
+                continue
+            return None
+        if r.status_code == 200:
+            try:
+                cs = (r.json().get("cookie_string") or "").strip()
+            except Exception:  # noqa: BLE001
+                return None
+            return cs or None
+        if r.status_code >= 500 and attempt == 0:
+            time.sleep(_cookie_retry_delay_seconds())
+            continue
         return None
-    try:
-        cs = (r.json().get("cookie_string") or "").strip()
-    except Exception:  # noqa: BLE001
-        return None
-    return cs or None
+    return None
 
 
 def load_cookie_local(account: str) -> str:
@@ -308,26 +346,34 @@ def _pick_working_cookie_local(ulogin: str, accounts: tuple[str, ...] = DEFAULT_
         # Главпоток is the source of truth. Local cookies are static fallbacks and
         # may be expired even while the live agency session is healthy.
         for getter in (fetch_cookie_glavpotok, load_cookie_local):
-            try:
-                cookie = getter(acc)
-            except Exception:  # noqa: BLE001 — нет такого аккаунта/конфига → следующий источник
-                continue
-            if not cookie:
-                continue
-            if getter is fetch_cookie_glavpotok:
-                fresh_seen.add(acc)
-            try:
-                UacClient(cookie, ulogin).link_info("https://ya.ru")
-                _ACCOUNT_COOKIE_CACHE[ulogin] = (cookie, time.time())
-                return cookie
-            except Exception as e:  # noqa: BLE001 — кука не подошла → следующий источник/аккаунт
-                last_err = e
-                # Сессия Яндекса протухла (главпоток отдал мёртвую куку): need_reset / «Истёк срок».
-                if getter is fetch_cookie_glavpotok and any(
-                    s in str(e) for s in ("need_reset", "Истек срок", "Истёк срок", "session")
-                ):
-                    if acc not in expired_accs:
+            is_fresh = getter is fetch_cookie_glavpotok
+            max_probe_attempts = 2 if is_fresh else 1
+            for probe_attempt in range(max_probe_attempts):
+                try:
+                    cookie = getter(acc)
+                except Exception:  # noqa: BLE001 — нет такого аккаунта/конфига → следующий источник
+                    break
+                if not cookie:
+                    break
+                if is_fresh:
+                    fresh_seen.add(acc)
+                try:
+                    UacClient(cookie, ulogin).link_info("https://ya.ru")
+                    _ACCOUNT_COOKIE_CACHE[ulogin] = (cookie, time.time())
+                    return cookie
+                except Exception as e:  # noqa: BLE001 — кука не подошла → следующий источник/аккаунт
+                    last_err = e
+                    # Retry только когда свежая кука с главпотока выглядит протухшей/login-page.
+                    # ``No rights``/``Нет прав`` НЕ ретраим: это доступ агентства к ulogin.
+                    retryable_auth = is_fresh and _cookie_retryable_auth_text(
+                        str(getattr(e, "body", "") or e)
+                    )
+                    if retryable_auth and probe_attempt == 0:
+                        time.sleep(_cookie_retry_delay_seconds())
+                        continue
+                    if retryable_auth and acc not in expired_accs:
                         expired_accs.append(acc)
+                    break
     if expired_accs and not fresh_seen:
         # Чёткое actionable-сообщение → видно в UI/джобе: куку надо ОБНОВИТЬ на главпотоке (перелогин).
         raise RuntimeError(

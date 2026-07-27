@@ -96,12 +96,29 @@ def _ct_segment_map() -> dict:
     def _is_brand(tok: str) -> bool:
         return lead.get(tok, 0) >= 2 or (lead.get(tok, 0) >= 1 and tok in single)
 
+    def _is_standalone_auto_brand(ct: str, name: str) -> bool:
+        """Singleton auto brands without model ct children are still Марки.
+
+        The prefix heuristic above catches brands with child models (Haval → Haval Jolion), but
+        legacy/rare brands such as Lifan/Volvo/Lexus may exist only as one ag_part1 row. Keep
+        leadgen ct08xx and topic buckets (Авито/Дром/Автокредит, slash names) as Общее.
+        """
+        try:
+            n = int(str(ct or "")[2:])
+        except Exception:  # noqa: BLE001
+            return False
+        parts = str(name or "").strip().split()
+        if not (19 <= n <= 318) or len(parts) != 1:
+            return False
+        raw = parts[0]
+        return ("/" not in raw) and bool(re.search(r"[A-Za-z]", raw))
+
     out: dict = {}
     for ct, ln in low.items():
         parts = ln.split()
         if len(parts) >= 2 and _is_brand(parts[0]):
             out[ct] = "Модели"
-        elif ln and _is_brand(ln):
+        elif ln and (_is_brand(ln) or _is_standalone_auto_brand(ct, ln)):
             out[ct] = "Марки"
         else:
             out[ct] = "Общее"
@@ -382,6 +399,119 @@ def _pack_group_fact(slepok: str, site_type: str, tp: str, ct: str, gk: str) -> 
     return {"real": real, "auto": auto, "sig": sig}
 
 
+def _tp67_group_fact_with_real_library(
+    slepok: str,
+    site_type: str,
+    tp: str,
+    ct: str,
+    gk: str,
+    position_name: str,
+    sq: str,
+    base_fact: dict,
+    real_items: list | dict | None = None,
+    cctx=None,
+) -> dict:
+    """tp6/tp7 fact for UI names/badges, including the same real-library fallback as creation.
+
+    Plain pack facts see only M3 files. UAC positions can legitimately get keywords from
+    ``tp67_real_keywords.json`` through ``create_set_context._tp67_keywords_for``; the detail
+    card already uses that path. Without it the tree can display an old ``Автотаргетинг`` name
+    while the campaign will be created as keyword-driven.
+    """
+    if (base_fact.get("real") or 0) > 0:
+        return base_fact
+    try:
+        if cctx is None:
+            try:
+                from . import automation_runtime as ar  # lazy: gets the configured DI module in web services
+                cctx = ar._create_set_context_module()
+            except Exception:  # noqa: BLE001
+                from . import create_set_context as cctx
+        items = real_items if real_items is not None else cctx._tp67_real_keyword_items()
+
+        def _real_library(tp_key: str) -> list:
+            skey = cctx._SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
+            pos_key = cctx._tp67_kw_position_key(position_name)
+            ct_key = (ct or "").strip().lower()
+            sq_key = (sq or "").strip().lower()
+            best = None
+            best_score = None
+            if isinstance(items, dict):
+                candidates = []
+                if pos_key:
+                    candidates.extend(items.get("by_pos", {}).get((tp_key, skey, pos_key), []))
+                if ct_key:
+                    candidates.extend(items.get("by_ct", {}).get((tp_key, skey, ct_key), []))
+            else:
+                candidates = items or []
+            seen_ids: set[int] = set()
+            for it in candidates:
+                obj_id = id(it)
+                if obj_id in seen_ids:
+                    continue
+                seen_ids.add(obj_id)
+                if it.get("tp") != tp_key or not (it.get("keywords") or []):
+                    continue
+                if it.get("slepok") != skey:
+                    continue
+                site_score = 1 if (not site_type or it.get("site_type") == site_type) else 0
+                sq_score = 1 if (not sq_key or it.get("sq") == sq_key) else 0
+                ct_score = 1 if (ct_key and it.get("ct") == ct_key) else 0
+                p_score = 1 if (pos_key and it.get("position") == pos_key) else 0
+                if not (ct_score or p_score):
+                    continue
+                score = (1, site_score, sq_score, p_score, ct_score, len(it.get("keywords") or []))
+                if best_score is None or score > best_score:
+                    best = it
+                    best_score = score
+            if not best:
+                return []
+            return cctx._kw_clean(
+                cctx._drop_used_car(
+                    cctx._drop_foreign_city_keywords(best.get("keywords") or [], ""),
+                    site_type,
+                ),
+                200,
+            )
+
+        pos = _real_library(tp)
+        if not pos and tp == "tp7":
+            pos = _real_library("tp6")
+    except Exception:  # noqa: BLE001 — UI fact is best-effort; keep pack-only fallback
+        return base_fact
+    real = 0
+    auto = bool(base_fact.get("auto"))
+    reals: list = []
+    for line in pos or []:
+        s = (line or "").strip()
+        if not s:
+            continue
+        if _PACK_AUTO_RE.search(s):
+            auto = True
+        else:
+            real += 1
+            reals.append(s)
+    if real <= 0 and auto == bool(base_fact.get("auto")):
+        return base_fact
+    sig = f"{real}:" + (f"{reals[0]}…{reals[-1]}" if reals else "")
+    return {"real": real, "auto": auto, "sig": sig}
+
+
+def _slepki_pack_signature(struct: dict) -> str:
+    """Cheap signature for cached pack-derived facts in `/api/ui_structure`.
+
+    Per-file stat of ~15k keyword candidates is too expensive on LXC/M3 mirrors. Pack edits made
+    through the slepki worker touch this marker, so the web processes can invalidate cached
+    `pack_facts`/`kw_totals` with one local stat.
+    """
+    marker = os.path.join(os.path.dirname(__file__), "slepki_pack_cache.marker")
+    try:
+        st = os.stat(marker)
+        return f"{st.st_mtime_ns}:{st.st_size}"
+    except OSError:
+        return "missing"
+
+
 def _slepki_pack_facts(struct: dict) -> dict:
     """Пер-групповой факт ключей для бейджей таргетинга tp1/tp2/tp4/tp5 → предрасчёт на СЕРВЕРЕ.
 
@@ -404,6 +534,8 @@ def _slepki_pack_facts(struct: dict) -> dict:
     facts: dict = {}
     totals: dict = {}
     seen_sigs: dict = {}
+    tp67_real_items: dict | None = None
+    tp67_context = None
     for d in (struct.get("directologists") or []):
         slepok = d.get("key") or ""
         if not slepok:
@@ -424,11 +556,86 @@ def _slepki_pack_facts(struct: dict) -> dict:
                             if not ct:
                                 continue
                             gk = it.get("gk") or ""
+                            merged_gks = [str(x).strip() for x in (it.get("merged_gks") or []) if str(x).strip()]
+                            all_gks = [gk] + [x for x in merged_gks if x and x != gk]
                             key = f"{slepok}|{site}|{code}|{ct}|{gk}"
                             if key in facts:
                                 continue
                             fact = _pack_group_fact(slepok, site, code, ct, gk)
-                            facts[key] = {"real": fact["real"], "auto": fact["auto"]}
+                            if code in ("tp6", "tp7"):
+                                if tp67_context is None:
+                                    try:
+                                        from . import automation_runtime as ar
+                                        tp67_context = ar._create_set_context_module()
+                                    except Exception:  # noqa: BLE001
+                                        from . import create_set_context as tp67_context
+                                if tp67_real_items is None:
+                                    try:
+                                        from . import automation_runtime as ar
+                                        raw_items = ar._json("tp67_real_keywords.json").get("items") or []
+                                    except Exception:  # noqa: BLE001
+                                        raw_items = []
+                                    by_pos: dict = {}
+                                    by_ct: dict = {}
+                                    for ri in raw_items:
+                                        if not isinstance(ri, dict) or not (ri.get("keywords") or []):
+                                            continue
+                                        rk = str(ri.get("slepok") or "")
+                                        rtp = str(ri.get("tp") or "")
+                                        rpos = str(ri.get("position") or "")
+                                        rct = str(ri.get("ct") or "").lower()
+                                        if rpos:
+                                            by_pos.setdefault((rtp, rk, rpos), []).append(ri)
+                                        if rct:
+                                            by_ct.setdefault((rtp, rk, rct), []).append(ri)
+                                    tp67_real_items = {"by_pos": by_pos, "by_ct": by_ct}
+                                position_name = ""
+                                camp_names = it.get("camp_names") or []
+                                if camp_names:
+                                    position_name = str(camp_names[0] or "").strip()
+                                position_name = position_name or str(it.get("t") or g.get("name") or "").strip()
+                                if merged_gks:
+                                    real = 0
+                                    auto = False
+                                    sig_parts: list[str] = []
+                                    seen_fact_sigs: set[str] = set()
+                                    for one_gk in all_gks:
+                                        one = _pack_group_fact(slepok, site, code, ct, one_gk)
+                                        one = _tp67_group_fact_with_real_library(
+                                            slepok, site, code, ct, one_gk, position_name, sp.get("sq") or "", one,
+                                            real_items=tp67_real_items, cctx=tp67_context,
+                                        )
+                                        if one["sig"] not in seen_fact_sigs:
+                                            seen_fact_sigs.add(one["sig"])
+                                            real += int(one.get("real") or 0)
+                                            sig_parts.append(one["sig"])
+                                        auto = auto or bool(one.get("auto"))
+                                    fact = {"real": real, "auto": auto, "sig": "|".join(sig_parts)}
+                                else:
+                                    fact = _tp67_group_fact_with_real_library(
+                                        slepok, site, code, ct, gk, position_name, sp.get("sq") or "", fact,
+                                        real_items=tp67_real_items, cctx=tp67_context,
+                                    )
+                                try:
+                                    pos_key = f"{sp.get('sq') or 'site'}|{g.get('name') or ''}|{it.get('t') or ''}"
+                                    exp = tp67_context.tp67_struct_expectations(
+                                        slepok, site, code, ct, "", position_name, sp.get("sq") or "",
+                                        pos_key=pos_key,
+                                    )
+                                    modes = exp.get("modes") or []
+                                    kws = exp.get("keywords") or []
+                                    fact["real"] = len(kws)
+                                    fact["sig"] = f"{len(kws)}:" + (f"{kws[0]}…{kws[-1]}" if kws else "")
+                                    fact["audiences"] = len(exp.get("audiences") or [])
+                                    fact["target_label"] = tp67_context.tp67_targeting_label_from_modes(modes, code)
+                                except Exception:  # noqa: BLE001 — UI label is best-effort; keep keyword fact
+                                    pass
+                            out_fact = {"real": fact["real"], "auto": fact["auto"]}
+                            if code in ("tp6", "tp7"):
+                                out_fact["audiences"] = int(fact.get("audiences") or 0)
+                                if fact.get("target_label"):
+                                    out_fact["target_label"] = str(fact.get("target_label") or "")
+                            facts[key] = out_fact
                             # счётчик обзора: суммируем только НОВУЮ подпись пака внутри (tp,ct)
                             seen = seen_sigs.setdefault(f"{slepok}|{site}|{code}|{ct}", set())
                             if fact["sig"] not in seen:

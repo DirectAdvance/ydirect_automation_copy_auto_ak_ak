@@ -4,7 +4,6 @@
  "abSegmentStatisticRetargetingConditionId": null,
  "name": null,
  "enableCpcHold": false,
- "contextLimit": 100,
  "dynamicPlacesAdvTextsOnly": false,
  "dayBudget": "0",
  "attributionModel": "AUTOMATIC",

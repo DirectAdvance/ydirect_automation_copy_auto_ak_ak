@@ -68,6 +68,20 @@ def _brand_level_url(u: str) -> str:
     return origin + brand_path
 
 
+def _href_host(href: str = "") -> str:
+    """Hostname аккаунта из href, без схемы/www/пути/query. Пусто → ''."""
+    h = (href or "").lower().strip()
+    if not h:
+        return ""
+    for pfx in ("https://www.", "http://www.", "https://", "http://"):
+        if h.startswith(pfx):
+            h = h[len(pfx):]
+            break
+    if h.startswith("www."):
+        h = h[4:]
+    return h.split("/")[0].split("?")[0]
+
+
 def _is_site_domain_name(f_name: str, href: str = "") -> bool:
     """True если f_name совпадает с hostname аккаунта (href) — пропустить в имени кампании.
     Защита от вставки домена (напр. «autos-kemerovo.site») вместо имени фида контента."""
@@ -76,13 +90,45 @@ def _is_site_domain_name(f_name: str, href: str = "") -> bool:
     nm = (f_name or "").strip().lower()
     if nm.startswith("www."):
         nm = nm[4:]
-    h = href.lower()
-    for pfx in ("https://www.", "http://www.", "https://", "http://"):
-        if h.startswith(pfx):
-            h = h[len(pfx):]
-            break
-    host = h.split("/")[0].split("?")[0]
+    host = _href_host(href)
     return bool(host and nm == host)
+
+
+def _strip_site_domain_label(label: str, href: str = "") -> str:
+    """Срезать домен аккаунта из МЕТКИ, которая реально уходит в имя кампании.
+
+    Гард `_is_site_domain_name` сверял КОРОТКОЕ имя фида и только на ТОЧНОЕ равенство хосту,
+    а в имя подставляется другое: URL фида без схемы («carsklad-126.site/yandex-catalog.xml»)
+    или имя из кабинета с доменом-префиксом («carsklad-126.site — yandex-catalog-…»). Домен
+    проходил в имя кампании. Режем ПРЕФИКС хоста + ведущие разделители.
+
+    Пусто на выходе = метка была только доменом → суффикс к имени не добавлять.
+    Различимость fan-out сохраняется: путь/имя фида после домена у фидов разные.
+    """
+    s = (label or "").strip()
+    if not s:
+        return ""
+    host = _href_host(href)
+    if not host:
+        return s
+    low = s.lower()
+    stripped = False
+    for cand in ("www." + host, host):
+        if low.startswith(cand):
+            s = s[len(cand):]
+            stripped = True
+            break
+    if not stripped:
+        return s          # хоста в метке нет → метка легитимна целиком, разделитель НЕ трогаем
+    s = s.strip()
+    # Режем РОВНО ОДИН разделитель между доменом и меткой. lstrip по НАБОРУ символов
+    # («—–-/|:· ») съедал ведущий дефис легитимной метки («-catalog.xml» → «catalog.xml»),
+    # поэтому дефис принимается только как «дефис + пробел», не как первый символ метки.
+    for sep in ("— ", "– ", "- ", "—", "–", "/", "|", ":", "·"):
+        if s.startswith(sep):
+            s = s[len(sep):]
+            break
+    return s.strip()
 
 
 def _model_page_href(base_href: str, site_type: str, model_name: str) -> str:

@@ -64,4 +64,5 @@ def count_skipped_existing(results: list[dict[str, Any]]) -> int:
 
 def count_failed(results: list[dict[str, Any]]) -> int:
     return sum(1 for row in results or []
-               if (not row.get("ok")) and not units_in_result(row) and not row.get("defer"))
+               if (not row.get("ok")) and not units_in_result(row) and not row.get("defer")
+               and not row.get("gate_excluded"))

@@ -3,10 +3,96 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import urlsplit, urlunsplit
 
 from . import campaign as cmc
 from . import create_set_context as _csctx  # _parse_targeting_modes (чистый хелпер, без configure)
 from . import kontent_pack as kp
+from .link_check import resolve_or_fallback_url as _resolve_url
+from .model_urls import _brand_level_url, _model_page_href, _strip_site_domain_label, _strip_url_query
+
+
+def _site_root_href(href: str) -> str:
+    """Root site URL for feed/model links even when campaign landing is /quiz."""
+    raw = str(href or "").strip()
+    try:
+        p = urlsplit(raw)
+        if p.scheme and p.netloc:
+            return urlunsplit((p.scheme, p.netloc, "", "", ""))
+    except Exception:  # noqa: BLE001
+        pass
+    return raw.rstrip("/")
+
+
+def _pavlov_multibrand_titles(brand: str = "") -> list[str]:
+    """Приоритетный fallback для Павлова: финансовая подпись вместо generic credit-pool."""
+    b = (brand or "").strip().split()[0] if (brand or "").strip() else ""
+    if b:
+        return [
+            f"{b} без наценки. Выгода до 900 000 ₽ в кредит",
+            f"{b} в кредит. КАСКО на год и взнос 0 ₽",
+            f"Купить {b}. Одобрение 98% и 3 платежа за наш счёт",
+            f"{b} в наличии. Убрали наценку на новые авто",
+            f"{b} трейд-ин. Выгода до 900 000 ₽ в кредит",
+        ]
+    return [
+        "Новые авто без наценки. Выгода до 900 000 ₽",
+        "Кредит на новые авто. КАСКО на год и взнос 0 ₽",
+        "Одобрение 98%. Выгода до 900 000 ₽ в кредит",
+        "3 платежа за наш счёт. Кредит на новые авто",
+        "Выбор марок. Убрали наценку на новые авто",
+    ]
+
+
+def _pavlov_multibrand_texts(brand: str = "") -> list[str]:
+    b = (brand or "").strip().split()[0] if (brand or "").strip() else "новое авто"
+    return [
+        f"Купить {b} в кредит. Убрали наценку. Выгода до 900 000 ₽. Оставьте заявку!",
+        f"{b} в наличии. КАСКО на год и взнос 0 ₽. Одобрение 98%. Рассчитайте платёж!",
+        "Выберите марку в наличии. Трейд-ин выше рынка и 3 платежа за наш счёт.",
+    ]
+
+
+def _pavlov_multibrand_sitelinks() -> list[dict]:
+    return [
+        {"title": "Убрали наценку", "description": "Зафиксируйте выгоду по кредитной программе"},
+        {"title": "Одобрение до 98%", "description": "Проверим заявку и подберём банк под покупку"},
+        {"title": "КАСКО на год", "description": "КАСКО на 1 год при покупке нового авто в кредит"},
+        {"title": "3 платежа за наш счёт", "description": "Компенсируем 3 платежа по кредитной программе"},
+    ]
+
+
+def _strip_dangling_uac_tail(text: str) -> str:
+    """Убрать обрезанные хвосты UAC-текстов: «от 9», «за 15», «до 900» без единицы/объекта."""
+    s = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not s:
+        return ""
+    s = re.sub(r"(?i)(?:\s|^)(?:от|до|за|с)\s+\d[\d\s]*(?:[.,;:!—-]\s*)?$", "", s).strip()
+    return s.rstrip(" .,!;:—-")
+
+
+def _strip_online_word(text: str) -> str:
+    s = re.sub(r"(?i)(?:\s+|^)онлайн(?=\s|[.,!?;:]|$)", " ", str(text or ""))
+    s = re.sub(r"\s+([.,!?;:])", r"\1", s)
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    return s.rstrip(" .,!;:—-")
+
+
+def _limit_online_density(items: list[str], max_with_online: int) -> list[str]:
+    """Reduce repetitive 'онлайн' in one UAC campaign without changing meaning."""
+    out: list[str] = []
+    used = 0
+    for raw in items or []:
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        if re.search(r"(?i)\bонлайн\b", s):
+            if used >= max_with_online:
+                s = _strip_online_word(s)
+            else:
+                used += 1
+        out.append(s)
+    return out
 
 
 def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_id, goal_id,
@@ -27,6 +113,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     _TP67_OPTIMAL_CATEGORIES = deps['_TP67_OPTIMAL_CATEGORIES']
     _TP67_RELEVANCE_CATEGORIES = deps['_TP67_RELEVANCE_CATEGORIES']
     _account_model_feeds = deps['_account_model_feeds']
+    _account_offer_urls = deps['_account_offer_urls']
     _add_job_err = deps['_add_job_err']
     _audience_objects = deps['_audience_objects']
     _bad_ad_sitelink = deps['_bad_ad_sitelink']
@@ -45,9 +132,11 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     _dedup_prefix_absorb = deps['_dedup_prefix_absorb']
     _discount_pcts = deps['_discount_pcts']
     _diverse_text_offers = deps['_diverse_text_offers']
+    _drop_new_car = deps['_drop_new_car']
     _drop_used_car = deps['_drop_used_car']
     _enabled_minus_words = deps['_enabled_minus_words']
     _fallback_master_titles = deps['_fallback_master_titles']
+    _first_url_feed = deps['_first_url_feed']
     _fill_title = deps['_fill_title']
     _fill_variants = deps['_fill_variants']
     _has_number = deps['_has_number']
@@ -55,10 +144,10 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     _is_bad_start = deps['_is_bad_start']
     _is_bu_site = deps['_is_bu_site']
     _is_common_ct = deps['_is_common_ct']
-    _is_site_domain_name = deps['_is_site_domain_name']
     _job_db_progress = deps['_job_db_progress']
     _lines = deps['_lines']
     _match_collection = deps['_match_collection']
+    _feed_url_for_model = deps['_feed_url_for_model']
     _num = deps['_num']
     _own_brand_tokens = deps['_own_brand_tokens']
     _replace_emdash = deps['_replace_emdash']
@@ -73,8 +162,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     _slepok_campaign_content = deps['_slepok_campaign_content']
     _strip_credit_rate = deps['_strip_credit_rate']
     _title2_blocklist = deps['_title2_blocklist']
-    _tp67_keywords_for = deps['_tp67_keywords_for']
-    _tp67_targeting_mode = deps['_tp67_targeting_mode']
+    _tp7_listing_plus_filter = deps['_tp7_listing_plus_filter']
     _tp7_product_feed_filters = deps['_tp7_product_feed_filters']
     _tp7_listings_minus_filters = deps['_tp7_listings_minus_filters']
     _trim_to_word = deps['_trim_to_word']
@@ -86,14 +174,11 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     _is_non_auto = not _slepok_is_auto(agent or "")
     is_manual = str(it.get("variant", "")).endswith("manual")
     is_product = it.get("type") == "product"
-    _raw_mode = str(it.get("targeting_mode") or (
-        "keywords" if is_manual else _tp67_targeting_mode({
-            "name": it.get("position_name") or name,
-            "group": it.get("audience_cat") or "",
-            "label": it.get("position_name") or "",
-            "code": it.get("structure_code") or "",
-        })
-    )).strip()
+    # Режим позиции — ТОЛЬКО явный из структуры/плана. Регулярка по ИМЕНИ (`_tp67_targeting_mode`)
+    # источником режима больше НЕ является (Д7, Семён 2026-07-19): «МК - Общая - Автотаргетинг»
+    # с 416 ключами и 9 аудиториями в структуре уходила в autotarget и теряла и то, и другое.
+    # Окончательный набор режимов считается ниже, ПО СОДЕРЖИМОМУ структуры (после it_tp/c_ct).
+    _raw_mode = str(it.get("targeting_mode") or ("keywords" if is_manual else "")).strip()
     # ГИБРИД: одна tp6/tp7-позиция может нести keywords И audience одновременно (реальные слепки:
     # tp7 RA = ключи + до 8 аудиторий, tp6 RA = ключи + 1 аудитория). Парсим в НАБОР режимов.
     _modes = _csctx._parse_targeting_modes(_raw_mode)
@@ -118,15 +203,48 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     # ПРАВИЛО ПОЛЬЗОВАТЕЛЯ: контент по 4-значному ct кодера. ct=марка/модель → её
     # картинка+заголовки; ct0000/нет марки → общий текст (tp6/tp7 сейчас всегда ct0000).
     c_brand, c_ct = _brand_ct_from_coder(it)
+    # ── Режим таргетинга tp6/tp7 ПО СОДЕРЖИМОМУ СТРУКТУРЫ (Д7, Семён 2026-07-19) ──────────────
+    # «если в тп6-тп7 нет ключей и аудиторий, то это по умолчанию ---autotargeting, и не важно
+    # какое будет название». Эталон берём ПРЯМО из структуры/пака (tp67_struct_expectations),
+    # а не из того, что решил план: обрыв на этапе плана иначе остаётся невидимым.
+    # Явный режим (_raw_mode) только ДОБАВЛЯЕТ режим — тогда keyword_source-гейт ниже
+    # продолжает ловить «объявлено КС, а корпус пуст», а не молчит.
+    # pos_key — СТАБИЛЬНЫЙ ключ позиции из плана. Матч по display-имени здесь промахивается на
+    # позициях с плейсхолдером «ГОРОД»: план подставляет город в имя, а структура читается сырой
+    # («ТК - Общая - Автотаргетинг - ГОРОД») → 0 ключей и молчаливый autotarget.
+    _struct_exp = _csctx.tp67_struct_expectations(
+        agent, eff_site, it_tp, c_ct or str(it.get("ct") or "ct0000"), ctx.get("city") or "",
+        it.get("position_name") or it.get("audience_cat") or name, it_sq,
+        pos_key=str(it.get("pos_key") or ""))
+    if not _struct_exp.get("matched"):
+        it_targeting_warnings_early = (
+            f"tp6/tp7 позиция не сопоставлена со структурой: slepok={agent}, site_type={eff_site},"
+            f" tp={it_tp}, pos_key={it.get('pos_key')!r}, "
+            f"position={(it.get('position_name') or name)!r} — ключи/аудитории НЕ подтянуты")
+        _add_job_err(_job, it_targeting_warnings_early)
+    _modes = _csctx._tp67_modes_from_content(
+        bool(_struct_exp["keywords"]), bool(_struct_exp["audiences"]), _raw_mode)
+    _want_keywords = "keywords" in _modes
+    _want_audience = "audience" in _modes
+    targeting_mode = "keywords" if _want_keywords else ("audience" if _want_audience else "autotarget")
+    # Аудитории САМОЙ позиции структуры важнее merged-фолбэка `_slepok_audiences_for` (он
+    # объединяет ВСЕ категории слепка). Явный interest_ids из плана по-прежнему главнее.
+    if not (it.get("interest_ids") or []) and _struct_exp["audiences"]:
+        native_ints = [str(x) for x in _struct_exp["audiences"]]
+    # Яндекс лимит «Интересы и поисковые запросы» в МК/UAC — 30 интересов.
+    # Режем здесь (ближе к источнику), uac_client.py добавляет safety-net.
+    if len(native_ints) > 30:
+        _warn = (f"tp6/tp7 интересов {len(native_ints)} > 30 (лимит МК/UAC): "
+                 f"slepok={agent}, site_type={eff_site}, tp={it_tp} → обрезано до 30")
+        native_ints = native_ints[:30]
+        _add_job_err(_job, _warn)
     it_keywords: list[str] = []
     it_minus_keywords: list[str] = []
     it_targeting_warnings: list[str] = []
     if _want_keywords:
-        it_keywords, it_minus_keywords = _tp67_keywords_for(
-            agent, eff_site, it_tp, c_ct or str(it.get("ct") or "ct0000"), ctx.get("city") or "",
-            it.get("position_name") or it.get("audience_cat") or name,
-            it_sq,
-        )
+        # Тот же group-aware поиск, что дал эталон структуры (`_struct_exp`) — иначе создание
+        # читало бы ЛЕГАСИ-файл пака без gk-слага и получало 0 ключей при непустой структуре.
+        it_keywords, it_minus_keywords = _struct_exp["keywords"], _struct_exp["minus"]
         if not it_keywords:
             # Ключей нет НИ в паке слепка, НИ в его собственной библиотеке реальных UAC-payload
             # (чужой слепок источником быть не может — жёсткий фильтр create_set_context._score).
@@ -135,9 +253,14 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
                     f"position={(it.get('position_name') or it.get('audience_cat') or name)!r} "
                     f"(нет в паке и в СВОЕЙ библиотеке; заимствование у другого слепка запрещено)")
             if _keyword_source:
-                # keyword_source-ГЕЙТ: позиция ЯВНО объявлена keyword-driven (keyword_source задан),
-                # но корпус ключей пуст → НЕ уходить молча в autotarget (это баг). Блокируем позицию
-                # с явной ошибкой в DoD/логе; кампанию НЕ создаём.
+                # keyword_source-ГЕЙТ: позиция ЯВНО объявлена keyword-driven в структуре, но корпус
+                # ключей пуст → НЕ уходить молча в autotarget (это баг). Блокируем позицию с явной
+                # ошибкой в DoD/логе; кампанию НЕ создаём.
+                # ⚠️ Ветки `or _struct_exp["keywords"]` здесь НЕТ намеренно: `it_keywords` — это и
+                # есть `_struct_exp["keywords"]`, поэтому внутри `if not it_keywords` она всегда
+                # ложна и создавала лишь ВИД работающей проверки. Реальный рубеж против потери
+                # «структура обещала ключи, а в кабинет не доехали» — сверка UAC_STRUCT_* по
+                # эталону `_res["struct"]`, а не этот гейт.
                 _blk = (_err + f" → BLOCKED (keyword_source={_keyword_source!r}: молчаливая "
                         "подмена на autotarget запрещена)")
                 _add_job_err(_job, _blk)
@@ -158,60 +281,94 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     it_audiences = _audience_objects(native_ints) if _want_audience else []
     if _want_audience and not it_audiences:
         _err = (f"tp6/tp7 аудитория без аудиторий слепка: slepok={agent}, "
-                f"site_type={eff_site}, tp={it_tp}, category={it.get('audience_cat') or it.get('position_name') or ''}")
+                f"site_type={eff_site}, tp={it_tp}, category={it.get('audience_cat') or it.get('position_name') or ''}"
+                # Счётчик СТРУКТУРЫ в тексте — чтобы потеря «структура обещала N, отправили 0»
+                # была видна в errors_log, а не только факт «режим audience без объектов».
+                f", struct_audiences={len(_struct_exp['audiences'])}"
+                + (f", не поддержано UAC-путём={_struct_exp['audiences_unsupported']}"
+                   if _struct_exp["audiences_unsupported"] else ""))
         _want_audience = False
         if not _want_keywords:
             targeting_mode = "autotarget"
         it_targeting_warnings.append(
             _err + " → fallback " + ("keywords" if _want_keywords else "autotarget"))
         _add_job_err(_job, it_targeting_warnings[-1])
-    if is_product and not c_brand and it_sq != "kviz":
+    if is_product and c_brand and c_ct and c_ct != "ct0000":
+        # tp7 Марки/Модели: посадочная должна соответствовать кодеру группы.
+        # Марки → страница марки (/auto/haval), Модели → точный URL модели из фида, при промахе
+        # формульная модельная страница. Иначе UAC берёт base href и превью показывает случайный товар.
+        _is_brand_only = len([p for p in re.split(r"\s+", c_brand.strip()) if p]) == 1
+        _raw_feed_url = ""
+        _site_href = _site_root_href(href)
+        try:
+            _feed_urls = _account_offer_urls(login, _site_href)
+            _raw_feed_url = (_feed_url_for_model(_feed_urls, c_brand,
+                                                 no_brand_fallback=(not _is_brand_only)) or "")
+        except Exception:  # noqa: BLE001 — URL-фолбэк ниже
+            _raw_feed_url = ""
+        if _raw_feed_url:
+            it_href = _brand_level_url(_raw_feed_url) if _is_brand_only else _strip_url_query(_raw_feed_url)
+        else:
+            it_href = _model_page_href(_site_href, eff_site, c_brand)
+    elif is_product and not c_brand and it_sq != "kviz":
         it_href = re.sub(r"/+$", "", href) + "/auto"
+    it_href = _resolve_url(it_href)
     _sc = _slepok_campaign_content(agent, eff_site)
+    _is_pavlov_multibrand = ((agent or "").strip().lower() == "pavlov"
+                             and (eff_site or "").strip() == "Мультибренд")
+    _pavlov_titles = _pavlov_multibrand_titles(c_brand if _is_pavlov_multibrand else "")
+    _pavlov_texts = _pavlov_multibrand_texts(c_brand if _is_pavlov_multibrand else "")
+    _pavlov_sitelinks = _pavlov_multibrand_sitelinks() if _is_pavlov_multibrand else []
+    _llm_titles = _lines(it.get("titles"))
+    _llm_texts = _lines(it.get("texts"))
+    _live_generated_content = bool(_stream_agent and _llm_titles and _llm_texts and it.get("sitelinks"))
     if c_brand:                                    # кодер несёт модель -> ведём контент по ней
         _b0 = c_brand.split()[0].lower()
         _model_t = [t for t in _sc["titles"] if _b0 in t.lower()]
-        title_primary = _brand_title_set(c_brand, ctx.get("city") or "") + _model_t
-        title_supp = title_primary + _sc["titles"] + tpl_titles + _GENERIC_TITLE_FILLERS
+        title_primary = _llm_titles + _pavlov_titles + _brand_title_set(c_brand, ctx.get("city") or "") + _model_t
+        title_supp = title_primary + _sc["titles"] + tpl_titles + _pavlov_titles + _GENERIC_TITLE_FILLERS
     elif is_product:
         # tp7 ct0000 (общая кампания) - заголовки ТОЛЬКО без марки/модели.
         # _sc["titles"] часто брендовые («Haval…», «Chery…») - НЕ используем как base для авто.
         # Для не-авто (dmp и будущие B2B): база = корпус слепка, авто-дженерики не подмешиваем.
         if _is_non_auto:
             _b2b_titles_p = [t for t in (_sc.get("titles") or []) if t and str(t).strip()]
-            title_primary = _b2b_titles_p
-            title_supp = _b2b_titles_p + tpl_titles
+            title_primary = _llm_titles + _b2b_titles_p
+            title_supp = _llm_titles + _b2b_titles_p + tpl_titles
         else:
-            title_primary = _GENERIC_AT_TITLES
-            title_supp = _GENERIC_AT_TITLES + _GENERIC_TITLE_FILLERS
+            title_primary = _llm_titles + _pavlov_titles + _GENERIC_AT_TITLES
+            title_supp = _llm_titles + _pavlov_titles + _GENERIC_AT_TITLES + _GENERIC_TITLE_FILLERS
     else:                                          # tp6 МК ct0000 → авто: _GENERIC_AT_TITLES; не-авто: B2B-корпус
         if _is_non_auto:
             # Не-авто (dmp и будущие B2B): база = B2B-корпус слепка; авто-дженерики НЕ подмешиваем.
             # B2B-строки часто без цифр («Получайте контакты потенциальных клиентов…») —
             # поэтому number-gate ниже отключён для не-авто.
             _b2b_titles = [t for t in (_sc.get("titles") or []) if t and str(t).strip()]
-            title_primary = _b2b_titles
-            title_supp = _b2b_titles + tpl_titles
+            title_primary = _llm_titles + _b2b_titles
+            title_supp = _llm_titles + _b2b_titles + tpl_titles
         else:
             # баг #8: _sc["titles"] часто содержат марки («Haval у дилера»…) — для общей МК (ct0000)
             # это неверно. Используем _GENERIC_AT_TITLES как base; _sc["titles"] только в supp-добавке.
-            title_primary = _GENERIC_AT_TITLES
-            title_supp = _sc["titles"] + tpl_titles + _GENERIC_TITLE_FILLERS
+            title_primary = _llm_titles + _pavlov_titles + _GENERIC_AT_TITLES
+            title_supp = _llm_titles + _pavlov_titles + _sc["titles"] + tpl_titles + _GENERIC_TITLE_FILLERS
     # ЖЁСТКОЕ ПРАВИЛО tp6/tp7: РОВНО 5 заголовков / 3 текста / 8 быстрых ссылок.
     # ГОРОД В КОНТЕНТЕ обязан совпадать с городом аккаунта.
     _acc_city = (ctx.get("city") or "").strip()
     _, _cities_bl = _title2_blocklist()
-    _cf = lambda lst: _replace_foreign_city(_drop_used_car(lst, eff_site), _acc_city, _cities_bl)  # noqa: E731
-    # БАГ 1: для tp7 ct0000 - base = ТОЛЬКО общие заголовки, игнорируем it.get("titles")
+    # Оба site_type-фильтра: `_drop_used_car` (Б/У-лексика на НОВОМ сайте) и парный ему
+    # `_drop_new_car` («новые авто» на сайте «С пробегом»). Условия взаимоисключающие —
+    # одновременно сработать и выкосить пул они не могут.
+    _cf = lambda lst: _replace_foreign_city(  # noqa: E731
+        _drop_new_car(_drop_used_car(lst, eff_site), eff_site), _acc_city, _cities_bl)
     if not c_brand:
         # ct0000 (общая кампания) — tp6 МК И tp7 Товарка: base = только общие заголовки,
-        # игнорируем it.get("titles") (могут содержать бренды от ИИ).
+        # но live LLM-заголовки идут первыми и проходят тот же фильтр брендовых токенов.
         # баг #8: фильтр брендовых токенов распространён на tp6 ct0000 (раньше только tp7).
-        _t_base = list(title_primary)
+        _t_base = list(_llm_titles if _live_generated_content else title_primary)
         _ct_brand_tokens: set = {v.split()[0].lower() for v in kp.feeds_ct_model().values() if v}
         _foreign_brand_tokens, _foreign_city_tokens = _title2_blocklist()
     else:
-        _t_base = title_primary
+        _t_base = list(_llm_titles if _live_generated_content else title_primary)
         _ct_brand_tokens = set()
         _foreign_brand_tokens, _foreign_city_tokens = set(), set()
 
@@ -222,7 +379,10 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
         return not (_words & _foreign_brand_tokens) and not (_words & _foreign_city_tokens)
     # Сборка заголовков с пост-обработкой (БАГ 1+2+3+4+7+8)
     # Для не-авто (B2B): _GENERIC_TITLE_FILLERS — авто-кредитные, не добавляем в пул.
-    _title_fill_pool = _cf(title_supp) + ([] if _is_non_auto else _GENERIC_TITLE_FILLERS)
+    # `_pavlov_titles + _GENERIC_TITLE_FILLERS` приклеивались сырыми мимо `_cf` — на Б/У-сайте
+    # это протаскивало «Кредит на новый авто…»/«Новые авто в наличии…». Оборачиваем в `_cf`.
+    _title_fill_pool = (_cf(_llm_titles) if _live_generated_content
+                        else _cf(title_supp) + ([] if _is_non_auto else _cf(_pavlov_titles + _GENERIC_TITLE_FILLERS)))
     _raw_titles = _fill_variants(_cf(_t_base), _title_fill_pool, 12)
     it_titles = []
     _seen_tk: set = set()
@@ -276,14 +436,21 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     if not c_brand:
         if _is_non_auto:
             _b2b_texts = [t for t in (_sc.get("texts") or []) if t and str(t).strip()]
-            _x_base = _b2b_texts or _GENERIC_TEXT_FILLERS
+            _x_base = _llm_texts if _live_generated_content else (_b2b_texts or _GENERIC_TEXT_FILLERS)
+        elif _is_pavlov_multibrand:
+            _x_base = _llm_texts if _live_generated_content else (_pavlov_texts + _GENERIC_TEXT_FILLERS)
         else:
-            _x_base = _GENERIC_TEXT_FILLERS
+            _x_base = _llm_texts if _live_generated_content else _GENERIC_TEXT_FILLERS
     else:
-        _x_base = _rsya_texts((_lines(it.get("texts")) or []) + (_sc["texts"] or []),
-                              eff_site, ctx.get("city") or "", c_brand, cap=8)
+        _x_base = _llm_texts if _live_generated_content else (
+            _pavlov_texts + _rsya_texts((_llm_texts or []) + (_sc["texts"] or []),
+                                        eff_site, ctx.get("city") or "", c_brand, cap=8)
+        )
     # Для не-авто: _GENERIC_TEXT_FILLERS авто-кредитные — не добавляем в пул.
-    _text_fill_pool = tpl_texts + ([] if _is_non_auto else _GENERIC_TEXT_FILLERS)
+    # Тот же сырой хвост для текстов: `_GENERIC_TEXT_FILLERS` нёс «Кредит без первого взноса
+    # на новое авто…» мимо `_cf`. Прогоняем весь пул через site_type-фильтр.
+    _text_fill_pool = (_cf(_llm_texts) if _live_generated_content
+                       else _cf(_pavlov_texts + tpl_texts) + ([] if _is_non_auto else _cf(_GENERIC_TEXT_FILLERS)))
     _raw_texts = _fill_variants(_cf(_x_base), _text_fill_pool, 8)
     it_texts = []
     _seen_xk: set = set()
@@ -319,7 +486,9 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     it_sitelinks = []
     _seen_sl_keys: set = set()
     _title_has_pct = bool(_discount_pcts(it_titles))
-    for _s in _fill_variants(_sl_base, tpl_sitelinks + _GENERIC_SITELINK_FILLERS, 16):
+    _sl_seed = list(_sl_base or []) if _live_generated_content else (_pavlov_sitelinks + _sl_base)
+    _sl_fill = [] if _live_generated_content else (tpl_sitelinks + _pavlov_sitelinks + _GENERIC_SITELINK_FILLERS)
+    for _s in _fill_variants(_sl_seed, _sl_fill, 16):
         if not isinstance(_s, dict):
             continue
         _st = _trim_to_word(_sanitize_content(_s.get("title", ""), max_len=30), 30).rstrip()
@@ -338,7 +507,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
         if len(it_sitelinks) >= 8:
             break
     if len(it_sitelinks) < 8:
-        for _s in _GENERIC_SITELINK_FILLERS:
+        for _s in _pavlov_sitelinks + _GENERIC_SITELINK_FILLERS:
             _st = _trim_to_word(_sanitize_content(_s.get("title", ""), max_len=30), 30).rstrip()
             _sd = _trim_to_word(_sanitize_content(_s.get("description", ""), max_len=60), 60).rstrip()
             _sk = (_st.lower(), _sd.lower())
@@ -437,7 +606,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
         )
     # _fallback_master_titles возвращает авто-кредитный контент («Авто в кредит», «КАСКО»…).
     # Для не-авто (B2B dmp) — не добираем авто-фолбэком; используем что есть из B2B-корпуса.
-    if len(it_titles) < 5 and not _is_non_auto:
+    if len(it_titles) < 5 and not _is_non_auto and not _live_generated_content:
         for _t in _fallback_master_titles(c_brand or "", _acc_city, eff_site, 5):
             if len(it_titles) >= 5:
                 break
@@ -450,7 +619,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     it_texts = [x for x in _dedup_prefix_absorb(it_texts) if len(str(x).strip()) >= _TP67_MIN_TEXT_LEN]
     if len(it_texts) < 3:
         # Для не-авто: _GENERIC_TEXT_FILLERS авто-кредитные — не добираем ими.
-        _txt_fallback = [] if _is_non_auto else list(_GENERIC_TEXT_FILLERS)
+        _txt_fallback = [] if (_is_non_auto or _live_generated_content) else (_pavlov_texts + list(_GENERIC_TEXT_FILLERS))
         it_texts = _diverse_text_offers(
             _dedup_prefix_absorb(it_texts + _txt_fallback), 3)
     # R2-4 2026-07-10 (c1): topic/semantic-дедуп быстрых ссылок ВСЕГДА (не только при <8).
@@ -460,16 +629,17 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     # → семантически это ОДИН оффер (credit_pay|9000). _dedup_sitelinks (bucket-лимиты +
     # _sitelink_semantic_key) их схлопывает, но раньше вызывался ТОЛЬКО в ветке <8 → при полном
     # комплекте 8 не отрабатывал = «UAC мимо дедупа». Порядок diversify→dedup — как на tp1/tp2/tp5.
+    _pre_semantic_sitelinks = list(it_sitelinks or [])
     try:
         from . import ai_agents as _A
         _dl = _A._dedup_sitelinks(_A.diversify_sitelink_utp(it_sitelinks, 8), eff_site, 8)
-        if _dl:
+        if _dl and ((not _live_generated_content) or len(_dl) >= 8):
             it_sitelinks = _dl
     except Exception:  # noqa: BLE001
         pass
-    if len(it_sitelinks) < 8:
+    if len(it_sitelinks) < 8 and not _live_generated_content:
         _sl_candidates = list(it_sitelinks or [])
-        for _s in _GENERIC_SITELINK_FILLERS:
+        for _s in _pavlov_sitelinks + _GENERIC_SITELINK_FILLERS:
             _st = _trim_to_word(_sanitize_content(_s.get("title", ""), max_len=30), 30).rstrip()
             _sd = _trim_to_word(_sanitize_content(_s.get("description", ""), max_len=60), 60).rstrip()
             if (_st and _sd and not _bad_ad_sitelink(_st, _sd)
@@ -523,40 +693,217 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     _uniq_sl: list = []
     _seen_titles: set = set()
     _seen_descs: set = set()
-    for _s in (it_sitelinks or []):
-        if not isinstance(_s, dict):
-            continue
-        _st = str(_s.get("title") or "").strip()[:30].rstrip()
-        _sd = str(_s.get("description") or "").strip()[:60].rstrip()
-        if not _st:
-            continue
+
+    def _soften_uac_sitelink_text(_s: str) -> str:
+        _s = re.sub(r"(?i)\bс\s+выгод\w*\s+до\s+-?\d+\s*%", "с выгодными условиями", _s or "")
+        _s = re.sub(r"(?i)\bсо\s+скидк\w*\s+до\s+-?\d+\s*%", "со спецусловиями", _s)
+        _s = re.sub(r"(?i)\bскидк\w*\s+до\s+-?\d+\s*%", "Спецусловия", _s)
+        _s = re.sub(r"(?i)\bвыгод\w*\s+до\s+-?\d+\s*%", "Выгодные условия", _s)
+        return re.sub(r"\s{2,}", " ", _s).strip(" .")
+
+    def _append_uac_sitelink(_title: str, _desc: str) -> None:
+        if len(_uniq_sl) >= 8:
+            return
+        _st = _trim_to_word(_sanitize_content(_soften_uac_sitelink_text(_title), max_len=30), 30).rstrip()
+        _sd = _trim_to_word(_sanitize_content(_soften_uac_sitelink_text(_desc), max_len=60), 60).rstrip()
         _tk, _dk = _st.lower(), _sd.lower()
-        if _tk in _seen_titles or (_dk and _dk in _seen_descs):
-            continue
+        if not _st or not _sd or _tk in _seen_titles or (_dk and _dk in _seen_descs):
+            return
+        if not _is_bu_site(eff_site) and _BU_RE.search(f"{_st} {_sd}"):
+            return
+        if _title_has_pct and _sitelink_has_pct({"title": _st, "description": _sd}):
+            return
+        if _bad_ad_sitelink(_st, _sd) or not _common_content_ok(f"{_st} {_sd}"):
+            return
         _seen_titles.add(_tk)
         if _dk:
             _seen_descs.add(_dk)
         _uniq_sl.append({"title": _st, "description": _sd})
-    if len(_uniq_sl) < 8:
-        for _s in _GENERIC_SITELINK_FILLERS:
+
+    for _s in (it_sitelinks or []):
+        if not isinstance(_s, dict):
+            continue
+        _append_uac_sitelink(str(_s.get("title") or ""), str(_s.get("description") or ""))
+    if len(_uniq_sl) < 8 and _live_generated_content:
+        for _s in list(_pre_semantic_sitelinks or []) + list(_sl_base or []):
             if len(_uniq_sl) >= 8:
                 break
-            _st = _trim_to_word(_sanitize_content(_s.get("title", ""), max_len=30), 30).rstrip()
-            _sd = _trim_to_word(_sanitize_content(_s.get("description", ""), max_len=60), 60).rstrip()
-            _tk, _dk = _st.lower(), _sd.lower()
-            if not _st or _tk in _seen_titles or (_dk and _dk in _seen_descs):
-                continue
-            if not _is_bu_site(eff_site) and _BU_RE.search(f"{_st} {_sd}"):
-                continue
-            if _title_has_pct and _sitelink_has_pct({"title": _st, "description": _sd}):
-                continue
-            if _bad_ad_sitelink(_st, _sd) or not _common_content_ok(f"{_st} {_sd}"):
-                continue
-            _seen_titles.add(_tk)
-            if _dk:
-                _seen_descs.add(_dk)
-            _uniq_sl.append({"title": _st, "description": _sd})
+            if isinstance(_s, dict):
+                _append_uac_sitelink(str(_s.get("title") or ""), str(_s.get("description") or ""))
+    if len(_uniq_sl) < 8 and _live_generated_content:
+        _live_descs = []
+        for _x in list(it_texts or []):
+            _first = re.split(r"[.!?]", str(_x or ""), maxsplit=1)[0].strip()
+            if _first:
+                _live_descs.append(_first)
+        _live_descs.extend([
+            "Оставьте заявку и получите расчёт за 15 минут",
+            "Подберём условия и ответим онлайн по заявке",
+            "Покажем варианты и условия покупки сегодня",
+            "Проверим доступные условия по вашей заявке",
+            "Расскажем детали и поможем выбрать авто",
+            "Менеджер свяжется и уточнит условия сегодня",
+            "Получите подборку вариантов по бюджету",
+            "Сравним условия покупки и оформим заявку",
+        ])
+        _live_titles = []
+        for _t in list(it_titles or []) + list(it_texts or []):
+            _first = re.split(r"[.!?]", str(_t or ""), maxsplit=1)[0].strip()
+            if _first:
+                _live_titles.append(_first)
+        for _i, _title in enumerate(_live_titles):
+            if len(_uniq_sl) >= 8:
+                break
+            _desc = _live_descs[_i % len(_live_descs)] if _live_descs else "Оставьте заявку и получите расчёт онлайн"
+            _append_uac_sitelink(_title, _desc)
+    if len(_uniq_sl) < 8 and not _live_generated_content:
+        for _s in _pavlov_sitelinks + _GENERIC_SITELINK_FILLERS:
+            if len(_uniq_sl) >= 8:
+                break
+            _append_uac_sitelink(_s.get("title", ""), _s.get("description", ""))
     it_sitelinks = _uniq_sl[:8]
+    if _live_generated_content and len(it_texts) < 3:
+        _seen_live_texts = {_variant_norm_key(_x) for _x in it_texts if _variant_norm_key(_x)}
+
+        def _uac_text_number_hint() -> str:
+            for _src in list(it_titles or []) + list(_llm_titles or []) + list(_llm_texts or []):
+                _m = re.search(
+                    r"(?i)\b(?:до|от)\s+\d[\d\s]*(?:[%₽]|руб\.?|р\.|тыс\.?|млн\.?|платеж\w*|минут\w*)?",
+                    str(_src or ""),
+                )
+                if _m:
+                    return _m.group(0).strip()
+            return "за 15 минут"
+
+        def _append_uac_live_text(_raw: str) -> None:
+            if len(it_texts) >= 3:
+                return
+            _x = _sanitize_content(_soften_uac_sitelink_text(str(_raw or "")), max_len=81)
+            _x = _trim_to_word(_strip_credit_rate(_x), 81).rstrip(" .")
+            if _x and not _is_non_auto and not _has_number(_x):
+                _x = _trim_to_word(f"{_x} {_uac_text_number_hint()}", 81).rstrip(" .")
+            if (not _x or _is_bad_start(_x) or _bad_ad_text(_x) or not _common_content_ok(_x)
+                    or (not _is_non_auto and not _has_number(_x))
+                    or len(_x) < _TP67_MIN_TEXT_LEN):
+                return
+            _nk = _variant_norm_key(_x)
+            if _nk and (_nk in _seen_live_texts or any(_variant_norm_key(_old) == _nk for _old in it_texts)):
+                return
+            if _nk:
+                _seen_live_texts.add(_nk)
+            it_texts.append(_x)
+
+        for _x in list(_llm_texts or []) + list(it_texts or []):
+            _append_uac_live_text(_x)
+        for _s in list(_pre_semantic_sitelinks or []) + list(_sl_base or []) + list(it_sitelinks or []):
+            if len(it_texts) >= 3:
+                break
+            if isinstance(_s, dict):
+                _append_uac_live_text(_s.get("description") or _s.get("title") or "")
+        for _t in list(it_titles or []) + list(_llm_titles or []):
+            if len(it_texts) >= 3:
+                break
+            _append_uac_live_text(_t)
+        it_texts = _diverse_text_offers(
+            _dedup_prefix_absorb([
+                _trim_to_word(_x, 81).rstrip() for _x in it_texts if _x and str(_x).strip()
+            ]),
+            3,
+        )
+    if _live_generated_content and len(it_texts) < 3:
+        # Последний live-only guard перед hard-block: _diverse_text_offers может честно вернуть
+        # только 2 текста, если все M3-формулировки попали в одни offer-buckets. Для live-пути
+        # нельзя брать generic fallback, поэтому делаем короткие варианты из собственных
+        # заголовков/ссылок этой же кампании и больше не прогоняем их через bucket-сжиматель.
+        _hint = "за 15 минут"
+        for _src in list(it_titles or []) + list(_llm_titles or []) + list(_llm_texts or []):
+            _m = re.search(
+                r"(?i)\b(?:до|от)\s+\d[\d\s]*(?:[%₽]|руб\.?|р\.|тыс\.?|млн\.?|платеж\w*|минут\w*)?",
+                str(_src or ""),
+            )
+            if _m:
+                _hint = _m.group(0).strip()
+                break
+        _emergency_seeds: list[str] = []
+        for _s in list(_pre_semantic_sitelinks or []) + list(_sl_base or []) + list(it_sitelinks or []):
+            if isinstance(_s, dict):
+                _emergency_seeds.append(str(_s.get("description") or _s.get("title") or ""))
+        _emergency_seeds.extend(str(_t or "") for _t in list(it_titles or []) + list(_llm_titles or []))
+        for _seed in _emergency_seeds:
+            if len(it_texts) >= 3:
+                break
+            _base = re.split(r"[.!?]", _soften_uac_sitelink_text(str(_seed or "")), maxsplit=1)[0].strip()
+            if not _base:
+                continue
+            _x = _trim_to_word(_sanitize_content(f"{_base}. Оставьте заявку {_hint}", max_len=81), 81).rstrip(" .")
+            if (not _x or _is_bad_start(_x) or _bad_ad_text(_x) or not _common_content_ok(_x)
+                    or (not _is_non_auto and not _has_number(_x))
+                    or len(_x) < _TP67_MIN_TEXT_LEN):
+                continue
+            _nk = _variant_norm_key(_x)
+            if _nk and any(_variant_norm_key(_old) == _nk for _old in it_texts):
+                continue
+            it_texts.append(_x)
+    if _live_generated_content and len(it_titles) < 5:
+        _title_hint = "за 15 минут"
+        for _src in list(it_titles or []) + list(it_texts or []) + list(_llm_titles or []) + list(_llm_texts or []):
+            _m = re.search(
+                r"(?i)\b(?:до|от)\s+\d[\d\s]*(?:[%₽]|руб\.?|р\.|тыс\.?|млн\.?|платеж\w*|минут\w*)?",
+                str(_src or ""),
+            )
+            if _m:
+                _title_hint = _m.group(0).strip()
+                break
+        _title_seeds: list[str] = []
+        _title_seeds.extend(str(_t or "") for _t in list(_llm_titles or []) + list(it_texts or []) + list(_llm_texts or []))
+        for _s in list(_pre_semantic_sitelinks or []) + list(_sl_base or []) + list(it_sitelinks or []):
+            if isinstance(_s, dict):
+                _title_seeds.append(str(_s.get("title") or _s.get("description") or ""))
+        _own = _own_brand_tokens(c_brand) if c_brand else set()
+        _brand_prefix = (c_brand or "").strip().split()[0] if c_brand else ""
+        for _seed in _title_seeds:
+            if len(it_titles) >= 5:
+                break
+            _base = re.split(r"[.!?]", _soften_uac_sitelink_text(str(_seed or "")), maxsplit=1)[0].strip()
+            if not _base:
+                continue
+            if _brand_prefix:
+                _bl = _base.lower()
+                if not any(re.search(r"(?<![a-zа-яё0-9])" + re.escape(tok) + r"(?![a-zа-яё0-9])", _bl)
+                           for tok in _own):
+                    _base = f"{_brand_prefix} {_base}"
+            if not _is_non_auto and not _has_number(_base):
+                _base = f"{_base} {_title_hint}"
+            _t = _sanitize_content(_base, max_len=56)
+            _t = _fill_title(_replace_sep_hyphen(_replace_emdash(_strip_credit_rate(_t))), 45, 56)
+            _t = _trim_to_word(_t, 56).rstrip(" .")
+            if (not _t or _is_bad_start(_t) or _bad_ad_title(_t) or not _common_content_ok(_t)
+                    or (not _is_non_auto and not _has_number(_t))):
+                continue
+            if _own:
+                _tl = _t.lower()
+                if not any(re.search(r"(?<![a-zа-яё0-9])" + re.escape(tok) + r"(?![a-zа-яё0-9])", _tl)
+                           for tok in _own):
+                    continue
+            if _ct_brand_tokens:
+                _tl = _t.lower()
+                if any(_tok in _tl for _tok in _ct_brand_tokens):
+                    continue
+            _nk = _variant_norm_key(_t)
+            if _nk and any(_variant_norm_key(_old) == _nk for _old in it_titles):
+                continue
+            it_titles.append(_t)
+    if _live_generated_content and (len(it_titles) < 5 or len(it_texts) < 3 or len(it_sitelinks) < 8):
+        _err = ("tp6/tp7 live-контент после UAC-фильтров неполный; шаблонный фолбэк запрещён: "
+                f"заголовки {len(it_titles)}/5; тексты {len(it_texts)}/3; "
+                f"быстрые ссылки {len(it_sitelinks)}/8")
+        _add_job_err(_job, f"{name}: {_err}")
+        results.append({"name": name, "ok": False, "error": _err, "blocked": True})
+        _bump_job(_job, False)
+        _bump_item(_job)
+        if _job:
+            _job_db_progress(_job)
+        return results, _tp7_mf
     # Картинки: порядок задаёт _creative_images_for_ct (automation_runtime.py:2700-2756) —
     # СНАЧАЛА общий пул Manual по ct (_manual/{ct}), ПОТОМ добор из пака ЭТОГО слепка
     # (read_slepok_images по канону слепка), потом explicit-ассеты вкладки «Контент».
@@ -605,9 +952,20 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     # Fix A: UAC (tp6/tp7) может получить сырой структурный слаг вместо красивого имени
     # (если items пришли не через _emit_struct/_build_name). Детектируем по шаблону
     # tp[67]_cp[ac]_(site|kviz)_ct\d+_a(on|off)_ и пересобираем через _build_name.
-    # Идемпотентно: красивое имя (содержит «—») не матчит regex → не переформатируется.
-    if re.match(r'^tp[67]_cp[ac]_(site|kviz)_ct\d+_a(?:on|off)_', name):
+    # ⚠️ ГРАБЛЯ (2026-07-21, живой дубль «Автотаргетинг» в 46 tp6/7-позициях): regex якорится
+    # ТОЛЬКО в начало строки — план-имя ТОЖЕ начинается с этих кодов (формат `_build_name`),
+    # « — » идёт уже ПОСЛЕ префикса, так что re.match срабатывал ВСЕГДА, а не только на сыром
+    # слаге. Fix A выбрасывал уже чистое план-имя и пересобирал из недедупленного display
+    # (`_slepok_struct_groups`), давая «ТК - Автотаргетинг - Общая - КС + Автотаргетинг».
+    # Явная проверка отсутствия « — » (не regex-хвост) — план-имена пропускаются идемпотентно.
+    if re.match(r'^tp[67]_cp[ac]_(site|kviz)_ct\d+_a(?:on|off)_', name) and " — " not in name:
         _r_code_fix, _oblast_fix = _resolve_region(ctx.get("city") or "")
+        _tp_label_fix = "ТК" if is_product else "МК"
+        _targeting_label_fix = _csctx.tp67_targeting_label_from_modes(_modes, "tp7" if is_product else "tp6")
+        _cat_fix = _csctx.tp67_clean_position_name_for_targeting(
+            it.get("position_name") or it.get("audience_cat") or "",
+            _tp_label_fix,
+        ) or None
         name = _build_name(
             is_master=not is_product,   # РЕГРЕССИЯ-ФИКС R2-8: строка была случайно удалена при правке DEFECT 3
             # DEFECT 3 (2026-07-10): is_auto ТОЛЬКО для autotarget. Было (!="keywords") —
@@ -619,49 +977,141 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             r_code=_r_code_fix,
             oblast=_oblast_fix,
             sq=it_sq,
-            cat=(it.get("position_name") or it.get("audience_cat") or None),
+            cat=_cat_fix,
             ct=(c_ct or it.get("ct") or "ct0000"),
+            targeting_label=_targeting_label_fix,
         )
     # Ручная аудитория («Настроить вручную») → отражаем в кодер-имени (aoff→aon).
     disp_name = name.replace("_aoff_", "_aon_", 1) if (is_manual and "_aon_" not in name) else name
-    _feed_name = (it.get("feed_name") or "").strip()
-    if is_product and _feed_name and _feed_name not in disp_name and not _is_site_domain_name(_feed_name, href):
+    # Метку фида для имени БЕРЁМ У ПЛАНА (`feed_label`, create_set_plan.py:1167) — ровно ту,
+    # что план уже подставил в имя. Так равенство имён план↔билд — свойство КОНСТРУКЦИИ.
+    # ⚠️ Пересчитывать метку здесь из `feed_name` нельзя: план считает её из URL фида, а кабинет
+    #    отдаёт своё имя («Фид легковых», иной регистр, «feed-2024») → имена расходятся
+    #    (FEED_FALLBACK_PLAN_VS_BUILDER_DESYNC: дубль-суффикс + рассинхрон already_in_direct).
+    #    Прежнее совпадение держалось лишь на том, что имя кабинета оказывалось case-exact
+    #    подстрокой имени файла — это везение данных, а не свойство кода.
+    # Ключа нет (item НЕ из плана, путь «Fix A») → фолбэк: чистим имя кабинета от домена-префикса
+    # (`_is_site_domain_name` ловил только ТОЧНОЕ равенство хосту → домен уезжал в имя).
+    # Пусто на выходе (метка была только доменом) → суффикс не клеим.
+    _feed_name = (str(it.get("feed_label") or "").strip() if "feed_label" in it
+                  else _strip_site_domain_label(it.get("feed_name") or "", href))
+    if is_product and _feed_name and _feed_name not in disp_name:
         disp_name = f"{disp_name} — {_feed_name}"
+    # Тот же дедуп сегментов, что план применяет в `_uniq` ПОСЛЕ приклейки метки фида
+    # (create_set_plan.py). Без него имя билда разошлось бы с именем плана в случае, когда
+    # дедуп срезал повторный сегмент/чанк (класс FEED_FALLBACK_PLAN_VS_BUILDER_DESYNC).
+    # Идемпотентно: имя из плана уже канонично → строка не меняется.
+    disp_name = _csctx.dedup_name_segments(disp_name)
     # tp7: фид «страницы каталога» = тот же, что под товары; иначе yandex-catalog.xml.
     it_feed = (_num(it.get("feed_id"), 0) or None) if is_product else None
+    # single_feed sentinel (feed_id=0 → it_feed=None): план не смог подтвердить профильный фид
+    # на этапе плана (транзиентный сбой strict-lookup или API). Резолвим здесь, как tp5/tp3
+    # делают через _resolve_single_feed_variants (create_set_feed_builders.py:907).
+    # Если профильный фид найден → используем. Если нет → пропускаем tp7 (как tp5 делает
+    # при feed_confirmed=False). Нормальный tp7 (it_feed!=None) этот блок не затрагивает.
+    if is_product and it_feed is None:
+        _job_body = (_job or {}).get("body", {}) if _job else {}
+        if bool(_job_body.get("single_feed")):
+            from .create_set_input import PROFILE_FEED_KEYS as _PFK
+            _sf_pids: list[int] = []
+            for _spk in _PFK:
+                _spid = _first_url_feed(_st_token, login, _w_agency or "", strict=True, url_key=_spk)
+                if _spid and _spid not in _sf_pids:
+                    _sf_pids.append(_spid)
+            if _sf_pids:
+                it_feed = _sf_pids[0]   # найден профильный фид → используем первый
+            else:
+                # профильного фида нет на билде тоже; feed_confirmed=False (иначе план поставил бы
+                # реальный fid вместо sentinel); пропускаем tp7 — аналог data["feeds"]=[] в tp5.
+                return [{"ok": False, "name": name,
+                         "error": "tp7 single_feed: профильный фид не найден на билде — пропущена"}], _tp7_mf
     it_listings = _catalog_feed(_st_token, login, it_feed or 0, _w_agency or "") if is_product else None
     # tp7 фильтр по collectionId: показываем только модель кодера (не весь фид).
     # Загружаем фиды с модельными коллекциями лениво — один раз на весь запрос.
     it_lff = []                                  # listings_feed_filters
     it_ff = []                                   # feed_filters (товарная часть)
     if is_product and it_feed:
-        # ЛЮБАЯ товарная tp7 получает фильтр: брендовый ct → позитив по марке/модели + минус-марки;
-        # ct0000/общая → ТОЛЬКО минус-марки из глобальных правил (правило Семёна; раньше гейт
-        # c_ct != "ct0000" оставлял общие товарки ВООБЩЕ без фильтров — FEED_FILTER_MISSING_UAC).
+        # Tp7 фильтруется только позитивно по марке/модели из ct. Общие ct0000-кампании
+        # и позиции без реальной марки/модели не получают глобальные минус-фильтры.
         it_ff = _tp7_product_feed_filters(c_brand or "", c_ct or "ct0000", login=login, feed_id=it_feed or 0)
-    if is_product and it_feed and c_brand and c_ct and c_ct != "ct0000" and c_ct != "ct0111":
-        if _tp7_mf is None:                      # ленивая загрузка (не дёргать API на каждый item)
-            _tp7_mf = _account_model_feeds(login, _w_agency or "")
-        fm_entry = next((f for f in _tp7_mf if f["id"] == it_feed), None)
-        feed_models = fm_entry["models"] if fm_entry else None
-        coll_id = _match_collection(c_brand, feed_models) if feed_models else None
-        # coll_id найден → позитивный фильтр по коллекции (брендовая tp7).
-        # Без coll_id — весь фид (марка или неизвестная модель): it_lff остаётся [].
-        if coll_id:
-            it_lff = [{"conditions": [{"field": "collectionId", "operator": "CONTAINS",
-                                       "value": f'["{coll_id}"]'}]}]
+    if is_product and it_feed and c_brand and c_ct and c_ct != "ct0000":
+        it_lff = _tp7_listing_plus_filter(login, it_feed, c_brand, c_ct, _w_agency or "")
+        # collectionId is valid for listings_feed_filters only. Sending it in product
+        # feed_filters makes UAC map the condition to a text operator and reject create
+        # with INVALID_OPERATOR. Product feed_filters stay positive by mark/model field.
     elif is_product and it_feed:
-        if not c_brand or not c_ct or c_ct == "ct0000":
-            # Небрендовые группы: ct0000 «Страницы каталога» ИЛИ любая товарка без марки
-            # (напр. ct0014 «Общие запросы») — БЕЗ mark-фильтров → весь каталог (все 198+ стр.).
-            # Такие страницы НЕ входят в mark_* коллекции → CONTAINS(mark_*) даёт 0 результатов.
-            # UAC принимает фильтр без Exception → except-retry-без-фильтра (ниже) не срабатывает.
-            # Требование Семёна: небрендовым группам mark-фильтр НЕ ставим.
-            it_lff = []
-        else:
-            # брендовая товарка (есть c_brand, но не попала в модельную ветку выше, напр. ct0111):
-            # allow-list по mark_* с вычетом минус-марок.
-            it_lff = _tp7_listings_minus_filters(login, it_feed, _w_agency or "")
+        # Небрендовые группы и брендовые группы без точного collectionId идут без listings-фильтра.
+        # Глобальные minus/allow-list фильтры здесь намеренно не ставим.
+        it_lff = []
+    it_titles = list(dict.fromkeys(
+        _strip_dangling_uac_tail(_trim_to_word(t, 56)) for t in (it_titles or []) if t and str(t).strip()
+    ))[:5]
+    it_texts = _diverse_text_offers(
+        [x for x in dict.fromkeys(
+            _strip_dangling_uac_tail(_trim_to_word(t, 81)) for t in (it_texts or []) if t and str(t).strip()
+        ) if x and len(x) >= _TP67_MIN_TEXT_LEN],
+        3,
+    )
+    if not _is_non_auto:
+        it_titles = _limit_online_density(it_titles, 1)
+        it_texts = _limit_online_density(it_texts, 1)
+
+    if len(it_texts) < 3:
+        _final_seen_texts = {_variant_norm_key(_x) for _x in it_texts if _variant_norm_key(_x)}
+        _num_hint = "за 15 минут"
+        for _src in list(it_titles or []) + list(_llm_titles or []) + list(_llm_texts or []):
+            _m = re.search(
+                r"(?i)\b(?:до|от)\s+\d[\d\s]*(?:[%₽]|руб\.?|р\.|тыс\.?|млн\.?|платеж\w*|минут\w*)?",
+                str(_src or ""),
+            )
+            if _m:
+                _num_hint = _m.group(0).strip()
+                break
+
+        def _append_final_uac_text(_raw: str) -> None:
+            if len(it_texts) >= 3:
+                return
+            _base = re.split(r"[.!?]", _soften_uac_sitelink_text(str(_raw or "")), maxsplit=1)[0].strip()
+            if not _base:
+                return
+            if not _is_non_auto and not _has_number(_base):
+                _base = f"{_base}. Оставьте заявку {_num_hint}"
+            _x = _sanitize_content(_base, max_len=81)
+            _x = _trim_to_word(_strip_credit_rate(_x), 81).rstrip(" .")
+            if (not _x or _is_bad_start(_x) or _bad_ad_text(_x) or not _common_content_ok(_x)
+                    or (not _is_non_auto and not _has_number(_x))
+                    or len(_x) < _TP67_MIN_TEXT_LEN):
+                return
+            _nk = _variant_norm_key(_x)
+            if _nk and (_nk in _final_seen_texts or any(_variant_norm_key(_old) == _nk for _old in it_texts)):
+                return
+            if _nk:
+                _final_seen_texts.add(_nk)
+            it_texts.append(_x)
+
+        _final_text_sources: list[str] = []
+        _final_text_sources.extend(str(_x or "") for _x in list(_llm_texts or []) + list(_sc.get("texts") or []))
+        for _s in list(_sl_base or []) + list(it_sitelinks or []) + list(_pavlov_sitelinks or []):
+            if isinstance(_s, dict):
+                _final_text_sources.append(str(_s.get("description") or _s.get("title") or ""))
+        _final_text_sources.extend(str(_x or "") for _x in list(it_titles or []) + list(_llm_titles or []))
+        if not _live_generated_content and not _is_non_auto:
+            _final_text_sources.extend(str(_x or "") for _x in list(_GENERIC_TEXT_FILLERS or []))
+        for _src in _final_text_sources:
+            if len(it_texts) >= 3:
+                break
+            _append_final_uac_text(_src)
+
+    if len(it_texts) < 3:
+        _err = (f"tp6/tp7 контент неполный после финальной UAC-добивки: тексты {len(it_texts)}/3")
+        _add_job_err(_job, f"{name}: {_err}")
+        results.append({"name": name, "ok": False, "error": _err, "blocked": True})
+        _bump_job(_job, False)
+        _bump_item(_job)
+        if _job:
+            _job_db_progress(_job)
+        return results, _tp7_mf
+
     try:
         spec = cmc.MasterCampaignSpec(
             href=it_href, titles=it_titles, texts=it_texts, region_ids=region_ids,
@@ -669,6 +1119,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             week_budget=it_budget,
             display_name=disp_name, sitelinks=it_sitelinks,
             image_files=it_images, video_files=it_videos,
+            content_ids=[str(x).strip() for x in (it.get("preloaded_content_ids") or []) if str(x).strip()],
             image_limit=5,
             # dmp (не-авто лидоген): ОТКЛЮЧАЕМ pHash-дедуп картинок в collect_image_files —
             # доменные баннеры одного шаблона (тёмный фон + разный текст) РАЗНЫЕ для Директа,
@@ -703,15 +1154,15 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
                      if str(it.get("pricing") or "").strip().upper()
                      in ("PER_CLICK", "PER_CONVERSION", "PER_ACTION")
                      else ("PER_CONVERSION" if it.get("pay") == "cpa" else "PER_CLICK")),
-            # Возраст 35+ (age_35) — для ВСЕХ ручных режимов tp6/Мастер (keywords И audience):
-            # DoD §3.6 требует исключить ОБА младших брекета (18-24 И 25-34) → socdem-range стартует
-            # с 35-44 (age_lower=age_35, age_upper=age_inf по дефолту). Раньше стоял age_25 (исключал
-            # только 18-24) — пробел DoD, исправлено 2026-07-09. Значение age_35 — та же enum-семья
-            # Яндекс-socdem, что age_18/age_25 (границы брекетов 18/25/35/45/55).
+            # Возраст 25+ (age_25) — для ВСЕХ ручных режимов tp6/Мастер (keywords И audience):
+            # исключать только брекет 18-24 → socdem-range стартует с 25-34 (age_lower=age_25).
+            # Раньше стоял age_35 (исключал ОБА брекета 18-24 И 25-34) — решение Семёна 2026-07-21
+            # изменено на 25+. Значение age_25 — та же enum-семья Яндекс-socdem,
+            # что age_18/age_35 (границы брекетов 18/25/35/45/55).
             # Исключения: автотаргетинг (#7 выше — полный socdem age_18 по дизайну) и товарка tp7
             # (age_18 всегда — возраст не настраивается). ag_part6 в имени = ag011 («ручной возраст»,
             # НЕ привязан к конкретной границе) — синхронизирован тем же условием, create_set_plan.py.
-            age_lower=("age_18" if (targeting_mode == "autotarget" or is_product) else "age_35"),
+            age_lower=("age_18" if (targeting_mode == "autotarget" or is_product) else "age_25"),
         )
         try:
             cid = client.create_master_campaign(spec, launch=launch)
@@ -734,7 +1185,15 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
         _res = {"name": disp_name, "ok": True, "id": cid, "launched": launch,
                 "images": len(it_images), "videos": len(it_videos),
                 "sitelinks": len(it_sitelinks),
-                "url": f"https://direct.yandex.ru/wizard/campaigns/{cid}/?ulogin={login}"}
+                "url": f"https://direct.yandex.ru/wizard/campaigns/{cid}/?ulogin={login}",
+                # Эталон СТРУКТУРЫ слепка для этой позиции → live-верификатор сверяет кабинет
+                # со СТРУКТУРОЙ, а не с build'ом (build уже пустой → сверка build↔live давала 0==0
+                # и молчала об обрыве на этапе плана). См. uac_verifier.UAC_STRUCT_*_MISSING.
+                "struct": {"keywords": len(_struct_exp["keywords"]),
+                           "audiences": len(_struct_exp["audiences"]),
+                           "audiences_unsupported": _struct_exp["audiences_unsupported"],
+                           "modes": _struct_exp["modes"]},
+                "sent": {"keywords": len(it_keywords), "audiences": len(it_audiences)}}
         if it_warnings:
             _res["warnings"] = it_warnings
         results.append(_res)

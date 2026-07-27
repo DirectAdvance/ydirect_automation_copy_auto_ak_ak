@@ -396,6 +396,28 @@ _KW_BUDGET = 9800          # консервативный лимит ключе�
 _KW_MAX_PER_GROUP = 200    # верхний предохранитель на группу (Яндекс лимит API)
 
 
+def unique_keyword_ids(added_items) -> int:
+    """Сколько РАЗНЫХ ключевых фраз реально осело по ответу Grid ``addKeywords.addedItems``.
+
+    Директ схлопывает фразы, которые считает одинаковыми, и возвращает на дубль ``keywordId``
+    УЖЕ существующей фразы (живой зонд 2026-07-19, аккаунт porg-ozge4ntu: 10 отправленных →
+    10 строк addedItems, но только 5 разных keywordId и ровно 5 фраз в кабинете; на v5-пути тот же
+    дубль приходит с Warning 10140 «Ключевое слово уже существует» и Id базовой фразы).
+    Схлопываются: порядок слов, регистр, лишние пробелы, оператор ``+``, словоформа. НЕ схлопываются:
+    ``!``/кавычки/``[]``, минус-слово в конце фразы.
+    Поэтому ``len(addedItems)`` = число ОТПРАВЛЕННЫХ, а не созданных → сверка build⇄кабинет давала
+    стабильный ложный недобор (BUILD_LIVE_UNDERCOUNT + бессмысленный keywords_repair).
+
+    Fail-safe: строки есть, но ни у одной нет ``keywordId`` (смена Grid-схемы) → откат на старый
+    счётчик ``len(rows)``, чтобы не выдать ложный «0 из N создано»."""
+    rows = [r for r in (added_items or []) if isinstance(r, dict)]
+    seen = {str(r.get("keywordId")) for r in rows
+            if str(r.get("keywordId") or "").strip() not in ("", "0")}
+    if rows and not seen:
+        return len(rows)
+    return len(seen)
+
+
 def _alloc_kw_caps(groups: list) -> list[int]:
     """Two-pass keyword budget allocation (Яндекс лимит: ≤10 000 ключей/кампанию, берём 9800).
 
@@ -433,6 +455,40 @@ def _alloc_kw_caps(groups: list) -> list[int]:
     return caps
 
 
+def _kw_canon_for_campaign(phrase: Any) -> str:
+    """Conservative campaign-level duplicate key.
+
+    Direct collapses duplicate keywords inside one campaign across adgroups. If a later
+    group receives only duplicates, Grid may still return keywordIds while the group stays
+    live-empty. Keep the normalization intentionally modest: lowercase, strip plus-operators,
+    collapse whitespace and sort tokens.
+    """
+    words = [w for w in re.sub(r"(^|\s)\+", " ", str(phrase or "").lower()).split() if w]
+    return " ".join(sorted(words))
+
+
+def _drop_cross_group_duplicate_keywords(groups: list) -> tuple[list, int]:
+    """Remove campaign-level duplicate keywords and skip groups left with no unique phrases."""
+    seen: set[str] = set()
+    kept: list = []
+    dropped = 0
+    for g in groups or []:
+        ng = dict(g or {})
+        kws = []
+        for kw in ng.get("keywords") or []:
+            key = _kw_canon_for_campaign(kw)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            kws.append(kw)
+        if kws:
+            ng["keywords"] = kws
+            kept.append(ng)
+        else:
+            dropped += 1
+    return kept, dropped
+
+
 def create_full(login: str, *, campaign_spec: dict, groups: list, region_ids: list,
                 href: str, goal_id: int = 0, autotargeting: bool = True,
                 price_map: dict | None = None, brand_price_fn=None) -> dict:
@@ -454,17 +510,22 @@ def create_full(login: str, *, campaign_spec: dict, groups: list, region_ids: li
         return rep
     rep["campaign_id"] = cid
 
-    use_groups = groups[:_AC_GROUP_CAP]
-    if len(groups) > _AC_GROUP_CAP:
-        rep["deferred"] = len(groups) - _AC_GROUP_CAP
+    # Группы пачкой (AddUnifiedAdGroups принимает список) — adGroupId выровнен по порядку.
+    search_only = bool(campaign_spec.get("search")) and not bool(campaign_spec.get("network"))
+    raw_groups = list(groups or [])
+    if search_only and not autotargeting:
+        raw_groups, _dup_drop = _drop_cross_group_duplicate_keywords(raw_groups)
+        if _dup_drop:
+            rep["groups_skipped_duplicate_keywords"] = _dup_drop
+    use_groups = raw_groups[:_AC_GROUP_CAP]
+    if len(raw_groups) > _AC_GROUP_CAP:
+        rep["deferred"] = len(raw_groups) - _AC_GROUP_CAP
 
     # Two-pass аллокация ключей: _alloc_kw_caps даёт per-group cap при суммарном бюджете ≤9800.
     # Плотные группы получают максимум оставшегося бюджета (баги #3/#9 code-review).
     kw_caps = _alloc_kw_caps(use_groups)
 
-    # Группы пачкой (AddUnifiedAdGroups принимает список) — adGroupId выровнен по порядку.
-    search_only = bool(campaign_spec.get("search")) and not bool(campaign_spec.get("network"))
-    at_profile = "search_tp2" if search_only else ""
+    at_profile = "search_tp2" if (search_only and autotargeting) else ""
     # Группы БЕЗ ключей в поле AddUnifiedAdGroups. Раньше keywords передавались и сюда, и в
     # отдельный AddKeywords ниже — Grid СОЗДАВАЛ их ДВАЖДЫ для групп <~140 ключей (точные
     # дубли фраз, каждая со своим keywordId). Единственный источник ключей — AddKeywords ниже
@@ -493,6 +554,13 @@ def create_full(login: str, *, campaign_spec: dict, groups: list, region_ids: li
             ag_ids = list(ag_ids) + [None] * (len(use_groups) - len(ag_ids))
             rep["errors"].append("позиционный сдвиг: read-back недоступен, ключи могут быть смещены")
         rep["adgroup_ids"] = [int(x) if x else None for x in ag_ids]
+    else:
+        time.sleep(0.6)
+        _name_to_id = cl._read_adgroup_name_to_id(cid)
+        if _name_to_id:
+            ag_ids = [_name_to_id.get(g.get("name") or "") for g in use_groups]
+            rep["groups"] = sum(1 for x in ag_ids if x)
+            rep["adgroup_ids"] = [int(x) if x else None for x in ag_ids]
 
     # Ключи ЕДИНСТВЕННЫМ путём — отдельным AddKeywords (в build_adgroup keywords=[], иначе дубли).
     _kw_items = []
@@ -504,13 +572,27 @@ def create_full(login: str, *, campaign_spec: dict, groups: list, region_ids: li
                 _kw_items.append({"adGroupId": str(agid), "keyword": str(k)})
     if _kw_items:
         try:
-            rep["keywords"] = len(cl.add_keywords(_kw_items))
+            _sent_kw_agids = {str(it.get("adGroupId") or "") for it in _kw_items if it.get("adGroupId")}
+            _added_kw_rows = cl.add_keywords(_kw_items)
+            _added_kw_agids = {str(r.get("adGroupId") or "") for r in (_added_kw_rows or []) if r.get("adGroupId")}
+            _missing_kw_agids = _sent_kw_agids - _added_kw_agids
+            if _missing_kw_agids:
+                time.sleep(0.6)
+                _retry_items = [it for it in _kw_items if str(it.get("adGroupId") or "") in _missing_kw_agids]
+                _retry_rows = cl.add_keywords(_retry_items) if _retry_items else []
+                _added_kw_rows = list(_added_kw_rows or []) + list(_retry_rows or [])
+                _added_kw_agids = {str(r.get("adGroupId") or "") for r in (_added_kw_rows or []) if r.get("adGroupId")}
+                _missing_kw_agids = _sent_kw_agids - _added_kw_agids
+            rep["keywords"] = unique_keyword_ids(_added_kw_rows)
             # #ФИКС-7: keyword-кампания задумана с ключами (_kw_items>0), но 0 создано →
             # add_keywords проглотил validationResult.errors и вернул []. Кампания без ключей
             # показываться не будет → выносим в errors (иначе ложный ok=True).
             if not rep["keywords"]:
                 rep["errors"].append(
                     f"ключи(AddKeywords): 0 из {len(_kw_items)} создано (валидатор Grid отклонил)")
+            if _missing_kw_agids:
+                rep["errors"].append(
+                    f"ключи(AddKeywords): {len(_missing_kw_agids)} групп без подтверждённых ключей")
         except Exception as e:  # noqa: BLE001 — группы созданы; но ключи теперь ЕДИНСТВЕННЫМ путём,
             # молчать нельзя: сбой = кампания без ключей (не будет показываться). Выносим в rep["errors"],
             # чтобы вызывающий (ЕПК-копир/feed/tp1/repair) увидел провал по стандартной проверке errors.
@@ -586,16 +668,24 @@ def add_text_content_to_existing(login: str, *, campaign_id: int, groups: list,
     if not cid:
         rep["errors"].append("content-repair: нет campaign_id")
         return rep
-    use_groups = list(groups or [])[:_AC_GROUP_CAP]
-    if not use_groups:
+    raw_groups = list(groups or [])
+    if not raw_groups:
         rep["errors"].append("content-repair: нет групп для добавления")
         return rep
-    if len(groups or []) > _AC_GROUP_CAP:
-        rep["deferred"] = len(groups or []) - _AC_GROUP_CAP
 
     cl = GridCreateClient(login)
     cl._bootstrap_csrf()
     at_profile = "search_tp2" if search_only else ""
+    if search_only and not autotargeting:
+        raw_groups, _dup_drop_tc = _drop_cross_group_duplicate_keywords(raw_groups)
+        if _dup_drop_tc:
+            rep["groups_skipped_duplicate_keywords"] = _dup_drop_tc
+    use_groups = raw_groups[:_AC_GROUP_CAP]
+    if not use_groups:
+        rep["errors"].append("content-repair: нет групп для добавления")
+        return rep
+    if len(raw_groups) > _AC_GROUP_CAP:
+        rep["deferred"] = len(raw_groups) - _AC_GROUP_CAP
     # Консервативный kw_cap: не знаем сколько ключей уже в кампании → аллоцируем только по
     # добавляемым группам (worst-case). Это та же формула что в create_full.
     kw_caps = _alloc_kw_caps(use_groups)
@@ -623,6 +713,13 @@ def add_text_content_to_existing(login: str, *, campaign_id: int, groups: list,
             ag_ids = list(ag_ids) + [None] * (len(use_groups) - len(ag_ids))
             rep["errors"].append("позиционный сдвиг: read-back недоступен, ключи могут быть смещены")
         rep["adgroup_ids"] = [int(x) if x else None for x in ag_ids]
+    else:
+        time.sleep(0.6)
+        _name_to_id = cl._read_adgroup_name_to_id(cid)
+        if _name_to_id:
+            ag_ids = [_name_to_id.get(g.get("name") or "") for g in use_groups]
+            rep["groups"] = sum(1 for x in ag_ids if x)
+            rep["adgroup_ids"] = [int(x) if x else None for x in ag_ids]
 
     # Ключи ЕДИНСТВЕННЫМ путём — отдельным AddKeywords (в build_adgroup keywords=[], иначе дубли).
     _kw_items_tc = []
@@ -634,12 +731,29 @@ def add_text_content_to_existing(login: str, *, campaign_id: int, groups: list,
                 _kw_items_tc.append({"adGroupId": str(agid), "keyword": str(k)})
     if _kw_items_tc:
         try:
-            rep["keywords"] = len(cl.add_keywords(_kw_items_tc))
+            _sent_kw_agids_tc = {str(it.get("adGroupId") or "") for it in _kw_items_tc if it.get("adGroupId")}
+            _added_kw_rows_tc = cl.add_keywords(_kw_items_tc)
+            _added_kw_agids_tc = {str(r.get("adGroupId") or "") for r in (_added_kw_rows_tc or [])
+                                  if r.get("adGroupId")}
+            _missing_kw_agids_tc = _sent_kw_agids_tc - _added_kw_agids_tc
+            if _missing_kw_agids_tc:
+                time.sleep(0.6)
+                _retry_items_tc = [it for it in _kw_items_tc
+                                   if str(it.get("adGroupId") or "") in _missing_kw_agids_tc]
+                _retry_rows_tc = cl.add_keywords(_retry_items_tc) if _retry_items_tc else []
+                _added_kw_rows_tc = list(_added_kw_rows_tc or []) + list(_retry_rows_tc or [])
+                _added_kw_agids_tc = {str(r.get("adGroupId") or "") for r in (_added_kw_rows_tc or [])
+                                      if r.get("adGroupId")}
+                _missing_kw_agids_tc = _sent_kw_agids_tc - _added_kw_agids_tc
+            rep["keywords"] = unique_keyword_ids(_added_kw_rows_tc)
             # #ФИКС-7: задумано с ключами, но 0 создано (проглоченный validationResult.errors) →
             # кампания без ключей не показывается → выносим в errors (иначе ложный ok=True).
             if not rep["keywords"]:
                 rep["errors"].append(
                     f"ключи(AddKeywords): 0 из {len(_kw_items_tc)} создано (валидатор Grid отклонил)")
+            if _missing_kw_agids_tc:
+                rep["errors"].append(
+                    f"ключи(AddKeywords): {len(_missing_kw_agids_tc)} групп без подтверждённых ключей")
         except Exception as e:  # noqa: BLE001 — группы созданы; ключи теперь ЕДИНСТВЕННЫМ путём,
             # сбой = группы без ключей. Выносим в rep["errors"] (repair-gate проверяет not errors).
             rep["errors"].append(f"ключи(AddKeywords): {str(e)[:200]}")

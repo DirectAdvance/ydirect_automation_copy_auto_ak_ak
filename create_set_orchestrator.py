@@ -56,6 +56,9 @@ def create_set_response(deps: dict):
     _content_cache_key = deps['_content_cache_key']
     _account_content_get = deps.get('_account_content_get')   # #16: account-level reuse (в пределах прохода)
     _account_content_put = deps.get('_account_content_put')
+    _account_offer_prices = deps.get('_account_offer_prices')
+    _brand_ct_from_coder = deps.get('_brand_ct_from_coder')
+    _creative_images_for_ct = deps.get('_creative_images_for_ct')
     _content_copy = deps['_content_copy']
     _counter_foreign_owner = deps['_counter_foreign_owner']
     _create_account_promo_from_slepok = deps['_create_account_promo_from_slepok']
@@ -76,6 +79,8 @@ def create_set_response(deps: dict):
     _grid_list_campaigns = deps['_grid_list_campaigns']
     _ints = deps['_ints']
     _job_db_progress = deps['_job_db_progress']
+    _set_llm_heartbeat_job = deps.get('_set_llm_heartbeat_job')
+    _current_llm_heartbeat_job = deps.get('_current_llm_heartbeat_job')
     _lines = deps['_lines']
     _load_corrections = deps['_load_corrections']
     _metrika_goals_for = deps['_metrika_goals_for']
@@ -84,6 +89,7 @@ def create_set_response(deps: dict):
     _normalize_callout_text = deps['_normalize_callout_text']
     _num = deps['_num']
     _preflight_creds = deps['_preflight_creds']
+    _preupload_tp1_images = deps.get('_preupload_tp1_images')
     _promo_content_lines = deps['_promo_content_lines']
     _promo_usable_for_content = deps['_promo_usable_for_content']
     _pull_begin = deps['_pull_begin']
@@ -102,6 +108,9 @@ def create_set_response(deps: dict):
     _v5_get = deps['_v5_get']
     _v5_call = deps.get('_v5_call')      # None → callouts пропускаются (graceful degrade)
     _job_new = deps.get('_job_new')              # немедленная постановка куки-джобы (может отсутствовать)
+    # DI-инъекции для create_set_tp8_10 (Посевы engine): Manual-пул картинок + ct→img_ct маппинг
+    _manual_creative_paths = deps.get('_manual_creative_paths')
+    _image_ct_for_content  = deps.get('_image_ct_for_content')
     body = request.json or {}
     from .create_set_input import normalize_create_set_input
     _input = normalize_create_set_input(
@@ -169,9 +178,9 @@ def create_set_response(deps: dict):
     # DIRECT_API_FIRST (default OFF): ON → tp2/tp4 создаём ТОКЕНОМ (баллы), фолбэк на куку по 152;
     # 152-флип строже (только по подтверждённому исчерпанию). OFF → прежнее поведение байт-в-байт.
     _API_FIRST = _api_first_enabled() and callable(_create_text_via_token)
-    # stream_content: путь «Создать и опубликовать» БЕЗ предпросмотра — ИИ-контент М3 генерим
-    # ПОИТЕМНО прямо здесь, перед созданием каждой РК (контент 1 РК → создаём 1 РК → следующая),
-    # а НЕ всю пачку заранее во фронте. Прогресс виден сразу, при 152/сбое уже созданные сохранены.
+    # stream_content: путь «Создать и опубликовать» БЕЗ предпросмотра. ИИ-контент генерится
+    # по item прямо перед созданием кампании; prepare-фаза больше не блокирует первую
+    # Direct-мутацию ожиданием всего набора.
     stream_content = _input["stream_content"]
     _stream_agent = None
     if stream_content:
@@ -254,16 +263,52 @@ def create_set_response(deps: dict):
             tpl_titles=tpl_titles,
             tpl_texts=tpl_texts,
             site_type=eff_site,
+            allow_post_only=True,
         )
         if not _content_check.get("ok"):
             return jsonify({"error": _content_check.get("error")}), int(_content_check.get("status") or 400)
+        # Структура слепка — источник правды. UI preview уже строит items из структуры, но create
+        # принимает payload из body (async/retry/API), поэтому stale/ручной payload должен упасть ДО
+        # precreate/LLM/Direct-мутаций.
+        try:
+            from .verifier import structure_preflight_issues as _structure_preflight_issues
+            _struct_body = dict(body)
+            _struct_body["agent"] = agent
+            _struct_body["site_type"] = eff_site
+            _struct_issues = _structure_preflight_issues(items, _struct_body)
+        except Exception as e:  # noqa: BLE001
+            _struct_issues = [{
+                "severity": "warn",
+                "code": "STRUCTURE_PREFLIGHT_SKIPPED",
+                "message": f"structure preflight failed: {str(e)[:160]}",
+            }]
+        _struct_errors = [x for x in (_struct_issues or []) if x.get("severity") == "error"]
+        if _struct_errors:
+            _msg = (
+                "структура слепка не совпадает с планом создания: "
+                + "; ".join(
+                    f"{x.get('tp') or '?'}:{x.get('camp_key') or x.get('name') or x.get('code')}"
+                    for x in _struct_errors[:8]
+                )
+            )
+            _gate_job = _CREATE_JOBS.get(body.get("_job_id")) if body.get("_job_id") else None
+            if _gate_job:
+                _add_job_err(_gate_job, _msg)
+            return jsonify({
+                "error": _msg,
+                "abort_reason": "slepok_structure_mismatch",
+                "issues": _struct_errors[:20],
+            }), 409
         href = _account["href"]
         region_ids = _account["region_ids"]
 
         # ПРЕДПОЛЁТ: ДО создания РК проверяем «тот ли токен/куку используем» — лёгкие read-only
         # вызовы с таймаутами. Битые/протухшие креды → быстрый явный отказ (а не тихий висяк на
-        # пути создания). Кука обязательна только если в наборе есть grid/UAC-типы (tp5/tp6/tp7).
-        _need_cookie = any((it.get("type") or "") not in _TOKEN_ONLY_TYPES for it in items)
+        # пути создания). Кука обязательна, если набор явно идёт через cookie-путь (deferred
+        # via_cookie=true), либо если в наборе есть grid/UAC-типы. Иначе cookie-докрутки tp2/tp4
+        # ошибочно считались token-only, `_token_for_login()` мог вернуть другого token-owner'а,
+        # и новый deferred сохранялся под чужим agency (y-direct-victory вместо victoryagency14).
+        _need_cookie = bool(via_cookie) or any((it.get("type") or "") not in _TOKEN_ONLY_TYPES for it in items)
         _pf = _preflight_creds(login, body.get("agency") or ctx["agency"] or "", _need_cookie)
         if not _pf["ok"]:
             return jsonify({"error": f"предполётная проверка кредов: {_pf['error']}"}), 502
@@ -298,7 +343,7 @@ def create_set_response(deps: dict):
         if stream_content and _stream_agent:
             from .llm_providers import (check_content_pipeline_health as _cphealth,
                                         arm_m3_breaker as _arm_m3_breaker,
-                                        m3_completion_preflight_ok as _m3_gen_preflight)
+                                        trip_or_breaker as _trip_or_breaker)
             _cp = _cphealth()
             # Completion-preflight: health GET (/v1/models) жив ≠ /chat/completions жив — живой баг
             # 09.07: M3 не выдаёт НИ ОДНОГО токена, idle-таймаут срабатывает через 30-120с, до 4
@@ -306,9 +351,13 @@ def create_set_response(deps: dict):
             # circuit-breaker (весь контент → OpenRouter, БЕЗ повторных idle на мёртвый M3). Выбор
             # провайдера в попапе сохранён: breaker — страховка поверх, не замена (юзер выбрал M3 и
             # он мёртв → авто-фолбэк на OpenRouter на весь набор).
-            _m3_gen_ok = bool(_cp["m3_alive"]) and _m3_gen_preflight()
+            _m3_gen_ok = bool(_cp["m3_alive"])
             _arm_m3_breaker(body.get("_job_id") or login, tripped=(not _m3_gen_ok))
             _or_ok = bool(_cp["or_alive"])
+            if not _or_ok:
+                _trip_or_breaker()
+                if _m3_gen_ok and not str(body.get("llm_provider") or "").strip():
+                    body["llm_provider"] = "m3"
             # Абортим ТОЛЬКО когда генерировать реально нечем: M3 completion мёртв И OpenRouter мёртв.
             # (Раньше гейт смотрел any_alive по health GET — пропускал набор в 90с-таймауты на висящем
             # completion. Теперь M3-completion-мёртв считается как мёртвый M3.)
@@ -347,20 +396,19 @@ def create_set_response(deps: dict):
         _units_pending = 0                               # сколько пунктов плана НЕ создано из-за лимита
         _units_from = None                               # индекс ПЕРВОГО несозданного пункта (для остатка/докрутки)
         _units_switched = False                          # на 152 ВЕСЬ остаток переведён на куки-путь (бесшовно)
+        _defer_deferred_id = None                        # id докрутки для M3/pack-empty defer
 
         # ── C1 (Фаза 2): параллельные НЕконкурирующие каналы создания (фича-флаг, дефолт OFF) ──
         # ИДЕЯ: пока Канал A создаёт РК через Direct API v5 (тратит агентские БАЛЛЫ/units) — Канал B
         # параллельно создаёт РК по КУКЕ/Grid/UAC (баллы НЕ тратит). Ресурсы не конкурируют →
         # общий wall-clock ≈ max(A,B) вместо A+B. Внутри КАЖДОГО канала — строго ПОСЛЕДОВАТЕЛЬНО
         # (гонка за баллами/152/rate-limit недопустима).
-        #   Канал A (units/API): tp1_rsy, rsya_gallery(tp3), search_gallery(tp5) — идут через
-        #     create_tp1_campaign / create_tp5_campaign / create_tp3_campaign (v501/token) когда есть
-        #     токен и not via_cookie; при 152 сами падают на куку. Пары (tp1 cpc+cpa, tp5) — ВНУТРИ
-        #     одного item-раннера, между каналами НЕ рвутся.
-        #   Канал B (без баллов): search_test(tp2), search_dynamic(tp4) — ВСЕГДА cookie/Grid
-        #     (run_create_set_text → create_text_via_cookie), и master/product tp6/tp7 — UAC/cookie.
-        # OFF (дефолт): единый последовательный проход одним каналом = ровно прежнее поведение.
-        _PARALLEL = os.environ.get("DIRECT_PARALLEL_CHANNELS", "0").strip().lower() in (
+        #   Канал A (units/API): сначала лёгкие tp2-tp5, потом тяжёлый tp1_rsy. При DIRECT_API_FIRST
+        #     tp2/tp4 начинают токеном; tp3/tp5 и tp1 идут v501/token, при 152 сами падают на куку.
+        #   Канал B (без баллов): master/product tp6/tp7 — UAC/cookie. Без DIRECT_API_FIRST сюда же
+        #     попадают tp2/tp4 как cookie/Grid.
+        # ON (дефолт): tp2-tp5 могут идти параллельно tp6/tp7, tp1 остаётся последним.
+        _PARALLEL = os.environ.get("DIRECT_PARALLEL_CHANNELS", "1").strip().lower() in (
             "1", "true", "on", "yes")
         # _guard: сериализует мутации ОБЩЕГО состояния (job-счётчики, _generated_content_by_key,
         # prefetch-словари). ON → RLock (реентерабельный: нет дедлока при случайной вложенности);
@@ -413,6 +461,23 @@ def create_set_response(deps: dict):
         def _channel_of(_it) -> str:
             # A = тратит баллы (token/v501, 152→cookie фолбэк); B = всегда cookie/Grid/UAC (без баллов).
             return "A" if (_it.get("type") or "") in _units_types_eff else "B"
+
+        def _item_priority(_idx: int) -> tuple[int, int]:
+            """Fast-first ordering inside a create job.
+
+            Heavy tp1 feed/image campaigns go after fast tp2-tp5 API items. In parallel mode,
+            channel A can create tp2-tp5 while channel B creates tp6/tp7; tp1 starts only
+            after the lighter A-channel items.
+            """
+            _it = items[_idx]
+            _typ = str(_it.get("type") or "")
+            if _typ in ("search_test", "search_dynamic", "rsya_gallery", "search_gallery"):
+                return (0, _idx)
+            if _typ in ("master_campaign", "product_campaign") or str(_it.get("tp") or "") in ("tp6", "tp7"):
+                return (1, _idx)
+            if _typ == "tp1_rsy":
+                return (2, _idx)
+            return (3, _idx)
         # RESUME-SKIP (по требованию): ОДИН раз bulk-читаем имена кампаний аккаунта (Grid, без баллов)
         # и дальше пропускаем пункты, чья кампания УЖЕ существует в Директе. Так «Продолжить» докручивает
         # только недостающее (вкл. ранее упавшие — их в Директе нет → создадутся), а не гонит набор с нуля.
@@ -444,6 +509,87 @@ def create_set_response(deps: dict):
                           "Проверьте сессию и куки аккаунта."),
                 "abort_reason": "empty_existing_names_in_resume",
             }), 503
+        prepare_report = None
+        _tp1_image_future = None
+        try:
+            from . import ai_agents as _A_prepare
+            from . import campaign as _cmc_prepare
+            from . import create_set_prefetch as _prepare
+            from . import kontent_pack as _kp_prepare
+            _prepare.configure({
+                "account_ctx": _account_ctx,
+                "cached_campaign_content": _cached_campaign_content,
+                "content_cache_key": _content_cache_key,
+                "content_cache": _CONTENT_CACHE,
+                "content_cache_lock": _CONTENT_CACHE_LOCK,
+                "brand_ct_from_coder": _brand_ct_from_coder,
+                "account_offer_prices": _account_offer_prices,
+                "account_content_put": _account_content_put,
+                "preupload_tp1_images": _preupload_tp1_images,
+                "creative_images_for_ct": _creative_images_for_ct,
+                "image_ct_for_content": _image_ct_for_content,
+                "get_agent": _A_prepare.get_agent,
+                "pick_working_cookie": _cmc_prepare.pick_working_cookie,
+                "videos_pool_for_ct": _kp_prepare.videos_pool_for_ct,
+            })
+            prepare_report = _prepare.prepare_job(
+                login,
+                body,
+                ctx=ctx,
+                site_type=eff_site,
+                city=ctx.get("city") or "",
+                href=href,
+                grid_cookie=_pf.get("cookie"),
+                job=_job,
+                job_db_progress=_job_db_progress,
+                add_job_err=_add_job_err,
+                is_cancelled=lambda: bool(_job and _job.get("cancel")),
+                prepare_regular_content=False,
+                preupload_tp1=False,
+            )
+            try:
+                if _preupload_tp1_images and any((it.get("type") or "") == "tp1_rsy" for it in items):
+                    _tp1_image_future = _prepare.start_tp1_image_preupload(
+                        login,
+                        body,
+                        site_type=eff_site,
+                        slepok=body.get("agent") or "",
+                        grid_cookie=_pf.get("cookie"),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                if prepare_report is not None:
+                    prepare_report["tp1_preupload_start_error"] = str(exc)[:200]
+        except Exception as exc:  # noqa: BLE001
+            prepare_report = {"ok": False, "error": str(exc)[:300]}
+        if not (prepare_report or {}).get("ok"):
+            _msg = f"prepare создания не завершён: {(prepare_report or {}).get('error') or 'unknown'}"
+            if _job:
+                _add_job_err(_job, _msg)
+            return jsonify({
+                "error": _msg,
+                "abort_reason": "create_prepare_failed",
+                "prepare_report": prepare_report,
+            }), 503
+        if stream_content and _stream_agent:
+            _missing_posts = [
+                it.get("name") or it.get("campaign_name") or it.get("type") or "post"
+                for it in items
+                if it.get("type") in ("post_tp8", "post_tp9", "post_tp10")
+                and not ((it.get("title") or it.get("post_title")) and (it.get("body") or it.get("post_body")))
+            ]
+            if _missing_posts:
+                _msg = (
+                    "prepare-контент посевов неполный: "
+                    f"post={len(_missing_posts)}"
+                )
+                if _job:
+                    _add_job_err(_job, _msg)
+                return jsonify({
+                    "error": _msg,
+                    "abort_reason": "create_prepare_content_incomplete",
+                    "missing_posts": _missing_posts[:20],
+                    "prepare_report": prepare_report,
+                }), 503
         from .create_set_precreate import run_create_set_precreate
         _precreated = run_create_set_precreate(
             login=login,
@@ -480,9 +626,22 @@ def create_set_response(deps: dict):
         _content_futures: dict[int, object] = {}
         _content_futures_by_key: dict[tuple, object] = {}
         _generated_content_by_key: dict[tuple, dict] = {}
+        _run_llm_provider = str(body.get("llm_provider") or "openrouter").strip().lower()
 
         def _stream_content_item(src: dict) -> dict:
-            return dict(src or {})
+            item_copy = dict(src or {})
+            if _run_llm_provider and not str(item_copy.get("llm_provider") or "").strip():
+                item_copy["llm_provider"] = _run_llm_provider
+            return item_copy
+
+        def _run_content_with_heartbeat(job_id: str | None, fn, *args, **kwargs):
+            if job_id and callable(_set_llm_heartbeat_job):
+                _set_llm_heartbeat_job(job_id)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                if job_id and callable(_set_llm_heartbeat_job):
+                    _set_llm_heartbeat_job(None)
 
         def _prefetch_content(idx: int) -> None:
             nonlocal _content_executor
@@ -498,6 +657,12 @@ def create_set_response(deps: dict):
                 _cached_ready = _CONTENT_CACHE.get(_ckey)
             if _cached_ready:
                 return
+            # Для M3 не префетчим: на текущей инфраструктуре один 72B endpoint, и futures
+            # поверх него давали зависание job без понятного лога после img-preupload.
+            # Синхронная генерация ниже медленнее, но детерминированно двигает один item.
+            _provider = str(src.get("llm_provider") or _run_llm_provider).strip().lower()
+            if _provider == "m3":
+                return
             # _guard: при ON два потребителя (Канал A/B) могут префетчить одновременно — мутации
             # _content_futures / _content_futures_by_key / lazy-init executor сериализуем; дедуп по
             # _ckey исключает двойной submit. OFF: _guard = nullcontext → идентично прежнему.
@@ -509,8 +674,16 @@ def create_set_response(deps: dict):
                     from concurrent.futures import ThreadPoolExecutor
                     # Q3 (2026-07-08): 2→3 — глубже прячем LLM-латентность за Grid-I/O.
                     # 4 рискует упереться в rate-limit OpenRouter; 3 — консервативный шаг.
-                    _content_executor = ThreadPoolExecutor(max_workers=3)
+                    # M3 сейчас часто представлен одним 72B endpoint. Параллельный prefetch
+                    # нескольких кампаний поверх внутреннего fan-out перегружает его и даёт
+                    # ложные timeouts до первого токена, после чего набор уходит в OpenRouter.
+                    _provider = str(src.get("llm_provider") or _run_llm_provider).strip().lower()
+                    _content_executor = ThreadPoolExecutor(max_workers=(1 if _provider == "m3" else 3))
+                _heartbeat_job = (_current_llm_heartbeat_job()
+                                  if callable(_current_llm_heartbeat_job) else None)
                 fut = _content_executor.submit(
+                    _run_content_with_heartbeat,
+                    _heartbeat_job,
                     _cached_campaign_content,
                     login,
                     _stream_agent,
@@ -548,53 +721,64 @@ def create_set_response(deps: dict):
                 True,
             )
 
-        for _pref_i in range(min(3, len(items))):
-            _prefetch_content(_pref_i)
+        def _wait_tp1_images() -> None:
+            nonlocal prepare_report
+            fut = _tp1_image_future
+            if fut is None:
+                return
+            if _job:
+                with _guard:
+                    _job["step"] = "preupload_tp1"
+                _jdp(_job)
+            try:
+                rep = fut.result()
+                if isinstance(prepare_report, dict):
+                    prepare_report["images_tp1"] = rep
+            except Exception as exc:  # noqa: BLE001
+                msg = f"tp1 preupload failed: {str(exc)[:200]}"
+                if isinstance(prepare_report, dict):
+                    prepare_report["images_tp1"] = {"ok": False, "error": str(exc)[:200]}
+                _aje(_job, msg)
+            finally:
+                if _job:
+                    with _guard:
+                        _job["step"] = "creating"
+                    _jdp(_job)
 
-        # ── Набор-level ПРЕД-ЗАЛИВКА картинок tp1 в фоне (не блокирует цикл) ─────────────────
-        # Собираем все уникальные пути картинок tp1 набора и грузим их в библиотеку аккаунта
-        # ОДИН раз параллельно ДО/во время цикла (прогрев процесс-глобального _GRID_IMG_HASH_CACHE).
-        # Per-РК заливка в _build_tp1_adgroups(Фаза 3.4)/_create_tp1_via_cookie переиспользует
-        # хэши БЕЗ повторной сети; кэш-промах → штатная per-РК заливка (грациозно). Демон: любой
-        # сбой прогрева НЕ трогает джобу. Только при наличии tp1_rsy (helper сам себя фильтрует).
-        try:
-            # ВАЖНО: через blueprint-обёртку (deps), а НЕ сырьём `from .create_set_tp1_builders import …`.
-            # Обёртка проходит _create_set_tp1_builder_module()→configure() → инъектирует DI-глобалы
-            # (_SLEPOK_KEY/kp/gf/_ct_segment/_creative_images_for_ct/_parallel_upload_images) в модуль.
-            # Сырой импорт в фон-потоке обходил ленивый configure → NameError на первом глобале
-            # (инцидент IMG_PREUPLOAD_SLEPOK_KEY_UNDEF, 2026-07-09).
-            _preup_imgs = deps.get('_preupload_tp1_images')
-            if callable(_preup_imgs) and any((_it.get("type") or "") == "tp1_rsy" for _it in items):
-                threading.Thread(
-                    target=lambda: _preup_imgs(login, items, eff_site, agent,
-                                               grid_cookie=_pf.get("cookie")),
-                    name="createset-preupload-images", daemon=True,
-                ).start()
-        except Exception:  # noqa: BLE001 — прогрев картинок best-effort, не критичен
-            pass
+        # Content/image warm-up is now a blocking prepare stage above. The legacy per-item
+        # future path stays only as a defensive fallback if a manual/sync caller supplies
+        # incomplete non-stream content.
 
         # Типы пунктов → tp-код (для safety-net гейта строгого соответствия слепку ниже).
         _TYPE_TO_TP = {"tp1_rsy": "tp1", "search_test": "tp2", "rsya_gallery": "tp3",
-                       "search_dynamic": "tp4", "search_gallery": "tp5"}
+                       "search_dynamic": "tp4", "search_gallery": "tp5",
+                       # Посевы (tp8/tp9/tp10) — Grid GdPostCampaign (SPEC 2026-07-21)
+                       "post_tp8": "tp8", "post_tp9": "tp9", "post_tp10": "tp10"}
+
+        # Накопление «avoid» заголовков между tp8/tp9/tp10 одного набора —
+        # чтобы generate_post_ad_content генерил разные заголовки для каждой Посевы-кампании.
+        _posevy_avoid: list = []
+        _llm_gate_stopped = False
+        _llm_gate_stop_reason = ""
 
         def _run_item(_ci, it, ch):
+            nonlocal _llm_gate_stopped, _llm_gate_stop_reason
             # Обработка ОДНОГО пункта плана в контексте канала `ch`. break-точки прежнего цикла →
             # ch.stop=True + return; continue → return. Всё общее состояние (results/units/via_cookie/
             # tp7-кэш) — на ch (изолировано по каналу); job-счётчики/prefetch/контент-кэш — под _guard.
-            # M3-гейт (Семён 09.07): если ИИ (M3 и OpenRouter) недоступен, НЕ висим часами —
-            # гейт делает одну короткую перепроверку и возвращает True, создание продолжается
-            # на контенте из слепка (детерминированный фолбэк). False возвращается ТОЛЬКО при
-            # отмене джобы (job.cancel) → тогда штатно останавливаемся, созданное цело.
+            # M3-гейт: если ИИ (M3 и OpenRouter) недоступен, не создаём новые Direct-объекты
+            # на неполном контенте и не запускаем postprocess по обрезанному набору.
             _m3_gate = deps.get('_m3_gate_wait')
             if callable(_m3_gate) and not _m3_gate(_job):
-                _aje(_job, "Набор отменён (job.cancel) на M3-гейте — создание "
-                           "остановлено; остаток доберёт повторный запуск")
+                _llm_gate_stopped = True
+                _llm_gate_stop_reason = "job_cancelled" if (_job and _job.get("cancel")) else "llm_unavailable"
+                _aje(_job, "Набор остановлен на M3-гейте — создание новых кампаний "
+                           "остановлено; неполный набор нужно очистить и перезапустить")
                 ch.results.append({"ok": False, "name": it.get("name") or "",
-                                   "error": "Набор отменён — создание остановлено на этом пункте"})
+                                   "abort_reason": _llm_gate_stop_reason,
+                                   "error": "Набор остановлен на M3-гейте до создания этого пункта"})
                 ch.stop = True
                 return
-            _prefetch_content(_ci + 1)
-            _prefetch_content(_ci + 2)
             # Исчерпание суточного лимита баллов Директа (error 152): при ПЕРВОМ же маркере 152
             # БЕСШОВНО переводим ВЕСЬ остаток набора на куки-путь (Grid/UAC, без баллов) — НЕ рвём
             # цикл и НЕ отправляем массово в deferred-до-полуночи (это и было «висит без движения»).
@@ -684,7 +868,13 @@ def create_set_response(deps: dict):
             # (у них отдельной строки в превью нет).
             if _job:                                     # done = обработано ПУНКТОВ плана; created/failed —
                 with _guard:                             # по ФАКТУ каждой созданной кампании (fan-out даёт
-                    _job["done"] = _ci                   # N кампаний на 1 пункт), бампается ниже _bj().
+                    # `_ci` — индекс пункта ВНУТРИ СВОЕГО КАНАЛА, а каналов несколько
+                    # (DIRECT_PARALLEL_CHANNELS) → каждый канал писал сюда собственную нумерацию и
+                    # `done` скакал назад (живьём 19→1→2 при created 3→4→5). Считаем ВЗЯТЫЕ в работу
+                    # пункты общим инкрементом под тем же `_guard` → монотонно и ≤ len(items).
+                    # (`set_done`/`_bump_item` сюда НЕ годится: он инкрементится только на ветках
+                    # пропуска — строки 701/713 — а не на каждом обработанном пункте.)
+                    _job["done"] = min(int(_job.get("done") or 0) + 1, len(items))
                 _jdp(_job)
             name = it.get("name") or ""
             # Строгое соответствие слепку (ревью A4, баг porg-psm5h7q6): ПРЕВЬЮ гейтит план, но путь
@@ -692,8 +882,17 @@ def create_set_response(deps: dict):
             # API) — дублируем гейт, иначе тип вне боевого профиля слепка просочился бы в набор.
             _excl_tp = deps.get('_slepok_profile_excludes_tp')
             _it_tp = _TYPE_TO_TP.get(it.get("type") or "")
-            if callable(_excl_tp) and _it_tp and _excl_tp(agent, eff_site, _it_tp):
+            # Посевы (tp8/tp9/tp10) — структурно независимы от боевого профиля агента: их tp-коды
+            # намеренно отсутствуют в targeting_profile.json любого автодилерского директолога
+            # (тон берётся от агента, структура GdPostCampaign — фиксированная и универсальная).
+            # Гейт строгого соответствия слепку НЕ применяем к посевам: они всегда допустимы.
+            _is_posevy = it.get("type") in ("post_tp8", "post_tp9", "post_tp10")
+            if not _is_posevy and callable(_excl_tp) and _it_tp and _excl_tp(agent, eff_site, _it_tp):
                 print(f"[strict-slepok] {_it_tp} пропущен (нет в боевом профиле {agent}): {name}", flush=True)
+                # ВАЖНО: добавляем result-строку, чтобы len(results) == len(items) и счётчик
+                # «N из M» в UI не обнулялся молча при исключении пунктов гейтом.
+                ch.results.append({"ok": False, "name": name, "gate_excluded": True,
+                                   "error": f"excluded by targeting_profile gate: {_it_tp} not in agent profile"})
                 _bi(_job)
                 return
             # RESUME-SKIP: кампания пункта УЖЕ есть в Директе → не пересоздаём (и не тратим M3-генерацию).
@@ -701,11 +900,46 @@ def create_set_response(deps: dict):
             # ⚠ tp1_rsy — МУЛЬТИ-ФИД fan-out ({name} — {feed1}, {name} — {feed2}): item-level prefix-skip
             # пропустил бы ВЕСЬ пункт, если создана ХОТЬ ОДНА фид-кампания → недосозданные фиды потерялись
             # бы. Для tp1_rsy item-skip НЕ делаем — внутри его цикла skip ПОФИДОВО (по полному имени nm).
+            if _is_posevy:
+                try:
+                    from .create_set_tp8_10 import _campaign_name as _post_campaign_name  # noqa: PLC0415
+                    _post_tp = str(it.get("type") or "").replace("post_", "")
+                    _post_name = _post_campaign_name(
+                        _post_tp,
+                        str(it.get("ct") or "ct0000"),
+                        str(it.get("r_code") or r_code_ctx),
+                        str(it.get("oblast") or ctx.get("oblast") or ""),
+                        str(it.get("brand_label") or "Посевы"),
+                    )
+                    if _post_name:
+                        name = _post_name
+                        it["name"] = _post_name
+                except Exception:  # noqa: BLE001 — skip stays conservative; builder will still recalc name
+                    pass
             if (it.get("type") != "tp1_rsy"
                     and already_in_direct(name, _existing_names)
                     and not force_recreate(name, _repair_force_names)):
-                ch.results.append({"ok": True, "name": name, "skipped": True,
-                                   "note": "уже создана в Директе — пропущена при докрутке"})
+                _skip_row = {"ok": True, "name": name, "skipped": True,
+                             "note": "уже создана в Директе — пропущена при докрутке"}
+                # tp6/tp7: к SKIP-строке ВСЁ РАВНО кладём эталон структуры. Иначе сверка
+                # UAC_STRUCT_* на уже созданных (в т.ч. дефектных) кампаниях НИКОГДА не срабатывала:
+                # РК существует под тем же именем → skip → нет result-строки с `struct` → потерянные
+                # ключи/аудитории остаются потерянными молча (Д7 2026-07-19, pavlov 712889267/…327).
+                if str(it.get("tp") or "") in ("tp6", "tp7"):
+                    try:
+                        from . import create_set_context as _csctx  # локально: без import-цикла
+                        _sx = _csctx.tp67_struct_expectations(
+                            agent, eff_site, str(it.get("tp")),
+                            str(it.get("ct") or "ct0000"), ctx.get("city") or "",
+                            it.get("position_name") or it.get("audience_cat") or name,
+                            it.get("sq") or "site", pos_key=str(it.get("pos_key") or ""))
+                        _skip_row["struct"] = {
+                            "keywords": len(_sx["keywords"]), "audiences": len(_sx["audiences"]),
+                            "audiences_unsupported": _sx["audiences_unsupported"],
+                            "modes": _sx["modes"], "matched": bool(_sx.get("matched"))}
+                    except Exception:  # noqa: BLE001 — эталон best-effort, skip важнее сверки
+                        pass
+                ch.results.append(_skip_row)
                 _bi(_job)
                 if _job:
                     _jdp(_job)
@@ -742,12 +976,20 @@ def create_set_response(deps: dict):
 
             # ПОТОКОВАЯ ГЕНЕРАЦИЯ (publish без предпросмотра): контент М3 для ЭТОЙ РК — прямо
             # перед её созданием (1 РК: сгенерили → создаём → следующая). Если контент уже есть
-            # в item (ручной путь с предпросмотром) — не трогаем. Сбой генерации → создатель сам
-            # упадёт на слепок/шаблоны (фолбэк), набор не валим.
-            if stream_content and _stream_agent and not (it.get("titles") and it.get("texts") and it.get("sitelinks")):
+            # в item (ручной путь с предпросмотром) — не трогаем. Сбой/неполный комплект теперь
+            # НЕ уходит в слепок/шаблоны: item падает явно, чтобы не создавать generic РК.
+            if (stream_content and _stream_agent
+                    and not (it.get("titles") and it.get("texts") and it.get("sitelinks"))
+                    and it.get("type") not in ("post_tp8", "post_tp9", "post_tp10")):
                 if _job:
                     with _guard:
                         _job["step"] = "generating"      # UI: «генерирую контент…»
+                    _jdp(_job)
+                _provider = str(it.get("llm_provider") or _run_llm_provider).strip().lower()
+                print(f"[content-gen] start {login}: idx={_ci} provider={_provider or '-'} name={name}",
+                      flush=True)
+                _c = {}
+                _gen_error = ""
                 try:
                     _c = _take_prefetched_content(_ci, it) or {}
                     if _c.get("titles") and not it.get("titles"):
@@ -758,8 +1000,18 @@ def create_set_response(deps: dict):
                         it["sitelinks"] = _c["sitelinks"]
                     if _c.get("title2") and not it.get("title2"):
                         it["title2"] = _c["title2"]
-                except Exception:  # noqa: BLE001 — генерация не критична: фолбэк на слепок/шаблоны
-                    pass
+                except Exception as e:  # noqa: BLE001
+                    _gen_error = str(e)[:300]
+                print(f"[content-gen] done {login}: idx={_ci} provider={_provider or '-'} "
+                      f"titles={len(it.get('titles') or [])} texts={len(it.get('texts') or [])} "
+                      f"sitelinks={len(it.get('sitelinks') or [])} error={_gen_error[:120]}",
+                      flush=True)
+                if not (it.get("titles") and it.get("texts") and it.get("sitelinks")):
+                    _warn = ("генерация контента не дала полный комплект — продолжаем через builder "
+                             "fallback/локальные шаблоны"
+                             + (f": {_gen_error}" if _gen_error else ""))
+                    _aje(_job, f"{name}: {_warn}")
+                    it.setdefault("warnings", []).append(_warn)
                 if _job:
                     with _guard:
                         _job["step"] = "creating"        # UI: «создаю кампанию…»
@@ -816,6 +1068,7 @@ def create_set_response(deps: dict):
 
             # ── tp1 РСЯ: ЕПК v501 mode=network_cpa с бренд-группами из пака M3 ──────
             if it.get("type") == "tp1_rsy":
+                _wait_tp1_images()
                 from .create_set_tp1 import run_create_set_tp1
                 ch.results.extend(run_create_set_tp1(
                     it=it, name=name,
@@ -933,6 +1186,51 @@ def create_set_response(deps: dict):
                     bump_item=_bi,
                 ))
                 return
+            # ── Посевы: tp8/tp9/tp10 (GdPostCampaign, Grid-only, SPEC 2026-07-21) ─────
+            if it.get("type") in ("post_tp8", "post_tp9", "post_tp10"):
+                from .create_set_tp8_10 import (  # noqa: PLC0415
+                    run_create_set_post,
+                    configure as _cst810_configure,
+                )
+                # DI: инъектируем Manual-пул и ct-маппинг из automation_runtime (deps).
+                # Без configure — _posevy_images_for_ct тихо пропускает Manual-приоритет (SPEC §2.11 п.1).
+                _cst810_configure({
+                    "_manual_creative_paths": _manual_creative_paths,
+                    "_image_ct_for_content":  _image_ct_for_content,
+                    "_enabled_post_minus_places": deps.get("_enabled_post_minus_places"),
+                    "_account_offer_urls": deps.get("_account_offer_urls"),
+                    "_feed_url_for_model": deps.get("_feed_url_for_model"),
+                    "_ct_segment": deps.get("_ct_segment"),
+                })
+                _post_tp = it["type"].replace("post_", "")  # "tp8"/"tp9"/"tp10"
+                _post_results = run_create_set_post(
+                    it=it, name=name,
+                    login=login, slepok=agent, site_type=eff_site,
+                    href=href, region_ids=region_ids,
+                    counter_id=counter_id, goal_id=goal_id,
+                    grid_cookie=_pf.get("cookie"),
+                    tp_code=_post_tp,
+                    corr=corr,
+                    r_code=(it.get("r_code") or r_code_ctx),
+                    oblast=(it.get("oblast") or ctx.get("oblast") or ""),
+                    ct=(it.get("ct") or "ct0000"),
+                    brand_label=(it.get("brand_label") or "Посевы"),
+                    save_draft=(it.get("save_draft", True)),
+                    avoid=list(_posevy_avoid),  # копия: не мутируем _posevy_avoid снаружи
+                    job=_job,
+                    add_job_err=_aje,
+                    bump_job=_bj,
+                    bump_item=_bi,
+                    job_db_progress=_jdp,
+                )
+                ch.results.extend(_post_results)
+                # Накапливаем заголовок для avoid следующей Посевы-кампании набора
+                for _pr in _post_results:
+                    _t = _pr.get("title")
+                    if _t and _t not in _posevy_avoid:
+                        _posevy_avoid.append(_t)
+                return
+
             _prod_results, ch.tp7_mf = _run_master_product_item(
                 it=it, name=name, href=href, region_ids=region_ids, counter_id=counter_id,
                 goal_id=goal_id, cpa=cpa, launch=launch, client=client, agent=agent,
@@ -948,7 +1246,8 @@ def create_set_response(deps: dict):
             # append/extend попадают прямо в него; порядок и семантика (152→via_cookie флип, cancel,
             # skip, fan-out, deferred) идентичны прежнему циклу for _ci, it in enumerate(items).
             _chan = _Chan(results, via_cookie)
-            for _ci, it in enumerate(items):
+            for _ci in sorted(range(len(items)), key=_item_priority):
+                it = items[_ci]
                 _run_item(_ci, it, _chan)
                 if _chan.stop:                           # прежний break (cancel / M3-гейт-отмена)
                     break
@@ -962,8 +1261,10 @@ def create_set_response(deps: dict):
             # по именам из общего results. Каждый канал внутри себя строго ПОСЛЕДОВАТЕЛЕН.
             ch_A = _Chan([], via_cookie)
             ch_B = _Chan([], via_cookie)
-            _idx_A = [i for i, _it in enumerate(items) if _channel_of(_it) == "A"]
-            _idx_B = [i for i, _it in enumerate(items) if _channel_of(_it) == "B"]
+            _idx_A = sorted([i for i, _it in enumerate(items) if _channel_of(_it) == "A"],
+                            key=_item_priority)
+            _idx_B = sorted([i for i, _it in enumerate(items) if _channel_of(_it) == "B"],
+                            key=_item_priority)
 
             def _run_channel(ch, idxs):
                 for _ci in idxs:
@@ -1012,6 +1313,19 @@ def create_set_response(deps: dict):
             _job["done"] = len(items)
             _job["created"] = created
             _job["failed"] = failed
+        if _llm_gate_stopped:
+            if _job:
+                _add_job_err(_job, "LLM-гейт остановил создание; postprocess/repair для неполного "
+                                   "набора пропущен")
+            return jsonify({
+                "error": "LLM-гейт остановил создание; набор неполный",
+                "abort_reason": _llm_gate_stop_reason or "llm_gate_stopped",
+                "created": created,
+                "failed": failed,
+                "results": results,
+                "skipped_existing": skipped_existing,
+                "partial_created_requires_cleanup": bool(created),
+            }), 503
         # ОТЛОЖЕННАЯ ДОКРУТКА пунктов с пустым/недоступным M3-паком (defer): НЕ permanent-fail —
         # сохраняем их в deferred, демон докрутит по куке позже (когда пак/M3 восстановится). Дубля нет
         # (set_plan/RESUME-SKIP пропустит уже созданные). resume_at=now() → подхват в ближайший поллинг.
@@ -1021,9 +1335,12 @@ def create_set_response(deps: dict):
             _rc_def = int(body.get("_resume_count") or 0)
             _ddid = None
             if _defer_items and _rc_def < _RESUME_MAX:
+                _parent_deferred_id = body.get("_deferred_id")
                 _ddid = _deferred_save(login, (_w_agency or body.get("agency") or ""),
-                                       body, _defer_items, body.get("_job_id"), resume_count=_rc_def)
+                                       body, _defer_items, body.get("_job_id"), resume_count=_rc_def,
+                                       exclude_id=_parent_deferred_id)
                 if _ddid:
+                    _defer_deferred_id = _ddid
                     _add_job_err(_job, f"{len(_defer_items)} пунктов отложено на докрутку ({_ddid})")
             if _defer_items and not _ddid:
                 # Кап докруток (_RESUME_MAX) или сбой сохранения деферреда → НЕ теряем молча
@@ -1314,6 +1631,8 @@ def create_set_response(deps: dict):
             # 152 случился в середине набора → остаток БЕСШОВНО создан по куке (без баллов).
             units_note = (f"Баллы коммандера исчерпаны (error 152) во время набора — остаток автоматически "
                           f"создан по куке (Grid/UAC, без баллов). Создано кампаний: {created}.")
+        if _defer_deferred_id and not deferred_id:
+            deferred_id = _defer_deferred_id
         # Если это была ДОКРУТКА осиротевшего остатка (resume по куке): помечаем родительскую строку
         # direct_deferred_creates терминально, чтобы рестарт не реанимировал её повторно (анти-цикл).
         _parent_did = body.get("_deferred_id")
@@ -1332,8 +1651,9 @@ def create_set_response(deps: dict):
                     _deferred_set_status(_parent_did, "waiting",
                                          "токен/баллы не готовы — отложено, демон повторит токеном")
                 else:
-                    _deferred_set_status(_parent_did, "done",
-                                         f"докручено по куке: создано {created}, не создано {failed}")
+                    from .create_set_deferred_status import parent_deferred_status_after_resume
+                    _dst, _dnote = parent_deferred_status_after_resume(created=created, failed=failed)
+                    _deferred_set_status(_parent_did, _dst, _dnote)
             except Exception:  # noqa: BLE001
                 pass
         from .create_set_response import build_create_set_response
@@ -1357,10 +1677,18 @@ def create_set_response(deps: dict):
             verification=verification,
             live_verification=live_verification,
             precreate_report=precreate_report,
+            prepare_report=prepare_report,
             repair_gate_summary=repair_gate_summary,
             auto_repair=auto_repair,
             skipped_existing=skipped_existing,
         ))
     finally:
+        # Сводка деградации контента за набор: сколько РК уехало на статический фолбэк и почему.
+        # В finally — печатается и при аборте/исключении, иначе самый интересный случай теряется.
+        try:
+            from .llm_providers import log_llm_degrade_summary as _log_degrade
+            _log_degrade(f"createset:{login}")
+        except Exception:  # noqa: BLE001  (телеметрия не должна ронять набор)
+            pass
         if not _worker_path:
             _pull_end(f"createset:{login}")

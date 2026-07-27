@@ -558,6 +558,17 @@ def delayed_content_repair_request(parent_job_id: str, job_snapshot: dict[str, A
         + (1 if (summary or {}).get("callout_campaigns") else 0)
         + int((summary or {}).get("rename_campaigns") or 0)
     )
+    is_copy_job = bool(body.get("_kind") == "copy_campaigns" or job_snapshot.get("kind") == "copy_campaigns")
+    if is_copy_job and not is_post_recreate and inplace_actions <= 0:
+        return {
+            "scheduled": False,
+            "source": "delayed_after_done",
+            "reason": "copy_no_inplace_repairs",
+            "content_repairs": int((summary or {}).get("in_place_content_repairs") or 0),
+            "inplace_actions": inplace_actions,
+            "summary": summary,
+            "uses_direct_units": False,
+        }
 
     login = (job_snapshot.get("login") or result.get("login") or "").strip()
     if not login:

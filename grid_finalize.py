@@ -27,6 +27,11 @@ try:                                    # пакетный контекст (blu
 except ImportError:                     # плоский запуск (локальные тесты из direct/)
     import campaign as cmc
 
+try:
+    from .text_norm import _strip_href_fragment
+except ImportError:                     # плоский запуск (локальные тесты из direct/)
+    from text_norm import _strip_href_fragment
+
 urllib3.disable_warnings()
 
 _DIR = Path(__file__).parent
@@ -83,8 +88,9 @@ _UPDATE_UNIFIED_ADGROUPS_Q = (
     "validationResult{errors{code params path}warnings{code params path}}}}"
 )
 
-# placementTypes (явный список → интерфейс показывает «Ручная настройка», не пресет «Поиск»).
-# tp5 «Поиск + Товарная галерея»: продвижение в выдаче + товарная галерея на поиске.
+# tp5 «Поиск + Товарная галерея»: ручная настройка задаётся placementTypes=null
+# и platforms gallery+search+organic. Непустой список Direct может свернуть в UI-пресет.
+TP5_PLACEMENT_TYPES = None
 PLACEMENTS_TP5 = ["SEARCH_PAGE", "ADV_GALLERY"]
 # Платформы канала (поиск-only, без РСЯ/Карт/орг-списка) — согласовано с placementTypes.
 PLATFORMS_SEARCH = {
@@ -210,6 +216,93 @@ class GridFinalizeError(RuntimeError):
     pass
 
 
+# Транзиентные сбои Grid, при которых ПОВТОР мутации имеет смысл. Маркеры русские: Grid отвечает
+# с Accept-Language ru, и «Внутренняя ошибка сервера … reqId = …» (наблюдалась live 2026-07-19,
+# job b0d25ad114c5, кампания 712885317) без явного маркера транзиентом не считалась вовсе.
+# ⚠️ Ошибки ВАЛИДАЦИИ этих маркеров не содержат → под ретрай не подпадают (как и в
+# yandex_gateway._TRANSIENT_MARKERS — тот же принцип, свой список: там v5 JSON, здесь GraphQL).
+_GRID_TRANSIENT_MARKERS = (
+    "внутренняя ошибка сервера", "временно недоступ", "сервис недоступен", "сервер недоступен",
+    "попробуйте позже", "повторите", "сервер занят",
+    "internal server error", "timeout", "timed out", "unavailable", "gateway", "bad gateway",
+)
+# Держим коротким: finalize идёт внутри джобы на десятки кампаний, длинный backoff растянет прогон.
+_GRID_RETRY_TRIES = 3
+_GRID_RETRY_BACKOFF = (2, 5)
+
+
+def _grid_errors_transient(errors) -> bool:
+    """True, если ответ Grid содержит транзиентную ошибку (повтор идемпотентной мутации оправдан)."""
+    if not errors:
+        return False
+    try:
+        blob = json.dumps(errors, ensure_ascii=False).lower()
+    except (TypeError, ValueError):
+        blob = str(errors).lower()
+    return any(marker in blob for marker in _GRID_TRANSIENT_MARKERS)
+
+
+def _grid_updated_ad_ids(res: dict) -> list[str]:
+    """Реально обновлённые объявления из ответа ``update*Ads`` — элементы с непустым ``id``.
+
+    ⚠️ Считать длину ``updatedAds`` НЕЛЬЗЯ: при отказе Директ отдаёт список ТОЙ ЖЕ ДЛИНЫ из
+    ``null`` (живой probe 2026-07-19, porg-gcegsszl camp 704132838: 15 items отклонены
+    ``ACTION_IN_ARCHIVED_CAMPAIGN``, HTTP 200, ``updatedAds:[null ×15]``) — ``len()`` давал
+    ``replaced:15, errors:[]`` при НУЛЕ изменённых объявлений. Сигнатура
+    ``GRID_UPDATE_ADS_NULL_ITEMS_FALSE_SUCCESS`` в ERRORS_JOURNAL.
+    """
+    out: list[str] = []
+    for x in (res.get("updatedAds") or []):
+        if isinstance(x, dict) and x.get("id"):
+            out.append(str(x["id"]))
+    return out
+
+
+def _grid_failed_ad_ids(res: dict, sent_items: list[dict]) -> list[str]:
+    """Id отправленных объявлений, которым Grid не вернул ``updatedAds.id``.
+
+    ``updatedAds`` в observed-ответах позиционный: успешный элемент = ``{"id": ...}``,
+    отказ = ``null`` на той же позиции. Если Grid вернул список короче отправленного,
+    недостающий хвост тоже считаем отказом.
+    """
+    returned = list((res or {}).get("updatedAds") or [])
+    failed: list[str] = []
+    for idx, it in enumerate(sent_items or []):
+        row = returned[idx] if idx < len(returned) else None
+        if isinstance(row, dict) and row.get("id"):
+            continue
+        aid = str((it or {}).get("id") or "").strip()
+        if aid:
+            failed.append(aid)
+    return failed
+
+
+def _grid_validation_reasons(res: dict, data: dict | None = None) -> list[str]:
+    """Человекочитаемые причины отказа из ``validationResult`` + GraphQL-уровня ``errors``.
+
+    Формат элемента: ``CODE @path (params)`` — код нужен для журнала, path/params показывают,
+    какой именно item отклонён. Warnings добавляются отдельным префиксом ``warning:``.
+    """
+    def _fmt(e, prefix: str = "") -> str:
+        if not isinstance(e, dict):
+            return f"{prefix}{str(e)[:160]}"
+        code = e.get("code") or e.get("message") or "?"
+        path = e.get("path")
+        params = e.get("params")
+        s = f"{prefix}{code}"
+        if path:
+            s += f" @{path if isinstance(path, str) else json.dumps(path, ensure_ascii=False)}"
+        if params:
+            s += f" ({json.dumps(params, ensure_ascii=False)[:120]})"
+        return s[:240]
+
+    vr = (res or {}).get("validationResult") or {}
+    reasons = [_fmt(e) for e in (vr.get("errors") or [])]
+    reasons += [_fmt(e, "warning: ") for e in (vr.get("warnings") or [])]
+    reasons += [_fmt(e) for e in ((data or {}).get("errors") or [])]
+    return reasons
+
+
 # A2: переиспользование GridClient (сессия + CSRF) на протяжении набора/кампании вместо создания
 # нового инстанса на КАЖДЫЙ из ~28 вызовов в цикле create_set (каждый новый инстанс = новый
 # requests.Session + повторный _bootstrap_csrf POST). Кэш ключуется по (login, cookie, thread_ident):
@@ -264,8 +357,26 @@ class GridClient:
         # pick_working_cookie. При протухании куки (стаканный 403) _reauth обновит куку только
         # для не-явного пути (pick_working_cookie снова); для явного — только сбросит CSRF.
         self._explicit_cookie = bool(cookie)
+        self._reauth_depth = 0
+        # Причины неполной записи последнего update_ad_images / update_text_ad_images.
+        # Методы возвращают ЧИСЛО, а причина отказа обязана быть видна наверху (инвариант
+        # «не отработало → видно в результате задания»), поэтому кладём её сюда.
+        self.last_ad_update_errors: list[str] = []
 
     def _post(self, op: str, query: str, variables: dict) -> requests.Response:
+        def _looks_like_login_page(resp: requests.Response) -> bool:
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if "json" in ctype:
+                return False
+            head = (resp.text or "")[:500].lower()
+            return "<html" in head and ("<title>log in</title>" in head or "passport.yandex" in head)
+
+        def _remember_csrf(resp: requests.Response) -> None:
+            m = re.search(r"_direct_csrf_token=([^;,\s]+)", resp.headers.get("Set-Cookie", ""))
+            tok = resp.cookies.get("_direct_csrf_token") or (m.group(1) if m else None)
+            if tok:
+                self.csrf = tok
+
         headers = {
             "Cookie": self.cookie, "dna-operation-name": op, "x-direct-api": "1",
             "x-detected-locale": "ru", "Content-Type": "application/json",
@@ -281,27 +392,22 @@ class GridClient:
         _had_csrf = self.csrf is not None   # A2-heal: различаем bootstrap-403 и stale-cookie-403
         r = self.sess.post(url, json={"operationName": op, "query": query, "variables": variables},
                            headers=headers, timeout=40)
-        m = re.search(r"_direct_csrf_token=([^;,\s]+)", r.headers.get("Set-Cookie", ""))
-        tok = r.cookies.get("_direct_csrf_token") or (m.group(1) if m else None)
-        if tok:
-            self.csrf = tok
+        _remember_csrf(r)
         # A2-heal: если CSRF уже был установлен, но всё равно 403 — кука протухла после
         # кэширования (ротация сессии Яндекса). Переподхватываем куку + CSRF и повторяем ОДИН раз.
         # Случай первого bootstrap-403 (_had_csrf=False) сюда не попадает — им управляет
         # _bootstrap_csrf (ретрай снаружи). Рекурсии нет: _reauth обнуляет self.csrf → вложенный
         # вызов _post из _bootstrap_csrf видит _had_csrf=False и не заходит в эту ветку.
-        if r.status_code == 403 and _had_csrf:
-            print(f"[grid] stale-cookie 403 {self.login}/{op}: reauth → retry", flush=True)
+        if ((r.status_code == 403 and _had_csrf) or _looks_like_login_page(r)) and not getattr(self, "_reauth_depth", 0):
+            reason = "stale-cookie 403" if r.status_code == 403 else "login-page"
+            print(f"[grid] {reason} {self.login}/{op}: reauth → retry", flush=True)
             self._reauth()
             headers["Cookie"] = self.cookie
             if self.csrf:
                 headers["x-csrf-token"] = self.csrf
             r = self.sess.post(url, json={"operationName": op, "query": query, "variables": variables},
                                headers=headers, timeout=40)
-            m2 = re.search(r"_direct_csrf_token=([^;,\s]+)", r.headers.get("Set-Cookie", ""))
-            tok2 = r.cookies.get("_direct_csrf_token") or (m2.group(1) if m2 else None)
-            if tok2:
-                self.csrf = tok2
+            _remember_csrf(r)
         return r
 
     def _bootstrap_csrf(self) -> None:
@@ -328,10 +434,64 @@ class GridClient:
         После сброса вызываем _bootstrap_csrf — он видит csrf=None → выполняет полный
         bootstrap-POST. _post внутри bootstrap видит _had_csrf=False → не заходит в _reauth
         повторно (нет рекурсии)."""
+        if getattr(self, "_reauth_depth", 0):
+            raise RuntimeError(f"Grid reauth уже выполняется для ulogin={self.login}")
+        self._reauth_depth = int(getattr(self, "_reauth_depth", 0)) + 1
         self.csrf = None
-        if not self._explicit_cookie:
-            self.cookie = cmc.pick_working_cookie(self.login)
-        self._bootstrap_csrf()
+        try:
+            if not self._explicit_cookie:
+                self.cookie = cmc.pick_working_cookie(self.login, force_refresh=True)
+            self._bootstrap_csrf()
+            if not self.csrf:
+                raise RuntimeError(f"Grid reauth не получил CSRF для ulogin={self.login}")
+        finally:
+            self._reauth_depth = max(0, int(getattr(self, "_reauth_depth", 1)) - 1)
+
+    def post_idempotent(self, op: str, query: str, variables: dict, *,
+                        tries: int = _GRID_RETRY_TRIES) -> requests.Response:
+        """``_post`` + ретрай ТРАНЗИЕНТНЫХ сбоев. ТОЛЬКО для ИДЕМПОТЕНТНЫХ мутаций.
+
+        Разрешено для операций, идемпотентных по Id (``UpdateCampaigns`` — перезапись полей
+        СУЩЕСТВУЮЩЕЙ кампании теми же значениями: повтор даёт тот же результат).
+        ⛔ Для ``add*``-мутаций ЗАПРЕЩЕНО: обрыв после commit + повтор = дубли объектов
+        (см. комментарий в ``_post`` и журнал RETRY_ON_NETWORK_LOSS_DUPLICATES_ADD) — именно
+        поэтому ретрай живёт отдельным методом, а не внутри ``_post``.
+
+        Повторяем: транспортный сбой (исключение requests), HTTP 5xx и ответ 200 с транзиентной
+        ошибкой Директа. Ошибки валидации маркеров не содержат → возвращаются вызывающему сразу,
+        с прежним поведением. Исчерпали попытки — возвращаем ПОСЛЕДНИЙ ответ (вызывающий разберёт
+        его и бросит свою ошибку, как раньше); если ответа не было ни разу — пробрасываем исключение.
+        """
+        attempts = max(1, int(tries))
+        resp: requests.Response | None = None
+        last_exc: Exception | None = None
+        for attempt in range(attempts):
+            if attempt:
+                time.sleep(_GRID_RETRY_BACKOFF[min(attempt - 1, len(_GRID_RETRY_BACKOFF) - 1)])
+            try:
+                resp = self._post(op, query, variables)
+            except Exception as exc:  # noqa: BLE001 — транспортный сбой идемпотентной мутации
+                last_exc = exc
+                print(f"[grid] {op}: транспортный сбой ({str(exc)[:120]}), "
+                      f"попытка {attempt + 1}/{attempts}", flush=True)
+                continue
+            last_exc = None
+            if resp.status_code >= 500:
+                print(f"[grid] {op}: HTTP {resp.status_code}, попытка {attempt + 1}/{attempts}",
+                      flush=True)
+                continue
+            try:
+                data = resp.json()
+            except ValueError:
+                return resp
+            if _grid_errors_transient(data.get("errors")):
+                print(f"[grid] {op}: транзиентная ошибка Директа, "
+                      f"попытка {attempt + 1}/{attempts}", flush=True)
+                continue
+            return resp
+        if resp is None and last_exc is not None:
+            raise last_exc
+        return resp
 
     def finalize(self, campaign_id: int, *, name: str, goal_id: int,
                  cpa_rub: int | float, weekly_rub: int | float, counter_ids: list[int],
@@ -344,7 +504,7 @@ class GridClient:
         корректировки ставит apply_corrections ПОСЛЕ). Бросает при validationResult.errors.
 
         cpa_rub / weekly_rub — в РУБЛЯХ (Grid strategyData оперирует рублями строкой, НЕ микро).
-        placement_types: явный список → «Ручная настройка» (по умолч. PLACEMENTS_TP5).
+        placement_types: None/[] → placementTypes=null; явный список — legacy override.
         """
         self._bootstrap_csrf()
         uc = json.loads(json.dumps(_TEMPLATE))         # deepcopy шаблона
@@ -391,8 +551,10 @@ class GridClient:
         uc["isPriceRecommendationsManagementEnabled"] = False
         if notification_email:
             uc.setdefault("notification", {}).setdefault("emailSettings", {})["email"] = notification_email
-        r = self._post("UpdateCampaigns", _MUTATION,
-                       {"input": {"campaignUpdateItems": [{"unifiedCampaign": uc}]}, "login": self.login})
+        # UpdateCampaigns идемпотентна по id → транзиентный 500/обрыв ретраится (post_idempotent).
+        r = self.post_idempotent("UpdateCampaigns", _MUTATION,
+                                 {"input": {"campaignUpdateItems": [{"unifiedCampaign": uc}]},
+                                  "login": self.login})
         data = r.json()
         res = (data.get("data") or {}).get("updateCampaigns") or {}
         vr = res.get("validationResult") or {}
@@ -576,6 +738,8 @@ class GridClient:
         platforms = strategy.get("platforms") or {}
         budget = strategy.get("budget") or {}
         strategy_type = str(strategy.get("strategyType") or "")
+        budget_sum = int(budget.get("sum") or 0)
+        avg_bid = int(strategy.get("avgBid") or 0)
         if strategy_type == "OPTIMIZE_CONVERSIONS":
             if int(strategy.get("avgCpa") or 0) > 0:
                 strategy_name = "AUTOBUDGET_AVG_CPA"
@@ -585,16 +749,25 @@ class GridClient:
                 # → CANNOT_BE_NULL). Это round-trip, не смена стратегии. 2026-07-17 porg-jh2si7rh.
                 strategy_name = "AUTOBUDGET"
         elif strategy_type == "OPTIMIZE_CLICKS":
-            # ⚠️ Во write-enum Грида НЕТ имени для «Максимум кликов» с недельным бюджетом:
-            # AUTOBUDGET означает «Максимум конверсий» и МЕНЯЕТ стратегию кампании
-            # (проверено на porg-qfnapixm/702916352). Такие кампании помечаются
-            # _unsupported_strategy и пропускаются узкими апдейтами.
             if strategy.get("clicksLimit"):
                 strategy_name = "AUTOBUDGET_WEEK_BUNDLE"
-            elif strategy.get("avgBid"):
+            elif avg_bid > 0 or budget_sum > 0:
+                # HAR direct.yandex.ru.67har.har (UpdateCampaigns, 2026-07-20):
+                # UI пишет «Максимум кликов + недельный бюджет» как AUTOBUDGET_AVG_CLICK
+                # со strategyData.avgBid + sum + budgetType=WEEKLY. Когда Grid read отдаёт
+                # avgBid=None у уже созданного черновика, используем UI-дефолт 100 руб.,
+                # иначе узкие апдейты снова будут пропускать такие кампании.
                 strategy_name = "AUTOBUDGET_AVG_CLICK"
             else:
                 strategy_name = "AUTOBUDGET"
+        elif strategy_type == "DEFAULT":
+            # Grid read returns DEFAULT, but UpdateCampaigns expects DEFAULT_.
+            # Verified live on porg-mushirne/712796008: read-back keeps strategyType=DEFAULT.
+            strategy_name = "DEFAULT_"
+        elif strategy_type == "MULTIPLE_CPA":
+            # Grid read returns MULTIPLE_CPA, while write enum is AUTOBUDGET_MULTIPLE_CPA.
+            # Verified live on porg-mushirne/712829915 without strategy semantic change.
+            strategy_name = "AUTOBUDGET_MULTIPLE_CPA"
         else:
             strategy_name = strategy.get("strategyName") or strategy_type or "AUTOBUDGET_AVG_CPA"
         return {
@@ -623,12 +796,14 @@ class GridClient:
                 # «0» не проходит валидатор (MUST_BE_GREATER_THAN_OR_EQUAL_TO_MIN)
                 **({"avgCpa": str(int(strategy.get("avgCpa") or 0))}
                    if int(strategy.get("avgCpa") or 0) > 0 else {}),
+                **({"avgBid": str(avg_bid if avg_bid > 0 else 100)}
+                   if strategy_name == "AUTOBUDGET_AVG_CLICK" else {}),
                 "budgetType": "WEEKLY" if budget.get("period") == "WEEK" else str(budget.get("period") or "WEEKLY"),
                 "payForConversion": bool(strategy.get("payForConversion")),
                 "payForShows": bool(strategy.get("payForShows")),
                 "autoApplyRecommendationOptions": {"budgetIncreasePercent": None},
                 "isExplorationBudgetValueCustom": bool(strategy.get("isExplorationBudgetValueCustom")),
-                **({"sum": str(int(budget.get("sum") or 0))} if int(budget.get("sum") or 0) > 0 else {}),
+                **({"sum": str(budget_sum)} if budget_sum > 0 else {}),
             },
             "strategyName": strategy_name,
         }
@@ -708,12 +883,11 @@ class GridClient:
             "abSegmentStatisticRetargetingConditionId": ((row.get("abSegmentStatisticRetargetingCondition") or {}).get("id")),
             "name": row.get("name") or "",
             "enableCpcHold": bool(row.get("hasEnableCpcHold")),
-            "contextLimit": int(row.get("contextLimit") or 100),
             "dynamicPlacesAdvTextsOnly": bool(row.get("dynamicPlacesAdvTextsOnly")),
             "dayBudget": str(int(float(row.get("dayBudget") or 0))),
             "attributionModel": row.get("attributionModel") or "AUTOMATIC",
             "metrikaCounters": [int(x) for x in (row.get("metrikaCounters") or []) if str(x).isdigit()],
-            "meaningfulGoals": [],
+            "meaningfulGoals": (row.get("meaningfulGoals") or []),
             "strategyId": str(row.get("strategyId") or "0"),
             "biddingStategyWithPlatforms": cls._strategy_update_payload(row),
             "startDate": row.get("startDate"),
@@ -759,24 +933,12 @@ class GridClient:
             # пустой href не проходит валидатор (EMPTY_HREF) — поле шлём только заполненным
             payload["additionalData"] = {"href": href}
         strategy_type = str((row.get("strategy") or {}).get("strategyType") or "")
-        if strategy_type == "OPTIMIZE_CLICKS" and not (row.get("strategy") or {}).get("clicksLimit") \
-                and not (row.get("strategy") or {}).get("avgBid"):
-            # «Максимум кликов + недельный бюджет»: валидного write-имени нет,
-            # полный апдейт сменил бы стратегию — узкие апдейты обязаны пропустить кампанию.
-            payload["_unsupported_strategy"] = "Максимум кликов (недельный бюджет)"
-        # «Ручные ставки / Конкуренты» (HIGHEST_POSITION): Grid read возвращает strategyType='DEFAULT',
-        # но write-enum 'DEFAULT' не принимает («No value found for name 'DEFAULT'»).
-        # Узкие апдейты обязаны пропустить — иначе мутация упадёт с enum-ошибкой.
-        # Добавлено 2026-07-17 (проверено зондом porg-mushirne/porg-jh2si7rh).
-        bs_write = payload.get("biddingStategyWithPlatforms") or {}
-        if str(bs_write.get("strategyName") or "") == "DEFAULT":
-            payload["_unsupported_strategy"] = "Ручные ставки (DEFAULT — нет write-enum в Grid)"
-        # «Тёплый спрос» PAY_FOR_CONVERSION_MULTIPLE_GOALS: Grid read возвращает strategyName=
-        # 'MULTIPLE_CPA', но write-enum 'MULTIPLE_CPA' недействителен в Grid
-        # («No value found for name 'MULTIPLE_CPA'» — проверено зондом 712850299, 2026-07-17).
-        # restore_pay_for_conversion_strategy намеренно обходит этот guard (удаляет _unsupported_strategy).
-        if str(bs_write.get("strategyName") or "") == "MULTIPLE_CPA":
-            payload["_unsupported_strategy"] = "Тёплый спрос (MULTIPLE_CPA — нет write-enum в Grid)"
+        if strategy_type == "OPTIMIZE_CLICKS":
+            _strategy = row.get("strategy") or {}
+            _budget = _strategy.get("budget") or {}
+            if not _strategy.get("clicksLimit") and not _strategy.get("avgBid") \
+                    and int(_budget.get("sum") or 0) <= 0:
+                payload["_unsupported_strategy"] = "Максимум кликов (без лимита кликов/avgBid/бюджета)"
         return payload
 
     @staticmethod
@@ -833,8 +995,6 @@ class GridClient:
                 raise GridFinalizeError(
                     "Grid read-campaign-edit-data: " + json.dumps(data.get("errors"), ensure_ascii=False)[:400])
             for row in rows:
-                if row.get("__typename") != "GdUnifiedCampaign":
-                    continue
                 try:
                     cid = int(row.get("id") or 0)
                 except (TypeError, ValueError):
@@ -867,28 +1027,27 @@ class GridClient:
                 continue
             if co > 0 and co not in co_ids:
                 co_ids.append(co)
-        if not ids or not co_ids:
+        if not ids:
             return []
+        self._bootstrap_csrf()
         payloads = self._read_unified_campaign_update_payloads(ids)
         q = ("mutation UpdateCampaigns($input:GdUpdateCampaignsInput!$login:String!){"
              "updateCampaigns(input:$input){updatedCampaigns{id}"
              "validationResult{errors{code params path}warnings{code params path}}}"
              "getClientMutationId(input:{login:$login}){mutationId}}")
         bases, skipped = self._narrow_bases(payloads, ids, "Grid set-callouts")
-        if skipped:
-            cid0, why = next(iter(skipped.items()))
-            raise GridFinalizeError(
-                f"Grid set-callouts: кампания {cid0}: стратегия «{why}» не поддерживается — пропущена")
+        for cid, why in skipped.items():
+            print(f"[grid] set-callouts: кампания {cid} пропущена — стратегия «{why}»", flush=True)
         items = []
-        for cid in ids:
-            base = bases[cid]
+        for cid, base in bases.items():
             base["inheritableCallouts"] = {"calloutIds": [str(i) for i in co_ids]}
             items.append({"unifiedCampaign": base})
-        r = self._post("UpdateCampaigns", q, {
+        if not items:
+            return []
+        data = self._post_json_retry("UpdateCampaigns", q, {
             "login": self.login,
             "input": {"campaignUpdateItems": items},
         })
-        data = r.json()
         res = (data.get("data") or {}).get("updateCampaigns") or {}
         vr = res.get("validationResult") or {}
         if data.get("errors") or vr.get("errors"):
@@ -897,7 +1056,7 @@ class GridClient:
                     data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
         return res.get("updatedCampaigns") or []
 
-    def set_campaign_sitelink_set(self, campaign_ids: list[int], sitelink_set_id: int | str) -> list:
+    def set_campaign_sitelink_set(self, campaign_ids: list[int], sitelink_set_id: int | str | None) -> list:
         """Attach one inheritable sitelink set to campaigns through Grid.
 
         Content editor uses this when a sitelink title/description changes:
@@ -912,12 +1071,15 @@ class GridClient:
                 continue
             if cid > 0 and cid not in ids:
                 ids.append(cid)
-        try:
-            sid = int(sitelink_set_id)
-        except (TypeError, ValueError):
-            sid = 0
-        if not ids or sid <= 0:
+        sid_raw = None
+        if sitelink_set_id not in (None, "", 0, "0"):
+            try:
+                sid_raw = str(int(sitelink_set_id))
+            except (TypeError, ValueError):
+                sid_raw = None
+        if not ids:
             return []
+        self._bootstrap_csrf()
         payloads = self._read_unified_campaign_update_payloads(ids)
         q = ("mutation UpdateCampaigns($input:GdUpdateCampaignsInput!$login:String!){"
              "updateCampaigns(input:$input){updatedCampaigns{id}"
@@ -928,15 +1090,14 @@ class GridClient:
             print(f"[grid] set-sitelink-set: кампания {cid} пропущена — стратегия «{why}»", flush=True)
         items = []
         for cid, base in bases.items():
-            base["inheritableSitelinkSet"] = {"sitelinkSetId": str(sid)}
+            base["inheritableSitelinkSet"] = {"sitelinkSetId": sid_raw}
             items.append({"unifiedCampaign": base})
         if not items:
             return []
-        r = self._post("UpdateCampaigns", q, {
+        data = self._post_json_retry("UpdateCampaigns", q, {
             "login": self.login,
             "input": {"campaignUpdateItems": items},
         })
-        data = r.json()
         res = (data.get("data") or {}).get("updateCampaigns") or {}
         vr = res.get("validationResult") or {}
         if data.get("errors") or vr.get("errors"):
@@ -946,11 +1107,11 @@ class GridClient:
         return res.get("updatedCampaigns") or []
 
     def set_campaign_disabled_places(self, campaign_ids: list[int], hosts: list[str]) -> list:
-        """Set the campaign-level disabledPlaces (minus площадки) through a narrow Grid update.
+        """Set campaign-level disabledPlaces (minus площадки) through a narrow Grid update.
 
-        Copy-path use (П.13): apply our standard РСЯ minus-list to copied network
-        campaigns. Like ``set_campaign_callouts`` this reads the full unified payload
-        and rewrites ONLY ``disabledPlaces`` so strategy/placements stay untouched.
+        Copy-path use: copy the source campaign disabledPlaces 1:1. Like
+        ``set_campaign_callouts`` this reads the full unified payload and rewrites
+        ONLY ``disabledPlaces`` so strategy/placements stay untouched.
         """
         ids = []
         for raw in campaign_ids or []:
@@ -960,8 +1121,8 @@ class GridClient:
                 continue
             if cid > 0 and cid not in ids:
                 ids.append(cid)
-        clean_hosts = [str(h).strip() for h in (hosts or []) if str(h).strip()]
-        if not ids or not clean_hosts:
+        clean_hosts = list(dict.fromkeys(str(h).strip() for h in (hosts or []) if str(h).strip()))
+        if not ids:
             return []
         payloads = self._read_unified_campaign_update_payloads(ids)
         q = ("mutation UpdateCampaigns($input:GdUpdateCampaignsInput!$login:String!){"
@@ -973,11 +1134,7 @@ class GridClient:
             print(f"[grid] set-disabled-places: кампания {cid} пропущена — стратегия «{why}»", flush=True)
         items = []
         for cid, base in bases.items():
-            # MERGE: сохраняем ранее скопированные excluded-площадки + добавляем новые без дублей
-            existing = list(base.get("disabledPlaces") or [])
-            seen = set(existing)
-            merged = existing + [h for h in clean_hosts if h not in seen]
-            base["disabledPlaces"] = merged
+            base["disabledPlaces"] = list(clean_hosts)
             items.append({"unifiedCampaign": base})
         if not items:
             return []
@@ -999,7 +1156,7 @@ class GridClient:
 
         Нужен для сверки «настройки источника vs настройки копии» (step_settings_diff): отдаёт
         кампанию так, как её видит редактор Директа — стратегия, корректировки, временной таргетинг,
-        brandSafety, contextLimit, уведомления и т.д. Многого из этого v5 не показывает вовсе."""
+        brandSafety, уведомления и т.д. Многого из этого v5 не показывает вовсе."""
         ids = []
         for c in (campaign_ids or []):
             try:
@@ -1490,7 +1647,7 @@ class GridClient:
              "updateCampaigns(input:$input){updatedCampaigns{id}"
              "validationResult{errors{code params path}warnings{code params path}}}"
              "getClientMutationId(input:{login:$login}){mutationId}}")
-        r = self._post("UpdateCampaigns", q, {
+        r = self.post_idempotent("UpdateCampaigns", q, {
             "login": self.login,
             "input": {"campaignUpdateItems": items_with_bm},
         })
@@ -1502,6 +1659,89 @@ class GridClient:
                 "Grid set-names: " + json.dumps(
                     data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
         return res.get("updatedCampaigns") or []
+
+    def set_adgroup_names(self, adgroup_names: dict[int, str],
+                          campaign_ids: list[int]) -> dict:
+        """Переименовать группы через full-object RMW UpdateUnifiedAdGroups.
+
+        Меняет ТОЛЬКО adGroupName; все остальные поля (ключи, регионы, минус-слова,
+        трекинг, аудитории) читаются из Grid и записываются обратно без изменений.
+        Группы с retargetings_present=True или bid_modifiers_present=True пропускаются:
+        их поля не проходят безопасно через build_update_item, как и в других RMW-путях.
+
+        Returns {"updated": [adgroup_id, ...], "skipped": [...], "errors": [...]}.
+        """
+        clean: dict[int, str] = {}
+        for raw_id, raw_name in (adgroup_names or {}).items():
+            try:
+                gid = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            name = str(raw_name or "").strip()
+            if gid > 0 and name and gid not in clean:
+                clean[gid] = name
+        if not clean:
+            return {"updated": [], "skipped": [], "errors": []}
+
+        cids = [int(c) for c in (campaign_ids or [])
+                if str(c).strip().lstrip("-").isdigit() and int(c) > 0]
+        if not cids:
+            return {"updated": [], "skipped": [],
+                    "errors": ["нет campaign_ids для чтения групп"]}
+
+        try:
+            groups = self.groups_for_edit(cids)
+        except GridFinalizeError as e:
+            return {"updated": [], "skipped": [],
+                    "errors": [f"groups_for_edit: {str(e)[:300]}"]}
+
+        items: list[dict] = []
+        skipped: list[dict] = []
+        seen_gids: set[int] = set()
+
+        for grp in groups:
+            gid = grp.get("adgroup_id")
+            if gid not in clean:
+                continue
+            if gid in seen_gids:
+                continue
+            seen_gids.add(gid)
+            if not grp.get("supported"):
+                skipped.append({"adgroup_id": gid,
+                                 "reason": "тип группы не GdUnifiedAdGroup — RMW недоступен"})
+                continue
+            if grp.get("retargetings_present"):
+                skipped.append({"adgroup_id": gid,
+                                 "reason": "есть ретаргетинги — RMW небезопасен"})
+                continue
+            if grp.get("bid_modifiers_present"):
+                skipped.append({"adgroup_id": gid,
+                                 "reason": "есть корректировки ставок — RMW небезопасен"})
+                continue
+            grp_copy = dict(grp)
+            grp_copy["adgroup_name"] = clean[gid]
+            item = self.build_update_item(
+                grp_copy,
+                keywords=grp_copy.get("keywords") or [],
+                relevance_match=grp_copy.get("relevance_match"),
+            )
+            items.append(item)
+
+        not_found = sorted(gid for gid in clean if gid not in seen_gids)
+        errors: list[str] = []
+        if not_found:
+            errors.append(f"группы не найдены в указанных кампаниях: {not_found[:20]}")
+
+        if not items:
+            return {"updated": [], "skipped": skipped, "errors": errors}
+
+        try:
+            updated_ids = self.update_unified_adgroups(items)
+        except GridFinalizeError as e:
+            errors.append(f"update_unified_adgroups: {str(e)[:400]}")
+            return {"updated": [], "skipped": skipped, "errors": errors}
+
+        return {"updated": updated_ids, "skipped": skipped, "errors": errors}
 
     def add_keywords(self, items: list[dict]) -> list[dict]:
         """Add keyword phrases through Grid (no Direct API units).
@@ -1556,7 +1796,7 @@ class GridClient:
                     data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
         return res.get("addedItems") or []
 
-    def add_sitelink_set(self, sitelinks: list[dict]) -> int | None:
+    def add_sitelink_set(self, sitelinks: list[dict], *, preserve_fragment: bool = False) -> int | None:
         """Создать набор быстрых ссылок через Grid (БЕЗ баллов) → id набора или None.
         Реверс HAR23/entry262: mutation AddSitelinkSets.
         sitelinks: [{title, href, description?}, ...] — title≤30, description≤60.
@@ -1572,7 +1812,10 @@ class GridClient:
         items = []
         for s in sitelinks:
             title = (s.get("Title") or s.get("title") or "")[:30]
-            href = s.get("Href") or s.get("href") or ""
+            raw_href = s.get("Href") or s.get("href") or ""
+            # create-path исторически режет #якорь как внутреннюю служебную метку,
+            # но content-editor назначает ФИНАЛЬНЫЕ посадочные URL и должен сохранять fragment.
+            href = str(raw_href or "").strip() if preserve_fragment else _strip_href_fragment(raw_href)
             if not title or not href:
                 continue
             item = {"title": title, "href": href}
@@ -1687,12 +1930,12 @@ class GridClient:
         # A3: cookie-only — ShoppingAd создан САМИМ Grid, лага нет, пауза не нужна.
         if not self._cookie_only:
             time.sleep(0.2)
-        _sdt_wait = (2, 5)
-        for _sdt_att in range(3):
+        _sdt_wait = (2, 5, 10)
+        for _sdt_att in range(len(_sdt_wait) + 1):
             r = self._post("UpdateShoppingAds", _SHOPPING_MUTATION,
                            {"updateShoppingInput": {"adUpdateItems": items, "saveDraft": True}})
             data = r.json()
-            if data.get("errors") and _is_transient_data_error(data["errors"]) and _sdt_att < 2:
+            if data.get("errors") and _is_transient_data_error(data["errors"]) and _sdt_att < len(_sdt_wait):
                 import logging as _log_sdt_r
                 _log_sdt_r.getLogger("direct.finalize").warning(
                     "set_default_text server error attempt %d, retry in %ds; feed=%d login=%s",
@@ -1732,6 +1975,7 @@ class GridClient:
         items: [{adgroup_id, feed_id, vendor?, collection_id?}, ...].
           vendor      → группа по МАРКЕ: feedFilter field=vendor CONTAINS_ANY (HAR19-проверено).
           collection_id → группа по МОДЕЛИ: field=collectionId CONTAINS_ANY.
+          apply_global_minus=False → не добавлять глобальные минус-марки/модели к feedFilter.
           ни того, ни другого → товарка по ВСЕМУ фиду (вся витрина, намеренно для общих галерей).
         → список id созданных ShoppingAd (в порядке adAddItems), для set_default_text/листингов."""
         if len(items or []) > _GRID_MUTATION_CHUNK:
@@ -1775,12 +2019,14 @@ class GridClient:
                 conds.append({"field": "collectionId", "operator": "EQUALS_ANY",
                               "stringValue": json.dumps([str(it["collection_id"])], ensure_ascii=False)})
             # Глобальные минус-марки: «марка/модель НЕ содержит …» — используем ТОТ ЖЕ brand_fld/model_fld.
-            # Добавляем ПОСЛЕ brand/model/collectionId, в т.ч. для ct0000 (тогда — к всей витрине).
-            try:
-                from . import create_set_feeds as _csf
-                conds.extend(_csf._minus_marks_grid_conditions(brand_field=_brand_fld, model_field=_model_fld))
-            except Exception:  # noqa: BLE001 — минус-марки best-effort
-                pass
+            # Для Б/У-сайтов builder передаёт apply_global_minus=False: там эти фильтры вырезают
+            # нужные used-car офферы из общего фида.
+            if it.get("apply_global_minus", True) is not False:
+                try:
+                    from . import create_set_feeds as _csf
+                    conds.extend(_csf._minus_marks_grid_conditions(brand_field=_brand_fld, model_field=_model_fld))
+                except Exception:  # noqa: BLE001 — минус-марки best-effort
+                    pass
             if conds:
                 entry["feedFilter"] = {"tab": "CONDITION", "conditions": conds}
             ad_items.append(entry)
@@ -2015,18 +2261,18 @@ class GridClient:
         q = ("mutation updateListingAds($updateListingInput:GdUpdateListingAdsInput!){"
              "updateListingAds(input:$updateListingInput){updatedAds{id}"
              "validationResult{errors{code params path}}}}")
-        _lnf_wait = (2, 5)
+        _lnf_wait = (2, 5, 10)
         _last_err = None
         for _oi, _ovr in enumerate(_alt_overrides):
             upd = _build_upd(_ovr)
             if not upd:
                 return 0
             data: dict = {}
-            for _lnf_att in range(3):
+            for _lnf_att in range(len(_lnf_wait) + 1):
                 r = self._post("updateListingAds", q,
                                {"updateListingInput": {"adUpdateItems": upd, "saveDraft": True}})
                 data = r.json()
-                if data.get("errors") and _is_transient_data_error(data["errors"]) and _lnf_att < 2:
+                if data.get("errors") and _is_transient_data_error(data["errors"]) and _lnf_att < len(_lnf_wait):
                     _lnf_log.warning(
                         "set_listing_name_filters server error attempt %d, retry in %ds; login=%s",
                         _lnf_att + 1, _lnf_wait[_lnf_att], self.login)
@@ -2114,11 +2360,11 @@ class GridClient:
         return len(res.get("updatedAds") or [])
 
     def set_campaign_placement_types(self, campaign_ids: list[int],
-                                     placement_types: list[str]) -> list:
-        """Узкий UpdateCampaigns: только placementTypes («Места показа → Ручная настройка»).
+                                     placement_types: list[str] | None) -> list:
+        """Узкий UpdateCampaigns: только placementTypes.
         Шаблон = set_campaign_sitelink_set (narrow-мутации обязаны эхом вернуть broadMatch
-        и базовый скелет — _read_unified_campaign_update_payloads). Для tp5 эталон —
-        PLACEMENTS_TP5 (Товарная галерея + Продвижение в поисковой выдаче)."""
+        и базовый скелет — _read_unified_campaign_update_payloads). Для tp5 эталон — null
+        (ручная настройка через platforms gallery+search+organic)."""
         ids = []
         for raw in campaign_ids or []:
             try:
@@ -2127,8 +2373,8 @@ class GridClient:
                 continue
             if cid > 0 and cid not in ids:
                 ids.append(cid)
-        pts = [str(p) for p in (placement_types or []) if p]
-        if not ids or not pts:
+        pts = [str(p) for p in (placement_types or []) if p] if placement_types is not None else None
+        if not ids:
             return []
         payloads = self._read_unified_campaign_update_payloads(ids)
         q = ("mutation UpdateCampaigns($input:GdUpdateCampaignsInput!$login:String!){"
@@ -2140,7 +2386,7 @@ class GridClient:
             print(f"[grid] set-placements: кампания {_cid} пропущена — стратегия «{_why}»", flush=True)
         items = []
         for cid, base in bases.items():
-            base["placementTypes"] = pts
+            base["placementTypes"] = pts if pts else None
             items.append({"unifiedCampaign": base})
         if not items:
             return []
@@ -2164,8 +2410,9 @@ class GridClient:
         изменения стратегии и прочих полей. campaign_values = {tgt_cid: {"isOrganicSearchEnabled":
         bool, "placementTypes": list|None}} — значения берутся 1:1 из источника.
 
-        Кампании с _unsupported_strategy (DEFAULT / OPTIMIZE_CLICKS без лимита) пропускаются —
-        им нет безопасного write-enum → отдаются в skipped. Добавлено 2026-07-17.
+        Кампании с _unsupported_strategy (DEFAULT / OPTIMIZE_CLICKS без лимита и бюджета)
+        пропускаются — им нет безопасного write-enum → отдаются в skipped.
+        Добавлено 2026-07-17; OPTIMIZE_CLICKS с недельным бюджетом подтверждён HAR 2026-07-20.
         """
         ids = []
         for raw in (campaign_values or {}):
@@ -2320,6 +2567,34 @@ class GridClient:
                   flush=True)
             return None
 
+    def _note_ad_update_shortfall(self, op: str, res: dict, data: dict,
+                                  done: int, sent: int,
+                                  sent_items: list[dict] | None = None) -> list[str]:
+        """Причины неполной записи батча объявлений (пусто = записались все ``sent``).
+
+        Отказ Директа приходит как ``updatedAds:[null, …]`` (длина совпадает с отправленной)
+        + ``validationResult.errors``. Раньше ошибки только печатались в stdout, наверх шла
+        длина списка → задание выглядело успешным. Теперь причина возвращается вызывающему.
+        """
+        reasons = _grid_validation_reasons(res, data)
+        if done >= sent:
+            # полный успех: warnings не превращаем в ошибку задания, но ошибки-уровня
+            # validationResult при полном успехе не бывает — если пришли, показываем.
+            return [r for r in reasons if not r.startswith("warning: ")]
+        if not reasons:
+            reasons = ["Директ вернул updatedAds без id (отказ без объяснения)"]
+        head = f"{op}: обновлено {done} из {sent} объявл."
+        if done == 0:
+            head = f"{op}: НЕ обновлено ни одного из {sent} объявл."
+        failed = _grid_failed_ad_ids(res, sent_items or [])
+        failed_note = ""
+        if failed:
+            failed_note = f"; failed_ad_ids={','.join(failed)}"
+        blobs = [f"{head} — {reason}{failed_note}" for reason in reasons]
+        for blob in blobs:
+            print(f"[grid] {self.login} {blob}", flush=True)
+        return blobs
+
     def update_ad_images(self, ad_items: list[dict], *, allow_empty_images: bool = False) -> int:
         """Добавить imageHashes к объявлениям через UpdateAdaptiveTextAds Grid-mutation.
         Реверс из HAR-25/Entry27.
@@ -2379,24 +2654,37 @@ class GridClient:
             if it.get("displayHref"):
                 item["displayHref"] = str(it["displayHref"])
             upd.append(item)
+        self.last_ad_update_errors = []
         if not upd:
             return 0
         q = ("mutation UpdateAdaptiveTextAds($updateInput:GdUpdateAdaptiveTextAdsInput!){"
              "reqId:getReqId updateAdaptiveTextAds(input:$updateInput){"
              "updatedAds{id}validationResult{errors{code params path}"
              "warnings{code params path}}}}")
-        try:
-            self._bootstrap_csrf()
-            r = self._post("UpdateAdaptiveTextAds", q,
-                           {"updateInput": {"adUpdateItems": upd, "saveDraft": True}})
-            if r.status_code == 403:
+        updated_total = 0
+        all_errors: list[str] = []
+        for chunk in [upd[i:i + _GRID_MUTATION_CHUNK]
+                      for i in range(0, len(upd), _GRID_MUTATION_CHUNK)]:
+            try:
+                self._bootstrap_csrf()
                 r = self._post("UpdateAdaptiveTextAds", q,
-                               {"updateInput": {"adUpdateItems": upd, "saveDraft": True}})
-            data = r.json()
-            res = (data.get("data") or {}).get("updateAdaptiveTextAds") or {}
-            return len(res.get("updatedAds") or [])
-        except Exception:  # noqa: BLE001
-            return 0
+                               {"updateInput": {"adUpdateItems": chunk, "saveDraft": True}})
+                if r.status_code == 403:
+                    r = self._post("UpdateAdaptiveTextAds", q,
+                                   {"updateInput": {"adUpdateItems": chunk, "saveDraft": True}})
+                data = r.json()
+                res = (data.get("data") or {}).get("updateAdaptiveTextAds") or {}
+                done = _grid_updated_ad_ids(res)
+                updated_total += len(done)
+                all_errors.extend(self._note_ad_update_shortfall(
+                    "UpdateAdaptiveTextAds", res, data, len(done), len(chunk), chunk))
+            except Exception as e:  # noqa: BLE001
+                all_errors.append(
+                    f"UpdateAdaptiveTextAds: {type(e).__name__}: {str(e)[:160]} "
+                    f"— 0 из {len(chunk)} объявл. обновлено; "
+                    f"failed_ad_ids={','.join(str(x.get('id')) for x in chunk if x.get('id'))}")
+        self.last_ad_update_errors = all_errors
+        return updated_total
 
     def _ads_rows_paginated(self, op_name: str, query: str, chunk_cids: list[int]) -> list[dict]:
         """Все строки ``client.ads.rowset`` по чанку кампаний — с ПАГИНАЦИЕЙ по limitOffset.
@@ -2497,6 +2785,7 @@ class GridClient:
                                 and (c.get("creativeType") or "") == "VIDEO_ADDITION"]
                 out[aid] = {
                     "id": aid,
+                    "campaignId": row.get("campaignId"),
                     "href": row.get("href") or "",
                     # отображаемая ссылка: читается как linkTail, пишется как displayHref (хвост, не
                     # полный URL — проверено live 17.07.2026) → без чтения RMW стирал её full-replace'ом
@@ -2525,6 +2814,240 @@ class GridClient:
                     "phoneId": pwp.get("phoneId"),
                 }
         return out
+
+    def text_ads_for_update(self, campaign_ids: list[int], ad_ids: list[int]) -> dict[int, dict]:
+        """RMW-снимок ОБЫЧНЫХ текстовых объявлений (``GdTextAd``) для ``UpdateTextAds``.
+
+        Отдельный путь от ``adaptive_ads_for_update``: у TextAd картинка ОДНА и лежит в
+        ``bannerImage`` (не список ``images``), а пишется скаляром ``textBannerImageHash``
+        (браузерный эталон ``_har/TEXTAD_image_replace.json``, мутация ``UpdateTextAds``).
+
+        ``UpdateTextAds`` — full-replace, как и адаптивная мутация, поэтому читаем ВСЁ, что
+        придётся отдать назад. Состав сверен с интроспекцией входного типа ``GdUpdateAdInput``
+        (**32 поля**, живая схема 2026-07-19) — см. отчёт `images-tab-textad-report.md`.
+
+        Формат выдачи намеренно совпадает с ``adaptive_ads_for_update`` (``imageHashes``
+        списком из одного элемента, ``images`` — rich-превью), чтобы инвентарь вкладки
+        обрабатывал оба типа одним кодом. ``kind='text'`` отличает их при записи.
+
+        ``rmw_unsafe`` — непустая строка, если у объявления есть поле, чью write-форму
+        подтвердить нечем (турболендинг, мультикарточки). Такое объявление НЕ обновляем:
+        full-replace без этих ключей стёр бы настройку (класс
+        ``UAC_FULL_PATCH_REPLACE_DROPS_ASYMMETRIC_KEY``). Лучше честный пропуск, чем потеря.
+        """
+        cids: list[int] = []
+        for raw in campaign_ids or []:
+            try:
+                cid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if cid > 0 and cid not in cids:
+                cids.append(cid)
+        wanted: set[int] = set()
+        for raw in ad_ids or []:
+            try:
+                aid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if aid > 0:
+                wanted.add(aid)
+        if not cids or not wanted:
+            return {}
+        self._bootstrap_csrf()
+        q = ("query TextAdsForUpdate($login:String!,$inp:GdAdsContainerInput!){"
+             "client(searchBy:{login:$login}){ads(input:$inp){rowset{id campaignId "
+             "...on GdTextAd{href hrefParams linkTail title titleExtension body isMobile "
+             "erirAdDescription showTitleAndBody preferVCardOverPermalink vcardId "
+             "turboGalleryHref "
+             "bannerImage{imageHash name mdsGroupId namespace imageSize{height width} "
+             "formats{imageSize{height width} path}} "
+             # hasButton НЕ читаем: в GdUpdateAdInput такого ключа нет (интроспекция
+             # 2026-07-19, 32 поля), кнопка пишется объектом button — флаг был мёртвым
+             "logoImage{imageHash} button{action customText href} "
+             "bannerPrice{price priceOld prefix currency} "
+             "inheritableCallouts{policy assetValue} inheritableSitelinkSet{policy assetValue} "
+             "permalinkWithPhone{permalinkId phoneId policy} "
+             "typedCreative{creativeId creativeType} "
+             "multicards{__typename} turbolanding{id}}"
+             "}}}}")
+        out: dict[int, dict] = {}
+        for chunk in [cids[i:i + 100] for i in range(0, len(cids), 100)]:
+            rows = self._ads_rows_paginated("TextAdsForUpdate", q, chunk)
+            for row in rows:
+                try:
+                    aid = int(row.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                if aid not in wanted:
+                    continue
+                images_rich = _grid_images_rich([row.get("bannerImage")]
+                                                if row.get("bannerImage") else [])
+                creative = row.get("typedCreative") or {}
+                creative_id = (str(creative.get("creativeId"))
+                               if creative.get("creativeId")
+                               and (creative.get("creativeType") or "") == "VIDEO_ADDITION"
+                               else None)
+                unsafe = []
+                if row.get("turbolanding"):
+                    unsafe.append("турболендинг")
+                if row.get("multicards"):
+                    unsafe.append("мультикарточки")
+                out[aid] = {
+                    "id": aid,
+                    "kind": "text",
+                    "href": row.get("href") or "",
+                    "hrefParams": row.get("hrefParams") or "",
+                    # читается linkTail, пишется displayHref — та же асимметрия, что у
+                    # адаптивных (GRID_RMW_DISPLAY_HREF_WIPED); ключ есть в GdUpdateAdInput
+                    "displayHref": row.get("linkTail") or "",
+                    "title": row.get("title") or "",
+                    "titleExtension": row.get("titleExtension") or None,
+                    "body": row.get("body") or "",
+                    "isMobile": bool(row.get("isMobile")),
+                    "erirAdDescription": row.get("erirAdDescription") or None,
+                    "showTitleAndBody": bool(row.get("showTitleAndBody")),
+                    "preferVCardOverPermalink": bool(row.get("preferVCardOverPermalink")),
+                    "vcardId": row.get("vcardId") or None,
+                    "turboGalleryHref": row.get("turboGalleryHref") or None,
+                    # картинка ОДНА: список из одного элемента — только ради общей формы
+                    # с адаптивным путём (инвентарь вкладки ходит по imageHashes)
+                    "imageHashes": [im["imageHash"] for im in images_rich],
+                    "images": images_rich,
+                    "logoImageHash": (row.get("logoImage") or {}).get("imageHash") or None,
+                    "button": row.get("button"),
+                    "adPrice": row.get("bannerPrice"),
+                    "creativeId": creative_id,
+                    "inheritableSitelinkSet": _grid_inheritable_write(
+                        row.get("inheritableSitelinkSet"), "sitelinkSetId"),
+                    "inheritableCallouts": _grid_inheritable_write(
+                        row.get("inheritableCallouts"), "calloutIds"),
+                    # у TextAd визитка пишется ОБЪЕКТОМ permalinkWithPhone (у адаптивных —
+                    # плоскими permalinkId/phoneId): так шлёт браузер в эталоне
+                    "permalinkWithPhone": row.get("permalinkWithPhone") or None,
+                    "rmw_unsafe": ", ".join(unsafe),
+                }
+        return out
+
+    def update_text_ad_images(self, ad_items: list[dict]) -> int:
+        """Заменить картинку обычных текстовых объявлений через ``UpdateTextAds``.
+
+        ``ad_items`` — снимки из ``text_ads_for_update`` с уже подменённым ``imageHashes[0]``
+        (или явным ``textBannerImageHash``). Мутация REPLACE'ит объявление целиком, поэтому
+        собираем ПОЛНЫЙ payload: 17 ключей браузерного эталона (шлются ВСЕГДА, в т.ч.
+        ``adPrice``/``permalinkWithPhone`` с пустым значением) + поля, которые браузер не
+        слал только потому, что они были пусты у его объявления (displayHref, button,
+        logoImageHash, vcardId, showTitleAndBody, preferVCardOverPermalink) — их шлём
+        только когда значение непустое, т.е. поведение на «пустом» объявлении совпадает
+        с эталоном байт в байт.
+
+        ``rmw_unsafe`` (турболендинг/мультикарточки) → объявление пропускаем: их write-форму
+        подтвердить нечем, а full-replace без них стёр бы настройку.
+        → число обновлённых объявлений. Не бросает — 0 при ошибке.
+        """
+        return self.update_text_ads(ad_items)
+
+    def update_text_ads(self, ad_items: list[dict], *, allow_empty_image_hashes: bool = False) -> int:
+        """Full-replace TextAd payload through Grid without requiring image mutation."""
+        self.last_ad_update_errors = []
+        upd = []
+        for it in (ad_items or []):
+            if not it.get("id") or it.get("rmw_unsafe"):
+                continue
+            hashes = list(it.get("imageHashes") or [])
+            image_hash = str(it.get("textBannerImageHash") or (hashes[0] if hashes else "") or "")
+            if not image_hash and not allow_empty_image_hashes:
+                continue
+            item = {
+                "href": it.get("href") or "",
+                "hrefParams": it.get("hrefParams") or "",
+                # домен браузер шлёт null и на объявлении с непустым читаемым domain —
+                # Директ выводит его из href сам (эталон TEXTAD_image_replace.json)
+                "domain": None,
+                "body": it.get("body") or "",
+                "title": it.get("title") or "",
+                "titleExtension": it.get("titleExtension") or None,
+                "textBannerImageHash": image_hash or None,
+                "creativeId": it.get("creativeId") or None,
+                "adPrice": _strip_graphql_typenames(it["adPrice"]) if it.get("adPrice") else None,
+                "isMobile": bool(it.get("isMobile")),
+                "erirAdDescription": it.get("erirAdDescription") or None,
+                "inheritableCallouts": (it.get("inheritableCallouts")
+                                        if isinstance(it.get("inheritableCallouts"), dict)
+                                        else {"policy": "INHERIT"}),
+                "inheritableSitelinkSet": (it.get("inheritableSitelinkSet")
+                                           if isinstance(it.get("inheritableSitelinkSet"), dict)
+                                           else {"policy": "INHERIT"}),
+                "adType": "TEXT",
+                "id": str(it["id"]),
+                "turboGalleryParams": {"turboGalleryHref": it.get("turboGalleryHref") or None},
+            }
+            # ``adPrice`` и ``permalinkWithPhone`` шлём БЕЗУСЛОВНО — как браузер. Раньше оба
+            # ключа опускались на объявлении с пустым значением, и живой замер показал, что
+            # это не редкость: 4970 из 7501 объявлений уходили бы с 15 ключами вместо 17.
+            # Эквивалентность «ключа нет» ≡ «CLEAR» под REPLACE-мутацией НЕ доказана (эталон
+            # покрывает только ветку «оба непусты»), поэтому не опираемся на неё вовсе:
+            # состав payload теперь ОДИН для всех объявлений и равен браузерному.
+            # adPrice: GdAdPriceInput (nullable, интроспекция 2026-07-19) → явный null валиден.
+            pwp = it.get("permalinkWithPhone")
+            if isinstance(pwp, dict) and pwp.get("policy"):
+                item["permalinkWithPhone"] = {
+                    k: v for k, v in {
+                        "policy": str(pwp.get("policy")),
+                        "permalinkId": pwp.get("permalinkId"),
+                        "phoneId": pwp.get("phoneId"),
+                    }.items() if v is not None
+                }
+            else:
+                # визитки нет → ровно то, что шлёт браузер (``policy`` внутри объекта
+                # NON_NULL, поэтому пустой объект слать нельзя)
+                item["permalinkWithPhone"] = {"policy": "CLEAR"}
+            if it.get("displayHref"):
+                item["displayHref"] = str(it["displayHref"])
+            if it.get("logoImageHash"):
+                item["logoImageHash"] = str(it["logoImageHash"])
+            if it.get("vcardId"):
+                item["vcardId"] = str(it["vcardId"])
+            if it.get("showTitleAndBody"):
+                item["showTitleAndBody"] = True
+            if it.get("preferVCardOverPermalink"):
+                item["preferVCardOverPermalink"] = True
+            btn = it.get("button")
+            if isinstance(btn, dict) and btn.get("action"):
+                item["button"] = {"action": btn["action"], "href": btn.get("href") or ""}
+                if btn.get("customText"):
+                    item["button"]["customText"] = btn["customText"]
+            upd.append(item)
+        if not upd:
+            return 0
+        q = ("mutation UpdateTextAds($updateInput:GdUpdateAdsInput!){"
+             "reqId:getReqId updateAds(input:$updateInput){"
+             "updatedAds{id}validationResult{errors{code params path}"
+             "warnings{code params path}}}}")
+        # saveDraft=false — так шлёт браузер для TextAd (у адаптивных true). Не переносим
+        # значение между мутациями: сверено по эталону, 3/3 запроса UpdateTextAds = false.
+        updated_total = 0
+        all_errors: list[str] = []
+        for chunk in [upd[i:i + _GRID_MUTATION_CHUNK]
+                      for i in range(0, len(upd), _GRID_MUTATION_CHUNK)]:
+            variables = {"updateInput": {"adUpdateItems": chunk, "saveDraft": False}}
+            try:
+                self._bootstrap_csrf()
+                r = self._post("UpdateTextAds", q, variables)
+                if r.status_code == 403:
+                    r = self._post("UpdateTextAds", q, variables)
+                data = r.json()
+                res = (data.get("data") or {}).get("updateAds") or {}
+                done = _grid_updated_ad_ids(res)
+                updated_total += len(done)
+                all_errors.extend(self._note_ad_update_shortfall(
+                    "UpdateTextAds", res, data, len(done), len(chunk), chunk))
+            except Exception as e:  # noqa: BLE001
+                all_errors.append(
+                    f"UpdateTextAds: {type(e).__name__}: {str(e)[:160]} "
+                    f"— 0 из {len(chunk)} объявл. обновлено; "
+                    f"failed_ad_ids={','.join(str(x.get('id')) for x in chunk if x.get('id'))}")
+        self.last_ad_update_errors = all_errors
+        return updated_total
 
     def video_creative_urls(self, campaign_ids: list[int], ad_ids: list[int]) -> dict[str, dict]:
         """Скачиваемые URL видео-креативов (VIDEO_ADDITION) по куки → {creative_id: {...}}.
@@ -2606,16 +3129,27 @@ class GridClient:
                 "titles": list(it.get("titles") or []),
                 "bodies": list(it.get("bodies") or []),
                 "imageHashes": list(it.get("imageHashes") or []),
-                "creativeIds": [],
-                "permalinkId": None,
-                "phoneId": None,
+                "creativeIds": [str(c) for c in (it.get("creativeIds") or []) if c],
+                "permalinkId": it.get("permalinkId") or None,
+                "phoneId": it.get("phoneId") or None,
                 "erirAdDescription": None,
-                "inheritableCallouts": {"policy": "INHERIT"},
-                "inheritableSitelinkSet": {"policy": "INHERIT"},
+                "inheritableCallouts": (it.get("inheritableCallouts")
+                                        if isinstance(it.get("inheritableCallouts"), dict)
+                                        else {"policy": "INHERIT"}),
+                "inheritableSitelinkSet": (it.get("inheritableSitelinkSet")
+                                           if isinstance(it.get("inheritableSitelinkSet"), dict)
+                                           else {"policy": "INHERIT"}),
                 "id": str(it["id"]),
             }
             if it.get("adPrice"):
-                item["adPrice"] = it["adPrice"]
+                item["adPrice"] = _strip_graphql_typenames(it["adPrice"])
+            btn = it.get("button")
+            if isinstance(btn, dict) and btn.get("action"):
+                item["button"] = {"action": btn["action"], "href": btn.get("href") or ""}
+                if btn.get("customText"):
+                    item["button"]["customText"] = btn["customText"]
+            if it.get("displayHref"):
+                item["displayHref"] = str(it["displayHref"])
             upd.append(item)
         if not upd:
             return 0
@@ -2874,14 +3408,15 @@ class GridClient:
         searchRetargetings/generalPrice/bidModifiers), шлём в дефолте build_adgroup — это боевой
         стейт групп, создаваемых этим сервисом; вызывающий обязан пропускать группы с
         retargetings_present/bid_modifiers_present, чтобы не затереть непустые значения."""
-        kw = [{"phrase": str(k)} for k in (keywords or []) if str(k).strip()][:200]
+        kw = [{"phrase": p} for p in dict.fromkeys(
+            s for s in (str(k).strip() for k in (keywords or [])) if s)][:200]
         item = {
             "adGroupId": str(grp["adgroup_id"]),
             "adGroupName": grp.get("adgroup_name") or "",
-            "adGroupMinusKeywords": [str(m) for m in (grp.get("minus_keywords") or [])][:100],
+            "adGroupMinusKeywords": list(dict.fromkeys(str(m) for m in (grp.get("minus_keywords") or [])))[:100],
             "bidModifiers": {},
-            "libraryMinusKeywordsIds": [str(i) for i in (grp.get("library_minus_ids") or [])],
-            "regionIds": [int(r) for r in (grp.get("region_ids") or [])] or [225],
+            "libraryMinusKeywordsIds": list(dict.fromkeys(str(i) for i in (grp.get("library_minus_ids") or []))),
+            "regionIds": list(dict.fromkeys(int(r) for r in (grp.get("region_ids") or []))) or [225],
             "hyperGeoId": grp.get("hyper_geo_id"),
             "hyperlocalGeoSegments": grp.get("hyperlocal_geo_segments"),
             "audienceTargeting": grp.get("audience_targeting") or "ALL_AUDIENCE",
@@ -2913,8 +3448,22 @@ class GridClient:
         for i in range(0, len(items), _GRID_MUTATION_CHUNK):
             chunk = items[i:i + _GRID_MUTATION_CHUNK]
             self._bootstrap_csrf()
-            j = self._post_json_retry("UpdateUnifiedAdGroups", _UPDATE_UNIFIED_ADGROUPS_Q,
-                                      {"unifiedUpdateInput": chunk})
+            r = self.post_idempotent(
+                "UpdateUnifiedAdGroups",
+                _UPDATE_UNIFIED_ADGROUPS_Q,
+                {"unifiedUpdateInput": chunk},
+            )
+            try:
+                j = r.json()
+            except Exception as e:  # noqa: BLE001
+                raise GridFinalizeError(
+                    f"UpdateUnifiedAdGroups: не-JSON HTTP {r.status_code}: {r.text[:160]}"
+                ) from e
+            if j.get("errors"):
+                raise GridFinalizeError(
+                    "UpdateUnifiedAdGroups: "
+                    + json.dumps(j.get("errors"), ensure_ascii=False)[:400]
+                )
             res = (j.get("data") or {}).get("updateUnifiedAdGroups") or {}
             vr = res.get("validationResult") or {}
             if vr.get("errors"):

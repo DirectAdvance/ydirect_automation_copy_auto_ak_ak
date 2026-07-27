@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from .text_norm import _trim_clean
 from .text_gen import _fill_title
+from .grid_create import unique_keyword_ids as _unique_keyword_ids
+from .link_check import resolve_or_fallback_url as _resolve_url, resolve_urls_batch as _resolve_urls_batch
 
 import re
 import time
 from collections import Counter
+from urllib.parse import urlsplit, urlunsplit
 
 _DEPS: dict = {}
 
@@ -19,11 +22,41 @@ def configure(deps: dict) -> None:
     globals().update(deps)
 
 
+def _site_root_href(href: str) -> str:
+    """Root site URL for feed/model links even when campaign landing is /quiz."""
+    raw = str(href or "").strip()
+    try:
+        p = urlsplit(raw)
+        if p.scheme and p.netloc:
+            return urlunsplit((p.scheme, p.netloc, "", "", ""))
+    except Exception:  # noqa: BLE001
+        pass
+    return raw.rstrip("/")
+
+
+def _pack_group_href(ct: str, brand: str, real_brand: str, feed_urls: dict, href: str, site_type: str) -> str:
+    """Raw model_href для группы пака (до link_check resolve). Вызывается в pre-pass и основном цикле.
+
+    BUTTON_404_GENERIC_AVTO (2026-07-21): формульный deep-link зовём ТОЛЬКО с реальным брендом
+    (real_brand, не brand), т.к. brand может быть литеральным фолбэком «Авто» →
+    _slugify("Авто")="avto" → /auto/avto (404, страницы не существовало).
+    """
+    site_href = _site_root_href(href)
+    raw_feed = _feed_url_for_model(feed_urls, brand, no_brand_fallback=(_ct_segment(ct) == "Модели"))
+    if raw_feed:
+        return _brand_level_url(raw_feed) if _ct_segment(ct) == "Марки" else _strip_url_query(raw_feed)
+    if real_brand:
+        return _model_page_href(site_href, site_type, real_brand)
+    return site_href.rstrip("/")
+
+
 def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
                         region_ids: list, groups: list,
                         feed_id: int = 0, with_shopping: bool = False,
                         apply_group_minus: bool = True,
-                        autotarget: bool = False) -> dict:
+                        autotarget: bool = False,
+                        keep_keywords: bool = False,
+                        site_type: str = "") -> dict:
     """Наполнить Поисковую (tp2) / tp5 группами БАТЧЕМ: adgroups.add → keywords.add → ads.add(TextAd).
 
     groups: [{name, keywords:[], minus:[], title, text, href, title2?, callout_ext_ids?}].
@@ -38,6 +71,28 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
     → {adgroups, keywords, ads, errors, deferred}."""
     rep = {"adgroups": 0, "keywords": 0, "ads": 0, "images_uploaded": 0, "errors": [], "deferred": 0}
     rids = [int(r) for r in (region_ids or []) if str(r).lstrip("-").isdigit()] or [225]
+    wants_keywords = (not autotarget) or bool(keep_keywords)
+    if wants_keywords:
+        _seen_kw_campaign: set[str] = set()
+        _deduped_groups = []
+        _dropped_groups = 0
+        for _g in groups or []:
+            _ng = dict(_g or {})
+            _kws = []
+            for _kw in _kw_clean(_ng.get("keywords") or [], 200):
+                _key = " ".join(sorted(re.sub(r"(^|\s)\+", " ", str(_kw or "").lower()).split()))
+                if not _key or _key in _seen_kw_campaign:
+                    continue
+                _seen_kw_campaign.add(_key)
+                _kws.append(_kw)
+            if _kws:
+                _ng["keywords"] = _kws
+                _deduped_groups.append(_ng)
+            else:
+                _dropped_groups += 1
+        groups = _deduped_groups
+        if _dropped_groups:
+            rep["groups_skipped_duplicate_keywords"] = _dropped_groups
     if len(groups) > _AC_GROUP_CAP:                       # кап за проход (анти-блок)
         rep["deferred"] = len(groups) - _AC_GROUP_CAP
         groups = groups[:_AC_GROUP_CAP]
@@ -70,7 +125,8 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
             region_ids=rids,
             keywords=[],                          # ключи — ТОЛЬКО через Фазу 2, без дублей
             minus_keywords=_gm,
-            autotargeting_profile="search_tp2",   # EXACT_V2_MARK + WITHOUT_BRAND атомарно
+            autotargeting=bool(autotarget),
+            autotargeting_profile=("search_tp2" if autotarget else ""),   # EXACT_V2_MARK + WITHOUT_BRAND атомарно
         ))
     try:
         ag_ids = _gcl2.add_adgroups(_g2_items)
@@ -83,6 +139,11 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
             else:
                 ag_ids = list(ag_ids) + [None] * (len(groups) - len(ag_ids))
                 rep["errors"].append("tp2/tp4 Grid: позиционный сдвиг групп — ключи могут быть смещены")
+        else:
+            time.sleep(0.6)
+            _n2id2 = _gcl2._read_adgroup_name_to_id(int(campaign_id))
+            if _n2id2:
+                ag_ids = [_n2id2.get(g.get("name") or "") for g in groups]
         rep["adgroups"] = sum(1 for x in ag_ids if x)
         rep["relevance_match_set"] = rep["adgroups"]   # relevanceMatch атомарно при создании
     except gc.GridCreateError as _g2e:
@@ -104,14 +165,31 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
     for i, g in enumerate(groups):
         if not ag_ids[i]:
             continue
-        if autotarget:
+        if autotarget and not keep_keywords:
             continue
         # _kw_clean дедуплит (lowercase seen) и капит ≤200/группу → нет MUST_NOT_CONTAIN_DUPLICATED.
         for k in _kw_clean(g.get("keywords") or [], 200):
             kw_items.append({"adGroupId": str(ag_ids[i]), "keyword": k})
     if kw_items:
         try:
-            rep["keywords"] = len(_gcl2.add_keywords(kw_items))
+            _sent_kw_agids = {str(it.get("adGroupId") or "") for it in kw_items if it.get("adGroupId")}
+            # Считаем УНИКАЛЬНЫЕ keywordId, а не отправленные строки: Директ схлопывает
+            # дубли (порядок слов/регистр/пробелы/«+»/словоформа) и отдаёт id уже существующей
+            # фразы → len(addedItems) давал ложный недобор в сверке build⇄кабинет.
+            _added_kw_rows = _gcl2.add_keywords(kw_items)
+            _added_kw_agids = {str(r.get("adGroupId") or "") for r in (_added_kw_rows or []) if r.get("adGroupId")}
+            _missing_kw_agids = _sent_kw_agids - _added_kw_agids
+            if _missing_kw_agids:
+                time.sleep(0.6)
+                _retry_items = [it for it in kw_items if str(it.get("adGroupId") or "") in _missing_kw_agids]
+                _retry_rows = _gcl2.add_keywords(_retry_items) if _retry_items else []
+                _added_kw_rows = list(_added_kw_rows or []) + list(_retry_rows or [])
+                _added_kw_agids = {str(r.get("adGroupId") or "") for r in (_added_kw_rows or []) if r.get("adGroupId")}
+                _missing_kw_agids = _sent_kw_agids - _added_kw_agids
+            rep["keywords"] = _unique_keyword_ids(_added_kw_rows)
+            if _missing_kw_agids:
+                rep["errors"].append(
+                    f"keywords(Grid AddKeywords): {len(_missing_kw_agids)} групп без подтверждённых ключей")
         except Exception as _kwe:  # noqa: BLE001 — ключи = ЕДИНСТВЕННЫЙ путь; сбой = группы без ключей
             rep["errors"].append(f"keywords(Grid AddKeywords): {str(_kwe)[:200]}")
 
@@ -130,7 +208,10 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
         img_paths = g.get("image_paths") or ([g.get("image_path")] if g.get("image_path") else [])
         ra = _responsive_ad(g.get("titles") or [g.get("title"), g.get("name")],
                             g.get("texts") or [g.get("text")], href,
-                            image_hashes=None)
+                            image_hashes=None,
+                            # site_type нужен финальной сборке: `_upgrade_credit_*` подставляет
+                            # хардкод-варианты про «новые авто» уже ПОСЛЕ всех `_cf`.
+                            site_type=site_type or g.get("site_type") or "")
         if not ra:
             rep["errors"].append(f"{g.get('name', '?')}: пропущено объявление (нет заголовков/текстов/href)")
             continue
@@ -202,7 +283,8 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
                     _upd["image_hashes"] = meta.get("image_hashes") or []
                 _upd_items.append(_upd)
             if _upd_items:
-                rep["ads_repaired"] = _grid_update_adaptive_ads(login, _upd_items)
+                rep["ads_repaired"] = _grid_update_adaptive_ads(
+                    login, _upd_items, campaign_ids=[campaign_id] if campaign_id else None)
                 rep["image_groups"] = sum(1 for _it in _upd_items if _it.get("image_hashes"))
         except Exception as _e:  # noqa: BLE001
             rep.setdefault("warnings", []).append(f"tp2/tp4 repair: {str(_e)[:100]}")
@@ -349,6 +431,7 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
                           ai_title2: str = "",
                           apply_group_minus: bool = True,
                           city: str = "", autotarget: bool = False,
+                          keep_keywords: bool = False,
                           only_cts: list[str] | None = None,
                           only_gks: set | None = None) -> dict:
     """Наполнить текстовую кампанию (tp1/tp2/tp5): структура→модель-ct→ключи/минус/уточнения
@@ -399,7 +482,7 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
     _sc_titles = _slepok_campaign_content(slepok, site_type).get("titles") or []  # пул слепка — 1 раз
     # URL страниц моделей: account-level мёрж (все фиды, как цены) → покрывает марки без URL
     # в конкретном feed_id (был Баг-8: formular _model_page_href на 404). (#ФИКС-8)
-    _feed_urls = _account_offer_urls(login, href)
+    _feed_urls = _account_offer_urls(login, _site_root_href(href))
     # Группы 1в1 (per-adgroup). Гейт: если в структуре у какого-то ct >1 группа (реальная
     # ct-коллизия) И это НЕ split/dmp (only_cts / _struct_names) — строим по СТРУКТУРНЫМ items
     # (не по дедуп-ct), беря per-group пак-данные pack[ct]["_groups"][gk] с фолбэком на общий
@@ -420,6 +503,21 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
     else:
         _units = [(ct, "", "") for ct in cts]
     groups = []
+    # Pre-pass: прогрев кэша link_check параллельно (6 потоков). Основной цикл ниже
+    # вызывает _resolve_url(model_href) — теперь это будет cache-hit. (#LINK_CHECK_404_FALLBACK)
+    _batch_hrefs: list[str] = []
+    for _pct, _pgk, _puname in _units:
+        _pgrp_pack = (pack.get(_pct, {}).get("_groups") or {}).get(_pgk) if _pgk else None
+        _pdata = _pgrp_pack or pack.get(_pct) or {}
+        if not _pdata.get("positive"):
+            continue
+        _praw = ((_struct_names.get(_pct) or ct_name.get(_pct) or _pct) if _struct_names
+                 else (ct_name.get(_pct) or ct_model.get(_pct) or _pct))
+        _preal = _valid_pack_brand_name(_pct, _praw)
+        _pbrand = _preal if _struct_names else (_preal or "Авто")
+        _batch_hrefs.append(_pack_group_href(_pct, _pbrand, _preal, _feed_urls, href, site_type))
+    _resolve_urls_batch(_batch_hrefs)
+
     for ct, _gk, _uname in _units:
         _grp_pack = (pack.get(ct, {}).get("_groups") or {}).get(_gk) if _gk else None
         data = _grp_pack or pack.get(ct) or {}
@@ -433,20 +531,17 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
             # (_ag_part1_map = gsheet_naming) НЕ авторитет — авто-ct может совпасть с темой
             # слепка (ct0084: авто «Faw Bestune T77» ↔ dmp «Конкуренты») и подменить тему марка-брендом.
             raw_name = _struct_names.get(ct) or ct_name.get(ct) or ct
-            brand = _valid_pack_brand_name(ct, raw_name)          # тема → "" → не авто-лексика
+            _real_brand = _valid_pack_brand_name(ct, raw_name)    # тема → "" → не авто-лексика
+            brand = _real_brand
         else:
             raw_name = ct_name.get(ct) or ct_model.get(ct) or ct
-            brand = _valid_pack_brand_name(ct, raw_name) or "Авто"
+            _real_brand = _valid_pack_brand_name(ct, raw_name)
+            brand = _real_brand or "Авто"
         display = _pack_group_display_name(ct, raw_name, brand)   # человекочитаемая тема для ИМЕНИ группы
-        # deep-link на страницу модели: сначала реальный URL из фида, фолбэк на формульный слаг.
-        # ФИКС A: Марки → обрезаем до /auto/{brand}, Модели → полный путь (без query). (#ФИКС-A)
-        _raw_feed_url = _feed_url_for_model(_feed_urls, brand,
-                                            no_brand_fallback=(_ct_segment(ct) == "Модели"))
-        if _raw_feed_url:
-            model_href = (_brand_level_url(_raw_feed_url) if _ct_segment(ct) == "Марки"
-                          else _strip_url_query(_raw_feed_url))
-        else:
-            model_href = _model_page_href(href, site_type, brand)
+        # deep-link: фид → формульный слаг. ФИКС-A: Марки→/auto/{brand}, Модели→полный путь.
+        # BUTTON_404_GENERIC_AVTO: helper принимает _real_brand (не brand) для формульного deep-link.
+        # 404-фолбэк: кэш прогрет pre-pass (batch 6 потоков) → cache-hit. (#LINK_CHECK_404_FALLBACK)
+        model_href = _resolve_url(_pack_group_href(ct, brand, _real_brand, _feed_urls, href, site_type))
         # Title: шаблон «Новые {brand} в {город}. {акция}» (≤35 симв.) — фолбэк brand[:56]
         # с добивкой до ≥54 через _fill_title (иначе «BAIC» 4 симв. отбрасывается gate-ом <48).
         # dmp (гейт _struct_names): авто-шаблоны неприменимы — title-seed пуст, _rsya_titles ведёт
@@ -454,8 +549,8 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
         if _struct_names:
             title = ""
         else:
-            title = (_title_from_template(brand, city, slepok=slepok) if (not ai_title2 and brand)
-                     else _fill_title(brand[:56]))
+            title = (_title_from_template(brand, city, slepok=slepok, site_type=site_type)
+                     if (not ai_title2 and brand) else _fill_title(brand[:56]))
         ttl2 = (ai_title2[:30] if ai_title2 else _next_title2())   # ИИ-title2 или round-robin из пула
         # В боевом create_set контент генерим ОДИН РАЗ на кампанию/item. Делать M3-вызов на
         # КАЖДУЮ ct-группу нельзя: tp1/tp5 содержат десятки групп, и создание зависает на минуты
@@ -469,19 +564,23 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
         # Картинки: общие ct0000-ct0014 → общий пул ct0000; кузова ct0015-ct0018 → свой ct;
         # модели/марки → свой ct.
         tp2_all_images = _creative_images_for_ct(site_type, tp_code, ct, key)
+        _keywords = _filter_group_keywords(data.get("positive", []), _ct_segment(ct), brand, city, site_type,
+                                           model=(_uname if (_multi and _uname) else brand))
+        if ((not autotarget) or keep_keywords) and not _keywords:
+            continue
         groups.append({
-            # per-adgroup (multi): имя из структурного item; иначе dmp → чистая тема;
-            # авто-слепки → прежний кодер-нейминг {ct}_..._g00 — {бренд}.
-            "name": (_uname if (_multi and _uname)
-                     else (display if _struct_names else _text_group_name(ct, r_code, display))),
+            # per-adgroup (multi): кодер-имя строим через _text_group_name — дисплейное имя ГРУППЫ
+            # (структурный _uname) уходит в "тему" кодера, а не вместо кодера целиком.
+            # dmp (_struct_names): чистая тема без кодера (как прежде).
+            "name": (display if _struct_names
+                     else _text_group_name(ct, r_code, _uname if (_multi and _uname) else display)),
             # БАГ-13: для «Марки» — убрать ключи «марка+модель» (напр. «Chery Tiggo 8 Pro»)
             # model=: в per-adgroup режиме (_multi) фильтр чужих моделей строим по модели САМОЙ
             # ГРУППЫ (структурный `t`, напр. «Lada Granta Liftback»), а не по ct-уровневому brand
             # («Lada Granta») — иначе под-модели одного ct дискриминируют друг друга и группа
             # уезжает с 0 ключей (лифтбек/седан/универсал попадали в «чужие»).
-            "keywords": _filter_group_keywords(data.get("positive", []), _ct_segment(ct), brand, city, site_type,
-                                               model=(_uname if (_multi and _uname) else brand)),
-            "minus": _enabled_minus_words(),   # ЕДИНЫЙ источник минус-фраз — вкладка «Минус-слова»
+            "keywords": _keywords,
+            "minus": data.get("minus") or [],  # пак-специфичные минус-слова ct/группы; глобальные — только на кампании
             "ct": ct,                            # баг #5: нужен для _ct_segment→seg→adPrice по Марке
             "brand": brand,                      # модель/бренд группы — для adPrice из фида (#2)
             "titles": g_titles,                  # ← Комбинаторное: список заголовков
@@ -510,7 +609,9 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
         co_pool = {}
     rep = _build_tp2_adgroups(token, login, campaign_id, region_ids, groups,
                               feed_id=feed_id, with_shopping=with_shopping,
-                              apply_group_minus=apply_group_minus, autotarget=autotarget)
+                              apply_group_minus=apply_group_minus, autotarget=autotarget,
+                              keep_keywords=keep_keywords,
+                              site_type=site_type)
     rep["cts"] = len(cts)
     rep["groups_built"] = len(groups)
     rep["callouts_pool"] = len(co_pool)

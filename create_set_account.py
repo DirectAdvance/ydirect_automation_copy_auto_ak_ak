@@ -55,8 +55,14 @@ def prepare_create_set_account(*, login: str, body: dict[str, Any],
 def validate_create_set_content(*, items: list[dict[str, Any]],
                                 tpl_titles: list[str],
                                 tpl_texts: list[str],
-                                site_type: str) -> dict[str, Any]:
+                                site_type: str,
+                                allow_post_only: bool = False) -> dict[str, Any]:
     """Ensure there is either item content or fallback templates."""
+    if allow_post_only and items and all(
+        str(item.get("type") or "") in {"post_tp8", "post_tp9", "post_tp10"}
+        for item in items
+    ):
+        return {"ok": True}
     any_item_content = any((item.get("titles") or item.get("texts")) for item in items or [])
     if (not tpl_titles or not tpl_texts) and not any_item_content:
         return {"ok": False, "status": 400,

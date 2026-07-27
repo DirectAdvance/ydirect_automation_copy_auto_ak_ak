@@ -61,19 +61,24 @@ def execute_images_repair(login: str, ctx: dict, campaign_ids: list[int],
     """Пере-залить картинки tp1 через RMW + UpdateAdaptiveTextAds (in-place, no Direct units)."""
     out, status = _run_per_campaign_repair("images_repair", login, ctx, campaign_ids,
                                            deps.campaign_images_repair)
-    # IMAGE_NO_POOL: все кампании вернули чистый content-gap (пути к картинкам отсутствуют
-    # структурно — нет файлов в Manual/<ct> или паке слепка) и upload-ошибок нет.
-    # Это терминальный маркер: repair-loop не должен переставлять то же действие на следующей
-    # итерации (аналог VIDEO_NO_POOL у видео). Аналитически безопасно: skipped_content_gap=True
-    # выставляется ТОЛЬКО когда _creative_images_for_ct вернул [] (структурно пустой пул), а не
-    # при ошибке Grid/сети — те попадают в upload_fail_cts и не дают all-gap.
+    # IMAGE_NO_POOL: все кампании вернули ЧИСТЫЙ структурный content-gap:
+    #  • skipped_content_gap=True для каждой кампании (путей нет, пул структурно пуст)
+    #  • нет upload_fail_cts (upload не пытался, но это upload-ошибка, не gap)
+    #  • нет resolver_fail_cts (M3/сеть временно недоступны — ретраебл, НЕ terminal)
+    # Только при выполнении всех трёх условий ставим IMAGE_NO_POOL и ok=False:
+    #  – ok=False обязательно (Critical #1): execute_all_in_place смотрит `200<=status<300 AND ok`,
+    #    без ok=False action уйдёт в executed вместо failed → _repair_failures_nonfixable не вызовется.
+    #  – status=207 + ok=False → ветка failed.append(...) в execute_all_in_place → executed=0
+    #    → anti-pingpong check → _repair_failures_nonfixable(image_no_pool=True) → _nonfixable_stop.
     if out and status == 200:
         cam_results = out.get("results") or []
         if (cam_results
                 and all(r.get("skipped_content_gap") for r in cam_results)
-                and not any(r.get("upload_fail_cts") for r in cam_results)):
+                and not any(r.get("upload_fail_cts") for r in cam_results)
+                and not any(r.get("resolver_fail_cts") for r in cam_results)):
             out["image_no_pool"] = True
-            status = 207  # сигнал repair-loop: нечинимо in-place → не входит в executed
+            out["ok"] = False   # Critical #1: без этого execute_all_in_place видит ok=True → executed
+            status = 207        # сигнал repair-loop: нечинимо in-place → failed, не executed
     return out, status
 
 

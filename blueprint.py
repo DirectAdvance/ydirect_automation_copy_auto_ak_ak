@@ -138,6 +138,8 @@ register_settings_routes(
     global_minus_places=_global_minus_places,
     minus_places_ensure=_minus_places_ensure,
     place_host=_place_host,
+    post_minus_places_slice=_post_minus_places_slice,
+    post_minus_places_ensure=_post_minus_places_ensure,
     minus_words_slice=_global_minus_words_slice,
     minus_words_ensure=_minus_words_ensure,
     global_minus_marks=_global_minus_marks,
@@ -182,6 +184,7 @@ register_pack_routes(
     bp,
     _direct_access,
     victory_conn=_victory_conn,
+    victory_conn_rw=_victory_conn_rw,
     slepok_key_map=_SLEPOK_KEY,
     callout_limits={
         "max_each": _CALLOUT_MAX_EACH,
@@ -253,7 +256,7 @@ def _wire_copy_routes(target_bp, *, ensure_worker):
     процессе, _ensure_copy_worker в direct-copy.service (изолированная copy-очередь)."""
     register_copy_routes(
         target_bp,
-        _direct_access,
+        _service_required_any("work", "work:direct", "direct:content", "direct"),
         api_campaigns_func=_campaigns_response,
         account_prefill_func=_account_prefill_response,
         metrika_goals_for=_metrika_goals_for,

@@ -8,8 +8,15 @@ from __future__ import annotations
 import json
 from typing import Any
 
+# ⚠️ `UAC_NOT_DRAFT` УБРАН из набора 2026-07-19 (draft-гард, парный к `_delete_search_draft_campaigns`).
+# Код означает «кампания НЕ черновик», т.е. запущена/на модерации. Маршрутизировать её в
+# delete-before-recreate было самопротиворечиво: live DRAFT-gate в
+# `create_set_repairing._delete_uac_repair_campaigns` (ФИКС-C3) удалить её всё равно откажется, но
+# отказ возвращает `failed` → `repair_auto.queue_recreate_repair_job:606` аварийно обрывает ВЕСЬ
+# пакет починки. Теперь такая кампания просто не попадает в удаления: recreate-item по ней
+# отработает как resume и пропустит существующую по имени. Детект `UAC_NOT_DRAFT` остаётся
+# (report + `_RECREATE_CODES`), исчезает только право на удаление.
 _UAC_REPLACE_CODES = {
-    "UAC_NOT_DRAFT",
     "UAC_COUNTER_MISSING",
     "UAC_GOAL_MISSING",
     "UAC_REGION_MISSING",
@@ -25,6 +32,7 @@ _UAC_REPLACE_CODES = {
     "UAC_TEXTS_MISSING",
     "UAC_SITELINKS_MISSING",
     "UAC_MEDIA_MISSING",
+    "UAC_IMAGES_LOW",
     "UAC_FEED_MISSING",
     "UAC_PRODUCT_MODEL_FILTER_MISSING",
 }
@@ -143,6 +151,12 @@ def executable_uac_replace_campaigns(plan: dict[str, Any]) -> list[dict[str, Any
         if action.get("action") != "resume_or_recreate_campaign":
             continue
         if str(action.get("issue_code") or "") not in _UAC_REPLACE_CODES:
+            continue
+        # 🛑 Второй рубеж предохранителя: находка, пришедшая из прохода по RESUME-SKIP
+        # (`live_verifier` помечает `source="resume_skip"`), НИКОГДА не даёт права на удаление —
+        # эти кампании УЖЕ существовали и мы их не собирали. Сейчас такой проход и так отдаёт
+        # только `UAC_STRUCT_*` (вне этого набора), гард держит инвариант, если набор расширят.
+        if str(action.get("source") or "") == "resume_skip":
             continue
         try:
             cid = int(action.get("campaign_id") or 0)

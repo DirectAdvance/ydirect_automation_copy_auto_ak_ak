@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from .text_norm import _trim_clean
 from .create_set_minus import _MINUS_SET_NAME_MARKER
+from .model_urls import _strip_site_domain_label as _strip_dom_lbl
+from . import create_set_context as _csctx  # dedup_name_segments (чистый хелпер, без configure)
+from .create_set_feed_result import ensure_shopping_cookie_error, shopping_cookie_success
 
 import json
+import re as _re_fb
 
 _DEPS: dict = {}
 
@@ -25,7 +29,7 @@ def configure(deps: dict) -> None:
 _DEFAULT_SITELINKS_FALLBACK = [
     {"title": "Автокредит от 9 000 ₽/мес", "description": "Одобрение за 15 минут онлайн", "frag": "#credit"},
     {"title": "Первый взнос 0 ₽", "description": "Кредит без первоначального взноса", "frag": "#no-first-pay"},
-    {"title": "Кредит от 15 банков", "description": "Подберём лучшую ставку под вас", "frag": "#banks"},
+    {"title": "Кредитное решение", "description": "Подберём условия под вашу заявку", "frag": "#banks"},
     {"title": "Трейд-ин с выгодой", "description": "Обмен вашего авто на новое", "frag": "#trade-in"},
 ]
 
@@ -63,8 +67,8 @@ def _ensure_sitelink_hrefs(items: list, base_href: str) -> list:
 
 def _common_sitelinks_fast(login, slepok, site_type, city, tp_code, href=""):
     """Сайтлинки БЕЗ баллов и БЕЗ зависания LLM (#7): сначала БД-библиотека слепка
-    (`_slepok_content_get`, мгновенно), потом AI-генерация, и наконец детерминированный
-    статический резерв — чтобы быстрые ссылки прикреплялись ВСЕГДА (не зависели от флапающего LLM).
+    (`_slepok_content_get`, мгновенно), без AI-генерации на create-stage. Детерминированный
+    статический резерв добавляет вызывающий код, когда БД пуста.
     href backfill на всех источниках (БД/LLM часто без href → Grid отбрасывал ссылки → #7 не чинился).
     Возвращает list[dict{title,href,description}] или [] (пусто → вызывающий сам решает: v5-ассеты
     аккаунта на creation-пути ИЛИ детерминированный резерв в fix_sitelinks_missing). НЕ подставляет
@@ -80,12 +84,6 @@ def _common_sitelinks_fast(login, slepok, site_type, city, tp_code, href=""):
                 return picked
     except Exception:  # noqa: BLE001
         pass
-    try:
-        ai = _ensure_sitelink_hrefs(_ai_common_sitelinks(login, slepok, site_type, city, tp_code) or [], href)
-        if ai:
-            return ai
-    except Exception:  # noqa: BLE001
-        pass
     return []
 
 
@@ -93,6 +91,7 @@ def _create_text_via_cookie(
     login: str, name: str, tp_code: str, counter_id: int, goal_id: int, cpa_rub: int,
     budget_rub: int, region_ids: list, href: str, slepok: str, site_type: str, r_code: str,
     titles: list | None, texts: list, pay: str = "cpa", city: str = "", autotarget: bool = False,
+    keep_keywords: bool = False,
     segment: str | None = None,
     only_cts: list[str] | None = None,
     only_gks: set | None = None,
@@ -109,15 +108,39 @@ def _create_text_via_cookie(
     segment (Марки/Модели/Общее): без него _pack_groups_with_retry строит ВСЕ ct пака без разреза —
     марки и модели попадали в одну кампанию вперемешку (живой баг 2026-07-06, porg-lzjk6p5m/terehov)."""
     import datetime as _dt
-    _img_map = _grid_account_image_hashes(login)
+    # Кэш account-map по логину (было: `_grid_account_image_hashes` — чтение ВСЕХ кампаний+объявлений
+    # аккаунта на КАЖДОЙ cookie-кампании набора → квадратичный рост по ходу прогона).
+    _img_map = _account_image_map(login)
     groups, _m3_alive = _pack_groups_with_retry(login, slepok, site_type, r_code, href, titles, texts,
                                                 segment=segment, city=city, tp_code=tp_code,
                                                 image_map=_img_map, autotarget=bool(autotarget),
-                                                only_cts=only_cts)
+                                                keep_keywords=bool(keep_keywords),
+                                                only_cts=only_cts, only_gks=only_gks)
     if not groups:
-        # Пак пуст после ретраев → defer (отложенная докрутка), НЕ permanent-fail.
-        return {"ok": False, "defer": True, "name": name,
-                "error": f"{tp_code}(куки): пак M3 пуст/недоступен (M3_alive={_m3_alive}) — отложено на докрутку"}
+        # Keyword pack пуст после ретраев. Deferred уместен только при реальной недоступности
+        # локального зеркала/M3-источника: если источник жив, но под выбранные only_cts/only_gks нет ключей, это детерминированный
+        # content-gap. Повторная "докрутка" создаёт ядовитую очередь 0/N без шанса на успех.
+        if not _m3_alive:
+            return {"ok": False, "defer": True, "name": name,
+                    "error": (f"{tp_code}(куки): keyword pack пуст/недоступен "
+                              f"(local/M3 source alive={_m3_alive}) — отложено на докрутку")}
+        _cts = ", ".join(list(only_cts or [])[:12])
+        _gks = ", ".join(list(only_gks or [])[:12])
+        _more_cts = max(0, len(only_cts or []) - 12)
+        _more_gks = max(0, len(only_gks or []) - 12)
+        if _more_cts:
+            _cts += f"; +{_more_cts}"
+        if _more_gks:
+            _gks += f"; +{_more_gks}"
+        _detail = []
+        if _cts:
+            _detail.append(f"ct=[{_cts}]")
+        if _gks:
+            _detail.append(f"gk=[{_gks}]")
+        _suffix = ("; " + "; ".join(_detail)) if _detail else ""
+        return {"ok": False, "name": name,
+                "error": (f"{tp_code}(куки): content-gap — локальное зеркало/M3-источник доступны, "
+                          f"но нет групп/ключей для {slepok}/{site_type}{_suffix}")}
     start_date = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=3))).strftime("%Y-%m-%d")
     wkl = int(budget_rub) if budget_rub else int(cpa_rub) * 10
     # Корректировки в AddCampaigns (HAR21): campaignId-плейсхолдер 9999999 — Yandex привяжет к реальной.
@@ -169,7 +192,30 @@ def _create_text_via_cookie(
                              href=href, goal_id=goal_id or 0, autotargeting=bool(autotarget),
                              price_map=_tp24_price_map, brand_price_fn=_group_ad_price)
         cid = rep.get("campaign_id")
-        ok = bool(cid) and not (rep.get("errors") and not rep.get("groups"))
+        _errs = rep.get("errors") or []
+        _underfilled = (
+            not rep.get("groups")
+            or not rep.get("ads")
+            or (((not autotarget) or keep_keywords) and not rep.get("keywords"))
+        )
+        ok = bool(cid) and not (_errs or _underfilled)
+        if cid and not ok:
+            try:
+                _delete_partial_campaign(token, login, int(cid))
+            except Exception:  # noqa: BLE001
+                pass
+            _reason = str(
+                "; ".join(str(x) for x in _errs)
+                or ("группы не созданы" if not rep.get("groups")
+                    else "объявления не созданы" if not rep.get("ads")
+                    else "ключи не созданы")
+            )[:200]
+            return {"ok": False, "name": name, "campaign_id": cid, "partial_deleted": True,
+                    "defer": True,
+                    "build": {"groups": rep.get("groups"), "ads": rep.get("ads"),
+                              "keywords": rep.get("keywords", 0),
+                              "errors": _errs[:5]},
+                    "error": f"{tp_code}(куки) не дозаполнена: {_reason}"}
         # БАГ-11 фикс: Grid-финализация инвариантов + ассеты для tp2/tp4 куки-пути.
         # БАГ-1 FIX: вызываем ВСЕГДА при ok+cid, не только при goal_id.
         # Использует _finalize_search_via_grid (поисковые платформы, не РСЯ).
@@ -380,6 +426,7 @@ def _create_text_via_token(
         build = _build_text_from_pack(token, login, cid, slepok, site_type, tp_code,
                                       region_ids, href, titles, texts, r_code=r_code,
                                       segment=segment, city=city, autotarget=bool(autotarget),
+                                      keep_keywords=bool(keep_keywords),
                                       apply_group_minus=_apply_group_minus, only_cts=only_cts,
                                       only_gks=only_gks)
     except Exception as e:  # noqa: BLE001
@@ -397,7 +444,7 @@ def _create_text_via_token(
     # пути не существует, поэтому пустой `ads` здесь = дефект, а не легальный товарный состав.
     # (В tp1/tp5, где with_shopping=True, товарные аддитивны ПОСЛЕ TextAd и идут другим билдером —
     # этого гейта там нет.) `ads` в rep инициализируется всегда (rep = {... "ads": 0 ...}).
-    if build.get("error") or build.get("skipped") or not build.get("adgroups") or not build.get("ads"):
+    if build.get("error") or build.get("skipped") or _errs or not build.get("adgroups") or not build.get("ads"):
         try:
             _delete_partial_campaign(token, login, cid)
         except Exception:  # noqa: BLE001
@@ -461,13 +508,20 @@ def _create_text_via_token(
                 "sitelink_set": _slset, "promo": bool(_assets.get("promos") or precreated_promo_id),
                 "minus_set_grid": _minus_ids, "relevance_match_set": _rm_set,
                 "corrections": len((_bm_fin.get("bidModifierRetargeting") or {}).get("adjustments") or [])}
-        _v5_mods, _v5_mod_err = _apply_corrections(token, login, cid, corr, ret_map)
-        _fin["v5_corrections"] = _v5_mods
-        if _v5_mod_err:
-            _fin["v5_corrections_error"] = _v5_mod_err[:160]
         _fin["demographic_corrections"] = len((_bm_fin.get("bidModifierDemographics") or {}).get("adjustments") or [])
     except Exception as _fe:  # noqa: BLE001
         _fin = {"error": str(_fe)[:160]}
+    # ── 4b. v5 _apply_corrections — независимо от Grid-finalize (defense-in-depth):
+    #       Grid UpdateCampaigns может упасть по схеме/сети; v5-корректировки логически независимы. ──
+    try:
+        _v5_mods, _v5_mod_err = _apply_corrections(token, login, cid, corr, ret_map)
+        if isinstance(_fin, dict):
+            _fin["v5_corrections"] = _v5_mods
+            if _v5_mod_err:
+                _fin["v5_corrections_error"] = _v5_mod_err[:160]
+    except Exception as _ce:  # noqa: BLE001
+        if isinstance(_fin, dict):
+            _fin.setdefault("warnings", []).append(f"v5 corrections: {str(_ce)[:120]}")
     # ── 5. Глобальные минус-слова уровня кампании — ВСЕ режимы (v5 NegativeKeywords = _enabled_minus_words),
     #       аддитивно к shared_set (libraryMinusKeywordsIds). Эквивалент cookie-spec "minus_keywords". ──
     try:
@@ -479,8 +533,8 @@ def _create_text_via_token(
             _fin.setdefault("warnings", []).append(f"campaign-direct минусы: {str(_me)[:120]}")
     return {"ok": True, "name": name, "campaign_id": cid, "launched": False, "via": "token",
             "search_finalized": _fin,
-            "build": {"groups": build.get("groups_built"), "ads": build.get("ads"),
-                      "keywords": build.get("keywords", 0),
+            "build": {"groups": build.get("adgroups"), "groups_built": build.get("groups_built"),
+                      "ads": build.get("ads"), "keywords": build.get("keywords", 0),
                       "errors": (build.get("errors") or [])[:5]},
             "url": f"https://direct.yandex.ru/dna/campaign/{cid}?ulogin={login}"}
 
@@ -525,8 +579,14 @@ def _create_shopping_via_cookie(
             feed_name = ""
     if not fid:
         return {"ok": False, "name": name, "error": f"{tp_code}(куки): нет URL-фида на аккаунте — товарную галерею не создать"}
-    if tp_code == "tp5" and feed_name and feed_name not in name and not _is_site_domain_name(feed_name, href):
-        name = f"{name} — {feed_name}"
+    # Cookie-путь tp5 брал имя фида из кабинета (`_grid_feeds`) — оно идёт с доменом-ПРЕФИКСОМ,
+    # старый гард на ТОЧНОЕ равенство хосту его пропускал. Режем домен-префикс из самой метки
+    # (симметрично API-пути tp5/tp3 ниже); пусто на выходе → суффикс не добавляем.
+    _feed_lbl = _strip_dom_lbl(feed_name, href)
+    if tp_code == "tp5" and _feed_lbl and _feed_lbl not in name:
+        # Метка фида клеится ПОСЛЕ `_uniq` (другой модуль) → общий дедуп сегментов надо применить
+        # здесь же, иначе живое имя tp5 может нести повтор, которого нет в плановом.
+        name = _csctx.dedup_name_segments(f"{name} — {_feed_lbl}")
     is_rsya = False  # tp3 и tp5 — оба Search-канал (tp3 был ошибочно network — исправлено)
     start_date = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=3))).strftime("%Y-%m-%d")
     wkl = int(budget_rub) if budget_rub else int(cpa_rub) * 10
@@ -535,12 +595,10 @@ def _create_shopping_via_cookie(
             "cpa": int(cpa_rub), "weekly_budget": wkl, "start_date": start_date,
             "network": is_rsya, "search": (not is_rsya), "organic": (not is_rsya),
             "pay_for_conversion": False, "bid_modifiers": _bm,
-            # Места показа при СОЗДАНИИ НЕ форсируем (create=null — эталон HAR20 tp5-create).
-            # Их выставляет finalize: _finalize_search_via_grid(placement_types=PLACEMENTS_TP5),
-            # HAR49-эталон 712024652 (known-good). Форс ['SEARCH_PAGE','ADV_GALLERY'] в AddCampaigns
-            # не подтверждён и рискует ORGANIC_PLACEMENT_TYPES_INVALID_COMBINATION → падение ВСЕГО
-            # create (code-review C). Прежний create-guard закрывал лишь микро-окно «только Поиск»
-            # и был добавлен под ложную тревогу UI-кэша (live был уже корректен). tp3 — тоже null.
+            # Места показа при СОЗДАНИИ НЕ форсируем: tp5 canonical = placementTypes=null +
+            # platforms gallery/search/organic. Форс ['SEARCH_PAGE','ADV_GALLERY'] рискует свернуться
+            # в UI-пресет «Поиск» или дать ORGANIC_PLACEMENT_TYPES_INVALID_COMBINATION.
+            # tp3 тоже создаётся без форса на AddCampaigns; finalize ниже ставит ADV_GALLERY.
             "placement_types": None,
             # tp3/tp5 куки-путь: _apply_campaign_direct_minus downstream не вызывается (в отличие от tp2/tp4),
             # поэтому ставим минусы в spec для ВСЕХ режимов без риска дубля.
@@ -554,7 +612,8 @@ def _create_shopping_via_cookie(
                                       feed_id=fid, region_ids=region_ids, href=href,
                                       body_text=_trim_clean(body_text or "", 81), goal_id=goal_id or 0)
         cid = rep.get("campaign_id")
-        ok = bool(cid) and not (rep.get("errors") and not rep.get("groups"))
+        ok = shopping_cookie_success(rep)
+        err_text = None if ok else ensure_shopping_cookie_error(rep)
         # БАГ-8 фикс: ListingAd «Страницы каталога» — by-shopping, без name-фильтра (Общее, автотаргет).
         # create_shopping_full создаёт ShoppingAd но не ListingAd; докрутка через Grid (без баллов).
         # Сбой не блокирует — ShoppingAd уже создан; warnings идут в rep["errors"].
@@ -602,10 +661,10 @@ def _create_shopping_via_cookie(
                 # HAR-24/entry183: UpdateCampaigns должен получать реальный campaignId внутри
                 # bidModifiers (не placeholder 9999999 из AddCampaigns). Перестраиваем с cid.
                 _bm_fin = _grid_bid_modifiers(cid, corr or {}, ret_map or {})
-                # Search-финализация: tp3 = ADV_GALLERY (только товарная галерея на поиске);
-                # tp5 = SEARCH_PAGE + ADV_GALLERY (PLACEMENTS_TP5, HAR49-эталон 712024652).
+                # Search-финализация: tp3 = ADV_GALLERY; tp5 = placementTypes=null
+                # (ручная настройка через platforms gallery+search+organic).
                 # isOrganicSearchEnabled=True из platforms.organic (gallery=True в PLATFORMS_SEARCH).
-                _tp_placements = (["ADV_GALLERY"] if tp_code == "tp3" else list(gf.PLACEMENTS_TP5))
+                _tp_placements = (["ADV_GALLERY"] if tp_code == "tp3" else [])
                 _finalize_search_via_grid(
                     login, cid, name=name, goal_id=goal_id or 0, cpa_rub=cpa_rub, weekly_rub=wkl,
                     counter_ids=[counter_id] if counter_id else [],
@@ -627,10 +686,11 @@ def _create_shopping_via_cookie(
                 _fin = {"error": str(_fe)[:160]}
         out = {"ok": ok, "name": name, "campaign_id": cid, "launched": False, "via": "cookie",
                "shopping_finalized": _fin,
-               "build": {"groups": rep.get("groups"), "ads": rep.get("ads"), "feed_id": fid,
+               "build": {"groups": rep.get("groups"), "ads": rep.get("ads"),
+                         "shopping_ads": rep.get("ads"), "feed_id": fid,
                          "errors": rep.get("errors", [])[:5]},
                "url": (f"https://direct.yandex.ru/dna/campaign/{cid}?ulogin={login}" if cid else ""),
-               "error": ("; ".join(rep.get("errors") or [])[:240] if not ok else None)}
+               "error": err_text}
         return out
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "name": name, "error": f"{tp_code}(куки): {str(e)[:200]}"}
@@ -723,7 +783,8 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
                        feed_models: dict | None = None,
                        titles: list | None = None,
                        city: str = "", segment: str | None = None,
-                       autotarget: bool = False, products_only: bool = False,
+                       autotarget: bool = False, keep_keywords: bool = False,
+                       products_only: bool = False,
                        grid_cookie: str | None = None,
                        only_gks: set | None = None, only_cts: set | None = None,
                        all_feeds_list: list | None = None) -> dict:
@@ -766,7 +827,8 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
             href, r_code, titles, texts, counter_id=counter_id,
             feed_id=feed_id, with_shopping=bool(feed_id),
             feed_models=feed_models, city=city,
-            segment=segment, autotarget=autotarget, products_only=products_only,
+            segment=segment, autotarget=autotarget, keep_keywords=keep_keywords,
+            products_only=products_only,
             tp_code="tp5", only_gks=only_gks, only_cts=only_cts,
             all_feeds_list=all_feeds_list)
     except Exception as e:  # noqa: BLE001
@@ -841,7 +903,7 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
             callout_ids=_assets["callout_ids"], sitelink_set_id=slset_grid,
             promo_id=(_assets["promos"][0] if _assets["promos"] else None),
             minus_set_ids=[_assets["minus_set"]] if _assets.get("minus_set") else None,
-            placement_types=list(gf.PLACEMENTS_TP5))
+            placement_types=None)
     except Exception as _grid_exc:  # noqa: BLE001
         # Grid-докрутка не блокирует создание, но сбой ДОЛЖЕН быть виден:
         # при упавшем Grid кампания останется без товарной галереи (placementTypes не выставлен)
@@ -928,6 +990,7 @@ def _create_tp5_campaign(token: str, login: str, base_name: str, counter_id: int
                          titles: list | None = None,
                          agency: str = "", city: str = "",
                          segment: str | None = None, autotarget: bool = False,
+                         keep_keywords: bool = False,
                          products_only: bool = False, no_cpa: bool = False,
                          single_feed: bool = False,
                          grid_cookie: str | None = None,
@@ -968,7 +1031,8 @@ def _create_tp5_campaign(token: str, login: str, base_name: str, counter_id: int
                     counter_id, region_ids, href, 0, "",   # feed_id=0, feed_name="" (all-feeds)
                     slepok, site_type, r_code, corr, ret_map,
                     feed_models=None, titles=titles, city=city,
-                    segment=segment, autotarget=autotarget, products_only=products_only,
+                    segment=segment, autotarget=autotarget, keep_keywords=keep_keywords,
+                    products_only=products_only,
                     grid_cookie=grid_cookie, only_gks=only_gks, only_cts=only_cts,
                     all_feeds_list=_tp5_af_list))
                 _bump_job(job, True)
@@ -990,10 +1054,17 @@ def _create_tp5_campaign(token: str, login: str, base_name: str, counter_id: int
         if job and job.get("cancel"):                        # отмена: стоп ПЕРЕД следующим фидом
             break
         # Bug D fix: используем URL фида (без https://) вместо короткого имени из кабинета.
-        import re as _re_fn
-        _f_label = (_re_fn.sub(r'^https?://', '', feed_url) if feed_url else feed_name)
-        nm_cpc = (f"{base_name} — {_f_label}" if not _is_site_domain_name(feed_name, href)
-                  else base_name)
+        # Гард сверяем с ТЕМ, что реально уходит в имя (label), а не с коротким feed_name,
+        # и режем домен-ПРЕФИКС, а не только точное равенство хосту.
+        _f_label = _strip_dom_lbl(
+            (_re_fb.sub(r'^https?://', '', feed_url) if feed_url else feed_name), href)
+        # Дедуп сегментов — здесь же: метка фида приклеивается ПОСЛЕ `_uniq` (create_set_plan),
+        # поэтому воронка плана её не видит. `nm_cpa` выводится из уже каноничного `nm_cpc`.
+        # Структурные tp5 (camp_names/segment) должны называться ровно как в слепке.
+        # Суффикс фида нужен только при настоящем fan-out по нескольким фидам, иначе в кабинете
+        # имя расходится со структурой («… — yandex.xml» вместо каноничного «КС+Автотаргетинг»).
+        _keep_struct_name = bool(single_feed or segment or products_only or only_gks or only_cts)
+        nm_cpc = base_name if _keep_struct_name else (_csctx.dedup_name_segments(f"{base_name} — {_f_label}") if _f_label else base_name)
         nm_cpa = nm_cpc.replace("tp5_cpc_site", "tp5_cpa_site", 1)
         fm_entry = next((f for f in mf_list if int(f["id"]) == int(feed_id)), None)
         feed_models = fm_entry["models"] if fm_entry else None
@@ -1007,7 +1078,8 @@ def _create_tp5_campaign(token: str, login: str, base_name: str, counter_id: int
                     counter_id, region_ids, href, feed_id, feed_name,
                     slepok, site_type, r_code, corr, ret_map,
                     feed_models=feed_models, titles=titles, city=city,
-                    segment=segment, autotarget=autotarget, products_only=products_only,
+                    segment=segment, autotarget=autotarget, keep_keywords=keep_keywords,
+                    products_only=products_only,
                     grid_cookie=grid_cookie, only_gks=only_gks, only_cts=only_cts))
                 _bump_job(job, True)                         # live: +1 кампания
             except Exception as e:  # noqa: BLE001
@@ -1190,10 +1262,11 @@ def _create_tp3_campaign(token: str, login: str, base_name: str, counter_id: int
         if job and job.get("cancel"):                        # отмена: стоп ПЕРЕД следующим фидом
             break
         # Bug D fix: используем URL фида (без https://) вместо короткого имени из кабинета.
-        import re as _re_fn3
-        _f_label3 = (_re_fn3.sub(r'^https?://', '', feed_url) if feed_url else feed_name)
-        nm_cpc = (f"{base_name} — {_f_label3}" if not _is_site_domain_name(feed_name, href)
-                  else base_name)
+        # Гард — по реально подставляемой метке (label), с срезкой домен-префикса (см. tp5 выше).
+        _f_label3 = _strip_dom_lbl(
+            (_re_fb.sub(r'^https?://', '', feed_url) if feed_url else feed_name), href)
+        # Дедуп сегментов — здесь же (метка фида приклеивается ПОСЛЕ `_uniq`, см. tp5 выше).
+        nm_cpc = _csctx.dedup_name_segments(f"{base_name} — {_f_label3}") if _f_label3 else base_name
         nm_cpa = nm_cpc.replace("tp3_cpc_site", "tp3_cpa_site", 1)
         _t3 = ([(nm_cpc, "search_cpa", False)] if no_cpa
                else [(nm_cpc, "search_cpa", False), (nm_cpa, "search_payconv", True)])

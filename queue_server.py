@@ -31,6 +31,7 @@ from .job_repository import (
     _ready_login_remove,
     _next_units_reset_utc,
 )
+from .create_job_status import terminal_status_for_job, terminal_status_for_parent_failed
 from .yandex_gateway import (
     direct_tokens as _direct_tokens, token_for_login as _token_for_login,
     units_alive_for_login as _units_alive_for_login, grid_list_campaigns as _grid_list_campaigns,
@@ -48,7 +49,12 @@ _CREATE_WORKERS = 0
 _CREATE_POOL_PAUSE = 15
 _CREATE_MAX_PER_AGENCY = 1
 _CREATE_ACTIVE_AGENCIES: dict[str, int] = {}
-_CREATE_RUNNING_TIMEOUT = 1200
+_CREATE_RUNNING_TIMEOUT = int(os.environ.get("DIRECT_CREATE_RUNNING_TIMEOUT", "900"))
+_CREATE_FIRST_CAMPAIGN_TIMEOUT = int(os.environ.get("DIRECT_CREATE_FIRST_CAMPAIGN_TIMEOUT", "900"))
+# M3 content generation plus first-run image preupload can legitimately take >90s per campaign
+# while still heartbeating. Keep a bounded overall SLA, but leave enough budget for warm caches.
+_CREATE_SET_SLA_PER_CAMPAIGN_SEC = int(os.environ.get("DIRECT_CREATE_SET_SLA_PER_CAMPAIGN_SEC", "240"))
+_CREATE_SET_SLA_MIN_SEC = int(os.environ.get("DIRECT_CREATE_SET_SLA_MIN_SEC", "900"))
 _CREATE_FINALIZE_TIMEOUT = int(os.environ.get("DIRECT_CREATE_FINALIZE_TIMEOUT", "900"))
 _CREATE_WATCHDOG_POLL = 30
 _DCR_DETACH_PARENT = os.environ.get("DIRECT_DCR_DETACH_PARENT", "1") not in ("0", "false", "False", "no")
@@ -60,6 +66,8 @@ _JOB_HISTORY_TTL = 86400
 _RESUME_DAEMON = {"started": False}
 _RESUME_MAX = 3
 _RESUME_POLL = 120
+_COPY_AGENT_RETRY_DAEMON = {"started": False}
+_COPY_AGENT_RETRY_POLL = int(os.environ.get("DIRECT_COPY_AGENT_RETRY_POLL", "60"))
 _DEFERRED_STALE_HOURS = 3
 _DELAYED_REPAIR_DAEMON = {"started": False}
 _DELAYED_REPAIR_POLL = 60
@@ -109,6 +117,7 @@ _sweep_empty_drafts = _create_set_job_context = _repair_deps = _missing
 _create_set_live_verification = _run_spec_audit_and_fix = _finalize_queue_module = _missing
 _delete_drafts_core = _create_set_response = _auto_queue_recreate_after_done = _missing
 _prefetch_start = _missing
+_set_llm_heartbeat_job = _missing
 
 
 def _direct_role() -> str:
@@ -373,6 +382,56 @@ def _create_watchdog_tick() -> None:
             if not heartbeat:
                 continue
             _stuck = now - heartbeat
+            _started = float(job.get("started_at") or 0)
+            _kind = str(job.get("kind") or "")
+            _total = int(job.get("total") or 0)
+            if (_started
+                    and _kind in ("set", "slepok")
+                    and _total > 0
+                    and int(job.get("done") or 0) < _total):
+                _sla = max(_CREATE_SET_SLA_MIN_SEC, _total * _CREATE_SET_SLA_PER_CAMPAIGN_SEC)
+                if (now - _started) > _sla:
+                    job["status"] = "error"
+                    job["error"] = (
+                        "watchdog: create-set превысил SLA "
+                        f"{int(_sla // 60)} мин ({_total} кампаний × "
+                        f"{int(_CREATE_SET_SLA_PER_CAMPAIGN_SEC)}с)"
+                    )
+                    job["result"] = {"error": job["error"], "sla_timeout": True}
+                    job["finished_at"] = now
+                    job["_watchdog_done"] = True
+                    job["cancel"] = True
+                    timed_out.append((jid, dict(job)))
+                    agency = _job_agency(job)
+                    active = max(0, int(_CREATE_ACTIVE_AGENCIES.get(agency, 0)) - 1)
+                    if active:
+                        _CREATE_ACTIVE_AGENCIES[agency] = active
+                    else:
+                        _CREATE_ACTIVE_AGENCIES.pop(agency, None)
+                    _agency_gate_release(agency, jid)
+                    continue
+            if (_started
+                    and _kind in ("set", "slepok")
+                    and int(job.get("created") or 0) <= 0
+                    and (now - _started) > _CREATE_FIRST_CAMPAIGN_TIMEOUT):
+                job["status"] = "error"
+                job["error"] = (
+                    "watchdog: за "
+                    f"{int(_CREATE_FIRST_CAMPAIGN_TIMEOUT // 60)} мин не создана ни одна кампания"
+                )
+                job["result"] = {"error": job["error"], "first_campaign_timeout": True}
+                job["finished_at"] = now
+                job["_watchdog_done"] = True
+                job["cancel"] = True
+                timed_out.append((jid, dict(job)))
+                agency = _job_agency(job)
+                active = max(0, int(_CREATE_ACTIVE_AGENCIES.get(agency, 0)) - 1)
+                if active:
+                    _CREATE_ACTIVE_AGENCIES[agency] = active
+                else:
+                    _CREATE_ACTIVE_AGENCIES.pop(agency, None)
+                _agency_gate_release(agency, jid)
+                continue
             # done>=total — цикл создания завершён; heartbeat тикает на каждый обработанный item
             # (_bump_item/_bump_job), при done>=total он заморожен на последнем item → _stuck растёт
             # ровно на время фазы ФИНАЛИЗАЦИИ. Раньше эта фаза была БЕЗУСЛОВНО освобождена от
@@ -773,11 +832,30 @@ def _reconcile_parent_job_counters(parent_job_id: str, last_live: dict, last_sum
         total = int(job.get("total") or 0)
         created = int(job.get("created") or 0)
         failed = int(job.get("failed") or 0)
-        if failed <= 0 and created >= total:
-            return False                       # уже чисто — нечего реконсилировать
         result = rgate.dict_from_jsonish(job.get("result"))
         if not isinstance(result, dict):
             result = {}
+        live_clean = live_errors == 0 and (last_live or {}).get("status") in ("pass", "warn")
+        if live_clean:
+            result["live_verification"] = last_live
+            result["live_verification_reconciled_by_repair"] = {
+                "note": "post-repair live-сверка заменила stale-снимок parent job",
+                "status": (last_live or {}).get("status"),
+                "live_errors": live_errors,
+            }
+        if failed <= 0 and created >= total:
+            job["result"] = result
+            _job_db_save(parent_job_id, job, full=True)
+            with _CREATE_JOBS_LOCK:
+                mem = _CREATE_JOBS.get(parent_job_id)
+                if mem is not None and isinstance(mem.get("result"), dict):
+                    if live_clean:
+                        mem["result"]["live_verification"] = last_live
+                        mem["result"]["live_verification_reconciled_by_repair"] = (
+                            result["live_verification_reconciled_by_repair"]
+                        )
+                    _job_touch(mem)
+            return live_clean                   # счётчики уже чистые, но live мог быть stale
         result["counters_reconciled_by_repair"] = {
             "was_created": created, "was_failed": failed,
             "live_errors": live_errors, "note": "добивка подтвердила: все кампании набора живы",
@@ -794,6 +872,11 @@ def _reconcile_parent_job_counters(parent_job_id: str, last_live: dict, last_sum
                 mem["failed"] = 0
                 mem["error"] = None
                 if isinstance(mem.get("result"), dict):
+                    if live_clean:
+                        mem["result"]["live_verification"] = last_live
+                        mem["result"]["live_verification_reconciled_by_repair"] = (
+                            result["live_verification_reconciled_by_repair"]
+                        )
                     mem["result"]["counters_reconciled_by_repair"] = result["counters_reconciled_by_repair"]
                 _job_touch(mem)
         return True
@@ -960,7 +1043,7 @@ def _parent_absorb_child_progress(parent_jid: str, child_jid: str, created: int,
                 active.remove(child_jid)
             if not active:                               # все добивки закрыты → карточка терминальна
                 job["done"] = int(job.get("total") or 0)
-                job["status"] = "done"
+                job["status"], job["error"] = terminal_status_for_parent_failed(job.get("failed") or 0)
                 job["finished_at"] = time.time()
         else:
             job["status"] = "running"
@@ -1490,13 +1573,22 @@ def _resume_one_deferred(app, row) -> None:
     items = body.get("items") or []
     if not items:
         _deferred_set_status(did, "done", "нет пунктов"); return
-    # Агентство для партиционирования очереди (по куке units не нужны — баллы НЕ проверяем).
-    _tok, ag = _token_for_login(login, row.get("agency") or "", _direct_tokens())
+    _gap_note = _deferred_pack_gap_note(body)
+    if _gap_note:
+        _deferred_bump_resume_at(did, 6)
+        _deferred_set_status(did, "waiting", _gap_note)
+        return
+    # Агентство для партиционирования очереди. Для обычной cookie-докрутки agency — это ключ
+    # cookie-аккаунта и его нельзя подменять token-owner'ом из `_token_for_login()`: tp2/tp4
+    # cookie-deferred иначе снова уходят в y-direct-victory вместо исходного victoryagency14.
+    requested_ag = (row.get("agency") or body.get("agency") or "").strip()
+    _tok, ag = "", requested_ag
     body["_resume_count"] = int(row.get("resume_count") or 0) + 1
-    body["agency"] = ag or body.get("agency") or row.get("agency") or ""
     # _resume_via_token: пункты, которые в принципе НЕ создать по куке (NO_BRAND_SEGMENTS_AVAILABLE —
     # сегментный tp5 требует M3/токен) — сохранены с этим флагом; куку им НЕ навязываем.
     if body.get("_resume_via_token"):
+        _tok, ag = _token_for_login(login, requested_ag, _direct_tokens())
+        body["agency"] = ag or requested_ag
         # Токен-докрутку СТАВИМ В ОЧЕРЕДЬ ТОЛЬКО когда есть И токен, И баллы. Иначе воркер уйдёт на
         # cookie-путь (пустой токен ИЛИ preflight-152 форсит via_cookie) → NO_BRAND → self-reference-
         # дедуп → финал гасит строку в done → сегментный tp5 теряется (инцидент 08.07 721641cad7c1 /
@@ -1520,6 +1612,7 @@ def _resume_one_deferred(app, row) -> None:
             return
         # токен + баллы есть → добиваем ТОКЕНОМ (via_cookie НЕ ставим: сегментный tp5 пойдёт API-путём)
     else:
+        body["agency"] = requested_ag
         body["via_cookie"] = True                          # докрутка ПО КУКЕ (без баллов) — не ждём полночь
     body["_deferred_id"] = did                             # финал джобы пометит остаток done (анти-цикл)
     # Семён 2026-07-06: добивка — сразу (не в конец очереди) и без НОВОЙ карточки; _resume_of →
@@ -1535,6 +1628,26 @@ def _resume_one_deferred(app, row) -> None:
     except Exception as e:  # noqa: BLE001
         _deferred_bump_resume_at(did, 1)
         _deferred_set_status(did, "waiting", f"ошибка постановки: {str(e)[:120]}")
+
+
+def _deferred_pack_gap_note(body: dict) -> str:
+    """Fail-closed preflight for cookie-deferred search tails.
+
+    A deferred row can outlive the structure/content state it was built from. If its body still
+    references missing ``only_cts``/``only_gks`` while the local M3 mirror is available, queueing
+    the job just creates a deterministic 0/N or partial campaign and another toxic deferred loop.
+    Block only tp2/tp4 search tails, where every requested ct/gk must have real pack keywords.
+    """
+    if not isinstance(body, dict) or body.get("_resume_via_token"):
+        return ""
+    try:
+        from .create_set_content_preflight import create_set_pack_gap_note
+    except Exception:  # noqa: BLE001
+        return ""
+    note = create_set_pack_gap_note(body)
+    if not note:
+        return ""
+    return note.replace("Создание не запущено", "Deferred не запущен")
 
 def _deferred_enqueue_now(app, did: str) -> tuple | None:
     """On-demand: поставить остаток отложенного набора в ОЧЕРЕДЬ СЕЙЧАС (кнопка «создать через
@@ -1565,6 +1678,11 @@ def _deferred_enqueue_now(app, did: str) -> tuple | None:
     items = body.get("items") or []
     if not items:
         _deferred_set_status(did, "done", "нет пунктов"); return None
+    _gap_note = _deferred_pack_gap_note(body)
+    if _gap_note:
+        _deferred_bump_resume_at(did, 6)
+        _deferred_set_status(did, "waiting", _gap_note)
+        return None
     body["_resume_count"] = int(row.get("resume_count") or 0) + 1
     ag = row.get("agency") or body.get("agency") or ""
     body["agency"] = ag                                   # ключ партиционирования очереди
@@ -1749,6 +1867,79 @@ def _create_jobs_ahead(jid: str) -> int:
         return 0
     return running + idx
 
+
+def _copy_retry_body_from_failed(row: dict) -> dict:
+    """Build a fresh copy_campaigns body from a failed persisted copy job."""
+    body = dict(row.get("body") or {})
+    for key in (
+        "_job_id",
+        "_web_posted",
+        "_dedup_existing",
+        "_session_snapshot",
+        "_copy_api_idempotency_key",
+        "_copy_api_payload_hash",
+    ):
+        body.pop(key, None)
+    target_login = (body.get("target_login") or row.get("login") or "").strip()
+    body["_kind"] = "copy_campaigns"
+    body["login"] = target_login
+    body["target_login"] = target_login
+    body["created_by"] = "agent-board-auto"
+    body["_copy_retry_of"] = row.get("job_id") or ""
+    body["_copy_retry_agent_board_task_id"] = row.get("agent_board_task_id")
+    # Failed copy attempts can leave partial Direct drafts. The retry is allowed to clean drafts
+    # before re-copying, but it still does not archive or touch accepted campaigns.
+    body["target_cleanup"] = "delete_drafts"
+    return body
+
+
+def _copy_agent_retry_daemon_loop(app) -> None:
+    """When a linked Agent Board task is done, requeue the failed copy job once."""
+    while True:
+        try:
+            with app.app_context():
+                try:
+                    from .agent_board_bridge import (
+                        copy_jobs_ready_for_agent_retry,
+                        mark_copy_retry_started,
+                    )
+                    rows = copy_jobs_ready_for_agent_retry(_victory_conn_rw, limit=5)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[copy-agent-retry] scan failed: {str(e)[:160]}", flush=True)
+                    rows = []
+                for row in rows:
+                    failed_jid = str(row.get("job_id") or "")
+                    body = _copy_retry_body_from_failed(row)
+                    login = (body.get("target_login") or body.get("login") or "").strip()
+                    if not failed_jid or not login:
+                        continue
+                    if _job_db_active_by_login(login):
+                        continue
+                    try:
+                        total = len(body.get("campaign_ids") or []) or int(row.get("total") or 0)
+                    except Exception:  # noqa: BLE001
+                        total = int(row.get("total") or 0)
+                    retry_jid = _job_new(total, login, body, {}, dedup_login=True, priority=True)
+                    if retry_jid == failed_jid:
+                        continue
+                    try:
+                        mark_copy_retry_started(_victory_conn_rw, failed_jid, retry_jid)
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[copy-agent-retry] mark failed {failed_jid}->{retry_jid}: {str(e)[:160]}", flush=True)
+                    print(f"[copy-agent-retry] {failed_jid} -> {retry_jid} login={login}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"[copy-agent-retry] loop failed: {str(e)[:200]}", flush=True)
+        time.sleep(max(10, int(_COPY_AGENT_RETRY_POLL or 60)))
+
+
+def _ensure_copy_agent_retry_daemon(app) -> None:
+    with _CREATE_JOBS_LOCK:
+        if _COPY_AGENT_RETRY_DAEMON["started"]:
+            return
+        _COPY_AGENT_RETRY_DAEMON["started"] = True
+    threading.Thread(target=_copy_agent_retry_daemon_loop, args=(app,), daemon=True).start()
+
+
 def _write_gate_owner(job_kind: str) -> str:
     kind = str(job_kind or "")
     if kind == "copy_campaigns":
@@ -1880,6 +2071,7 @@ def _create_worker_loop(app):
         _fin_login = str((body or {}).get("login") or "").strip()
         _finalize_queue_module().register(_fin_login, jid, agency)   # окно захвата (OFF → no-op)
         try:
+            _set_llm_heartbeat_job(jid)
             _job_touch(job)
             _job_db_save(jid, job)                        # → 'running' в БД
             # Дочерняя добивка (докрутка/доставка/recreate) стартовала → родитель снова «в работе»:
@@ -1936,12 +2128,12 @@ def _create_worker_loop(app):
                     if data:
                         j["created"] = data.get("created", j["created"])
                         j["failed"] = data.get("failed", j["failed"])
-                    if j.get("cancel"):                   # отмена во время прогона (стоп после тек. кампании)
-                        j["status"] = "cancelled"
-                    elif (data or {}).get("error"):
-                        j["status"] = "error"; j["error"] = data.get("error")
-                    else:
-                        j["status"] = "done"; j["done"] = j["total"]
+                    _st, _err = terminal_status_for_job(j.get("kind"), data, cancelled=bool(j.get("cancel")))
+                    j["status"] = _st
+                    if _err:
+                        j["error"] = _err
+                    if _st == "done":
+                        j["done"] = j["total"]
                     # «Сколько ушло времени» — от старта прогона до терминала (сек). Кладём и в result,
                     # чтобы итоговый баннер показал длительность даже после рестарта (хранится в result jsonb).
                     if j.get("started_at"):
@@ -1955,6 +2147,14 @@ def _create_worker_loop(app):
                     _job_final = dict(j)                   # снимок под lock'ом для DB-записи вне lock'а
             if _job_final is not None:
                 _job_db_save(jid, _job_final, full=True)   # финальный статус + result в БД
+                if final_status == "error" and (body or {}).get("_kind") == "copy_campaigns":
+                    try:
+                        from .agent_board_bridge import notify_copy_job_error
+                        task_id = notify_copy_job_error(_victory_conn_rw, jid)
+                        if task_id:
+                            print(f"[copy-agent-board] task #{task_id} created for {jid}", flush=True)
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[copy-agent-board] notify failed {jid}: {str(e)[:160]}", flush=True)
                 _ready_logins_track(jid, _job_final)       # вкладка «Готовые логины» (add/remove)
                 _merge_resume_into_parent(jid, _job_final, body)
                 if final_status == "done" and not _is_delete_drafts and not _is_edit_job:
@@ -2041,12 +2241,22 @@ def _create_worker_loop(app):
                     if post_done_changed and _job_final is not None:
                         _job_db_save(jid, _job_final, full=True)
         finally:
+            try:
+                _set_llm_heartbeat_job(None)
+            except Exception:  # noqa: BLE001
+                pass
             # Задача F: гарантированно закрыть окно захвата (при error/cancel done-блок не отработал →
             # иначе recorder висит в реестре и глотает финализацию следующего набора того же login).
             # Идемпотентно: если done-блок уже снял — pop вернёт None.
             if _fin_login:
                 try:
                     _finalize_queue_module().unregister(_fin_login)
+                except Exception:  # noqa: BLE001
+                    pass
+            if not _is_delete_drafts and not _is_edit_job and (body or {}).get("_kind") != "copy_campaigns":
+                try:
+                    from .create_set_prefetch import cleanup_job_cache as _cleanup_create_prepare_cache
+                    _cleanup_create_prepare_cache(jid)
                 except Exception:  # noqa: BLE001
                     pass
             # освобождаем слот агентства и будим пул
@@ -2118,6 +2328,7 @@ def _ensure_copy_worker(app):
     _jobs_db_init()                                       # схема таблицы (mirror прогресса копирования)
     _copy_jobs_recover()                                  # crash-cleanup ТОЛЬКО своих copy-джоб
     _ensure_create_watchdog()                             # heartbeat зависших джоб (по in-memory этого процесса)
+    _ensure_copy_agent_retry_daemon(app)                  # Agent Board done → повтор failed copy job
     _create_watchdog_tick()
     workers = int(_CREATE_WORKERS or _create_workers_count())
     for _ in range(workers):                              # параллельно по разным агентствам
@@ -2324,11 +2535,13 @@ def _worker_apply_controls() -> None:
     for r in rows:
         jid = r["job_id"]
         ctrl = (r.get("control") or "").strip()
+        _control_applied = False
         if ctrl == "cancel":
             _cancelled = None
             with _CREATE_COND:
                 j = _CREATE_JOBS.get(jid)
                 if j is not None:
+                    _control_applied = True
                     j["cancel"] = True                    # стоп после текущей кампании item'а
                     if j.get("status") == "queued" and jid in _CREATE_QUEUE:
                         _CREATE_QUEUE.remove(jid)
@@ -2340,6 +2553,8 @@ def _worker_apply_controls() -> None:
                 # (_web_posted) → поллер ре-клеймит её и отменённая джоба ИСПОЛНЯЕТСЯ.
                 _job_db_save(jid, _cancelled)
         # feed-решения web-роль применяет напрямую (status flip в БД), поэтому здесь только 'cancel'.
+        if not _control_applied:
+            continue
         try:
             conn = _victory_conn_rw()
             try:
@@ -2393,10 +2608,10 @@ def _worker_reclaim_stuck_claimed() -> None:
         pass
 
 def _tg_alert(text: str) -> None:
-    """Best-effort Telegram-алерт в личный канал (паттерн tools/check_tone_of_voice.py)."""
+    """Best-effort Telegram-алерт Direct automation через профиль .secret TG_DIRECT_*."""
     try:
         from loader import load_telegram, send_telegram_message  # noqa: PLC0415
-        tg = load_telegram("personal")
+        tg = load_telegram("direct")
         tok, chat = tg.get("bot_token"), tg.get("chat_id")
         if tok and chat:
             send_telegram_message(tok, chat, text)

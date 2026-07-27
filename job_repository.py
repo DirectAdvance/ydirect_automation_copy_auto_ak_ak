@@ -73,6 +73,12 @@ def _jobs_db_init() -> None:
             cur.execute("ALTER TABLE public.direct_automation_jobs ADD COLUMN IF NOT EXISTS errors_log jsonb")
             # control: команда web→worker (сейчас используется 'cancel' для running-джоб; worker её NULL-ит)
             cur.execute("ALTER TABLE public.direct_automation_jobs ADD COLUMN IF NOT EXISTS control text")
+            # Фактический старт выполнения. created_at = постановка в очередь; started_at = воркер взял job.
+            cur.execute("ALTER TABLE public.direct_automation_jobs ADD COLUMN IF NOT EXISTS started_at timestamptz")
+            # Copy-service auto-triage: failed copy job -> Agent Board task -> retry after task done.
+            cur.execute("ALTER TABLE public.direct_automation_jobs ADD COLUMN IF NOT EXISTS agent_board_task_id bigint")
+            cur.execute("ALTER TABLE public.direct_automation_jobs ADD COLUMN IF NOT EXISTS copy_retry_job_id text")
+            cur.execute("ALTER TABLE public.direct_automation_jobs ADD COLUMN IF NOT EXISTS copy_retry_started_at timestamptz")
             # Кросс-процессный per-agency гейт (create-worker ↔ copy-worker делят куки/баллы агентства).
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS public.direct_agency_active (
@@ -99,10 +105,19 @@ def _job_db_save(jid: str, job: dict, *, full: bool = False) -> None:
             agency_val = (job.get("agency") or _job_agency(job) or None)
             err_log = job.get("errors_log")
             err_log_json = json.dumps(err_log, ensure_ascii=False) if err_log else None
+            started_at = job.get("started_at")
+            started_dt = None
+            if started_at:
+                try:
+                    from datetime import datetime, timezone
+                    started_dt = datetime.fromtimestamp(float(started_at), timezone.utc)
+                except Exception:  # noqa: BLE001
+                    started_dt = None
             cur.execute("""
                 INSERT INTO public.direct_automation_jobs
-                    (job_id, login, status, total, done, created, failed, kind, publish, error, result, body, agency, errors_log, updated_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+                    (job_id, login, status, total, done, created, failed, kind, publish, error,
+                     result, body, agency, errors_log, started_at, updated_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
                 ON CONFLICT (job_id) DO UPDATE SET
                     status=EXCLUDED.status, total=EXCLUDED.total, done=EXCLUDED.done,
                     created=EXCLUDED.created, failed=EXCLUDED.failed, error=EXCLUDED.error,
@@ -110,11 +125,12 @@ def _job_db_save(jid: str, job: dict, *, full: bool = False) -> None:
                     body=COALESCE(public.direct_automation_jobs.body, EXCLUDED.body),
                     agency=COALESCE(public.direct_automation_jobs.agency, EXCLUDED.agency),
                     errors_log=COALESCE(EXCLUDED.errors_log, public.direct_automation_jobs.errors_log),
+                    started_at=COALESCE(public.direct_automation_jobs.started_at, EXCLUDED.started_at),
                     updated_at=now()
             """, (jid, job.get("login"), job.get("status"), int(job.get("total") or 0),
                   int(job.get("done") or 0), int(job.get("created") or 0), int(job.get("failed") or 0),
                   job.get("kind"), bool(job.get("publish")), (job.get("error") or None)[:500] if job.get("error") else None,
-                  res_json, body_json, agency_val, err_log_json))
+                  res_json, body_json, agency_val, err_log_json, started_dt))
             conn.commit()
         finally:
             conn.close()
@@ -142,7 +158,12 @@ def _job_db_get(jid: str) -> dict | None:
         conn = _victory_conn()
         try:
             cur = conn.cursor()
-            cur.execute("SELECT * FROM public.direct_automation_jobs WHERE job_id=%s", (jid,))
+            cur.execute("""
+                SELECT j.*, COALESCE(j.started_at, a.started_at) AS started_at
+                  FROM public.direct_automation_jobs j
+                  LEFT JOIN public.direct_agency_active a ON a.job_id = j.job_id
+                 WHERE j.job_id=%s
+            """, (jid,))
             row = cur.fetchone()
             if not row:
                 return None
@@ -254,12 +275,20 @@ def _job_db_list_recent(active_only: bool = False) -> list[dict]:
         try:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             if active_only:
-                cur.execute("SELECT * FROM public.direct_automation_jobs "
-                            "WHERE status NOT IN ('done','error','cancelled','interrupted') "
-                            "ORDER BY created_at DESC LIMIT 50")
+                cur.execute("""
+                    SELECT j.*, COALESCE(j.started_at, a.started_at) AS started_at
+                      FROM public.direct_automation_jobs j
+                      LEFT JOIN public.direct_agency_active a ON a.job_id = j.job_id
+                     WHERE j.status NOT IN ('done','error','cancelled','interrupted')
+                     ORDER BY j.created_at DESC LIMIT 50
+                """)
             else:
-                cur.execute("SELECT * FROM public.direct_automation_jobs "
-                            "ORDER BY updated_at DESC LIMIT 50")
+                cur.execute("""
+                    SELECT j.*, COALESCE(j.started_at, a.started_at) AS started_at
+                      FROM public.direct_automation_jobs j
+                      LEFT JOIN public.direct_agency_active a ON a.job_id = j.job_id
+                     ORDER BY j.updated_at DESC LIMIT 50
+                """)
             return list(cur.fetchall() or [])
         finally:
             conn.close()
