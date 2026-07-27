@@ -243,7 +243,8 @@ def _tp1_video_ads(login: str, created_ad_meta: list, grid_cookie: str | None = 
             rep["warnings"].append(f"attach: {str(e)[:100]}")
     return rep
 
-def _synthesize_tp1_build_error(rep: dict, tp_code: str) -> None:
+def _synthesize_tp1_build_error(rep: dict, tp_code: str, *,
+                                autotarget: bool = False, keep_keywords: bool = False) -> None:
     """Синтез singular rep["error"] из rep["errors"] (plural) для структурных дефектов.
 
     Зачем: вызывающий код (create_set_tp1_builders ~:1481, create_set_feed_builders ~:838)
@@ -252,7 +253,8 @@ def _synthesize_tp1_build_error(rep: dict, tp_code: str) -> None:
     уходит как ok=True.
 
     Фатальные (→ синтез singular error):
-      tp5 (TEXT_CAMPAIGN / поиск): ключевые слова не добавлены при созданных группах.
+      tp5 (TEXT_CAMPAIGN / поиск): ключевые слова не добавлены при созданных группах
+      И в errors есть keyword-ошибка (строка 470: "keywords(Grid AddKeywords tp5)").
       Без ключей в поисковой кампании нет трафика → позиция нефункциональна.
 
     Намеренно информационные (остаются в errors, НЕ синтезируют singular error):
@@ -260,20 +262,23 @@ def _synthesize_tp1_build_error(rep: dict, tp_code: str) -> None:
       - shopping / all_feeds ошибки: TextAd-группы работают
       - частичные сбои групп/объявлений (adgroups > 0, ads > 0): позиция частично ok
       - tp1 RSY ключевые слова: РСЯ использует контекстный таргетинг без явных ключей
+      - чистый автотаргет (autotarget=True, keep_keywords=False): keywords=0 штатно,
+        таргетинг = relevanceMatch search_tp2 из Фазы 1 — синтез не нужен.
 
     Phase 1.5 уже ставит rep["error"] singular — не дублируем (проверка not rep.get("error")).
     """
     if (tp_code == "tp5"
             and rep.get("adgroups")
             and not rep.get("keywords")
-            and rep.get("errors")
             and not rep.get("error")):
-        _kw_errs = [e for e in rep["errors"]
-                    if "keyword" in e.lower() or "ключ" in e.lower() or "kw" in e.lower()
-                    or e.startswith("adgroups(Grid tp5)") or "tp5" in e]
-        _src = _kw_errs or rep["errors"]
-        rep["error"] = ("tp5 ключи не созданы при наличии групп: "
-                        + "; ".join(str(e) for e in _src[:2]))[:240]
+        # Чистый автотаргет: keywords=0 штатно (relevanceMatch без явных ключей).
+        if autotarget and not keep_keywords:
+            return
+        _kw_errs = [e for e in rep.get("errors", [])
+                    if "keyword" in e.lower() or "ключ" in e.lower() or "kw" in e.lower()]
+        if _kw_errs:
+            rep["error"] = ("tp5 ключи не созданы при наличии групп: "
+                            + "; ".join(str(e) for e in _kw_errs[:2]))[:240]
 
 
 def _build_tp1_adgroups(
@@ -863,7 +868,7 @@ def _build_tp1_adgroups(
 
     # Синтез singular error из errors (plural) для структурных дефектов.
     # Вынесено в _synthesize_tp1_build_error() для покрытия тестами.
-    _synthesize_tp1_build_error(rep, tp_code)
+    _synthesize_tp1_build_error(rep, tp_code, autotarget=autotarget, keep_keywords=keep_keywords)
     return rep
 
 def _pack_read_glitch(key: str, site_type: str, pack_tp: str) -> bool:

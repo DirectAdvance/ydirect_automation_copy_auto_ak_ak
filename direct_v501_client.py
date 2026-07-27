@@ -234,7 +234,7 @@ class DirectV501Client:
         """Вызов метода v501. Возвращает result-словарь или бросает DirectV501Error."""
         # Межпотоковый троттл: ≤4.5 req/s суммарно для одного OAuth-токена.
         # При двух A-суб-потоках (A1+A2) без троттла суммарная частота может превысить
-        # 5 req/s → 429. Acquire ПЕРЕД каждым HTTP-запросом (вкл. ретраи).
+        # 5 req/s → 429. Acquire один раз перед циклом; при 429 retry ждёт Retry-After.
         _get_v501_limiter(self._token).acquire()
         url = f"{V501_BASE}/{service}"
         body = {"method": method, "params": params}

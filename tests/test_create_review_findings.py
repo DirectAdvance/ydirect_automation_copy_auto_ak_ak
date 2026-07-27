@@ -173,3 +173,49 @@ class TestSynthesizeTp1BuildError:
         }
         _synthesize_tp1_build_error(rep, "tp5")
         assert not rep.get("error"), "positional shift is informational"
+
+    def test_tp5_autotarget_shopping_error_does_not_set_singular_error(self):
+        """tp5 + autotarget=True + keep_keywords=False + shopping error → NO singular error.
+
+        keywords=0 is штатно for чистый автотаргет (relevanceMatch без явных ключей).
+        A shopping/all_feeds error (e.g. all_feeds grp tp5(...)) must NOT trigger synthesis.
+        """
+        rep = {
+            "adgroups": 3, "keywords": 0, "ads": 3,
+            "errors": ["all_feeds grp tp5(456): Grid timeout"],
+        }
+        _synthesize_tp1_build_error(rep, "tp5", autotarget=True, keep_keywords=False)
+        assert not rep.get("error"), (
+            "autotarget+no keep_keywords: keywords=0 is штатно, must not set singular error"
+        )
+
+    def test_tp5_autotarget_keep_keywords_with_kw_error_sets_singular_error(self):
+        """tp5 + autotarget=True + keep_keywords=True + kw error → singular error IS set.
+
+        keep_keywords=True means real keywords were expected; missing keywords = fatal.
+        """
+        rep = {
+            "adgroups": 3, "keywords": 0, "ads": 0,
+            "errors": ["keywords(Grid AddKeywords tp5): Grid API error"],
+        }
+        _synthesize_tp1_build_error(rep, "tp5", autotarget=True, keep_keywords=True)
+        assert rep.get("error"), "autotarget+keep_keywords: missing keywords must be fatal"
+        assert "tp5 ключи" in rep["error"]
+
+    def test_tp5_shopping_error_only_with_keywords_zero_does_not_synthesize(self):
+        """tp5 + keywords=0 + only shopping/all_feeds errors → NO singular error.
+
+        'tp5' substring in all_feeds/shopping error must NOT trigger keyword synthesis
+        (was matching via old 'tp5 in e' filter, causing false failures on valid positions).
+        """
+        rep = {
+            "adgroups": 3, "keywords": 0, "ads": 3,
+            "errors": [
+                "all_feeds grp tp5(789): some shopping error",
+                "shopping(Grid addShoppingAds tp5): NOT_FOUND",
+            ],
+        }
+        _synthesize_tp1_build_error(rep, "tp5", autotarget=False, keep_keywords=False)
+        assert not rep.get("error"), (
+            "shopping/all_feeds errors with 'tp5' substring must remain informational"
+        )
