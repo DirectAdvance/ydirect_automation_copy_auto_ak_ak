@@ -59,6 +59,15 @@ def _lv_summary_int(data: dict[str, Any], key: str) -> int:
         return 0
 
 
+def _ver_summary_int(data: dict[str, Any], key: str) -> int:
+    """Read integer field from verification.summary (static verify_create_set report)."""
+    try:
+        ver = data.get("verification") or {}
+        return int((ver.get("summary") or {}).get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _count_positions_with_errors(data: dict[str, Any]) -> int:
     """Count unique campaign positions with at least one error-severity issue."""
     try:
@@ -98,13 +107,15 @@ def compute_job_issues_breakdown(
         return None
     d = data or {}
     live_errors = _lv_summary_int(d, "errors")
-    if live_errors == 0:
+    ver_errors = _ver_summary_int(d, "errors")
+    total_errors = live_errors + ver_errors
+    if total_errors == 0:
         return None  # чистый done
     live_warnings = _lv_summary_int(d, "warnings")
     gate_skips = _as_int(d.get("gate_skips"))
     positions_with_errors = _count_positions_with_errors(d)
     return {
-        "live_errors": live_errors,
+        "live_errors": total_errors,  # sum: live_verification + verification
         "live_warnings": live_warnings,
         "gate_skips": gate_skips,
         "positions_with_errors": positions_with_errors,

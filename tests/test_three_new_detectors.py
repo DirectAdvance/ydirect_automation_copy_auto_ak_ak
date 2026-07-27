@@ -225,6 +225,66 @@ class TestAdHrefRootInsteadOfModel:
         kinds = [r.get("kind") for r in repair]
         assert "rebuild_missing_content" in kinds
 
+    def test_does_not_fire_when_root_href_ok_true(self):
+        """root_href_ok=True → квизовый лендинг или заглушка без модельных страниц → молчим."""
+        counts = {
+            "adgroups": 1, "ads": 3,
+            "adaptive_images_read": True, "root_href_ads_read": True,
+            "root_href_ads_count": 5,
+        }
+        issues, repair = verify_grid_content(
+            name="tp5_cpc_site — Товарная галерея — Марки",
+            campaign_id=100, counts=counts,
+            expected={"root_href_ok": True},
+        )
+        codes = [i["code"] for i in issues]
+        assert "AD_HREF_ROOT_INSTEAD_OF_MODEL" not in codes
+
+    def test_does_not_fire_when_root_href_ok_true_modeli(self):
+        """root_href_ok=True also suppresses for Модели segment."""
+        counts = {
+            "adgroups": 2, "ads": 6,
+            "adaptive_images_read": True, "root_href_ads_read": True,
+            "root_href_ads_count": 6,
+        }
+        issues, _ = verify_grid_content(
+            name="tp5_cpc_site — Товарная галерея — Модели",
+            campaign_id=200, counts=counts,
+            expected={"root_href_ok": True},
+        )
+        codes = [i["code"] for i in issues]
+        assert "AD_HREF_ROOT_INSTEAD_OF_MODEL" not in codes
+
+    def test_fires_when_root_href_ok_false(self):
+        """root_href_ok=False (явно False) — детектор работает штатно."""
+        counts = {
+            "adgroups": 1, "ads": 3,
+            "adaptive_images_read": True, "root_href_ads_read": True,
+            "root_href_ads_count": 3,
+        }
+        issues, _ = verify_grid_content(
+            name="tp5_cpc_site — Товарная галерея — Марки",
+            campaign_id=100, counts=counts,
+            expected={"root_href_ok": False},
+        )
+        codes = [i["code"] for i in issues]
+        assert "AD_HREF_ROOT_INSTEAD_OF_MODEL" in codes
+
+    def test_fires_when_root_href_ok_absent(self):
+        """root_href_ok отсутствует в expected (None → falsy) → детектор работает."""
+        counts = {
+            "adgroups": 1, "ads": 3,
+            "adaptive_images_read": True, "root_href_ads_read": True,
+            "root_href_ads_count": 2,
+        }
+        issues, _ = verify_grid_content(
+            name="tp5_cpc_site — Товарная галерея — Марки",
+            campaign_id=100, counts=counts,
+            expected={},  # root_href_ok not set
+        )
+        codes = [i["code"] for i in issues]
+        assert "AD_HREF_ROOT_INSTEAD_OF_MODEL" in codes
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Detector 3: CPA_COUNT_PLAN_MISMATCH

@@ -135,3 +135,72 @@ def test_terminal_status_cancelled():
     st, err = terminal_status_for_job("set", {"created": 0, "failed": 0}, cancelled=True)
     assert st == "cancelled"
     assert err is None
+
+
+# ---------------------------------------------------------------------------
+# Integration: verify_create_set → job data → compute_job_issues_breakdown
+# ---------------------------------------------------------------------------
+
+def test_cpa_mismatch_reaches_has_issues_gate():
+    """Integration: CPA_COUNT_PLAN_MISMATCH in verify_create_set propagates to has_issues.
+
+    Previously, the gate only read live_verification.summary.errors and missed
+    all findings from the static verify_create_set (verification.summary.errors).
+    This test ensures the full chain works: detector fires → stored in job data →
+    has_issues breakdown is non-None.
+    """
+    from direct.verifier import verify_create_set
+
+    # Plan includes a CPA item, but results have none (silently skipped by orchestrator)
+    items = [{"name": "tp5_cpa_site — Модели"}, {"name": "tp5_cpc_site — Модели"}]
+    results = [{"name": "tp5_cpc_site — Модели", "ok": True, "id": 111}]
+
+    verification = verify_create_set(login="test-integ", items=items, results=results)
+    assert verification["summary"]["errors"] > 0, "sanity: CPA_COUNT_PLAN_MISMATCH must fire"
+    cpa_codes = [i["code"] for i in verification["issues"]]
+    assert "CPA_COUNT_PLAN_MISMATCH" in cpa_codes, "sanity: CPA_COUNT_PLAN_MISMATCH must be in issues"
+
+    # Simulate what queue_server stores as job result data (done, failed=0, no live_verification)
+    job_data = {
+        "created": 1,
+        "failed": 0,
+        "verification": verification,
+        # live_verification intentionally absent: test that verification alone triggers the gate
+    }
+
+    breakdown = compute_job_issues_breakdown("set", job_data)
+    assert breakdown is not None, (
+        "has_issues must fire when verification.summary.errors > 0 "
+        "(regression: was None — CPA_COUNT_PLAN_MISMATCH was invisible to gate)"
+    )
+    assert breakdown["live_errors"] > 0
+
+
+def test_verification_errors_sum_with_live_errors():
+    """verification.summary.errors + live_verification.summary.errors sum into live_errors."""
+    from direct.verifier import verify_create_set
+
+    items = [{"name": "tp5_cpa_site — Модели"}]
+    results = []
+    verification = verify_create_set(login="test-sum", items=items, results=results)
+    ver_errors = verification["summary"]["errors"]
+    assert ver_errors > 0, "sanity"
+
+    job_data = {
+        "created": 0, "failed": 0,
+        "verification": verification,
+        "live_verification": {"summary": {"errors": 2, "warnings": 0}, "issues": []},
+    }
+    breakdown = compute_job_issues_breakdown("set", job_data)
+    assert breakdown is not None
+    assert breakdown["live_errors"] == ver_errors + 2
+
+
+def test_verification_only_no_live_verification_clean():
+    """verification.summary.errors=0 and no live_verification → None (clean done)."""
+    # Empty items/results → no verification errors
+    from direct.verifier import verify_create_set
+    verification = verify_create_set(login="x", items=[], results=[])
+    assert verification["summary"]["errors"] == 0, "sanity: empty set should be clean"
+    job_data = {"created": 0, "failed": 0, "verification": verification}
+    assert compute_job_issues_breakdown("set", job_data) is None

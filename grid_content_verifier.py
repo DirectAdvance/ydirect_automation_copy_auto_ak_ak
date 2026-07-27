@@ -232,7 +232,10 @@ def verify_grid_content(name: str, campaign_id: int | None,
     # у которых urlparse(href).path in ("", "/")) из того же запроса AdaptiveImages, что
     # и NO_IMAGES_LIVE (_enrich_adaptive_images) — НОЛЬ новых запросов.
     # Tri-state: молчим, если root_href_ads_read=False (данные не прочитаны → fail-safe).
-    if (re.search(r'\bМодели\b|\bМарки\b', nm or "")
+    # Исключение: root_href_ok=True в expected — посадочная является корнем намеренно
+    # (квизовый лендинг site.ru/ без пути, кампания-заглушка без модельных страниц).
+    if (not exp.get("root_href_ok")
+            and re.search(r'\bМодели\b|\bМарки\b', nm or "")
             and counts.get("root_href_ads_read")
             and isinstance(counts.get("root_href_ads_count"), int)
             and counts.get("root_href_ads_count", 0) > 0):
