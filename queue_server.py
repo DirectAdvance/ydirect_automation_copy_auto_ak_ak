@@ -35,7 +35,9 @@ from .job_repository import (
     _ready_login_remove,
     _next_units_reset_utc,
 )
-from .create_job_status import terminal_status_for_job, terminal_status_for_parent_failed
+from .create_job_status import (
+    terminal_status_for_job, terminal_status_for_parent_failed, compute_job_issues_breakdown,
+)
 from .yandex_gateway import (
     direct_tokens as _direct_tokens, token_for_login as _token_for_login,
     units_alive_for_login as _units_alive_for_login, grid_list_campaigns as _grid_list_campaigns,
@@ -2176,6 +2178,14 @@ def _create_worker_loop(app):
                         j["error"] = _err
                     if _st == "done":
                         j["done"] = j["total"]
+                        # Гейт финального статуса: если live-верификатор нашёл ошибки —
+                        # фиксируем разбивку в result["has_issues"]. Статус остаётся "done"
+                        # (кампании созданы), но карточка покажет предупреждение.
+                        _issues_bd = compute_job_issues_breakdown(
+                            j.get("kind"), data if isinstance(data, dict) else None
+                        )
+                        if _issues_bd and isinstance(data, dict):
+                            data["has_issues"] = _issues_bd
                     # «Сколько ушло времени» — от старта прогона до терминала (сек). Кладём и в result,
                     # чтобы итоговый баннер показал длительность даже после рестарта (хранится в result jsonb).
                     if j.get("started_at"):

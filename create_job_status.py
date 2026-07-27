@@ -44,3 +44,68 @@ def terminal_status_for_parent_failed(failed: int) -> tuple[str, str | None]:
     if failed_i > 0:
         return "error", create_failed_error(failed_i, prefix="докрутка завершилась с ошибками")
     return "done", None
+
+
+# ---------------------------------------------------------------------------
+# Гейт финального статуса: has_issues breakdown
+# ---------------------------------------------------------------------------
+
+def _lv_summary_int(data: dict[str, Any], key: str) -> int:
+    """Read integer field from live_verification.summary."""
+    try:
+        lv = data.get("live_verification") or {}
+        return int((lv.get("summary") or {}).get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _count_positions_with_errors(data: dict[str, Any]) -> int:
+    """Count unique campaign positions with at least one error-severity issue."""
+    try:
+        lv = data.get("live_verification") or {}
+        issues = lv.get("issues") or []
+        seen: set[object] = set()
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            if issue.get("severity") == "error":
+                cid = (issue.get("campaign_id")
+                       or issue.get("item_id")
+                       or issue.get("id"))
+                seen.add(cid if cid is not None else id(issue))
+        return len(seen)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def compute_job_issues_breakdown(
+    kind: str | None,
+    data: dict[str, Any] | None,
+) -> dict[str, int] | None:
+    """Compute issues breakdown for a create-set job that finished as 'done'.
+
+    Returns None when the job is fully clean (no significant defects).
+    Returns a breakdown dict when live_verification.summary.errors > 0.
+
+    Gate logic (what is significant vs штатное):
+    - SIGNIFICANT → live_verification.summary.errors > 0
+      (error-severity findings from verifiers: missing groups, wrong config, etc.)
+    - NOT significant alone → warnings, gate_skips, errors_log
+      (штатные report-only warns; infrastructure connectivity issues)
+    - Out of scope here → build.errors[] plural (separate task, create_set_orchestrator ⛔)
+    """
+    if (kind or "") not in CREATE_JOB_KINDS:
+        return None
+    d = data or {}
+    live_errors = _lv_summary_int(d, "errors")
+    if live_errors == 0:
+        return None  # чистый done
+    live_warnings = _lv_summary_int(d, "warnings")
+    gate_skips = _as_int(d.get("gate_skips"))
+    positions_with_errors = _count_positions_with_errors(d)
+    return {
+        "live_errors": live_errors,
+        "live_warnings": live_warnings,
+        "gate_skips": gate_skips,
+        "positions_with_errors": positions_with_errors,
+    }
