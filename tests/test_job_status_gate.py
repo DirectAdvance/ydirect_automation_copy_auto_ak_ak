@@ -1,5 +1,10 @@
 """Tests for job-status gate: has_issues breakdown and terminal_status_for_job."""
-from direct.create_job_status import compute_job_issues_breakdown, terminal_status_for_job
+from direct.create_job_status import (
+    annotate_job_issues,
+    compute_job_issues_breakdown,
+    has_verification_data,
+    terminal_status_for_job,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -214,3 +219,146 @@ def test_verification_only_no_live_verification_clean():
     assert verification["summary"]["errors"] == 0, "sanity: empty set should be clean"
     job_data = {"created": 0, "failed": 0, "verification": verification}
     assert compute_job_issues_breakdown("set", job_data) is None
+
+
+# ---------------------------------------------------------------------------
+# has_verification_data: «данных нет» ≠ «ноль ошибок»
+# ---------------------------------------------------------------------------
+
+def test_verification_data_present_when_summary_exists():
+    assert has_verification_data(_data(live_errors=0)) is True
+    assert has_verification_data({"verification": {"summary": {"errors": 0}}}) is True
+
+
+def test_verification_data_absent_without_summary():
+    """Деградированный/упавший постпроцесс кладёт блок без summary — это «данных нет»."""
+    assert has_verification_data(None) is False
+    assert has_verification_data({"created": 5, "failed": 0}) is False
+    assert has_verification_data({"error": "worker crash"}) is False
+    assert has_verification_data({
+        "verification": {"status": "timeboxed", "error": "postprocess timebox 601s"},
+        "live_verification": {"status": "timeboxed", "prefer_grid": True},
+    }) is False
+
+
+# ---------------------------------------------------------------------------
+# annotate_job_issues: гейт работает на ЛЮБОМ терминальном статусе, не только done
+# ---------------------------------------------------------------------------
+
+def _error_job_data_like_69a140093e78():
+    """Слепок реального прогона 69a140093e78: status=error (created=25, failed=1),
+    lv_errors=23, ver_errors=1, ver_warnings=22 — раньше has_issues не писался вовсе."""
+    return {
+        "created": 25,
+        "failed": 1,
+        "live_verification": {"summary": {"errors": 23, "warnings": 0},
+                              "issues": [{"severity": "error", "campaign_id": f"c{i}"}
+                                         for i in range(23)]},
+        "verification": {"summary": {"errors": 1, "warnings": 22}, "issues": []},
+    }
+
+
+def test_error_job_gets_has_issues_breakdown():
+    """error-джоба с непустой верификацией → breakdown посчитан, числа = источнику."""
+    data = _error_job_data_like_69a140093e78()
+    st, err = terminal_status_for_job("set", data)
+    assert st == "error"                      # sanity: failed>0 → error, не done
+    annotate_job_issues("set", data)
+    hi = data.get("has_issues")
+    assert hi is not None, "regression JOB_STATUS_ERROR_SKIPS_HAS_ISSUES: разбивки нет на error-джобе"
+    assert hi["lv_errors"] == 23              # live_verification.summary.errors
+    assert hi["ver_errors"] == 1              # verification.summary.errors
+    assert hi["live_errors"] == 24            # JS-compat: сумма
+    assert hi["positions_with_errors"] == 23
+    assert "has_issues_unknown" not in data   # данные есть → пометки «нет данных» быть не должно
+
+
+def test_cancelled_job_with_verification_gets_breakdown():
+    """Гейт не зависит от статуса: cancelled с верификацией тоже получает разбивку."""
+    data = _data(created=3, failed=0, live_errors=4)
+    assert terminal_status_for_job("set", data, cancelled=True)[0] == "cancelled"
+    annotate_job_issues("set", data)
+    assert (data.get("has_issues") or {}).get("lv_errors") == 4
+
+
+def test_done_job_behaviour_unchanged_clean():
+    """done без ошибок: ключей не появляется — старое поведение не меняется."""
+    data = _data(live_errors=0, live_warnings=3)
+    annotate_job_issues("set", data)
+    assert "has_issues" not in data
+    assert "has_issues_unknown" not in data
+
+
+def test_done_job_behaviour_unchanged_with_errors():
+    """done с ошибками: тот же has_issues, что и до правки."""
+    data = _data(live_errors=2, live_warnings=5)
+    annotate_job_issues("set", data)
+    assert data["has_issues"] == compute_job_issues_breakdown("set", _data(live_errors=2, live_warnings=5))
+
+
+def test_job_without_verification_marked_unknown_not_zeros():
+    """Верификация не запускалась → явная пометка «нет данных», НЕ нули в has_issues."""
+    data = {"created": 0, "failed": 1, "error": "worker crash"}
+    annotate_job_issues("set", data)
+    assert "has_issues" not in data, "нулевую разбивку писать нельзя: данных не было"
+    assert data.get("has_issues_unknown") is True
+
+
+def test_degraded_postprocess_marked_unknown():
+    """Timeboxed постпроцесс (блоки без summary) → «нет данных», а не «ноль ошибок»."""
+    data = {
+        "created": 26, "failed": 0,
+        "verification": {"status": "timeboxed", "error": "postprocess timebox 601s"},
+        "live_verification": {"status": "timeboxed", "prefer_grid": True},
+    }
+    annotate_job_issues("set", data)
+    assert "has_issues" not in data
+    assert data.get("has_issues_unknown") is True
+
+
+def test_annotate_ignores_non_create_kinds():
+    """copy/delete джобы гейтом не размечаются вовсе."""
+    for kind in ("copy_campaigns", "delete_drafts", None):
+        data = {"created": 1, "failed": 1}
+        annotate_job_issues(kind, data)
+        assert data == {"created": 1, "failed": 1}
+
+
+def test_annotate_tolerates_non_dict_result():
+    annotate_job_issues("set", None)  # не должно падать
+
+
+# ---------------------------------------------------------------------------
+# Anti-regression: вызов гейта не должен снова уехать под `if _st == "done"`
+# ---------------------------------------------------------------------------
+
+def test_queue_server_calls_gate_outside_done_branch():
+    """queue_server обязан звать annotate_job_issues вне ветки `if _st == "done"`.
+
+    Именно вложенность в done-ветку была причиной JOB_STATUS_ERROR_SKIPS_HAS_ISSUES.
+    """
+    import ast
+    import pathlib
+
+    src_path = pathlib.Path(__file__).resolve().parents[1] / "queue_server.py"
+    tree = ast.parse(src_path.read_text(encoding="utf-8"))
+
+    def _calls(node):
+        return [n for n in ast.walk(node)
+                if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "annotate_job_issues"]
+
+    assert _calls(tree), "annotate_job_issues не вызывается в queue_server.py"
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        is_done_test = (
+            isinstance(test, ast.Compare)
+            and getattr(test.left, "id", "") == "_st"
+            and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq)
+            and getattr(test.comparators[0], "value", None) == "done"
+        )
+        if not is_done_test:
+            continue
+        nested = [c for stmt in node.body for c in _calls(stmt)]
+        assert not nested, "гейт has_issues снова вложен в `if _st == \"done\"` — error-джобы онемеют"

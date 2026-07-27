@@ -36,7 +36,7 @@ from .job_repository import (
     _next_units_reset_utc,
 )
 from .create_job_status import (
-    terminal_status_for_job, terminal_status_for_parent_failed, compute_job_issues_breakdown,
+    terminal_status_for_job, terminal_status_for_parent_failed, annotate_job_issues,
 )
 from .yandex_gateway import (
     direct_tokens as _direct_tokens, token_for_login as _token_for_login,
@@ -2178,14 +2178,16 @@ def _create_worker_loop(app):
                         j["error"] = _err
                     if _st == "done":
                         j["done"] = j["total"]
-                        # Гейт финального статуса: если live-верификатор нашёл ошибки —
-                        # фиксируем разбивку в result["has_issues"]. Статус остаётся "done"
-                        # (кампании созданы), но карточка покажет предупреждение.
-                        _issues_bd = compute_job_issues_breakdown(
-                            j.get("kind"), data if isinstance(data, dict) else None
-                        )
-                        if _issues_bd and isinstance(data, dict):
-                            data["has_issues"] = _issues_bd
+                    # Гейт финального статуса: если верификаторы нашли ошибки — фиксируем разбивку
+                    # в result["has_issues"]. Считаем на ВСЕХ терминальных статусах этого пути
+                    # (done/error/cancelled), а не только на done: при failed>0 статус уходит в
+                    # "error", и раньше разбивка не писалась вовсе — система молчала именно там,
+                    # где дефекты вероятнее всего (ERRORS_JOURNAL: JOB_STATUS_ERROR_SKIPS_HAS_ISSUES).
+                    # Статус от разбивки по-прежнему НЕ зависит. Верификации не было → вместо нулей
+                    # ставится явный result["has_issues_unknown"]. Статус "interrupted" сюда не
+                    # доходит (его ставит SQL-апдейт recover/watchdog, минуя result) — там верификация
+                    # не отрабатывала вовсе, поэтому честнее отсутствие полей.
+                    annotate_job_issues(j.get("kind"), data if isinstance(data, dict) else None)
                     # «Сколько ушло времени» — от старта прогона до терминала (сек). Кладём и в result,
                     # чтобы итоговый баннер показал длительность даже после рестарта (хранится в result jsonb).
                     if j.get("started_at"):

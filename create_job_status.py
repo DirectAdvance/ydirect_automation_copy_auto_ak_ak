@@ -87,11 +87,28 @@ def _count_positions_with_errors(data: dict[str, Any]) -> int:
         return 0
 
 
+def has_verification_data(data: dict[str, Any] | None) -> bool:
+    """True, если хотя бы один верификатор реально отработал и отдал summary.
+
+    Нужно, чтобы отличить «верификация прошла чисто» (0 ошибок — данные ЕСТЬ)
+    от «верификация не запускалась/упала» (данных НЕТ). Во втором случае нули
+    в разбивке были бы враньём: отсутствие данных ≠ отсутствие дефектов.
+    Деградированный постпроцесс (`create_set_postprocess._degraded_postprocess`)
+    кладёт `verification`/`live_verification` БЕЗ `summary` — это «данных нет».
+    """
+    d = data or {}
+    for key in ("live_verification", "verification"):
+        block = d.get(key)
+        if isinstance(block, dict) and isinstance(block.get("summary"), dict):
+            return True
+    return False
+
+
 def compute_job_issues_breakdown(
     kind: str | None,
     data: dict[str, Any] | None,
 ) -> dict[str, int] | None:
-    """Compute issues breakdown for a create-set job that finished as 'done'.
+    """Compute issues breakdown for a create-set job that reached a terminal status.
 
     Returns None when the job is fully clean (no significant defects).
     Returns a breakdown dict when live_verification.summary.errors > 0.
@@ -122,3 +139,26 @@ def compute_job_issues_breakdown(
         "gate_skips": gate_skips,
         "positions_with_errors": positions_with_errors,
     }
+
+
+def annotate_job_issues(kind: str | None, data: dict[str, Any] | None) -> None:
+    """Записать в result джобы итог гейта дефектов. Мутирует `data` на месте.
+
+    Вызывается на ЛЮБОМ терминальном статусе, который проходит через воркер
+    (`done` / `error` / `cancelled`), а не только на `done`: именно на `error`
+    (failed>0) молчание опаснее всего — прогон `69a140093e78` закончился
+    `error` с `lv_errors=23`, и разбивки в result не было вовсе
+    (ERRORS_JOURNAL: `JOB_STATUS_ERROR_SKIPS_HAS_ISSUES`).
+
+    Три РАЗНЫХ исхода, которые нельзя смешивать:
+    - есть дефекты          → `has_issues` = разбивка (как и раньше);
+    - верификация чистая    → ключей нет вовсе (поведение `done` не меняется);
+    - верификации не было   → `has_issues_unknown = True` (НЕ нули в `has_issues`).
+    """
+    if not isinstance(data, dict) or (kind or "") not in CREATE_JOB_KINDS:
+        return
+    breakdown = compute_job_issues_breakdown(kind, data)
+    if breakdown:
+        data["has_issues"] = breakdown
+    elif not has_verification_data(data):
+        data["has_issues_unknown"] = True
