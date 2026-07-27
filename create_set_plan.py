@@ -369,6 +369,9 @@ def _txt_autotarget(name: str, tgt: str) -> bool:
     return _txt_targeting_mode(name, tgt)[0]
 
 
+_METRIKA_DEPS_WARNED = False   # «коллбэки не проведены» логируем ОДИН раз на процесс (set_plan частый)
+
+
 def _metrika_alert_for(login: str, body: dict) -> dict:
     """Счётчик/цель Метрики на шаге ПЛАНА — тем же `prepare_metrika`, что и создание.
 
@@ -389,7 +392,21 @@ def _metrika_alert_for(login: str, body: dict) -> dict:
     goals_for = g.get("_metrika_goals_for")
     goal_vse_formy = g.get("_goal_vse_formy")
     foreign_owner = g.get("_counter_foreign_owner")
-    if not (callable(goals_for) and callable(goal_vse_formy) and callable(foreign_owner)):
+    missing = [nm for nm, fn in (("_metrika_goals_for", goals_for),
+                                 ("_goal_vse_formy", goal_vse_formy),
+                                 ("_counter_foreign_owner", foreign_owner))
+               if not callable(fn)]
+    if missing:
+        # Второй fail-open, и он ХУЖЕ первого: обрыв проводки постоянный и абсолютно тихий —
+        # проверка метрики на шаге плана выключается навсегда, пользователь молча возвращается
+        # к «узнаём при создании». Имена перечисляем, чтобы по логу было видно, что чинить.
+        global _METRIKA_DEPS_WARNED
+        if not _METRIKA_DEPS_WARNED:
+            _METRIKA_DEPS_WARNED = True
+            logging.getLogger("direct.plan").warning(
+                "metrika_alert: коллбэки не проведены (%s) — проверка метрики на шаге плана "
+                "выключена, план отдаём без алерта; проводка — "
+                "automation_runtime._create_set_plan_deps", ", ".join(missing))
         return empty
 
     def _int(val) -> int:

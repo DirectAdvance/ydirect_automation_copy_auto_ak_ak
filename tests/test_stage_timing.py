@@ -211,10 +211,13 @@ def _find_if_not_parallel(tree: ast.AST):
 
 
 def _calls_clear_item(nodes) -> bool:
+    """Именно `_timing.clear_item()`: по одному имени атрибута тест прошёл бы на чужом объекте."""
     for n in nodes:
         for sub in ast.walk(n):
             if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
-                    and sub.func.attr == "clear_item"):
+                    and sub.func.attr == "clear_item"
+                    and isinstance(sub.func.value, ast.Name)
+                    and sub.func.value.id == "_timing"):
                 return True
     return False
 

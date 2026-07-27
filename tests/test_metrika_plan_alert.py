@@ -69,12 +69,42 @@ def test_foreign_counter_owner_raises_alert(monkeypatch):
     assert "porg-other" in alert["error"]
 
 
+def _unwire(monkeypatch, *names):
+    """Снять проводку коллбэков и сбросить one-shot флаг предупреждения."""
+    for nm in names:
+        monkeypatch.delattr(create_set_plan, nm, raising=False)
+    monkeypatch.setattr(create_set_plan, "_METRIKA_DEPS_WARNED", False, raising=False)
+
+
 def test_missing_deps_do_not_block_plan(monkeypatch):
     """Проводки коллбэков нет → план не блокируем (гейт создания остаётся в оркестраторе)."""
-    monkeypatch.delattr(create_set_plan, "_metrika_goals_for", raising=False)
-    monkeypatch.delattr(create_set_plan, "_goal_vse_formy", raising=False)
-    monkeypatch.delattr(create_set_plan, "_counter_foreign_owner", raising=False)
+    _unwire(monkeypatch, "_metrika_goals_for", "_goal_vse_formy", "_counter_foreign_owner")
     assert create_set_plan._metrika_alert_for("porg-test", {"counter_id": "1"})["needed"] is False
+
+
+def test_missing_deps_are_logged_with_names(monkeypatch, caplog):
+    """Обрыв проводки постоянный и тихий: без лога проверка метрики на шаге плана выключается
+    навсегда. В сообщении обязаны быть ИМЕНА непроведённых коллбэков — чтобы знать, что чинить."""
+    _wire(monkeypatch)                                   # проводим все три...
+    _unwire(monkeypatch, "_goal_vse_formy")              # ...и рвём ровно один
+    with caplog.at_level(logging.WARNING, logger="direct.plan"):
+        assert create_set_plan._metrika_alert_for("porg-test", {"counter_id": "1"})["needed"] is False
+    recs = [r for r in caplog.records if r.name == "direct.plan"]
+    assert len(recs) == 1
+    assert recs[0].levelno == logging.WARNING
+    msg = recs[0].getMessage()
+    assert "_goal_vse_formy" in msg                       # порванный — назван
+    assert "_metrika_goals_for" not in msg                # проведённые — не названы
+    assert "_counter_foreign_owner" not in msg
+
+
+def test_missing_deps_warning_is_once_per_process(monkeypatch, caplog):
+    """set_plan дёргается часто: строка в journald должна быть одна на процесс, не на вызов."""
+    _unwire(monkeypatch, "_metrika_goals_for", "_goal_vse_formy", "_counter_foreign_owner")
+    with caplog.at_level(logging.WARNING, logger="direct.plan"):
+        for _ in range(5):
+            assert create_set_plan._metrika_alert_for("porg-test", {})["needed"] is False
+    assert len([r for r in caplog.records if r.name == "direct.plan"]) == 1
 
 
 def test_metrika_failure_does_not_break_plan(monkeypatch):
