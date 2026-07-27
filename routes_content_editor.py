@@ -279,8 +279,9 @@ def register_content_editor_routes(
     try:
         ensure_jobs_table()
         ensure_content_job_agent_column(_jobs_exec, CE_JOBS_TABLE)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"[content-editor] ensure_jobs_table failed: {e}", flush=True)
+        raise
 
     # ── Страница ──────────────────────────────────────────────────────────────
 

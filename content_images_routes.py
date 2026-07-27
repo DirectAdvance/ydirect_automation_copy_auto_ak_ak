@@ -316,7 +316,14 @@ def _rsya_inventory(token: str, login: str, v5_call: Callable,
     skipped: list[dict] = []
     camp: dict[int, dict] = {}
     archived_cids: set[int] = set()
-    for row in _grid_campaigns(grid, login):
+    try:
+        grid_campaign_rows = _grid_campaigns(grid, login)
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("images inventory: grid campaign list failed for %s: %r", login, exc)
+        skipped.append({"reason": f"Grid не отдал список кампаний ({exc!r}) — инвентарь недоступен",
+                        "count": 0, "failed_source": "grid_campaigns"})
+        return {}, {}, {}, skipped
+    for row in grid_campaign_rows:
         try:
             cid = int(row.get("id"))
         except (TypeError, ValueError):
@@ -371,7 +378,14 @@ def _rsya_inventory(token: str, login: str, v5_call: Callable,
     text_cid: dict[int, int] = {}
     feed_types: dict[str, int] = {}
     other_types: dict[str, int] = {}
-    for row in _grid_ads_index(grid, work_cids):
+    try:
+        grid_ads_rows = _grid_ads_index(grid, work_cids)
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("images inventory: grid ads index failed for %s: %r", login, exc)
+        skipped.append({"reason": f"Grid не отдал список объявлений ({exc!r}) — инвентарь недоступен",
+                        "count": 0, "failed_source": "grid_ads"})
+        return {}, {}, {}, skipped
+    for row in grid_ads_rows:
         try:
             aid = int(row.get("id"))
             cid = int(row.get("campaignId"))

@@ -413,6 +413,196 @@ def _replace_ad_href(token: str, login: str, old_path: str, new_path: str,
             "errors": errors, "skipped": skipped}
 
 
+def _h_ad_href(ctx: dict) -> dict:
+    return _replace_ad_href(ctx["token"], ctx["login"], ctx["old"], ctx["new"],
+                             ctx["content"], ctx["v5_call"], ctx["v501_svc"])
+
+
+def _h_image_replace(ctx: dict) -> dict:
+    # Смена изображения: new_text — JSON {"campaign_ids": [...], "pairs": [...]}
+    # (пути к временным файлам, не байты). Реализация — content_images_routes;
+    # импорт ленивый, иначе циклическая зависимость модулей.
+    from .content_images_routes import run_image_replace
+
+    try:
+        payload = json.loads(ctx["new_text"])
+    except (TypeError, ValueError):
+        return {"replaced": 0, "errors": ["не удалось разобрать задание смены изображения"]}
+    return run_image_replace(
+        ctx["token"], ctx["login"], payload, ctx["v5_call"],
+        grid_client_factory=ctx["grid_client_factory"],
+        uac_client_factory=ctx["uac_client_factory"],
+    )
+
+
+def _h_campaign_rename(ctx: dict) -> dict:
+    # Переименование кампаний и/или групп: new_text — JSON
+    # {"campaign_renames": {id: name, ...}, "adgroup_renames": {id: name, ...},
+    #  "adgroup_campaign_ids": [...]}
+    from .content_renames_routes import run_rename
+    try:
+        payload = json.loads(ctx["new_text"])
+    except (TypeError, ValueError):
+        return {"replaced": 0, "errors": ["не удалось разобрать задание переименования"]}
+    return run_rename(
+        ctx["login"],
+        payload,
+        grid_client_factory=ctx["grid_client_factory"],
+    )
+
+
+def _h_sitelink_reorder(ctx: dict) -> dict:
+    # Перестановка порядка: new_text — JSON {"perm": [...], "target_set_id": ..., "edited_items": [...]}
+    # (target_set_id=None — применить ко ВСЕМ наборам аккаунта; иначе — только к
+    # этому конкретному набору). Старый формат (голый массив perm, без обёртки) —
+    # поддержан для заданий, поставленных в очередь до этой правки.
+    try:
+        payload = json.loads(ctx["new_text"])
+    except (TypeError, ValueError):
+        return {"replaced": 0, "errors": ["не удалось разобрать перестановку позиций"], "reports": []}
+    if isinstance(payload, list):
+        perm, target_set_id, edited_items = payload, None, None
+    else:
+        perm, target_set_id = payload.get("perm"), payload.get("target_set_id")
+        edited_items = payload.get("edited_items")
+    return _reorder_sitelinks(
+        ctx["token"], ctx["login"], perm, ctx["content"], ctx["v5_call"],
+        target_set_id=target_set_id,
+        edited_items=edited_items,
+        grid_client_factory=ctx["grid_client_factory"],
+        uac_client_factory=ctx["uac_client_factory"],
+    )
+
+
+def _h_sitelink_assign(ctx: dict) -> dict:
+    try:
+        payload = json.loads(ctx["new_text"])
+    except (TypeError, ValueError):
+        return {"replaced": 0, "errors": ["не удалось разобрать эталонный набор быстрых ссылок"]}
+    items = _normalize_sitelink_items((payload or {}).get("items"))
+    return _assign_sitelink_items_accountwide(
+        ctx["token"], ctx["login"], items, ctx["content"], ctx["v5_call"],
+        grid_client_factory=ctx["grid_client_factory"],
+        uac_client_factory=ctx["uac_client_factory"],
+    )
+
+
+def _h_callout_assign(ctx: dict) -> dict:
+    new_text = ctx["new_text"]
+    payload = None
+    assign_texts = new_text
+    try:
+        payload = json.loads(new_text)
+    except (TypeError, ValueError):
+        payload = None
+    if isinstance(payload, dict) and isinstance(payload.get("texts"), list):
+        assign_texts = payload.get("texts")
+    return _assign_callout_accountwide(
+        ctx["login"],
+        assign_texts,
+        ctx["content"],
+        grid_client_factory=ctx["grid_client_factory"],
+    )
+
+
+def _h_ad_content_assign(ctx: dict) -> dict:
+    try:
+        payload = json.loads(ctx["new_text"])
+    except (TypeError, ValueError):
+        return {"replaced": 0, "errors": ["не удалось разобрать набор заголовков/текстов"]}
+    return _assign_ad_content_accountwide(
+        ctx["login"],
+        payload if isinstance(payload, dict) else {},
+        ctx["content"],
+        grid_client_factory=ctx["grid_client_factory"],
+        uac_client_factory=ctx["uac_client_factory"],
+    )
+
+
+def _h_ad_field(ctx: dict) -> dict:
+    typ, old, new_text, content, mode = ctx["typ"], ctx["old"], ctx["new_text"], ctx["content"], ctx["mode"]
+    targets = _match_targets(content, typ, old, mode=mode, new_text=new_text)
+    if not targets:
+        return {"replaced": 0, "errors": ["объявление с таким текстом не найдено"]}
+    non_uac = [t for t in targets if t.get("source") != "uac"]
+    uac_targets = [t for t in targets if t.get("source") == "uac"]
+    replaced = 0
+    errors: list[str] = []
+    result: dict = {}
+    if non_uac:
+        out = _replace_adaptive_ad_texts(
+            ctx["login"], typ, old, new_text, non_uac,
+            grid_client_factory=ctx["grid_client_factory"],
+        )
+        replaced += int(out.get("replaced") or 0)
+        errors.extend(out.get("errors") or [])
+        result["grid"] = out
+    if uac_targets:
+        out = _replace_uac_texts(
+            ctx["login"], typ, old, new_text, uac_targets,
+            mode=mode,
+            uac_client_factory=ctx["uac_client_factory"],
+        )
+        replaced += int(out.get("replaced") or 0)
+        errors.extend(out.get("errors") or [])
+        result["uac"] = out
+    return {"replaced": replaced, "errors": errors, **result}
+
+
+def _h_callout(ctx: dict) -> dict:
+    return _replace_callout_grid(
+        ctx["token"], ctx["login"], ctx["old"], ctx["new_text"], ctx["content"], ctx["v5_call"],
+        grid_client_factory=ctx["grid_client_factory"],
+    )
+
+
+def _h_sitelink_type(ctx: dict) -> dict:
+    typ, old, new_text, content = ctx["typ"], ctx["old"], ctx["new_text"], ctx["content"]
+    targets = _match_targets(content, typ, old)
+    if not targets:
+        already = _already_applied_sitelink_result(content, typ, new_text)
+        if already is not None:
+            return already
+        return {"replaced": 0, "errors": ["набор с таким текстом быстрой ссылки не найден"]}
+    uac_targets = [t for t in targets if t.get("source") == "uac"]
+    grid_targets = [t for t in targets if t.get("source") != "uac"]
+    replaced = 0
+    errors: list[str] = []
+    result: dict = {}
+    if grid_targets:
+        out = _replace_sitelink_text_grid(
+            ctx["login"], typ, old, new_text, grid_targets,
+            token=ctx["token"], v5_call=ctx["v5_call"],
+            grid_client_factory=ctx["grid_client_factory"],
+        )
+        replaced += int(out.get("replaced") or 0)
+        errors.extend(out.get("errors") or [])
+        result["grid"] = out
+    if uac_targets:
+        out = _replace_uac_sitelinks(
+            ctx["login"], _SITELINK_FIELD.get(typ, "title"), old, new_text, uac_targets,
+            uac_client_factory=ctx["uac_client_factory"],
+        )
+        replaced += int(out.get("replaced") or 0)
+        errors.extend(out.get("errors") or [])
+        result["uac"] = out
+    return {"replaced": replaced, "errors": errors, **result}
+
+
+_REPLACE_HANDLERS: dict[str, Callable[[dict], dict]] = {
+    "ad_href": _h_ad_href,
+    "image_replace": _h_image_replace,
+    "campaign_rename": _h_campaign_rename,
+    "sitelink_reorder": _h_sitelink_reorder,
+    "sitelink_assign": _h_sitelink_assign,
+    "callout_assign": _h_callout_assign,
+    "ad_content_assign": _h_ad_content_assign,
+    "callout": _h_callout,
+    **{typ: _h_ad_field for typ in _AD_FIELD},
+    **{typ: _h_sitelink_type for typ in _SITELINK_TYPES},
+}
+
+
 def _do_replace(token: str, login: str, typ: str, old_text: str, new_text: str,
                 content: dict, v5_call: Callable, v501_svc: Callable,
                 *, mode: str = "exact", grid_client_factory: Callable | None = None,
@@ -420,190 +610,24 @@ def _do_replace(token: str, login: str, typ: str, old_text: str, new_text: str,
     """Применяет замену. Возвращает {'replaced': N, 'errors': [...]}."""
     old = _frag_trim(old_text)
     new = _frag_trim(new_text)
-    if typ == "ad_href":
-        return _replace_ad_href(token, login, old, new, content, v5_call, v501_svc)
-    if typ == "image_replace":
-        # Смена изображения: new_text — JSON {"campaign_ids": [...], "pairs": [...]}
-        # (пути к временным файлам, не байты). Реализация — content_images_routes;
-        # импорт ленивый, иначе циклическая зависимость модулей.
-        from .content_images_routes import run_image_replace
-
-        try:
-            payload = json.loads(new_text)
-        except (TypeError, ValueError):
-            return {"replaced": 0, "errors": ["не удалось разобрать задание смены изображения"]}
-        return run_image_replace(
-            token, login, payload, v5_call,
-            grid_client_factory=grid_client_factory,
-            uac_client_factory=uac_client_factory,
-        )
-    if typ == "campaign_rename":
-        # Переименование кампаний и/или групп: new_text — JSON
-        # {"campaign_renames": {id: name, ...}, "adgroup_renames": {id: name, ...},
-        #  "adgroup_campaign_ids": [...]}
-        from .content_renames_routes import run_rename
-        try:
-            payload = json.loads(new_text)
-        except (TypeError, ValueError):
-            return {"replaced": 0, "errors": ["не удалось разобрать задание переименования"]}
-        return run_rename(
-            login,
-            payload,
-            grid_client_factory=grid_client_factory,
-        )
-    if typ == "sitelink_reorder":
-        # Перестановка порядка: new_text — JSON {"perm": [...], "target_set_id": ..., "edited_items": [...]}
-        # (target_set_id=None — применить ко ВСЕМ наборам аккаунта; иначе — только к
-        # этому конкретному набору). Старый формат (голый массив perm, без обёртки) —
-        # поддержан для заданий, поставленных в очередь до этой правки.
-        try:
-            payload = json.loads(new_text)
-        except (TypeError, ValueError):
-            return {"replaced": 0, "errors": ["не удалось разобрать перестановку позиций"], "reports": []}
-        if isinstance(payload, list):
-            perm, target_set_id, edited_items = payload, None, None
-        else:
-            perm, target_set_id = payload.get("perm"), payload.get("target_set_id")
-            edited_items = payload.get("edited_items")
-        return _reorder_sitelinks(
-            token, login, perm, content, v5_call,
-            target_set_id=target_set_id,
-            edited_items=edited_items,
-            grid_client_factory=grid_client_factory,
-            uac_client_factory=uac_client_factory,
-        )
-    if typ == "sitelink_assign":
-        try:
-            payload = json.loads(new_text)
-        except (TypeError, ValueError):
-            return {"replaced": 0, "errors": ["не удалось разобрать эталонный набор быстрых ссылок"]}
-        items = _normalize_sitelink_items((payload or {}).get("items"))
-        return _assign_sitelink_items_accountwide(
-            token, login, items, content, v5_call,
-            grid_client_factory=grid_client_factory,
-            uac_client_factory=uac_client_factory,
-        )
-    if typ == "callout_assign":
-        payload = None
-        assign_texts = new_text
-        try:
-            payload = json.loads(new_text)
-        except (TypeError, ValueError):
-            payload = None
-        if isinstance(payload, dict) and isinstance(payload.get("texts"), list):
-            assign_texts = payload.get("texts")
-        return _assign_callout_accountwide(
-            login,
-            assign_texts,
-            content,
-            grid_client_factory=grid_client_factory,
-        )
-    if typ == "ad_content_assign":
-        try:
-            payload = json.loads(new_text)
-        except (TypeError, ValueError):
-            return {"replaced": 0, "errors": ["не удалось разобрать набор заголовков/текстов"]}
-        return _assign_ad_content_accountwide(
-            login,
-            payload if isinstance(payload, dict) else {},
-            content,
-            grid_client_factory=grid_client_factory,
-            uac_client_factory=uac_client_factory,
-        )
-    if mode == "substring":
+    if mode == "substring" and typ not in ("ad_href", "image_replace", "campaign_rename",
+                                            "sitelink_reorder", "sitelink_assign",
+                                            "callout_assign", "ad_content_assign"):
         if typ not in _AD_FIELD:
             return {"replaced": 0, "errors": ["массовая замена фрагмента доступна только для заголовков и текстов"]}
         if len(new) > len(old):
             return {"replaced": 0, "errors": [
                 f"новый фрагмент ({len(new)}) длиннее старого ({len(old)}) — заголовки вырастут, замена отклонена"]}
-    if typ in _AD_FIELD:
-        targets = _match_targets(content, typ, old, mode=mode, new_text=new_text)
-        if not targets:
-            return {"replaced": 0, "errors": ["объявление с таким текстом не найдено"]}
-        non_uac = [t for t in targets if t.get("source") != "uac"]
-        uac_targets = [t for t in targets if t.get("source") == "uac"]
-        replaced = 0
-        errors: list[str] = []
-        result: dict = {}
-        if non_uac:
-            out = _replace_adaptive_ad_texts(
-                login,
-                typ,
-                old,
-                new_text,
-                non_uac,
-                grid_client_factory=grid_client_factory,
-            )
-            replaced += int(out.get("replaced") or 0)
-            errors.extend(out.get("errors") or [])
-            result["grid"] = out
-        if uac_targets:
-            out = _replace_uac_texts(
-                login,
-                typ,
-                old,
-                new_text,
-                uac_targets,
-                mode=mode,
-                uac_client_factory=uac_client_factory,
-            )
-            replaced += int(out.get("replaced") or 0)
-            errors.extend(out.get("errors") or [])
-            result["uac"] = out
-        return {"replaced": replaced, "errors": errors, **result}
-
-    if typ == "callout":
-        return _replace_callout_grid(
-            token,
-            login,
-            old,
-            new_text,
-            content,
-            v5_call,
-            grid_client_factory=grid_client_factory,
-        )
-
-    if typ in _SITELINK_TYPES:
-        targets = _match_targets(content, typ, old)
-        if not targets:
-            already = _already_applied_sitelink_result(content, typ, new_text)
-            if already is not None:
-                return already
-            return {"replaced": 0, "errors": ["набор с таким текстом быстрой ссылки не найден"]}
-        uac_targets = [t for t in targets if t.get("source") == "uac"]
-        grid_targets = [t for t in targets if t.get("source") != "uac"]
-        replaced = 0
-        errors: list[str] = []
-        result: dict = {}
-        if grid_targets:
-            out = _replace_sitelink_text_grid(
-                login,
-                typ,
-                old,
-                new_text,
-                grid_targets,
-                token=token,
-                v5_call=v5_call,
-                grid_client_factory=grid_client_factory,
-            )
-            replaced += int(out.get("replaced") or 0)
-            errors.extend(out.get("errors") or [])
-            result["grid"] = out
-        if uac_targets:
-            out = _replace_uac_sitelinks(
-                login,
-                _SITELINK_FIELD.get(typ, "title"),
-                old,
-                new_text,
-                uac_targets,
-                uac_client_factory=uac_client_factory,
-            )
-            replaced += int(out.get("replaced") or 0)
-            errors.extend(out.get("errors") or [])
-            result["uac"] = out
-        return {"replaced": replaced, "errors": errors, **result}
-
-    return {"replaced": 0, "errors": [f"неизвестный тип: {typ}"]}
+    handler = _REPLACE_HANDLERS.get(typ)
+    if handler is None:
+        return {"replaced": 0, "errors": [f"неизвестный тип: {typ}"]}
+    ctx = {
+        "token": token, "login": login, "typ": typ, "old": old, "new": new,
+        "new_text": new_text, "content": content, "v5_call": v5_call, "v501_svc": v501_svc,
+        "mode": mode, "grid_client_factory": grid_client_factory,
+        "uac_client_factory": uac_client_factory,
+    }
+    return handler(ctx)
 
 
 def register_replace_routes(

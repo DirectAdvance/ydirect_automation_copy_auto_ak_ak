@@ -683,7 +683,9 @@ def _uac_patch_campaign_texts(client, campaign_id: int, field_key: str, values: 
             json_body=partial,
             step=f"uac-patch-text:{campaign_id}",
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        print(f"[content-editor] uac-patch-text:{campaign_id} partial PATCH failed ({exc!r}), "
+              f"falling back to full PATCH", flush=True)
         detail = client._request("GET", f"/campaign/{campaign_id}", step=f"uac-detail:{campaign_id}")
         detail = _unwrap_uac_response(detail)
         detail = _uac_campaign_patch_payload(detail, field_key, values)
