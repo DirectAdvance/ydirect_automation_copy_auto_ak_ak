@@ -11,6 +11,8 @@
 > **Структура документа:** §1 — диагностика готового набора (`live_verification`); §2 — контент
 > объявлений (общая база для всех tp: провайдеры, фолбэк, видео, тексты); §3 — по типам кампаний
 > (tp1–tp11) — основной per-tp чек-лист; §4 — эксплуатация; §5 — DoD слепка; далее — процедура проверки.
+> Актуально: `tp8/tp9/tp10` создаются как «Посевы» через Grid `GdPostCampaign`; `tp11` пока вне
+> автоматизации.
 
 ---
 
@@ -28,11 +30,13 @@
 | 1.3 | Все поисковые группы С ключами | `NO_KEYWORDS_LIVE` | Grid: `keyword_count` группы | keyword_repair (докрутка); корень — Phase 2 при создании | ⬜ |
 | 1.4 | Глоб. минус-слова («отзывы») на уровне КАМПАНИИ (tp2/tp4/tp5) | `GLOBAL_MINUS_CAMPAIGN_MISSING` | Grid unified-payload → `minusKeywords`+`libraryMinusKeywordsIds` | `_enabled_minus_words` в deps (create) + **пост-аудит** `_audit_global_minus_campaign` → `fix_global_minus_campaign` (Grid `set_campaign_minus_keywords`, in-place, D6 2026-07-09) | ✅ |
 | 1.5 | Каталог tp7 (ct0000) подхватывает страницы (не 0) | — (визуально в кабинете) | UI «Страницы каталога» / фид | `it_lff=[]` для ct0000 (сделано) | ✅ |
-| 1.6 | Быстрые ссылки = 8, без смысловых дублей | — | объявление в кабинете | source-order + topic-дедуп; **R2-4 (в1) 2026-07-10: UAC-путь (tp6/tp7) теперь тоже гонит `_dedup_sitelinks(diversify_…)` ВСЕГДА** (был под гейтом `<8` → кредит-дубль «Платеж от 9 000»+«Автокредит от 9 000» проскакивал). Опц. reuse ОДНОГО набора на аккаунт — флаг `DIRECT_SITELINK_REUSE_ACCOUNT` (дефолт OFF). **R2-6 2026-07-10 (корень 6/8 у tp7):** при `%` в заголовке фильтр `_sitelink_has_pct` выбрасывал 2 из 8 филлеров с «%» → оставалось 6 → `UAC_SITELINK_MISSING`. Добавлены 2 backup-филлера БЕЗ «%» (`_GENERIC_SITELINK_FILLERS` поз.9-10: «Рассрочка без переплат», «Гарантия на автомобиль») → при `_title_has_pct=True` из 10 отсеиваются 2, остаётся 8 | 🟡 (UAC-дедуп + %-backup — live не проверено) |
+| 1.6 | Быстрые ссылки = 8, без смысловых дублей; слова `рассрочка`/`рассрочк*` запрещены в заголовках, текстах, быстрых ссылках и уточнениях | — | объявление в кабинете / Grid readback | source-order + topic-дедуп; **R2-4 (в1) 2026-07-10: UAC-путь (tp6/tp7) теперь тоже гонит `_dedup_sitelinks(diversify_…)` ВСЕГДА** (был под гейтом `<8` → кредит-дубль «Платеж от 9 000»+«Автокредит от 9 000» проскакивал). Опц. reuse ОДНОГО набора на аккаунт — флаг `DIRECT_SITELINK_REUSE_ACCOUNT` (дефолт OFF). **2026-07-27:** backup-филлер `Рассрочка без переплат` запрещён, заменён на нейтральную гарантию; text-shaping дополнительно вычищает `рассрочк*` перед отправкой. | 🟡 |
 | 1.7 | Видео на видео-марках (BAIC/Belgee/Haval/Москвич) | `VIDEO_MISSING` | докрутка read-back `hasVideo` | brand-fallback + докрутка (сделано, 155/16 верно) | ✅ |
 | 1.8 | adPrice на фидовых группах | `NO_ADPRICE_LIVE` | Grid | adprice_repair (докрутка) | 🟡 |
-| 1.9 | Нет `adGroupId not defined` (listing) | — (лог воркера) | `journalctl direct-worker` | shoppingAdId→lid (сделано) | ✅ |
-| 1.10 | **URL объявления → ПРАВИЛЬНАЯ модель группы** (не чужая модель марки, не неточная формульная). Ссылка группы «Модели» (напр. ct0042 «Changan UNI-T») должна вести на url ЭТОЙ модели из фида (`/auto/changan/uni-t/i/suv-5d`), НЕ на первый оффер бренда (cs55) и НЕ на формульную без хвоста. Товарный сниппет (модель/город) — следствие правильности url. | `MODEL_URL_BRAND_FALLBACK_WRONG_MODEL` (авто-детектора пока НЕТ — визуально в кабинете / сверка href vs mark+folder группы) | Ссылка объявления в кабинете vs `mark_id`+`folder_id` оффера фида | **Root-cause:** `_grid_feed_offer_urls` (FeedOffersPreview = sample, не все офферы) → модель вне выборки не находит точный ключ → brand-fallback на чужую модель. **Вариант A (задеплоен 2026-07-13):** `no_brand_fallback` для сегмента «Модели» в `_feed_url_for_model` (`create_set_feeds.py:335`) → нет точного ключа → формульный `_model_page_href` (верная модель, БЕЗ хвоста `/i/suv-5d`). **Вариант B (raw XML, `_auto_feed_urls` доливка в `_account_offer_urls`, ЗАДЕПЛОЕН 2026-07-13):** точный url модели из ПОЛНОГО raw XML фида (`home/yandex.xml`) по ключу `mark_id`+`folder_id`, доливается в `_account_offer_urls` через `setdefault` (уже покрытые из sample-preview НЕ трогаются) → `/auto/changan/uni-t/i/suv-5d?fid=yandex`. Причина нужности B: `FeedOffersPreview` = **sample**, не все офферы → модель вне выборки (Changan UNI-T) точным ключом не находилась. A = страховка (формульный без хвоста), B = точный. Подробно — ERRORS_JOURNAL `MODEL_URL_BRAND_FALLBACK_WRONG_MODEL`. | 🟡 (A+B задеплоены; авто-детектор — ⬜ нет, live не проверено) |
+| 1.9 | Нет `adGroupId not defined` (listing) | — (лог воркера) | `journalctl -u direct-create-worker.service` | shoppingAdId→lid (сделано) | ✅ |
+| 1.10 | **URL объявления → ПРАВИЛЬНАЯ модель группы** (не чужая модель марки, не `/quiz`, не неточная формульная). Ссылка группы «Марки» должна вести на страницу марки (`/auto/haval`), ссылка группы «Модели» (напр. ct0042 «Changan UNI-T») должна вести на url ЭТОЙ модели из фида (`/auto/changan/uni-t/i/suv-5d`), НЕ на первый оффер бренда (cs55) и НЕ на формульную без хвоста. Товарный сниппет (модель/город) — следствие правильности url. | `MODEL_URL_BRAND_FALLBACK_WRONG_MODEL` / `MODEL_GROUP_HREF_QUIZ` (авто-детектора пока НЕТ — визуально в кабинете / сверка href vs mark+folder группы) | Ссылка объявления в кабинете vs `mark_id`+`folder_id` оффера фида | **Root-cause:** `_grid_feed_offer_urls` (FeedOffersPreview = sample, не все офферы) → модель вне выборки не находит точный ключ → brand-fallback на чужую модель. **Вариант A (задеплоен 2026-07-13):** `no_brand_fallback` для сегмента «Модели» в `_feed_url_for_model` (`create_set_feeds.py:335`) → нет точного ключа → формульный `_model_page_href` (верная модель, БЕЗ хвоста `/i/suv-5d`). **Вариант B (raw XML, `_auto_feed_urls` доливка в `_account_offer_urls`, ЗАДЕПЛОЕН 2026-07-13):** точный url модели из ПОЛНОГО raw XML фида (`home/yandex.xml`) по ключу `mark_id`+`folder_id`, доливается в `_account_offer_urls` через `setdefault`. **2026-07-27:** `/quiz` запрещён для всех generated Direct объявлений и кнопок; sanitizer заменяет `/quiz` на корень сайта до link-check и перед `_combo_button`. | 🟡 (A+B задеплоены; `/quiz`-регрессии закрыты кодом; live readback после ремонта обязателен) |
+| 1.11 | **БУ-сайты (`site_type='С пробегом'`) НЕ получают глобальные минус-фильтры фида по маркам/моделям**. Глобальные minus marks/models в feedFilter допустимы для новых авто, но для БУ-аккаунтов режут валидный used-car ассортимент. Позитивные фильтры конкретной марки/модели остаются. | `AUTO_USED_FEED_TP1_TP7_404_CONTENT_GUARDS` | Grid/UAC feed filters: для `С пробегом` нет `NOT_CONTAINS*` по global marks/models; бренд/модельные группы имеют only-positive фильтр | `create_set_tp1_builders._apply_global_feed_minus_for_site`; `GridClient.add_shopping_ads(apply_global_minus=False)`; `tp7` positive-only | 🟡 (код+тесты+деплой OK; live create/readback не проверено) |
+| 1.12 | **Односегментная 404-посадка (`/auto`, `/catalog`) fallback'ится на корень домена**, а не остаётся 404. Таймаут/5xx/сетевая ошибка по-прежнему fail-open возвращают исходный URL. | — | `resolve_or_fallback_url('https://bucars-kuban.site/auto')` | `link_check._parent_path`: `/auto` → origin | ✅ (real smoke: `/auto` → root 200) |
 
 ### 1.c DoD «Структура слепков → Создание РК 1:1» (задача 7, согласовано 2026-07-15)
 
@@ -40,10 +44,12 @@
 
 | # | Критерий | Как проверить | Статус |
 |---|---|---|---|
-| 7.1 | «Создание РК» = «Структура слепков» 1:1 по ВСЕМ tp1–tp7 (превью==дерево==создано) | сверка `_set_plan_response` `plan[]` vs `_build_export_rows` по слепку/tp | 🟡 (контракт `create_set_structure.structure_to_campaigns` — MATCH=True vs `_build_export_rows` на terehov/scherbakova/kuderko/pavlov tp1/tp2/tp4/tp5; **tp1/tp2/tp4/tp5 подключены**; tp3 — builder-blocked; tp6/tp7 уже 1:1) |
-| 7.2 | Кампании строятся по `item.camp_names` (не сегмент-коллапс Марки/Модели/Общее) для tp1–tp5 | tp1-tp5 больше не коллапсят в сегменты | 🟡 (**tp1/tp2/tp4/tp5 done**: ветки `tp1_rsy`/`search_test`/`search_dynamic`/`search_gallery` → `structure_to_campaigns`, per-group `only_gks/only_cts` → билдеры `_build_tp1_from_pack`/`_build_text_from_pack`/`_create_tp5_single`/`_tp1_pack_groups`; dmp-split tp2 сохранён; **tp3 — remaining**, builder-blocked) |
+| 7.1 | «Создание РК» = «Структура слепков» 1:1 по ВСЕМ обычным tp1–tp7; для пакета «Посевы» create-tab = `posevy.json` по tp8/tp9/tp10. Проверяется не только preview/plan: **фактически созданные кампании в аккаунте обязаны совпадать с деревом вкладки «Структура слепков» после применения защищённых тегов**. Missing/extra campaign, переименование, generic fallback вместо строки структуры или неполный `х3` = дефект. | live-сверка аккаунта: имена кампаний, количество кампаний, состав групп и protected-tags result должны совпасть с `_build_export_rows`/UI-деревом; для `х3` каждая tagged-строка обязана дать все 3 live-кампании (`КС`, `Автотаргетинг`, `КС + Автотаргетинг`); precreate guard `/api/create_set` отклоняет payload с `camp_key`, которого нет в UI-структуре | 🟡 (контракт `create_set_structure.structure_to_campaigns` — MATCH=True vs `_build_export_rows` на terehov/scherbakova/kuderko/pavlov tp1/tp2/tp4/tp5; **tp1/tp2/tp4/tp5 подключены**; `camp_names` нормализуются по tp+сегменту и схлопывают ordinal/year дубли с одинаковым `gc`, сохраняя все `gk`; **2026-07-26:** raw `camp_names` больше не расширяет создание: для tp1/tp2/tp4/tp5 хвосты `КС`/`Автотаргетинг`/`КС+Автотаргетинг` схлопываются в логический узел дерева и итоговый targeting; `scherbakova/Мультибренд` даёт tp2=2 и tp4=2, а не raw 6; старый `porg-4ealp4ry` показал дефект — verifier pass по созданным 22 ≠ структурный DoD pass; tp3 — builder-blocked; tp6/tp7 уже 1:1 + generic-дубли объединяются; **tp8/tp9/tp10 UI-parity done** 2026-07-22; 2026-07-25 добавлен precreate `slepok_structure_mismatch` guard до Direct-мутаций) |
+| 7.1a | Запуск create принимает только свежий план от текущего выбранного слепка/типа сайта; серверные версии имён запрещены | строки `plan[]` содержат `_plan_agent/_plan_site_type`; `/api/create_set_async` возвращает 409 при mismatch или `_vNN`/`renamed`; `_set_plan_response` не отдаёт `_vNN`, а пишет warning о коллизиях | ✅ (2026-07-22: `porg-rgwzgo57` old job имел `body.agent=terehov`, хотя ожидали `scherbakova`; tp6/tp7 `terehov/Мультибренд` давали `_v01/_v02/_v03` из `_uniq()` из-за коллизий. Новый guard: stale plan и `_v01` payload отклоняются 409; план tp6/tp7 Терехова отдаёт `versioned_count=0` + warning про убранные `_vNN`) |
+| 7.1b | Потоковый полный ИИ-прогон (`stream_content=true`) не имеет права наследовать старый DOM-план или `single_feed`; он пересчитывает полный свежий `PLAN` и отправляет все его строки. Product-only payload для full-run отклоняется как stale client. | UI: `createAndPublish()` → `acSelectAll(true)` + `forceFullPlan`; payload `/api/create_set_async` содержит весь `PLAN`; stale stream `item_types <= {"product"}` → 409 `stale_client_product_only_stream` | 🟡 (код 2026-07-27 на диске; live full-run не запускался после остановки worker по команде) |
+| 7.2 | Кампании строятся по логическому дереву структуры для tp1–tp5; `raw camp_names` не могут размножать РК и не могут тащить группу в чужой сегмент | для tp1/tp2/tp4/tp5 `structure_to_campaigns` схлопывает raw variants в видимые узлы дерева; аудит `explicit_segment_mismatches_after=0`, `ordinal_year_dup_buckets_after=0` по active auto-слепкам | 🟡 (**tp1/tp2/tp4/tp5 done**: ветки `tp1_rsy`/`search_test`/`search_dynamic`/`search_gallery` → `structure_to_campaigns`, per-group `only_gks/only_cts` → билдеры `_build_tp1_from_pack`/`_build_text_from_pack`/`_create_tp5_single`/`_tp1_pack_groups`; dmp-split tp2 сохранён; 2026-07-26 `КС`+`Автотаргетинг` raw-варианты схлопываются по tree base с сохранением всех `gk/merged_gks/ct`; **tp3 — remaining**, builder-blocked) |
 | 7.3 | tp3 — по фидовым кампаниям из структуры (не 1 РК «ТГ - Фид (товары)») | дерево tp3 == созданные РК | 🟡 (**camp_names done**: ветка `rsya_gallery` → `structure_to_campaigns`, base_name=camp_name; terehov С пробегом 13 РК / karavaev 3 / scherbakova 1 = 1:1. **При ОДНОМ фиде** (тест) fan-out даёт ровно 1 РК на camp_name → число РК = число camp_names-кампаний. Many-feeds: fan-out ×feeds на camp_name — для точного feed↔camp маппинга нужна доп-инфа в структуре, см. отчёт; fallback на старую 1-РК при пустых camp_names) |
-| 7.4 | Тег «х3» (tp1) → 3 РК: КС / автотаргет / КС+автотаргет, **каждой полный бюджет**; триггер — ТЕГ из `campaign_tags`, не `seg_modes` | tp1 с «х3» → 3 РК | 🟡 (**детектор `detect_protected_tags`: реестр OVERRIDE → UI-эвристика**; х3→`X3_VARIANTS` 3 РК, каждой полный `rs["cpc_budget"]`; live не проверено) |
+| 7.4 | Тег «х3» (tp1) → 3 РК: КС / автотаргет / КС+автотаргет, **каждой полный бюджет**; триггер — ТЕГ из `campaign_tags`, не имя кампании и не `seg_modes` | tp1 с явным «х3» → 3 РК; tp1 с именем `КС + Автотаргетинг` без тега → 1 РК | 🟡 (`detect_protected_tags`: `х3` только из реестра `campaign_tags`; эвристика имени оставлена только для `все фиды`; х3→`X3_VARIANTS` 3 РК, каждой полный `rs["cpc_budget"]`; live не проверено) |
 | 7.5 | Тег «все фиды» → все разрешённые фиды ГРУППАМИ в ОДНОЙ РК; **tp3/tp5/tp1-РСЯ** (tp7 — НЕ входит) | наличие групп-фидов в РК | 🟡 (**tp3 done**: `all_feeds` → `_create_tp3_campaign`/`_create_tp3_single` строят ОДНУ РК, ГРУППА на каждый разрешённый фид; при 1 фиде = 1 группа. **tp1-РСЯ/tp5 — deferred**: модель-групповые combined-кампании, «группа на фид» требует мульти-фид shopping в билдере; при ОДНОМ фиде (тест) — уже 1 РК/1 фид, флаг инертен, регрессии нет) |
 | 7.6 | Только «х3»/«все фиды» управляют созданием; прочие теги — отображение | grep tag-чтения в create-пути | ✅ (в create-пути читаются ТОЛЬКО `X3_TAG`/`ALL_FEEDS_TAG` через `detect_protected_tags`; прочие метки не влияют) |
 | 7.7 | Наборы минус слов: ОДИН общий shared-набор (2+ в структуре → слить в 1); минусы набора только tp2–tp5 | привязка `NegativeKeywordSharedSetIds` | ⬜ |
@@ -52,7 +58,7 @@
 | 7.10 | Регион шаблонный `r0000` в структуре → реальный город на создании | `_resolve_region` по городу аккаунта | ✅ |
 | 7.11 | Сохранён весь текущий функционал (черновики State=OFF, две стратегии cpc+cpa, докрутка 152, feed_alert, profile-гейтинг, процедурные добавки) | регресс-проверка после правок | ⬜ |
 | 7.13 | **tp2–tp5 — БЕЗ картинок и видео** (текстовые/поисковые кампании). Картинки/видео — только tp1 РСЯ (видео-марки, DoD 1.7) и tp6/tp7 (UAC/товарка). Для tp2/tp3/tp4/tp5 объявления текстовые, image/video НЕ добавляются. Следствие: `VIDEO_NO_POOL`/`CT_SLEPOK_IMAGES_EMPTY` на tp2-tp5 — НЕ дефект (там их и не должно быть) | read-back: tp2-5 объявления без image/video | ⬜ (подтвердить в коде + подавить ложный аудит-флаг на tp2-5) |
-| 7.12 | **КОНТЕНТ по тон-оф-войсу выбранного слепка** — заголовки/тексты/уточнения/быстрые ссылки генерятся по seeded-стилю ЭТОГО слепка (`create_set_slepok_content.apply_slepok_campaign_content` / `seed_slepok_content` / `ai_content` seed_slepok, `content_source`=слепок). На тесте: контент созданных РК соответствует стилю слепка (напр. «жёсткая складская выгода 53-57%, автокредит, взнос 0₽»), НЕ дефолт и НЕ чужой слепок | сверка текстов кампании vs seed слепка в кабинете | ⬜ |
+| 7.12 | **КОНТЕНТ по тон-оф-войсу выбранного слепка** — заголовки/тексты/уточнения/быстрые ссылки генерятся по seeded-стилю ЭТОГО слепка (`create_set_slepok_content.apply_slepok_campaign_content` / `seed_slepok_content` / `ai_content` seed_slepok, `content_source`=слепок). Генерация делает до 3 полных вариантов (`DIRECT_CONTENT_TONE_VARIANTS`, cap 1..3) и выбирает максимальный `voice_score` среди complete-кандидатов; `fast_mode`/`skip_tone_voice_variants` остаются single-run. Контент созданных РК должен соответствовать стилю слепка (напр. «жёсткая складская выгода 53-57%, автокредит, взнос 0₽»), НЕ дефолт и НЕ чужой слепок. **Live stream-generation не имеет права копировать `direct_slepok_content` как финальный контент; если LLM/repair не дали полный комплект, orchestrator продолжает в builder fallback/локальные шаблоны, а не ставит весь item failed до создания. Если builder тоже не находит валидный контент/пак — item падает с конкретным content-gap.** | `m3_debug.tone_voice_selection`, live tone-check, сверка текстов кампании vs seed слепка; контрактный тест `test_live_generation_blocks_template_fallback_when_llm_is_empty`; batch-regression `porg-4ealp4ry`: stream-fail не должен давать `40/40 failed` до builder'ов | 🟡 (код есть 2026-07-24; старые РК не переписывает; live повторный create/readback не проверено) |
 | 7.14 | **ИМЯ создаваемой кампании = СОГЛАСОВАННОЕ имя из «Структуры слепков»** (`item.camp_names[0]` / `item.t`) + регион. В имени НЕ должно быть метаданных фида/аккаунта: имени фида, даты фида (`… от DD.MM.YY`), домена аккаунта, listing/collection фида (`yandex-catalog-model-design-custom-name`), URL фида (`yandex.xml`, `yandex-used-auto`). Семён 2026-07-16 (porg-asfbs7qe): часть camp_names в структуре захаршены с метаданными фида (33 шт: terehov 30 / scherbakova 2 / avto_sk 1) → чистятся через унификацию имён (Google-таблица старое→новое). ⚠️ Приклейка `— {feed_name}` в `create_set_feed_builders.py:518` / `create_set_master_product.py:622` — КОРРЕКТНА (это отдельный legit-суффикс фида), НЕ трогать; чинить ТОЛЬКО базовый `name` (camp_name из структуры) | grep camp_names на `от \d\d\.\d\d`/`\.ru`/`yandex[.-]`/`catalog-model` → 0; имя созданной РК == согласованное имя структуры + регион | ⬜ (чистится унификацией #56) |
 
 ### 1.b ПОЛНЫЙ каталог кодов (100% — все 90 уникальных `issue.code`)
@@ -122,16 +128,16 @@
 | Код | Sev | Что значит | Где (файл:стр) | Fix |
 |---|---|---|---|---|
 | `NO_ADGROUPS_LIVE` | error | в кабинете 0 групп | grid_content_verifier.py:61 | 🟡 (пересоздание) |
-| `NO_ADS_LIVE` | error | 0 объявлений | grid_content_verifier.py:65 | 🟡 |
+| `NO_ADS_LIVE` | error | 0 объявлений | grid_content_verifier.py:65 | ✅ create-cookie underfilled guard: `ads=0`/`rep.errors` удаляют partial DRAFT и не дают `ok:true` |
 | `ADGROUP_NAME_MISSING` | error | у группы нет имени | grid_content_verifier.py:70 | 🟡 |
-| `NO_KEYWORDS_LIVE` | error | поисковая группа без ключей | grid_content_verifier.py:84,97 | 🟡 (keyword_repair) |
+| `NO_KEYWORDS_LIVE` | error | поисковая группа без ключей | grid_content_verifier.py:84,97 | ✅ для новых tp2/tp4: `only_gks` прокинут в packer, search-группы без ключей пропускаются, ключи дедупятся между группами; repair остаётся для старых РК |
 | `WRONG_AUTOTARGET` | error | автотаргет ≠ EXACT_V2_MARK+WITHOUT_BRAND | grid_content_verifier.py:89 | 🟡 (keyword_repair/пересоздание) |
 | `DYNAMIC_PLACES_ON` | warn | динамич. места включены там, где нельзя (tp2) | grid_content_verifier.py:104 | 🟡 |
 | `MINUS_PLACES_MISSING` | warn | нет минус-площадок (tp1 РСЯ) | grid_content_verifier.py:122 | 🟡 |
 | `CALLOUTS_MISSING_LIVE` | warn | **tp1–tp5: у кампании не привязаны уточнения** (`inheritableCallouts.assetValue` пуст). Гейт: только tp1–tp5 — **tp6/tp7 (МК/Товарка, UAC) уточнения не поддерживают** и НЕ флагаются | grid_content_verifier.py:148 | ⬜ (report-only) |
 | `SITELINK_SET_MISSING_LIVE` | warn | **tp1–tp5: у кампании не привязан НАБОР быстрых ссылок** (`inheritableSitelinkSet.assetValue` пуст). Уровень КАМПАНИИ — дополняет ad-level `SITELINK_MISSING`/`UAC_SITELINKS_MISSING` | grid_content_verifier.py:157 | ⬜ (report-only) |
 | `PROMO_MISSING` | warn | **tp1–tp5: промо не прикреплено. ДВУХСТУПЕНЧАТО** — ступень 1: в БИБЛИОТЕКЕ аккаунта вообще есть промо-акции (`expected["account_has_promo"]` ← проброшенный `account_has_promo_library`, фолбэк — прокси); ступень 2: промо доехало в кампанию. Аккаунт без промо → **не флагается вообще** | grid_content_verifier.py:174 | ⬜ (report-only) |
-| `NO_IMAGES_LIVE` | error | у объявления нет картинок | grid_content_verifier.py:185 | ✅ (fix_image_missing) |
+| `NO_IMAGES_LIVE` | error | у tp1 ResponsiveAd нет картинок. При создании tp1 группы без image-пула (`Manual/<ct>` → слепок `image_slepki` → explicit assets) должны **пропускаться**, а не создаваться голыми; если объявление уже создано без картинок — добивка `fix_image_missing` | grid_content_verifier.py:185 | ✅ (create-skip + fix_image_missing) |
 | `NO_ADPRICE_LIVE` | warn | нет adPrice (bannerPrice) ни на одном объявлении tp1. **Исключение: товарка-only** (`adaptive_images_read=True` и `adaptive_total==0`, напр. смарт-баннер) — `bannerPrice` есть только у адаптивных текстовых, у ShoppingAd/ListingAd цена идёт из фида → код НЕ выдаётся | grid_content_verifier.py:208 | 🟡 (adprice_repair) |
 | `EMPTY_DEFAULT_TEXT_LIVE` | warn | пустой `set_default_text` у ShoppingAd | grid_content_verifier.py:219 | 🟡 |
 | `ALT_TEXTS_ENABLED_LIVE` | error | tp1–tp5: персонализация (адаптивные тексты) ВКЛ (#3, должна OFF) | grid_content_verifier.py (кампания) | ✅ `campaign_invariant_repair` (grid_finalize.set_campaign_invariants) |
@@ -143,7 +149,7 @@
 | `ORG_LIST_ENABLED_LIVE` | error | tp1–tp5: список организаций (serpGeoWizard) ВКЛ | grid_content_verifier.py (кампания) | ✅ `campaign_invariant_repair` |
 | `STRATEGY_MISMATCH_LIVE` | warn | tp1–tp5: payForConversion ≠ pay-mode (cpc→False/cpa→True) | grid_content_verifier.py (кампания) | ⬜ (report-only; recreate, не in-place) |
 | `BUILD_LIVE_MISSING` | error | **сверка build⇄кабинет:** билдер отчитался о N>0 (группы/объявления/ключи), а в кабинете **0**. Severity error в ОБЕИХ фазах | `_verify_build_vs_live` | 🟡 (rebuild/keywords_repair — совпадает с `NO_*_LIVE`, дедуп в планировщике) |
-| `BUILD_LIVE_UNDERCOUNT` | warn (in-job) / error (delayed) | **сверка build⇄кабинет:** `0 < live < build`. In-job = **warn** (dcr-демон ещё доливает контент, in-job проверка его структурно не видит), отложенная фаза (`phase="delayed"`) = error + repair | `_verify_build_vs_live` | 🟡 (только в delayed) |
+| `BUILD_LIVE_UNDERCOUNT` | warn (in-job) / error (delayed) | **сверка build⇄кабинет:** `0 < live < build`. In-job = warn, delayed = error + repair. Для новых search tp2/tp4 `build.groups` должен считаться по read-back фактических `adgroups`; попытки остаются в `groups_built` | `_verify_build_vs_live` | ✅ для новых tp2/tp4 (`porg-pl6iavd5`/`kryuchkova` job `85a34373fc9a`: `groups=16`, `groups_built=18`, live pass) |
 | `GEO_MISSING_LIVE` | error | tp1–tp5: у групп пуст `regionsInfo.regionIds` (нет регионов показа) | grid_content_verifier.py (гео) | ⬜ (детект) |
 | `GEO_INCONSISTENT_LIVE` | warn | tp1–tp5: у групп ОДНОЙ кампании разные наборы регионов | grid_content_verifier.py (гео) | ⬜ (report-only) |
 | `UTM_MISSING_LIVE` | error | tp1–tp5: группа без UTM-метки (`trackingParams` пуст) — **DoD #2** (у tp1–tp5 метка живёт на ГРУППЕ, не на кампании) | grid_content_verifier.py (UTM) | ⬜ (детект; закрывает пробел P1 «UTM-на-группах») |
@@ -219,9 +225,10 @@
 | `UAC_TEXTS_MISSING` | error | текстов <3 | uac_verifier.py:124 |
 | `UAC_SITELINKS_MISSING` | warn | быстрых ссылок <8 | uac_verifier.py:128 |
 | `UAC_MEDIA_MISSING` | warn | нет медиа (картинки/видео) | uac_verifier.py:132 |
+| `UAC_IMAGES_LOW` | error | у tp6/tp7 меньше 5 именно image-контентов; video не считается картинкой. Добор допускается только из пула ТОГО ЖЕ `ct` (например `ct0111` → только `ct0111`); добивать из `ct0000`/другого `ct` запрещено. | uac_read.py + uac_verifier.py |
 | `UAC_VIDEO_MISSING` | low | видео-марка (BAIC/Belgee/Haval/Москвич) с картинками, но БЕЗ видео при непустом пуле (D3-UAC 2026-07-09) | `campaign_spec_audit._audit_uac_video_missing` |
 | `UAC_FEED_MISSING` | error | tp7 без фида | uac_verifier.py:135 |
-| `UAC_PRODUCT_MODEL_FILTER_MISSING` | error | tp7 брендовый без модельного фильтра | uac_verifier.py:138 |
+| `UAC_PRODUCT_MODEL_FILTER_MISSING` | error | tp7 сегмента **«Модели»** без модельного фильтра; сегмент «Марки»/«Общее» не требует model-filter. Для AUTO_RU модельным полем считается `folder_id`/`modification`, для YML — `model*` | uac_verifier.py:138 |
 
 **1.b.5 — Spec-audit + авто-фиксеры (`campaign_spec_audit.py`)** — соответствие слепку; у большинства ЕСТЬ реальный `fix_*`/`execute_*` (запускаются CLI `--fix` и delayed-repair оркестратором, `campaign_spec_audit.py:2152-2184`).
 
@@ -235,7 +242,7 @@
 | `GROUP_COUNT_BELOW_SLEPOK` | warn | модель-групп tp меньше слепка (агрегатно, D10 2026-07-09) | `_audit_group_count_vs_slepok` | ⬜ **report-only** (recreate недостающих позиций вручную/next-run) |
 | `CT_SLEPOK_IMAGES_EMPTY` | warn | брендовый ct без картинок в слепке → общий пул (D5 2026-07-09, minimum) | `_audit_ct_slepok_images` | ⬜ **report-only** (наполнить слепок — контент) |
 | `IMAGES_FORBIDDEN` | ⛔ **ОТМЕНЁН 2026-07-19** | ~~картинки на поисковом TextAd~~ — правило отменено решением Семёна: картинки в поиске ДОПУСТИМЫ (их ставит вкладка «Смена изображения»), детект и репейр погашены флагом `SEARCH_IMAGES_FORBIDDEN_RULE_ENABLED=False` | `_audit_search_images` | ⬜ отключено (см. ERRORS_JOURNAL «SEARCH_IMAGES_AUTOCLEAN_CANCELLED») |
-| `FEED_FILTER_MISSING_GRID` | medium | фидовая группа без минус-марок (Grid) | :494 | ✅ `fix_feed_filters_grid` (:1702) |
+| `FEED_FILTER_MISSING_GRID` | medium | фидовая группа без обязательного feed-filter. **Исключение 2026-07-24:** для `site_type='С пробегом'` глобальные минус-марки/модели НЕ являются обязательным фильтром; общие БУ-фидовые группы могут идти без global `NOT_CONTAINS`, а бренд/модельные должны иметь positive-фильтр своей марки/модели | :494 | ✅ `fix_feed_filters_grid` (:1702) |
 | `LISTING_POSITIVE_FILTER_MISSING` | high | ListingAd без позитивного фильтра каталога | :506 | ✅ `fix_listing_positive_filter` (:1802). **R2-4 (б) 2026-07-10:** брендовая группа = ТОЛЬКО позитив name CONTAINS_ANY [своя марка]; убран негативный `_lad_minus_conds` (NOT_CONTAINS_ALL 8 чужих) из `_grid_add_listings_with_name_filters` (при провале позитива в кабинете оставался только негатив «не содержит knewstar,…» 176/198). Общее/ct0000 — негатив-глоб-минус как есть. ⚠️ **follow-up:** AUTO_RU фид **3537034** (yandex.xml) — поле листинга не в `fieldsForUseAs` → позитив-фильтр для этого фида невозможен текущим API |
 | `PLACEMENTS_WRONG` | medium | `placementTypes` ≠ эталону tp5 | :556 | ✅ `fix_placements_wrong` (:1847) |
 | `GENERIC_FALLBACK_GROUP` | high | группа собралась на generic-фолбэке | :590 | ✅ `fix_generic_fallback_group` (:1880) |
@@ -247,11 +254,11 @@
 | `IMAGE_MISSING` | medium | нет картинки у объявления (spec) | :817 | ✅ `fix_image_missing` (:1675) |
 | `SHORT_TITLES` | low | заголовок <48/56 (tp1/tp2/tp4 адаптив / UAC) | :837, :943 | ✅ `fix_short_titles` — **LLM-РЕГЕНЕРАЦИЯ** (`content_quality.regen_titles`, тот же `_llm_pair_for`), НЕ суффикс; до 4 попыток |
 | `SHORT_TITLES_UNFIXABLE` | error | регенерация не дала заголовок ≥48 после 4 попыток (или слепок не восстановлен) | fix_short_titles | ⬜ (`fixable:False`, терминальный hard-fail вместо тихого суффикса) |
-| `BRAND_NOT_FIRST` | low | марка/модель группы НЕ до первой точки заголовка (tp1/tp2/tp4/tp5). **R2-6 2026-07-10: ТОЛЬКО сегменты Марки/Модели** (фильтр `_ct_segment(ct) in (Марки,Модели)`); «Общее» (ct0000 И тема-cts ct0010/ct0014) исключены — иначе ложный UNFIXABLE | `_audit_brand_not_first` | ✅ `fix_brand_not_first` (`regen_titles need_brand_first=True`) |
+| `BRAND_NOT_FIRST` | low | марка/модель группы НЕ до первой точки заголовка или стоит отдельной первой фразой `{brand}.` (tp1/tp2/tp4/tp5). **R2-6 2026-07-10: ТОЛЬКО сегменты Марки/Модели** (фильтр `_ct_segment(ct) in (Марки,Модели)`); «Общее» (ct0000 И тема-cts ct0010/ct0014) исключены — иначе ложный UNFIXABLE | `_audit_brand_not_first` + `content_quality.brand_head_ok` | ✅ `fix_brand_not_first` (`regen_titles need_brand_first=True`) |
 | `BRAND_NOT_FIRST_UNFIXABLE` | error | brand-first регенерация не удалась после 4 попыток | fix_brand_not_first | ⬜ (`fixable:False`, терминальный hard-fail) |
 | `UTP_RELEVANCE_FAILED` | warn | LLM-судья не одобрил дубли УТП/релевантность после 4 регенераций (маркер в `warnings`/`utp_judge` генерации) | `content_quality.audit_and_regen_utp` (на генерации) | ⬜ (на генерации — warn-маркер, не блок черновика) |
 | `NO_LISTING` | medium | фидовая tp5/tp7 без ListingAd | :885 | ✅ `fix_no_listing` (:1643) |
-| `FEED_FILTER_MISSING_UAC` | medium | UAC-товарка без feed-фильтров | :988 | ✅ `fix_feed_filters_uac` (:1504) |
+| `FEED_FILTER_MISSING_UAC` | medium | UAC-товарка без обязательных feed-фильтров. **Новый контракт 2026-07-24:** `ct0000`/общая tp7 не требует feed-filter; марочная/модельная tp7 требует только positive-фильтр по конкретной марке/модели (`vendor`/`mark_id` или `model`/`folder_id`), без global minus; `collectionId` только в `listings_feed_filters` | :988 | ✅ `fix_feed_filters_uac` (:1504) |
 | `SITELINK_MISSING` | warn | нет быстрых ссылок на объявлении | :1017 | ✅ `fix_sitelinks_missing` (:1307) |
 | `CALLOUTS_MISSING` | low | нет уточнений | :1042 | 🟡 (наследуемые Grid-callouts) |
 | `AUDIT_ERROR` | — | сам аудит упал на кампании (внутр.) | :1173 | — (диагностика) |
@@ -306,6 +313,13 @@
    `verify_create_set` (статик) → `live_verification` (live через Grid/UAC: `verification_service`→`live_verifier`→`grid_content_verifier`/`uac_verifier`/`campaign_state_verifier`) → `execute_safe_post_create` чинит СРАЗУ только безопасное in-place (promo/callouts/rename); остальное отложено (Grid-lag).
 2. **При терминале `status=done`** (worker): `_auto_queue_recreate_after_done` (авто-recreate) + `_schedule_delayed_content_repair_after_done` (строка в `direct_delayed_repairs`).
 3. **Демон `_delayed_repair_daemon_loop`** (poll 60с): через 180с `_run_delayed_content_repair` → свежая live-сверка → `execute_all_in_place` → `_run_spec_audit_and_fix` (14 авто-фиксеров) → ре-верифай → reschedule «до нуля» (кап 1) → `_requeue_missing_positions_once` → reconcile. Guard от ложных edit-view детектов (`_show_condition_kw_counts`, журнал I/J).
+
+**2026-07-22 (repair_media/queue_server):** `execute_images_repair` при структурно пустом пуле картинок
+ct (не upload-fail) ставит терминальный `image_no_pool` (аналог `VIDEO_NO_POOL`, `ok=False`) →
+`_repair_failures_nonfixable` останавливает reschedule; transient-ошибки резолвера идут в отдельный
+`resolver_fail_cts` и `image_no_pool` не получают. Watchdog-убитая `content_repair` джоба (child
+`dcr:{did}`) теперь авто-реквьюится (`_delayed_content_repair_requeue_after_watchdog`, кап
+`_DELAYED_REPAIR_WATCHDOG_REQUEUE_MAX=2`, backoff 300с) — раньше остаток действий терялся навсегда.
 
 **Покрыто авто (детект + добивка):** ядро §1.b — группы/объявления/ключи/фиды/картинки/видео/сайтлинки/
 автотаргет/минус-марки/каталог/промо/уточнения/имена; все UAC-коды tp6/tp7 (§1.b.4); §1.a 1.3/1.6/1.7/1.8.
@@ -399,10 +413,10 @@
 
 | Составляющая | Откуда | Проверка «готово» |
 |---|---|---|
-| **Ключи** | пак: `PACK_ROOT/{segment}/{tp}/{ct}/keywords/{slepok}.txt` (`read_keywords`). `PACK_ROOT=PACK_MOUNT/kontent_oktyabr`, а `PACK_MOUNT=$NEURO_PACK_MOUNT` — **в проде = `/opt/neuro_content_local`** (ЛОКАЛЬНАЯ копия на LXC101, синк `sync_content_m3.py`), задан в `direct.service`+`direct-worker.service` env (сверено `systemctl show`, 2026-07-09). Сам M3 в горячем пути чтения ключей НЕ участвует. sshfs-монт `/opt/neuro_kontent` — лишь код-дефолт `kontent_pack.py:31` (обратная совместимость), env его перекрывает. | не пусто |
+| **Ключи** | пак: `PACK_ROOT/{segment}/{tp}/{ct}/keywords/{slepok}.txt` (`read_keywords`). `PACK_ROOT=PACK_MOUNT/kontent_oktyabr`, а `PACK_MOUNT=$NEURO_PACK_MOUNT` — **в проде = `/opt/neuro_content_local`** (ЛОКАЛЬНАЯ копия на LXC101, синк `sync_content_m3.py`), задан в `direct-create.service`+`direct-create-worker.service` env (раньше назывались `direct.service`/`direct-worker.service`). Сам M3 в горячем пути чтения ключей НЕ участвует. sshfs-монт `/opt/neuro_kontent` — лишь код-дефолт `kontent_pack.py:31` (обратная совместимость), env его перекрывает. | не пусто |
 | **Тексты** (заголовки/тексты/б.ссылки) | генерируются LLM (см. 2.0bis) из слепка; фолбэк — БД `direct_slepok_content` (kinds `promo`/`campaign`) | есть чем сгенерить/фолбэкнуть |
 | **Voice/стиль** | `ai_agents.py::AGENTS[slepok]` (`get_agent` → не None) | агент есть в селекторе |
-| **Картинки** | пред-залиты в img-cache по `ct` модели из папки слепка; фолбэк — любая папка того же типа | картинка резолвится |
+| **Картинки** | пред-залиты в img-cache по `ct` модели из папки слепка. Для tp6/tp7 нужно 5 image именно своего `ct`; video не засчитывается, fallback на `ct0000`/другой `ct` запрещён и должен давать `UAC_IMAGES_LOW`, а не тихую замену. | картинка резолвится и `ct` совпадает |
 | **Видео** | видео-пул (см. 2.4) — до **2** роликов на `ct` (лимит подтверждён офиц. документацией Яндекса) | для видео-марок ролик есть |
 | **Быстрые ссылки** | БД слепка → M3-генерация (`_ai_sitelinks`) → общие фолбэки | 8 шт, без смысловых дублей |
 
@@ -430,41 +444,80 @@
   где `{tag}` показывает направление отказа. Плюс `[llm-preflight]` когда M3-primary отсекается
   fail-fast health-check `_m3_preflight_ok` (3×3с GET `/v1/models`) вместо ожидания полного read-timeout
   (90–480с) на мёртвом туннеле 8086.
+- **Preflight платёжеспособности OpenRouter обязателен:** `/api/v1/key` недостаточен. Перед
+  stream-create `check_content_pipeline_health()` должен проверить `/chat/completions` с
+  `OPENROUTER_COMPLETION_PROBE_TOKENS=800`; если M3 completion-preflight мёртв и OpenRouter даёт
+  402/не проходит completion-probe, набор блокируется до создания объектов (`content_pipeline_dead`).
+- **M3 fan-out разрешён только по разным endpoint'ам; одинаковый M3 URL сериализуется process-wide.** Если 4×14B выключены и
+  `M3_LLM_URLS_14B` свёрнут в один URL (`8086`), titles/texts/sitelinks должны выполняться
+  последовательно (`max_workers=1`), а разные create-set job в одном worker-процессе должны брать
+  per-endpoint lock в `_m3_complete_url`. Иначе один 72B endpoint получает параллельные запросы,
+  часть клиентов ловит idle-timeout до первого токена, breaker/gate ложно переводит набор в OpenRouter.
+  Ожидание этого lock тоже считается живой LLM-работой текущей job: `_m3_endpoint_guard()` обязан
+  вызывать scoped heartbeat, иначе DB-watchdog видит `updated_at` stale и убивает job, которая просто
+  стоит в очереди к `8086`. Если LLM-вызов выполняется через `ThreadPoolExecutor`
+  (`_m3_complete_parallel()` или `_llm_pair_for(...)._par()`), текущий heartbeat job-id должен явно
+  переноситься в дочерний поток через `_run_with_llm_heartbeat_job()`: `threading.local()` сам по себе
+  не наследуется, и heartbeat в executor-потоке иначе становится no-op.
+  Внешний content-prefetch executor (`create_set_orchestrator._prefetch_content()`) тоже должен
+  отправлять `_cached_campaign_content` через heartbeat wrapper; иначе OpenRouter-primary prefetch
+  активно пишет `OpenRouter→M3`, но job heartbeat всё равно теряется уровнем выше.
+  Проверка: `_llm_pair_for("m3")._par` для трёх одинаковых M3 URL даёт `max_active=1`; для разных
+  M3 URL и OpenRouter-primary параллельность сохраняется; concurrent calls в один `8086` не должны
+  выполняться одновременно внутри процесса; `_m3_endpoint_guard()` heartbeat-тест и два теста
+  propagation контекста для `_m3_complete_parallel()` / `_llm_pair_for(...)._par()` должны проходить,
+  плюс source-контракт на `_content_executor.submit(_run_content_with_heartbeat, ...)`.
+  **2026-07-26:** ожидание per-endpoint lock обязано быть bounded (`M3_ENDPOINT_LOCK_MAX_WAIT`,
+  default 90с). Hidden AI-запросы общих siteLinks на create-stage запрещены: `_common_sitelinks_fast`
+  и tp1/tp5-builders используют только готовый item-content / БД слепка / deterministic fallback,
+  а `_ai_common_sitelinks` по умолчанию возвращает `[]` (`DIRECT_CREATE_AI_COMMON_SITELINKS=0`).
+  Это защищает parallel create от ситуации «один поток завис в M3-stream, второй бесконечно ждёт
+  M3-lock, главный поток ждёт join».
+  Если `_m3_preflight_ok()` не прошёл, но
+  `m3_completion_preflight_ok(retries=1)` прошёл, M3 считается живым: `check_content_pipeline_health`
+  и `_llm_pair_for("m3")` не должны уходить в OpenRouter только из-за моргнувшего `/v1/models`.
 
 ### 2.0ter Фолбэк генерации при недоступности LLM (M3-гейт)
 
-> ✅ **ПЕРЕПИСАНО (Семён 2026-07-09):** прежняя версия описывала старое поведение (пауза 6×10мин+1ч,
-> затем `break` и остановка остатка). Код ИЗМЕНЁН 09.07 — теперь при недоступности обоих LLM набор
-> **НЕ останавливается**, а создаётся **на контенте из слепка** (детерминированный фолбэк). Семён был прав.
+> ✅ **АКТУАЛИЗИРОВАНО (2026-07-24):** прежняя версия разрешала детерминированный фолбэк
+> из слепка при недоступности обоих LLM. Для live create-set это запрещено: если M3 и
+> OpenRouter completion-preflight недоступны, набор/текущий item останавливается до создания
+> новых Direct-объектов.
 
 Перед созданием КАЖДОГО пункта набора вызывается гейт `_m3_gate_wait`
 (`blueprint.py:4397`, дёргается в `create_set_orchestrator.py:417`). Цепочка:
 
 1. **M3 жив** (`_m3_llm_probe`) → генерим через M3. Возврат `True`.
-2. **M3 мёртв, но OpenRouter жив** (`_openrouter_probe`) → **НЕ паузим**; лог
-   `[m3-gate] … контент пойдёт через DeepSeek V4 Flash (платно)`; фолбэк `_llm_pair_for` сам переключит. `True`.
+1a. **M3 health моргнул, но completion-probe жив** (`m3_completion_preflight_ok(retries=1)`) →
+   считаем M3 доступным и продолжаем. `GET /v1/models` не является достаточным основанием для стопа,
+   если реальный `/chat/completions` выдаёт токен.
+2. **M3 мёртв, но OpenRouter completion жив** (`_openrouter_probe && _openrouter_completion_probe`) →
+   **НЕ паузим**; лог `[m3-gate] … контент пойдёт через DeepSeek V4 Flash (платно)`; фолбэк
+   `_llm_pair_for` сам переключит. `True`.
 3. **Оба мертвы** → **ОДНА короткая перепроверка** `_M3_GATE_RECHECK_SEC=20` с (на моргание туннеля,
    heartbeat внутри). Восстановился хотя бы один → лог «ИИ снова доступен» → `True` (на ИИ).
-4. **После перепроверки оба всё ещё мертвы** → лог `[m3-gate] … продолжаем создание на контенте из
-   слепка (детерминированный фолбэк run_gen_campaign_content)` → **`True`** (создание ПРОДОЛЖАЕТСЯ).
-   `run_gen_campaign_content` (`assemble_campaign` + слепковый фолбэк) даёт `titles/texts/sitelinks`
-   детерминированно, без LLM.
-5. **`False` возвращается ТОЛЬКО при отмене джобы** (`job.cancel`, проверяется в цикле перепроверки
-   `blueprint.py:4424`) → в оркестраторе `_add_job_err` + `break` (`create_set_orchestrator.py:417-422`):
-   штатная остановка по отмене, уже созданное цело.
+4. **После перепроверки оба всё ещё мертвы или OpenRouter не проходит completion-probe** → набор/текущий
+   item останавливается до создания новых объектов (`503`/`content_pipeline_dead` на top-level gate или
+   `False` из `_m3_gate_wait`). Продолжать на шаблонный fallback нельзя: fallback запрещён для create-set,
+   иначе получится частичный набор без локального текстового контента.
+5. **`False` возвращается при отмене джобы или мёртвом LLM-gate** (`job.cancel` либо оба
+   completion-preflight после перепроверки не прошли) → в оркестраторе `_add_job_err` + `break`
+   (`create_set_orchestrator.py:417-422`): штатная остановка без продолжения на запрещённый fallback.
 
-✅ Итог: при недоступности обоих LLM новые тексты берутся **из слепка** (не generic-болванка, а готовый
-контент/шаблоны слепка через `run_gen_campaign_content`), набор **не висит часами и не бросается**.
-Пауза-до-полуночи и `break`-на-отказе-ИИ из прежней версии — УДАЛЕНЫ из кода.
+✅ Итог: набор **не висит часами** на недоступном ИИ и не падает целиком из-за одного пустого
+stream-ответа. Полностью мёртвый content-пайплайн блокируется до Direct-мутаций; частичный/пустой
+ответ конкретного item отдаётся builder'у, где допустимы только штатные локальные шаблоны/пак и
+явный content-gap при полном отсутствии данных.
 
 ⛔ **Live-путь (боевое создание): шаблонный фолбэк ЗАПРЕЩЁН** (`allow_corpus_fill=False` /
 `allow_static_fill=False`, ERRORS_JOURNAL `TONE_VOICE_TEMPLATE_FALLBACK_IN_LIVE_CREATE` 2026-07-21).
 При live create-set генерация работает ТОЛЬКО через LLM: корпус слепка (`agent["ads"]`),
 статические fillers и `direct_slepok_content` как добор к слабому LLM-ответу — ЗАПРЕЩЕНЫ.
-Если после генерации + retry полного комплекта заголовков/текстов нет — item получает ошибку
-`шаблонный фолбэк запрещён` и НЕ создаётся (generic-черновик не публикуется).
-Детерминированный фолбэк п.4 выше (весь пакет кладётся через `run_gen_campaign_content` из слепка)
-применяется ТОЛЬКО при полном отказе ОБА LLM (п.3→4), не как тихое добивание слабого ответа.
+Если после генерации + retry полного комплекта заголовков/текстов нет, item получает ошибку
+`шаблонный фолбэк запрещён` на уровне `run_gen_campaign_content`. Продолжение до builder'а допустимо
+только когда LLM-пайплайн жив, но конкретный ответ неполный. Если M3 и OpenRouter
+completion-preflight мертвы, `_m3_gate_wait` возвращает `False`, item не идёт в builder и новые
+Direct-объекты не создаются. Generic-черновик не публикуется.
 tp6/tp7: `create_set_master_product.py` в live-stream режиме берёт заголовки/тексты/сайтлинки
 ТОЛЬКО из LLM item-контента; `_GENERIC_*`, `tpl_*`, `_fallback_master_titles` UAC-креатив не заполняют.
 
@@ -478,7 +531,9 @@ tp6/tp7: `create_set_master_product.py` в live-stream режиме берёт �
 - **tp1 (РСЯ):** видео — **отложенная добивка ПОСЛЕ создания** (`_tp1_video_ads`):
   `upload_video_creative(path)` → `meta.creative_id` → `creativeIds` в `UpdateAdaptiveTextAds`.
   (⚠️ мутация объявления без `creativeIds`/`ad_price_payload` ЗАТИРАЕТ видео и цену — поэтому видео-attach
-  несёт `meta.ad_price_payload`; Фаза 3.6.)
+  несёт `meta.ad_price_payload`; Фаза 3.6.) Если `videos_for_ct(login,ct)` пуст, tp1 добивка пробует
+  только `read_videos(site_type,"tp1",ct)` из ct-пака текущего типа сайта; если и там пусто, ролик не
+  подменяется чужим.
 - **Проверка (read-back):** `hasVideo` через grid. Марка видео-типа (BAIC/Belgee/Haval/Москвич)
   без ролика → код `VIDEO_MISSING` → brand-fallback + докрутка **до полного нуля**.
 - **Технические лимиты Яндекса (офиц. документация, `docs/campaign-master/site.md:60-74`):**
@@ -503,7 +558,7 @@ tp6/tp7: `create_set_master_product.py` в live-stream режиме берёт �
 
 | # | Критерий | Автопроверка в коде | Статус |
 |---|---|---|---|
-| 2.1 | Марка/модель — ДО первой точки заголовка. **ИНТЕГРАЦИЯ (Семён 2026-07-10):** бренд — в ЖИВОЙ ФРАЗЕ, не изолированным словом перед точкой. «{Бренд}.» как самостоятельная первая фраза — ДЕФЕКТ: «Belgee. Авто в наличии» (brand + точка + отдельный УТП) = ПЛОХО. НОРМА: «Belgee в наличии», «Новый Belgee», «Купить Belgee в кредит», «Belgee трейд-ин» — бренд интегрирован в первую фразу. | Генерация: `ai_agents.build_titles_messages` — добавлено правило «⛔ ЗАПРЕЩЕНО `{Бренд}.` как изолированная первая фраза». `create_set_assets._upgrade_credit_titles` brand_real=True: все 5 шаблонов с «`{brand}.`» исправлены на интегрированные формы (2026-07-10). **Live-аудит ЕСТЬ**: `BRAND_NOT_FIRST` → фикс `fix_brand_not_first` = LLM-регенерация `need_brand_first=True` → 4 попытки → hard-fail `BRAND_NOT_FIRST_UNFIXABLE`. Проверка = `content_quality.brand_head_ok` = `_brand_in_text(title.split(".")[0], brand)`. **Сегмент-фильтр:** аудит ТОЛЬКО Марки/Модели; Общее (ct0000/ct0010/ct0014) исключены. | 🟡 (код есть, **live не проверено**) |
+| 2.1 | Марка/модель — ДО первой точки заголовка. **ИНТЕГРАЦИЯ (Семён 2026-07-10):** бренд — в ЖИВОЙ ФРАЗЕ, не изолированным словом перед точкой. «{Бренд}.» как самостоятельная первая фраза — ДЕФЕКТ: «Belgee. Авто в наличии» (brand + точка + отдельный УТП) = ПЛОХО. НОРМА: «Belgee в наличии», «Новый Belgee», «Купить Belgee в кредит», «Belgee трейд-ин» — бренд интегрирован в первую фразу. | Генерация: `ai_agents.build_titles_messages` — правило «⛔ ЗАПРЕЩЕНО `{Бренд}.` как изолированная первая фраза». `text_gen._brand_title_set`, `_brand_first_reorder` и `create_set_assets._upgrade_credit_titles` не выпускают изолированное `{brand}.`; **аудит** `content_quality.brand_head_ok()` дополнительно проверяет `_brand_isolated_first_phrase()` и флагает `KAIYI. Кредит...` как `BRAND_NOT_FIRST`. **Сегмент-фильтр:** аудит ТОЛЬКО Марки/Модели; Общее (ct0000/ct0010/ct0014) исключены. | 🟡 (код есть, **live не проверено**) |
 | 2.1b | **Вариативность захода** заголовков (R2-6 2026-07-10) — первые ~18 символов НЕ совпадают у всех 7 (одинаковый префикс `{Бренд} в {Город}.`×7 убивает комбинации Яндекса) | `create_set_assets._upgrade_credit_titles`: варианты смешаны — `{anchor}` (brand+город) / `{brand} в наличии` / «Новый {brand}» / «Купить {brand} в кредит» / `{brand} трейд-ин`. Все brand-first. Live-аудита НЕТ. | 🟡 (генерация есть, **live не проверено**; чинит только будущие прогоны) |
 | 2.1c | **Авто-контекст в заголовках** (Д1 2026-07-10) — из 7 заголовков **1–2 ОБЯЗАНЫ** явно сообщать продукт («авто в наличии», «новые автомобили», «{марка} в наличии»). Запрещено ВСЕ 7 только про кредит/финансы. Остальные 5 — кредитный угол. **Авто-контекст обязан быть ИНТЕГРИРОВАННЫМ** (2.1): «{brand} в наличии. Кредит от 9 000 ₽/мес», «Новый {brand}. Выгода до 45%» — НЕ «{brand}. Авто в наличии...» (изолировано). | `ai_agents.build_titles_messages`: «1–2 из {TITLES_N} — авто-продукт». `create_set_assets._upgrade_credit_titles`: позиции 1 и 4 = `f"{brand} в наличии. Кредит от 9 000 ₽/мес"` и `f"Новый {brand}. Выгода до 45%"` (обновлено 2026-07-10). | 🟡 (код есть, **live не проверено**) |
 | 2.2 | Мало свободных символов (заголовки плотные, ≥48/56) | Промпт: жёсткий минимум 48 симв. **Live-аудит** `SHORT_TITLES` (**tp1/tp2/tp4/tp5** адаптив `:837`, UAC `:943`; D2 2026-07-09: tp5 TextAd добавлен — ShoppingAd/ListingAd без titles не трогаются) → фикс = **LLM-регенерация** (`content_quality.regen_titles`, тот же `_llm_pair_for`), НЕ суффикс; 4 попытки → hard-fail `SHORT_TITLES_UNFIXABLE`. | 🟡 (код есть, регенерация+hard-fail; **live не проверено**) |
@@ -536,7 +591,9 @@ tp6/tp7: `create_set_master_product.py` в live-stream режиме берёт �
   > по `seg`. Правило Семёна выполняется, багом это НЕ является.
 - **Проверка (live):** `NO_ADPRICE_LIVE` (warn, `grid_content_verifier.py:208`) — фидовая группа без adPrice;
   добивается `adprice_repair` (докрутка, статус 🟡). ⚠️ на tp1 мутация объявления без `ad_price_payload`
-  ЗАТИРАЕТ цену (см. 2.4 про видео-attach).
+  ЗАТИРАЕТ цену (см. 2.4 про видео-attach). Все tp1 post-create Grid update картинок/текстов должны
+  идти через RMW `_grid_update_adaptive_ads(..., campaign_ids=[cid])`, иначе full-replace может стереть
+  `bannerPrice`/видео.
   > ✅ **ИСПРАВЛЕНО (2026-07-18):** прежняя формулировка не упоминала исключение **товарки-only**.
   > `bannerPrice` — поле ТОЛЬКО адаптивных текстовых объявлений; у ShoppingAd/ListingAd (смарт-баннер,
   > каталог) цена приходит **из фида**, поэтому код к ним неприменим. Код это учитывает:
@@ -579,9 +636,9 @@ Live-код `EMPTY_DEFAULT_TEXT_LIVE` (§1.b.3) чинит пустой; нед�
 > Единый чек-лист «что должно стоять и быть загружено» для КАЖДОГО tp. Сведено из глобальных
 > инвариантов + реального кода (`create_set_orchestrator.py`, `create_set_feed_builders.py`,
 > `create_set_master_product.py`, `create_set_finalize.py`, `grid_finalize.py`, `grid_create.py`).
-> Тип диспетчеризуется по `it.type` → `_TYPE_TO_TP` (`create_set_orchestrator.py:409`):
+> Тип диспетчеризуется по `it.type` → `_TYPE_TO_TP` / post-ветке (`create_set_orchestrator.py`):
 > `tp1_rsy`→tp1 · `search_test`→tp2 · `rsya_gallery`→tp3 · `search_dynamic`→tp4 · `search_gallery`→tp5 ·
-> tp6/tp7 = UAC (Мастер/Товарка, отдельная ветка по куке).
+> tp6/tp7 = UAC (Мастер/Товарка, отдельная ветка по куке) · `post_tp8/post_tp9/post_tp10` = Посевы.
 >
 > **Легенда типов** — источник истины НЕ `CODER.md` (там лишь примеры), а справочник
 > `public.local_gsheet_naming` (Victory, `type='tp'`), сверено SQL 2026-07-09:
@@ -590,12 +647,9 @@ Live-код `EMPTY_DEFAULT_TEXT_LIVE` (§1.b.3) чинит пустой; нед�
 > `tp7`=Товарка (мастер/фид+каталог) · `tp8`=Telegram · **`tp9`=Max** · **`tp10`=Telegram + Max** ·
 > `tp11`=Connected TV.
 >
-> ⚠️ **ИСПРАВЛЕНО (2026-07-09):** прежняя запись «tp9/tp10 не существуют» была ОШИБКОЙ — проверялся
-> только код автоматизации, а не справочник кодера. `tp9` и `tp10` **есть в кодере** (`local_gsheet_naming`)
-> так же, как tp8/tp11 — просто ни один из четырёх (`tp8`/`tp9`/`tp10`/`tp11`) сервис пока **не создаёт**
-> (нет в `_TYPE_TO_TP`, нет отдельной UAC-ветки как у tp6/tp7). Статус всех четырёх одинаковый: **определены
-> в кодере, вне скоупа автоматизации** — см. 3.8. Разницы «пробел в нумерации» vs «есть, но не делаем» —
-> НЕТ, все четыре в одной категории.
+> ⚠️ **ОБНОВЛЕНО (2026-07-22):** прежняя запись «tp8/tp9/tp10 сервис не создаёт» устарела.
+> `tp8/tp9/tp10` создаются отдельной post-веткой `create_set_tp8_10.py`; `tp11` остаётся только
+> в кодере и вне скоупа автоматизации.
 >
 > `- [ ]` = проверяемый пункт готовности. 🟡 = требует подтверждения на живом прогоне (в коде не доказуемо).
 
@@ -621,6 +675,8 @@ Live-код `EMPTY_DEFAULT_TEXT_LIVE` (§1.b.3) чинит пустой; нед�
 - [ ] Каждый текстовый/UAC tp = **ПАРА кампаний** `cpc` + `cpa` — **по умолчанию, НЕ безусловный инвариант**:
       управляется галочкой `no_cpa` (`create_set_plan.py:487-489`, `pays=['tcpa'] if no_cpa else ['tcpa','cpa']`):
       снята → пара `cpc`+`cpa`; активна (`no_cpa`) → остаётся ТОЛЬКО одна кампания (`cpc`).
+      Create-runtime должен принимать оба ключа (`no_cpa` и UI/plan alias `n`); иначе plan может
+      показать 0 CPA, а builder tp1/tp5 создаст скрытые CPA-пары.
 - [ ] #1 Метрика + `goal_id` (гейт `api_create_set`: нет счётчика/цели → `400`).
 - [ ] #2 UTM-метка: **tp1–tp5** на ГРУППАХ (`TrackingParams`), **tp6/tp7** на КАМПАНИИ (`tracking_params`).
 - [ ] #3 Персонализация (адаптивные тексты) **ВЫКЛ**.
@@ -696,6 +752,10 @@ Live-код `EMPTY_DEFAULT_TEXT_LIVE` (§1.b.3) чинит пустой; нед�
 - [ ] Быстрые ссылки = 8 + уточнения + промо.
 
 **Нюансы tp2:** состав = TextAd only (`ct001_ag011`). Картинок/видео/adPrice на поисковом TextAd нет.
+При `only_gks/only_cts` создание обязано строить только выбранные группы структуры; не-autotarget
+группа без ключей после фильтра не создаётся. Если Direct схлопывает дубли ключей между группами,
+наружный `build.groups` считается по фактическому read-back `adgroups`, а исходные попытки пишутся
+в `groups_built`.
 
 ### 3.3 tp3 — Товарная галерея (`rsya_gallery`, legacy)
 
@@ -731,11 +791,10 @@ Live-код `EMPTY_DEFAULT_TEXT_LIVE` (§1.b.3) чинит пустой; нед�
 - [ ] `TEXT_CAMPAIGN`, канал = **Поиск** (`Network` OFF, `yandexMaps` OFF, список организаций OFF).
 - [ ] Стратегия `cpc`(`pay="tcpa"`)=AVERAGE_CPA / `cpa`(`pay="cpa"`)=PAY_FOR_CONVERSION.
 - [ ] Ключи + автотаргет `search_tp2` (`EXACT_V2_MARK` + `WITHOUT_BRAND`).
-- [ ] **Места показа = «Ручная настройка»** `placementTypes=["SEARCH_PAGE","ADV_GALLERY"]`
-      (Товарная галерея на поиске + Продвижение в выдаче). ⚠️ При создании шлётся `null`, финальный
-      список ставит Grid-finalize (`placement_types=PLACEMENTS_TP5`); audit-код `PLACEMENTS_WRONG`.
-      🟡 жив. чтение `placementTypes` рекомендуется (в `CAMPAIGN_INVARIANTS.md` пункт исторически спорный —
-      код разрешил в пользу явного списка, HAR49-эталон 712024652).
+- [ ] **Места показа = «Ручная настройка»** `placementTypes=null` + platforms
+      `gallery/search/organic=true`, `network/yandexMaps/serpGeoWizard=false`.
+      Audit-код `PLACEMENTS_WRONG` флагает любой непустой `placementTypes` или включённую РСЯ.
+      🟡 следующее live-чтение `placementTypes` рекомендуется после code-review fix 2026-07-24.
 - [ ] Динамич. места `isOrganicSearchEnabled = True` (`organic=True`).
 - [ ] **adPrice на фидовых группах**.
 - [ ] Глоб. минус-слова на кампании (как tp2/tp4).
@@ -775,8 +834,17 @@ Live-код `EMPTY_DEFAULT_TEXT_LIVE` (§1.b.3) чинит пустой; нед�
   `TP67_TARGETING_LABEL_DRIFT` 2026-07-20): ключи+аудитории → `КС+аудитории`; только аудитории →
   `аудитории`; только ключи → `КС`; ничего → `автотаргетинг`. Метка добавляется к базовому имени
   ОТДЕЛЬНО — `item.t` источником таргетинга не является. Примеры: «МК - Кредит - автотаргетинг», «МК - Кредит - КС».
-  (ERRORS_JOURNAL: CAMP_NAMES_CROSS_TP_LEAK 2026-07-20; TP67_TARGETING_LABEL_DRIFT 2026-07-20; коммиты 447eff4 / 09830ae / 0ddbdde / DROPPED_CAT)
-- [ ] **Кодер позиции** (`gc` в структуре слепка): `{сегмент_ct}_aon_n000_r0000_ct001_ag011_g00` (всегда `aon`; `ct001`=МК).
+  `/slepki` UI и XLSX-экспорт обязаны делать тот же пересчёт и для `camp_names[0]`, включая fallback
+  `tp67_real_keywords.json`: старая строка `МК - Nissan - Автотаргетинг` при 183 реальных ключах
+  отображается как `МК - Nissan - КС` (фикс 2026-07-23).
+  Если внутри одного слепка+типа сайта несколько tp6/tp7-позиций после такого пересчёта дают одно
+  фактическое имя кампании, в структуре должна остаться **одна** позиция с union-списком
+  `merged_gks`; создание, `/slepki` карточка ключей и XLSX читают ключи/минуса по всем этим `gk`.
+  Несколько видимых строк с одинаковым именем, но разными ключами — дефект структуры, а не разные
+  кампании. Runtime-защита: `_slepok_struct_groups()` дополнительно схлопывает одинаковые видимые
+  tp6/tp7-позиции в памяти, чтобы новый прогон не создал дубли даже если JSON снова пришёл с такими строками.
+  (ERRORS_JOURNAL: CAMP_NAMES_CROSS_TP_LEAK 2026-07-20; TP67_TARGETING_LABEL_DRIFT 2026-07-20/2026-07-23; коммиты 447eff4 / 09830ae / 0ddbdde / DROPPED_CAT)
+- [ ] **Кодер позиции** (`gc` в структуре слепка): `{сегмент_ct}_aon_n000_r0000_ct001_ag011_g00` (всегда `aon`; `ct001`=МК). Для брендового `camp_names[0]` реальный `ct` берётся из очищенного имени (`МК - Chery - КС` → `Chery` → `ct0044`); `gc=ct0000` допустим только как fallback для реально общих позиций.
 **Режимы таргетинга: автотаргет vs ручная аудитория** (сверено по коду 2026-07-09,
 `create_set_master_product.py:82-127,500-518` + `campaign.py:1497-1507`; `targeting_mode` ∈
 `autotarget`/`keywords`/`audience`, из `it.targeting_mode` или `_tp67_targeting_mode`, при пустых
@@ -862,33 +930,112 @@ brand_hint прокинут (иначе «Марки»-ct давал пусто�
       без видео → recreate с довложением (как tp6, тот же `_audit_uac_video_missing`).
 - [ ] Каталог `ct0000` подхватывает страницы (не 0) — `it_lff=[]`.
 
-**Нюансы tp7 (минус-марки — РАЗДЕЛЬНО!):** сверено по коду 2026-07-09
-(`create_set_master_product.py:461-486` + `create_set_feeds.py:1476`):
+**Нюансы tp7 (feed-фильтры — positive-only!):** сверено по коду 2026-07-24
+(`create_set_master_product.py` + `create_set_feeds.py`):
 - **«Страницы каталога» (ListingAd, `listings_feed_filters` = `it_lff`)** для `ct0000` → **`it_lff=[]`**
   (весь каталог, БЕЗ минус-марок — иначе глобальные минус-марки обнуляли выдачу каталога = 0 страниц).
-  Брендовый `ct` с найденной коллекцией → позитив по `collectionId`. При отклонении UAC → ретрай без `it_lff`.
-- **«Товарка» (ShoppingAd, `feed_filters` = `it_ff`)** → глобальные минус-марки **применяются ВСЕГДА**
-  (даже `ct0000`/общий фид; `_tp7_product_feed_filters`); брендовый `ct` → + позитив по марке/модели.
-- ⚠️ Прежнее «tp7 — минус-марки НЕ добавляем вообще» **устарело**: оно оставляло общие товарки без
-  фильтров → `FEED_FILTER_MISSING_UAC`. Минус-марок нет ТОЛЬКО на «Страницах каталога» (`it_lff` ct0000).
+  Брендовый/модельный `ct` с найденной коллекцией → **точный позитив по `collectionId`**:
+  марка = бренд-уровень (`mark_*`, например Haval → `mark_6`), модель = `model_*`.
+  При отклонении UAC → ретрай без `it_lff`.
+- **«Товарка» (ShoppingAd, `feed_filters` = `it_ff`)** → глобальные минус-марки/модели **НЕ
+  применяются**. Фильтр ставится только если `ct` кампании содержит реальную марку или модель:
+  марочная tp7 → positive по полю марки (`vendor`/`mark_id`), модельная tp7 → positive по модели
+  (`model`/`folder_id`). `collectionId` в товарный `feed_filters` НЕ добавлять: UAC отклоняет
+  это как `INVALID_OPERATOR`; `collectionId` допустим только в `listings_feed_filters`.
+  `ct0000`/общая tp7 идёт без `feed_filters`.
+- **URL tp7 Марки/Модели** обязан вести на соответствующую посадочную даже при `sq=kviz`:
+  Марки → страница марки (`/auto/haval`), Модели → точный URL модели из фида или формульный
+  `/auto/{brand}/{model}`; `/quiz` не используется в generated Direct объявлениях и кнопках.
+  не на голый домен и не на первую/случайную модель бренда.
+- ⚠️ Прежнее «глобальные минус-марки применяются ко всей tp7-товарке» **устарело**: для БУ и
+  марочных/модельных кампаний это давало широкий или отрицательный фильтр вместо точного positive.
 
-### 3.8 tp8 / tp9 / tp10 / tp11 — ВНЕ СКОУПА (определены в кодере, сервис их НЕ создаёт)
+### 3.8 tp8 / tp9 / tp10 — Посевы; tp11 — вне скоупа
 
-Сверено SQL по `public.local_gsheet_naming` (`type='tp'`, Victory, 2026-07-09) — **все четыре реально
-существуют в справочнике кодера**, ни один не «отсутствует»:
+Сверено SQL по `public.local_gsheet_naming` (`type='tp'`, Victory) и по коду 2026-07-22.
+`tp8/tp9/tp10` теперь создаются через отдельный Grid-only engine; `tp11` только определён в кодере.
 
 | tp | Название в кодере | Статус в сервисе |
 |---|---|---|
-| `tp8` | Telegram | нет в `_TYPE_TO_TP`, нет UAC-ветки — не создаётся |
-| `tp9` | Max | нет в `_TYPE_TO_TP`, нет UAC-ветки — не создаётся |
-| `tp10` | Telegram + Max | нет в `_TYPE_TO_TP`, нет UAC-ветки — не создаётся |
+| `tp8` | Telegram | создаётся как `post_tp8`, Grid `GdPostCampaign`; platform `telegram=true`, `maxMessenger=false` |
+| `tp9` | Max | создаётся как `post_tp9`; platform `telegram=false`, `maxMessenger=true` |
+| `tp10` | Telegram + Max | создаётся как `post_tp10`; оба platform-флага включены |
 | `tp11` | Connected TV | нет в `_TYPE_TO_TP`, нет UAC-ветки — не создаётся |
 
-⚠️ **Исправление (2026-07-09):** в предыдущей версии этого раздела было написано «tp9/tp10 не
-существуют вообще» — это было ОШИБКОЙ (проверялся только код автоматизации `_TYPE_TO_TP`/grep по
-`home/seoadvanced/direct/`, а не источник истины кодера `local_gsheet_naming`). На момент правки
-сервис их не создаёт (пока мы это не автоматизируем — прямое указание Семёна), но как ТИПЫ они
-определены наравне с tp8/tp11.
+DoD для Посевов:
+- структура create-tab должна строиться из `direct/slepki/posevy.json`, как `/direct/automation/slepki`,
+  без hardcode `1 кампания`;
+- `AddCampaigns → AddPostAdGroups → AddPostAds`, результат остаётся черновиком;
+- для каждой post-группы есть картинка/креатив и контент GdPostAd;
+- частичный ответ Grid не считается успехом: `AddPostAdGroups` должен вернуть все planned-группы, а
+  `AddPostAds` — по одному объявлению на каждую post-группу (`groups == ads == planned_n_groups`);
+  недобор фиксируется как `partial` failure и/или `BUILD_LIVE_UNDERCOUNT`, а не зелёный result;
+- `button.href` / post `href` соответствует уровню кампании: марочная post-кампания (`Марки`,
+  однословный `brand_label` из feed-map, например `Haval`) ведёт на страницу марки
+  (`https://domain/auto/haval`), а модельная (`Модели`, например `Haval M6`) — на точный URL модели
+  из фида (`/auto/haval/m6/...`). Марочная кампания НЕ должна получать первый URL модели бренда;
+- body GdPostAd не должен содержать домен, URL или слово «сайт»; переход остаётся только в `button.href`;
+- body GdPostAd для Посевов должен заканчиваться строкой `Подробности по телефону: +<digits>`,
+  если на посадочной странице найден телефон: сначала `tel:`, затем видимый текст страницы
+  (`+7 (...) ...`/`8 (...) ...`). Телефон берётся с домена текущего `button.href`, без хардкода
+  по аккаунту/слепку;
+- body должен использовать лимит формата: целевой диапазон `POST_BODY_MAX - 30 .. POST_BODY_MAX`
+  символов после финальной нормализации. Если остаётся 60-100+ свободных символов, это дефект
+  композиции/добивки, кроме случаев когда цельный безопасный абзац уже не помещается;
+- после телефонной строки не допускается никакой текст: добивка лимита, УТП, трейд-ин/подарки и
+  уточнения должны вставляться выше CTA/телефона. Пустые секции вроде `В наличии:` без списка
+  удаляются, повторные УТП одного типа (`КАСКО`, `трейд-ин`, шины, первый взнос, одобрение) не
+  дублируются отдельными строками;
+- марки/модели и ключевые УТП/бонусы в body выделяются штатной разметкой `:b:...:bb:`;
+  italic-wrapper `:i:...:ii:` для всего поста не используется, потому live read/edit path Grid
+  нестабилен на смешанной italic+bold разметке; перед `AddPostAds` разметка нормализуется,
+  чтобы не было `INVALID_MARKUP`;
+- в живом тексте не допускаются голые/обрезанные маркеры разметки (`i:`, `b:`, `s:` вместо
+  `:i:`, `:b:`, `:s:`), склейки вида `на:b:Tenet` и хвосты, обрезанные триммингом перед телефоном
+  (`перезвоним в`, `Не упустите`, `Оставьте заявку...` без завершённой мысли);
+- body должен использовать доступный лимит формата осмысленно: если остаётся большой запас, генератор
+  добавляет нейтральный полезный абзац до CTA/телефона, без домена и без новых неподтверждённых
+  обещаний; целевой остаток — не больше ~30 символов, если его можно закрыть целой фразой без обрезки;
+- `g`-сегмент в кодере post-кампании/post-группы — это пол (`g00`=Все, `g01`=Мужчины,
+  `g02`=Женщины), а не номер картинки/группы. Несколько групп одной post-кампании без gender-
+  корректировки остаются `..._g00 — ... v1/v2/v3`;
+- перед отправкой body проходит защиту от явных неточностей: тип сайта (новые/с пробегом), бренд,
+  город, неподтверждённые гарантии и запрещённые формулировки;
+- brand_label/марка в Посевах допускается только если она подтверждена кодером (`ct` → `ag_part1`) или
+  видимым текстом сайта. Конкретные модели нельзя выдумывать: если нет подтверждения на сайте/в кодере,
+  body использует общие формулировки `модельный ряд {brand}` / `автомобили {brand}` / `авто в наличии`;
+- демографические корректировки из глобальных правил применяются в `bidModifierDemographics`;
+  отрицательные значения ниже `-50%` режутся до `-50%` (лимит Grid для tp8–tp10), `pct=0` не отправляется;
+  возраст `25–34` не добавляется «для примера» — только если он реально есть в правилах.
+
+Live 2026-07-22 (`porg-uy3huxcn`, job `24864b8891d4`, тест ограничен 2 кампаниями): сайт
+`autopark777.site` отдаёт `tel:+79999999991`; первые две `tp8` post-кампании созданы, но read-back
+поймал дефекты старого sanitizer: телефон и bold были, однако body начинался с `i:`, часть CTA
+обрезалась перед телефонной строкой, а после исправления italic+bold Grid `ads.rowset` мог отдавать
+пустой HTTP 500. DoD-фикс: `_phone_from_site` устойчиво читает `tel:`, `_trim_post_body` режет по
+предложениям/абзацам/словам и удаляет незавершённые CTA-хвосты, `_finalize_post_markup` оставляет
+safe bold без общего italic-wrapper, `_expand_post_body_before_phone` добирает свободный лимит.
+
+Live 2026-07-22 (`porg-uy3huxcn`, job `7edd79dd9835`, тест ограничен 2 кампаниями после v2):
+созданы черновики `712986295` и `712986322`, `live_verification.status=pass`, 6/6 `GdPostAd`
+прочитаны через Grid. В каждом body есть `Подробности по телефону: +79999999991`, есть
+`:b:...:bb:` для моделей/УТП, нет домена/URL/слова «сайт», нет italic-wrapper, нет обрезков
+`перезвоним в` / `Не упустите` перед телефоном. Свободный лимит body: 44 символа для мультибренда
+и 2 символа для Tenet.
+
+Live 2026-07-22 (`porg-xjxpfxby`, `tp810check_20260722_01`): первые две `tp8` post-кампании созданы
+черновиками `712977960` и `712978055`; `live_verification.status=pass`, Grid read-back: 2 кампании,
+6 post-групп, 6 объявлений, `bad_adgroup_names=0`, `bid_modifiers_present=true`.
+Актуальный структурный кодер Посевов — `ct018_ag001_g00` как в `CODER.md` и `direct/slepki/posevy.json`;
+демографические bid modifiers применяются отдельно и НЕ должны переписывать имя кампании/группы в `ag011`.
+
+Live 2026-07-22 (3 завершённых job): `porg-pl6iavd5` `5662588a0358` = `done 42/42`,
+`created=21`, `skipped_existing=21`, `failed=0`; `porg-xjxpfxby` `5450ecbffe7c` = `done 20/20`,
+`created=20`, `failed=0`; `porg-rgwzgo57` `6a43a2150ed3` = `done 77/77`, `created=77`,
+`failed=0`. По `body.items` пропущенных plan-items нет, deferred-create для этих parent jobs нет.
+Остаточные live issues — не потеря структуры, а content gaps/финализация: `NO_IMAGES_LIVE`
+(`porg-pl6iavd5` 14, `porg-xjxpfxby` 2, `porg-rgwzgo57` 15), один уже докрученный `NO_KEYWORDS_LIVE`
+на `porg-xjxpfxby`, один `RSYA_NOT_FINALIZED` на `porg-rgwzgo57`.
 
 ---
 
@@ -899,6 +1046,7 @@ brand_hint прокинут (иначе «Марки»-ct давал пусто�
 | 4.1 | Время создания приемлемое (НЕ 1+ час на 14 РК) | 🟡 (замер 59581fdd9f9d 2026-07-10: **41 мин** создание 14 РК + ~час хвост добивки [починен, см. 4.2]. Инфра уже оптимизирована: батч add, parallel-заливка картинок [воркеры 8→10 `DIRECT_IMG_UPLOAD_WORKERS`], units-probe раз-на-набор. **Главный оставшийся рычаг = LLM-генерация контента per-РК**) |
 | 4.2 | Набор ДОЖИМАЕТСЯ — не зависает / не прерывается | 🟡 (R2-6 2026-07-10: «добивка держит родителя `running` ~час» ПОЧИНЕНА — dcr content_repair больше не absorb'ится в родителя, флаг `DIRECT_DCR_DETACH_PARENT`=ON: карточка → `done` сразу после создания+аудита, content_repair крутится демоном асинхронно. Реальные докрутки [recreate/UAC/finalize] не тронуты. Live не проверено) |
 | 4.3 | Write-gate: **параллельность между агентствами**, сериализация только ВНУТРИ одного | ✅ (коммиты `c2c8b01` / `064b1d6` 2026-07-21) |
+| 4.4 | Карточка job показывает время **текущего исполнения аккаунта**, а не общее ожидание в очереди | ✅ (2026-07-23: `started_at` сохраняется в `direct_automation_jobs`, list/recent jobs подмешивают `direct_agency_active.started_at`, `routes_jobs` считает `elapsed` для `running` от `started_at`; ожидание в очереди не должно увеличивать таймер исполнения. При ручной остановке job уже созданные черновики НЕ удаляются автоматически — удаление только отдельным действием.) |
 
 > **4.3 Write-gate** — норма с 2026-07-21: очереди создания/копирования/контента пишут
 > **параллельно для РАЗНЫХ агентств** (write-lock ключ = agency, не глобальный).
@@ -916,6 +1064,7 @@ brand_hint прокинут (иначе «Марки»-ct давал пусто�
 | # | Критерий | Как проверить |
 |---|---|---|
 | 5.1 | Появляется + выбирается в селекторе /direct/automation | `/api/ai/agents` содержит слепок |
+| 5.1a | Активная структура хранится в per-slepok JSON, без монолита | в `direct/slepki/` нет активного `*slepki_structure*.json`; active part-файлы без ведущего `_` считаются рабочими слепками. Проверка 2026-07-22: монолита нет; `gordeeva_v1.json` — валидный active слепок, `slepki_store.assemble()` должен видеть 19 слепков и `gordeeva_v1=True` |
 | 5.2 | Есть ключи в паке для **КАЖДОГО ct** (вкл. модельные) — не пусто и не seed-only | `read_keywords(segment,tp,ct,slepok)` для ВСЕХ ct слепка, вкл. tp2 И tp5. **R2-6 2026-07-10:** ОДИН отсутствующий/тонкий `keywords/{slepok}.txt` ломает свою кампанию (не «есть на уровне марки → значит ок»). Пример: scherbakova/ct0032 Changan CS55 — `tp2` файла НЕ было (0 ключей), `tp5` = 2 seed-строки. Ориентир объёма у здоровых ct: 66–788. Корень «ключи пропали» = ЭТО (данные), не регрессия кода |
 | 5.3 | Есть тексты (`direct_slepok_content`) / voice (`AGENTS`) | запись в БД + `get_agent(slepok)` |
 | 5.4 | Реально СОЗДАЁТ РК с контентом слепка (не generic) | прогон на аккаунте директолога |
@@ -944,11 +1093,13 @@ brand_hint прокинут (иначе «Марки»-ct давал пусто�
 | 4 | **Ключи — из корректного корпуса**, без чужемодельной протечки; если реальных ключей нет — позиция явно `blocked`, а не молча падает в autotarget | `read_keywords(segment,tp,ct,slepok)` для ВСЕХ ct слепка; cross-ct ревью токенов; `KEYWORD_REPAIR_NO_PACK_SILENTLY_OK` = 0 |
 | 5 | **Картинки/видео** — 1–5 по заданной fallback-цепочке, с настоящим self-heal при временных сбоях; `VIDEO_NO_POOL` при реально пустом пуле — не ложный аудит | `CT_SLEPOK_IMAGES_EMPTY` и `VIDEO_NO_POOL` = warn, не бизнес-блок; видео-пул содержит ролики для нужных марок слепка |
 | 6 | **Минус-слова подключены** — и глобальные, и собственные слепка | `GLOBAL_MINUS_CAMPAIGN_MISSING = 0` после создания; пак содержит `_minus`/`_minus_shared` для ct |
-| 7 | **Фильтр фида tp5/tp7 небустой** — DoD-гейт до создания черновика проверяет пересечение фильтра с офферами фида, мёртвые товарные группы не создаются | `LISTING_POSITIVE_FILTER_MISSING = 0`; group_count tp5/tp7 > 0 после создания |
+| 7 | **Фильтр фида tp1/tp3/tp5/tp7 соответствует сегменту и site_type** — товарные/каталожные объявления используют поля конкретного фида: YML → `vendor/model`, AUTO_RU/БУ → `mark_id/folder_id`. Для `С пробегом` глобальные минус-фильтры марок/моделей запрещены; для марочных/модельных кампаний нужен positive-фильтр конкретной марки/модели; для общих `ct0000` tp7 feed-filter не обязателен. DoD-гейт до создания черновика проверяет пересечение фильтра с офферами фида, мёртвые товарные группы не создаются | `FEED_FILTER_MISSING_GRID = 0` с исключением БУ-global-minus; `LISTING_POSITIVE_FILTER_MISSING = 0`; `FEED_FILTER_MISSING_UAC` не флагает `ct0000`; group_count tp1/tp3/tp5/tp7 > 0 после создания |
 | 8 | **Preflight ловит дубли** — и внутри одного слепка между site_type, не только между директологами; совпадения либо осознанны и задокументированы, либо это баг | Preflight на слепке; дубли из `SLEPKI_AUDIT_2026-07-12.md` «Exact item repeats» — сверить с источником кабинета |
 | 9 | **Источник истины — живой кабинет**, а не имена кампаний и не аналитическая таблица (`Dim_Campaign` недосчитывает) | `live_verification.summary.errors = 0` после прогона; не ориентироваться на счётчики BI |
 | 10 | **Отчётность не врёт** — job status / errors_log / виджет докрутки отражают реальное состояние, нет тихих «14/14 чисто» при живых дефектах | Сравнить `summary.errors` из `live_verification` с кабинетом вручную |
 | 11 | **`group.name` в слепке НЕ содержит зашитый реальный регион харвеста** — только `camp_names[0]` (city-агностичен) идёт в базовое имя кампании; область/регион аккаунта подставляется ОТДЕЛЬНО движком при создании (`_emit_struct`, `create_set_plan.py`). Зашитый реальный город/область в `group.name` — след мёржа нескольких региональных аккаунтов в один слепок; это ОШИБКА онбординга. Исправление: убрать регион из `group.name` (фикс 035756f — 170 групп, 7 слепков, 2026-07-21). При онбординге нового слепка — проверять `group.name` на вхождения реального города/области. | `grep -r '"name"' direct/slepki/*.json | grep -iE 'краснодар|москва|самара|уфа|...'` → 0 реальных регионов в именах групп (допустимы только токен `ГОРОД` как плейсхолдер) |
+| 12 | **Сегмент кампании и группы совпадают** — в `camp_names` кампании с явным сегментом `Марки` не содержат группы `Общее/Модели`, кампании `Модели` не содержат `Марки/Общее`, кампании `Общее` не содержат `Марки/Модели`. `Авто/Автомобили/Машины` считается сегментом `Общее`. | Для UI-пака `Авто`: raw-аудит `direct/slepki/*.json` по файлам без `ui_group`/`auto=false`; для каждого item с `camp_names[]` `segment(_first_ct(gc))` должен входить в явные сегментные слова каждого имени; итог `total_issues=0`. Дополнительно проверить через `structure_to_campaigns(...)`: явные сегментные кампании не имеют item чужого сегмента. Item без поля `camp_names` проверяются отдельным fallback-аудитом, это не нарушение данного сегментного инварианта. |
+| 13 | **Один таргет-профиль не размножается разными группами** — внутри одного слепка/site_type/tp и одной кампании не должно быть двух item с одинаковым `ct/a/n/r/ag/g` и одинаковой семантикой группы. Общие синонимы (`Смарт`, технический `ct0014...`, `Авто/Автомобили/Машины`; повтор `Авито/Авто Ру/Дром`) должны быть объединены в одну группу, исходные `gk` сохраняются через `merged_gks`. | Для UI-пака `Авто`: аудит по `(camp_names, ct/a/n/r/ag/g, canonical_group)` должен давать `exact_dup=0` и `canon_dup=0`; отдельно `common_in_brand=0`, `wrong_tp67_ct0000=0`, `generic_tovar=0`, `tp67_container=0`. |
 
 ### 5.a Не-авто слепки (B2B-лидоген: `dmp` и будущие) — признак `"auto": false` в структуре
 
@@ -993,7 +1144,7 @@ brand_hint прокинут (иначе «Марки»-ct давал пусто�
 2. Прочитать `result.live_verification.summary.errors` + `issues[].code` → пункты §1.
 3. По кодам issues определить, что добивать (таблица §1).
 4. Визуально в кабинете: 1.5 каталог, 1.6 ссылки, контент §2, per-tp §3.
-5. `journalctl direct-worker` на предмет 1.9 и транзиентных Яндекс-ошибок (1000/500 — не наши баги).
+5. `journalctl -u direct-create-worker.service` на предмет 1.9 и транзиентных Яндекс-ошибок (1000/500 — не наши баги).
 6. Отметить в этом файле статусы ✅/🟡/⬜ по факту прогона.
 </content>
 </invoke>

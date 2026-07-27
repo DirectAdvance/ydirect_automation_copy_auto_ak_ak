@@ -42,6 +42,14 @@
 - #4 / #5 — ⚠️ в UAC-payload полей мониторинга/расш.гео нет. МК — упрощённый тип; вероятно этих
   тумблеров у него нет (они на обычных Поисковых). Нужна live-проверка МК-черновика (нечастый кейс).
 
+### Посевы (`tp8` / `tp9` / `tp10`): `create_set_tp8_10.py`
+- Создаются через Grid как `GdPostCampaign`: `AddCampaigns → AddPostAdGroups → AddPostAds`.
+- #1/#2 — Метрика/цель и UTM задаются на уровне кампании/post-групп, как для tp8+.
+- Корректировки: `bidModifierDemographics` передаются сразу в `AddPostAdGroups`.
+  Grid для post-групп принимает отрицательные демографические корректировки не ниже **-50%**:
+  глобальные `-100%` (`AGE_0_17`, `AGE_18_24`) в post-engine должны уходить как `percent=-50`.
+- `pct=0` не отправляется; положительные проценты идут как есть. Проверка: `test_tp8_10_bid_mod_dem.py`.
+
 ## Гейт
 `blueprint.py::api_create_set` — нет счётчика/цели → `400`, кампания НЕ создаётся (правило #1).
 
@@ -59,8 +67,7 @@
 - #5 Расш.гео — `hasExtendedGeoTargeting=False` в Grid-мутации ✅
 - #6 «Директ помогает» — `isRecommendationsManagementEnabled=False` в Grid-мутации ✅
 - **Места показа** — ⚠️ ИСПРАВЛЕНО 2026-07-01: `placementTypes=null` (НЕ список!) + `platforms` (gallery+search+organic из `PLATFORMS_SEARCH`). Любой НЕпустой `placementTypes` Яндекс матчит с пресетом («SEARCH_PAGE» → «Поиск»), `ADV_GALLERY` игнорится → UI «Поиск». «Ручная настройка» с ТГ = `placementTypes=null`. tp5-call шлёт `placement_types=[]` (sentinel → null).
-  - **create=null (2026-07-01, code-review):** `_create_shopping_via_cookie` (blueprint ~12082) при СОЗДАНИИ шлёт `placement_types=None` (эталон HAR20 tp5-create). Форс списка в AddCampaigns рискует `ORGANIC_PLACEMENT_TYPES_INVALID_COMBINATION` → падение всего create.
-  - **🔴 ПРОТИВОРЕЧИЕ (открыто, требует live tp5-create+read):** этот пункт утверждает finalize=null, НО код `blueprint.py:12143` `_finalize_search_via_grid(placement_types=list(PLACEMENTS_TP5))` шлёт ЯВНЫЙ `["SEARCH_PAGE","ADV_GALLERY"]` с обратным комментом (HAR49-эталон 712024652: «null давал пресет Поиск, ADV_GALLERY не входит»). Одно из двух утверждений неверно. Разрешить живым созданием одной tp5 и чтением фактических placementTypes/UI-мест. НЕ править finalize вслепую.
+  - **create/finalize=null (2026-07-24, code-review fix):** `_create_shopping_via_cookie` при создании не форсирует список, а финализация tp5 передаёт sentinel `[]`/`None` → `placementTypes=null`. Следующий live tp5-create+read должен подтвердить фактический UI-режим после правки.
 - **ListingAd** — в товарной группе можно добавить `add_listing_ad(adgroup_id, feed_id, collection_id)` рядом с ShoppingAd. `FeedFilterConditions` по `collectionId` работает (проверено live 2026-06-21).
 
 ## Проверка
@@ -113,6 +120,9 @@ UAC «Мастер кампаний» (tp6) и «Товарка» (tp7) — пр
   обнуляет непустой набор (`return out or kws`).
 - **tp1 «все фиды»:** товарка множилась по всем enabled-фидам. Фикс: `role='catalog'` в
   `direct_global_feed_rules` + `_account_model_feeds(catalog_only=True)` ТОЛЬКО для tp1 (tp7 — все).
+- **БУ feed-minus:** глобальные минус-марки/модели нельзя применять к `site_type='С пробегом'`:
+  они вырезают валидный БУ-ассортимент. В tp7 глобальные feed-minus не применяются вообще; только
+  positive-фильтр по ct марки/модели, `ct0000` без feed-filter.
 - **tp1 нет минус-площадок:** хранился `https://gdz.ru/` (URL), Яндекс ждёт голый ХОСТ → `_place_host`.
 - **tp1 нет цены:** брендовая группа без своего оффера → `_group_ad_price` фолбэк на `_min_offer_price`.
 - **tp6 сырое имя:** UAC берёт `it["name"]` дословно → regex-детект сырого слага + пересборка `_build_name`.

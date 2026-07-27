@@ -63,6 +63,7 @@ reconciler_staging/
 .bak_*
 # разовые пробы (логи + json-результаты)
 _probe_*
+_proposed_*
 _grind_*
 _tone_baseline_result.json
 # рантайм-журнал edit-очереди и staging-структура
@@ -71,3 +72,14 @@ slepki_structure.staging.json
 
 # Снимки пак-файлов перед веерной записью save_assets (slepki_editor._backup_pack_files)
 slepki_pack_backups/
+slepki_pack_cache.marker
+slepki/_backup_*/
+slepki/_proposed_*
+
+# рантайм-состояние и кэши: пересоздаются, в гите только шумят
+direct.db
+ct_segments_cache.json
+donor_tp4_models_cache.json
+# артефакты прогона slepok-qa (в results лежат логины аккаунтов Директа)
+slepok_qa_results.json
+slepok_qa_report.md

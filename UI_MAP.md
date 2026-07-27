@@ -41,21 +41,29 @@ home/seoadvanced/templates/direct/index.html
 | `static/direct/automation_content.js` | Контент M3. Не подключается в HTML напрямую, lazy-loaded из `automation.js` |
 | `static/direct/slepki_ui.js` | Общие деревья структуры, используемые и на странице слепков, и во вкладке создания РК |
 | `static/direct/slepki_ui.css` | Общие стили деревьев/бейджей слепков |
+| `static/direct/slepki_minus_places.js` | UI минус-площадок/исключений для дерева слепков |
 | `direct/routes_pages.py` | `GET /direct/automation` |
 | `direct/automation_runtime.py` | `_render_page()`: собирает Jinja-контекст и рендерит `direct/index.html` |
 
 Важно: прежняя карта была устаревшей. JavaScript больше НЕ живёт целиком inline в
-`index.html`; основная логика вынесена в `/static/direct/automation.js`.
+`index.html`; основная логика вынесена в `/static/direct/automation*.js`.
 
-В `index.html` остаётся только маленький inline seed:
+В `index.html` остаётся маленький inline seed и список подключённых модулей:
 
 ```html
+<script src="/static/direct/slepki_ui.js?..."></script>
+<script src="/static/direct/slepki_minus_places.js?..."></script>
 <script>
 const FEEDS = {{ feeds_catalog | tojson }};
 const IS_ADMIN = {{ is_admin | tojson }};
 </script>
-<script src="/static/direct/automation.js"></script>
+<script src="/static/direct/automation_jobs.js?..."></script>
+<script src="/static/direct/automation_create.js?..."></script>
+<script src="/static/direct/automation.js?..."></script>
 ```
+
+`automation_rules.js` и `automation_content.js` грузятся лениво через
+`ensureRulesModule()` / `ensureContentModule()` в `automation.js`.
 
 ---
 
@@ -67,9 +75,9 @@ const IS_ADMIN = {{ is_admin | tojson }};
 |---------|-----|--------|
 | Обзор | `templates/direct/index.html` | `static/direct/automation.js` + `/direct/api/overview` |
 | Статистика по аккаунтам | `templates/direct/index.html` | `static/direct/automation.js` + `/direct/api/account_stats` |
-| Создание РК | `templates/direct/index.html` | `static/direct/automation.js`, `routes_set_plan.py`, `routes_jobs.py`, `routes_create_set.py` |
-| Глобальные правила | `templates/direct/index.html` | `routes_settings.py` |
-| Контент | `templates/direct/index.html` | `routes_content.py`, `routes_pack.py` |
+| Создание РК | `templates/direct/index.html` | `automation_create.js`, `automation_jobs.js`, `routes_set_plan.py`, `routes_jobs.py`, `routes_create_set.py` |
+| Глобальные правила | `templates/direct/index.html` | lazy `automation_rules.js`, `routes_settings.py` |
+| Контент | `templates/direct/index.html` | lazy `automation_content.js`, `routes_content.py`, `routes_pack.py` |
 | Обучение ИИ | `templates/direct/index.html` | UI в `automation.js`, API может быть вынесен в `direct-ai.service` |
 | Готовые логины | `templates/direct/index.html` | `routes_ready_logins.py` |
 | Помощь | `templates/direct/index.html` | `routes_ai.py` |
@@ -93,7 +101,8 @@ const IS_ADMIN = {{ is_admin | tojson }};
 ## Поток создания набора РК
 
 Кнопки создания живут в `templates/direct/index.html`, обработчики — в
-`static/direct/automation.js`.
+`static/direct/automation_create.js`, карточки и polling задач — в
+`static/direct/automation_jobs.js`.
 
 ```
 createSet()
@@ -210,10 +219,23 @@ home/seoadvanced/direct/deploy/nginx-direct-location.conf
 
 ```bash
 node --check home/seoadvanced/static/direct/automation.js
+node --check home/seoadvanced/static/direct/automation_create.js
+node --check home/seoadvanced/static/direct/automation_jobs.js
+node --check home/seoadvanced/static/direct/automation_rules.js
+node --check home/seoadvanced/static/direct/automation_content.js
+node --check home/seoadvanced/static/direct/slepki_ui.js
+node --check home/seoadvanced/static/direct/slepki_minus_places.js
 node --check home/seoadvanced/static/direct/copy_common.js
 node --check home/seoadvanced/static/direct/copy_auto.js
 node --check home/seoadvanced/static/direct/copy_other.js
-python3.12 -m py_compile home/seoadvanced/direct/main.py home/seoadvanced/direct/copy_main.py
+python3.12 -m py_compile \
+  home/seoadvanced/direct/main.py \
+  home/seoadvanced/direct/copy_main.py \
+  home/seoadvanced/direct/content_main.py \
+  home/seoadvanced/direct/slepki_main.py \
+  home/seoadvanced/direct/accounts_main.py \
+  home/seoadvanced/direct/ai_main.py \
+  home/seoadvanced/direct/autorules_main.py
 ```
 
 ### Nginx на LXC101
@@ -236,4 +258,4 @@ curl -I https://seoadvanced.ru/direct/automation/copy
 
 ---
 
-*Обновлено 2026-07-19: учтён вынос JS в `static/direct/automation.js`, отдельная страница copy и split-сервисы nginx.*
+*Обновлено 2026-07-22: учтён split JS на `automation_create.js`/`automation_jobs.js`, lazy-модули правил/контента и актуальный чеклист проверки.*

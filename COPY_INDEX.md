@@ -99,8 +99,8 @@
 | D2b | campaign_neg_count | UNREADABLE | `campaigns.json` NegativeKeywords | не читается отдельно — только report |
 | D3 | shared_set_count | СРАВНИВАЕТСЯ | `negative_sets.json` count | Grid `read_campaign_invariants.libraryMinusKeywordsIds` count |
 | D4 | promo_attached | СРАВНИВАЕТСЯ | `promotions.json` has_promo | Grid `edit_rows.promoExtension` |
-| D5 | adaptive_titles_count | СРАВНИВАЕТСЯ | `ads.json` adaptive ads count | Grid `adaptive_ads_for_update` — честный per-ad счёт объявлений с `titles` (2026-07-20: было прокси `adaptive_total`; теперь ловит «объявление создалось, заголовки не залились»); Grid не прочитан → UNREADABLE |
-| D6 | adaptive_bodies_count | СРАВНИВАЕТСЯ | `ads.json` bodies count (`ads_with_texts`, grid_snapshot `gs.get("bodies")`) | Grid `adaptive_ads_for_update` — честный per-ad счёт объявлений с `bodies` (2026-07-20: было прокси `adaptive_total`); Grid не прочитан → UNREADABLE |
+| D5 | adaptive_titles_count | СРАВНИВАЕТСЯ | `ads.json` adaptive ads count | Grid `campaign_content_counts.responsiveSearchAdsCount` (=adaptive_total) |
+| D6 | adaptive_bodies_count | СРАВНИВАЕТСЯ | `ads.json` bodies count (`ads_with_texts`, grid_snapshot `gs.get("bodies")`) | Grid (прокси: `adaptive_total` из `campaign_content_counts`; отдельного счётчика bodies нет) |
 | D7 | callout_count | СРАВНИВАЕТСЯ | `callouts.json` count | Grid `edit_rows.calloutExtensions` count |
 | D8 | sitelinks_present | СРАВНИВАЕТСЯ | `sitelinks.json` has_any | Grid `edit_rows.sitelinkExtensions` has_any |
 | D9 | ads_with_images | СРАВНИВАЕТСЯ | `ads.json` ImageHash not null | Grid `_enrich_adaptive_images` / v5 `ads_with_images_v5` |
@@ -149,7 +149,7 @@
 ## Смежные доки (не дублируются, только ссылки)
 
 - `ARCHITECTURE.md` — слои всего пакета, граф импортов, copy-кластер
-- `README.md` — create-flow (tp1–tp7), Grid/v5, куки главпотока
+- `README.md` — create-flow (tp1–tp10: основные tp1–tp7 + Посевы tp8–tp10), Grid/v5, куки главпотока
 - `STATE_COPY_OTHER.md` — история инцидентов «Прочих сфер», баги 1–7, что осталось
 - `ERRORS_JOURNAL.md` — root-cause всех инцидентов, «не помогло ранее»
 - `CAMPAIGN_INVARIANTS.md` — 6 обязательных инвариантов (применимы и к копиям)

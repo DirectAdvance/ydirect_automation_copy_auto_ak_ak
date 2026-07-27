@@ -35,8 +35,9 @@
 
 - `routes_*.py` — Flask route-слой `/direct/*`. `blueprint.py` остаётся местом для legacy
   helper/adapter-логики, но больше не содержит `@bp.route`.
-- `main.py` — entrypoint общего Direct app. В systemd он запускается с
-  `DIRECT_REGISTER_CONTENT_EDITOR=0`, чтобы не держать content editor в `direct.service`.
+- `main.py` — entrypoint общего Direct app. В systemd он запускается как
+  `direct-create.service` с `DIRECT_REGISTER_CONTENT_EDITOR=0`, чтобы не держать content editor
+  в процессе создания РК.
 - `content_main.py` — entrypoint отдельного content editor app: только
   `/direct/automation/content` и `/direct/api/content-editor/*`.
 - `routes_create_set.py` — `/api/create_set`, legacy `/api/create`, verification/repair endpoints.
@@ -48,7 +49,8 @@
   `SelectionCriteria.CampaignIds`, responsive ads через `Titles`/`Texts`.
   Отдельная документация сервиса: `CONTENT_EDITOR.md` и `CONTENT_EDITOR_COOKIE_GRID.md`.
 - `create_set_*.py` — вынесенные части create_set orchestration: context, feeds, minus, assets,
-  text/tp1/feed builders, finalize, repairing, corrections и master-product ветка.
+  text/tp1/feed builders, finalize, repairing, corrections, master-product ветка и
+  `create_set_tp8_10.py` для «Посевов» (GdPostCampaign tp8/tp9/tp10).
 - `precreate.py` — план и исполнение предсоздания перед upload-циклом (`precreate` report,
   promo, callouts-reuse, будущие минус-библиотеки/изображения/AI-content).
 - `verifier.py` / `live_verifier.py` / `uac_verifier.py` / `grid_content_verifier.py` /
@@ -98,9 +100,9 @@ Grid/v5 live-verifier orchestration.
 `NAME_MISMATCH` планирует `rename_campaign`, `CAMPAIGN_ARCHIVED` планирует recreate через
 cookie/Grid без Direct API units.
 
-Static verification не требует `callouts` для UAC-only наборов (`tp6_`/`tp7_`): для них
-достаточность проверяется UAC-detail. Для смешанных наборов и tp1-tp5 неподтвержденные callouts
-по-прежнему дают `CALLOUTS_NOT_CONFIRMED`.
+Static verification не требует `callouts` для UAC/Post-only наборов (`tp6_`/`tp7_`/`tp8_`/`tp9_`/`tp10_`):
+для tp6/tp7 достаточность проверяется UAC-detail, для Посевов — Grid/Post-result. Для смешанных
+наборов и tp1-tp5 неподтвержденные callouts по-прежнему дают `CALLOUTS_NOT_CONFIRMED`.
 
 Если UAC live verification находит плохой черновик (`UAC_NOT_DRAFT`, нет счетчика/цели/UTM,
 включена персонализация или рекомендации, неполный контент), repair planner строит
@@ -133,6 +135,7 @@ resume-skip не пропустил существующую плохую кам
 | **Нативные интересы** (аудитории по группам) для МК/Товарки | Victory БД `public.direct_slepok_audiences` (`slepok`×`site_type`×`tp`×`category`×`kind`→`interest_ids`) |
 | **Глобальные правила** (бюджет/CPA/корректировки/фиды/минус-площадки/минус-марки) | Victory БД `direct_automation_rules`, `direct_audience_corrections`, `direct_demographic_corrections`, `direct_global_feed_rules`, `direct_global_minus_places`, `direct_global_minus_marks` |
 | Структура слепков (кодеры кампаний `tpN_{cpc\|cpa}_{site\|kviz}`) | `direct/slepki/<key>.json` (по файлу на слепок) + `direct/slepki/_order.json`; собирается `slepki_store.assemble()`. Монолита `slepki_structure.json` больше нет |
+| Структура Посевов | `direct/slepki/posevy.json`; create-tab и `/slepki` читают один источник через `SLEPKI`, без hardcode `1 кампания` |
 | Баланс / блокировки / ассеты | Яндекс.Директ API v5 (OAuth) + Live v4 + Grid (куки) |
 | Локальная LLM | mlx_lm.server на Mac M3 (через обратный SSH-туннель, см. `_M3_LLM_URL`) |
 
@@ -234,10 +237,12 @@ resume-skip не пропустил существующую плохую кам
 - **Быстрые ссылки → на главную** (`_norm_sitelinks` ставит href аккаунта), агент пишет
   только заголовок+описание; после фильтров есть финальная fallback-добивка до `8` ссылок.
 - Few-shot — **реальные** заголовки/тексты/ссылки из корпуса (`ads.jsonl`/`sitelinks.jsonl`),
-  `AGENT_ADS` в `ai_agents.py`. Не публикуются дословно — образец стиля + фолбэк, если модель
-  вернула меньше нужного (тогда добивается из корпуса, с пометкой в `warnings`).
+  `AGENT_ADS` в `ai_agents.py`. Не публикуются дословно — образец стиля + безопасная добивка, если
+  модель вернула меньше нужного (тогда добивается из корпуса, с пометкой в `warnings`).
 - `/api/create_set` принимает `titles/texts/sitelinks` в каждом `item`; нет ИИ-контента →
-  фолбэк на шаблоны `direct_ad_templates` по типу сайта (или `direct_slepok_content`).
+  builder может использовать локальные шаблоны/пак. Stream-generation не копирует
+  `direct_slepok_content` как финальный live-контент; полностью мёртвый content-пайплайн
+  блокируется до Direct-мутаций.
 
 ### Отладка качества M3
 
@@ -562,9 +567,10 @@ token-типы создаются по куке агентства через Gr
   1) полный AI/M3-контент,
   2) если часть вариантов отброшена фильтрами или M3 вернул пусто/ошибку — обязательный repair-loop
   до полного набора,
-  3) только если после этого секция всё ещё пустая/недобрана — слепковый/общий fallback.
+  3) если stream-generation не дала полный комплект — builder fallback/локальные шаблоны; если и они
+  не собрали валидный набор, item падает с content-gap.
   Цель инварианта: комбинированные объявления не должны выходить с частично пустыми заголовками,
-  текстами или быстрыми ссылками.
+  текстами или быстрыми ссылками и не должны массово падать до builder'ов при временном LLM-сбое.
 - **Склонение города:** `-ль → -е` (Ставрополь→Ставрополе, Ярославль→Ярославле), прочие `-ь → -и` (Пермь→Перми).
 - **tp1 быстрые ссылки:** нет у слепка → ИИ M3-генерация (`_ai_sitelinks`) → общие фоллбэки.
 - **Товарная галерея без бренд-пака** (напр. pavlov без tp5-пака): фид-фолбэк — общая товарная группа

@@ -28,7 +28,7 @@ bounded-context, но без фанатизма (модульный моноли
 
 ```
 Процессы/воркеры    main · worker_main · content_main/worker · copy_main
-      │             (systemd: direct / direct-worker / direct-content / direct-copy)
+      │             (systemd: direct-create / direct-create-worker / direct-content / direct-copy)
       ▼
 HTTP-роуты (тонкие) routes_*.py ×18  ── регистрируются в blueprint.py
       │
@@ -98,7 +98,7 @@ routes_create_set · routes_deferred · routes_pack · routes_campaigns · route
 |------|--------|
 | Оркестратор | `create_set_orchestrator` (769) |
 | Этапы | `create_set_input · context · account · metrika · corrections · minus · plan · precreate · prefetch · resume · response · units · slepok_content · callouts` |
-| Per-tp builders | `create_set_tp1`/`tp1_builders`(1641) · `create_set_text`/`text_builders`(tp2/tp4) · `create_set_feeds`(1289)/`feed_builders`(tp3/tp5) · `create_set_gallery` · `create_set_master_product`(tp6/tp7) · `create_set_assets` |
+| Per-tp builders | `create_set_tp1`/`tp1_builders`(1641) · `create_set_text`/`text_builders`(tp2/tp4) · `create_set_feeds`(1289)/`feed_builders`(tp3/tp5) · `create_set_gallery` · `create_set_master_product`(tp6/tp7) · `create_set_tp8_10`(Посевы tp8/tp9/tp10) · `create_set_assets` |
 | Пост / промо / финализ | `create_set_postprocess · create_set_repairing · create_set_finalize · create_set_promo · promo · promotions · precreate` |
 
 ### Движки Grid / UAC
@@ -297,7 +297,10 @@ campaign_naming; `_TITLE_PROMO_IDX`/бренд-кэши→text_gen; `_CONTENT_CA
 | tp5 | `search_gallery` | Поиск + Товарная галерея (TextAd+ListingAd+ShoppingAd, ЕПК) | v5 API + Grid-finalize |
 | tp6 | UAC (отд. ветка) | Мастер кампаний (МК). Имя = `{базовое имя} - {метка}`, метка ∈ `автотаргетинг / КС / аудитории / КС+аудитории` (без CPC/CPA). Кодер позиции: `{ct}_aon_n000_r0000_ct001_ag011_g00`. UI-бейдж вид таргетинга. | Grid/UAC (`create_set_master_product.py`) |
 | tp7 | UAC (отд. ветка) | Товарные кампании (ТК), ShoppingAd/ListingAd по фиду. Имя = `{базовое имя} - {метка}`. Кодер позиции: `{ct}_aon_n000_r0000_ct010_ag001_g00`. | Grid/UAC (`create_set_master_product.py`) |
-| tp8–tp11 | — | Telegram / Max / Telegram+Max / Connected TV — есть в кодере, сервис пока не создаёт | — |
+| tp8 | `post_tp8` | Посевы Telegram, Grid `GdPostCampaign`/`GdPostAdGroup`/`GdPostAd`; один CPC-вариант, группы из `direct/slepki/posevy.json` | Grid (`create_set_tp8_10.py`) |
+| tp9 | `post_tp9` | Посевы Max, тот же GdPost engine; отличается platform-флагом `maxMessenger` | Grid (`create_set_tp8_10.py`) |
+| tp10 | `post_tp10` | Посевы Telegram+Max, оба platform-флага включены | Grid (`create_set_tp8_10.py`) |
+| tp11 | — | Connected TV — есть в кодере, сервис пока не создаёт | — |
 
 ### Позиция слепка — идентичность и реконструкция (2026-07-13)
 
@@ -403,7 +406,9 @@ API-ключ минус-слов в payload: `NegativeKeywords.Items` (загл�
 
 **3. tp6/tp7 — только Grid (v5 не отдаёт).**
 Детект: id в `grid_list_campaigns`, отсутствует в v5. Контент МК — Grid `showConditions`.
-Имена по префиксу `tp6_/tp7_`, **не** по Grid `__typename` (инвертирован). tp8 — не собираем.
+Имена по префиксу `tp6_/tp7_`, **не** по Grid `__typename` (инвертирован). Для Посевов
+используется отдельный источник `direct/slepki/posevy.json` и post-engine `tp8/tp9/tp10`, а
+исторический harvest tp1–tp7 их не собирал.
 
 **4. G8 гео-чистка.**
 `geo_strip` убирает города из позитива **и** операторных минус-частей (`-екатеринбург`),

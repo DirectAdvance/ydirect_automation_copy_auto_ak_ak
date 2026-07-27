@@ -2,6 +2,10 @@
 
 > Статус: **Фазы 1-3 выполнены.** Решение зафиксировано 2026-06-22,
 > реализация и cutover выполнены 2026-06-30.
+> **Сверка 2026-07-22:** документ исторический. Актуальные имена unit'ов для создания —
+> `direct-create.service` / `direct-create-worker.service` (не старые `direct.service` /
+> `direct-worker.service`). Текущие runtime-правила см. `README.md`, `CLAUDE.md`,
+> `deploy/dropins/README.md`.
 
 ---
 
