@@ -10,6 +10,7 @@ from . import create_set_context as _csctx  # _parse_targeting_modes (чисты
 from . import kontent_pack as kp
 from .link_check import resolve_or_fallback_url as _resolve_url
 from .uac_verifier import UAC_IMAGES_MIN as _UAC_IMAGES_MIN
+from .uac_verifier import images_create_min as _uac_images_create_min
 from .model_urls import (_brand_level_url, _is_degenerate_feed_url, _model_page_href,
                          _strip_site_domain_label, _strip_url_query)
 
@@ -939,32 +940,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
         it_images = []
     # Передаём запас кандидатов: campaign.py загрузит до 5 УСПЕШНО принятых Direct файлов.
     it_images = list(dict.fromkeys(it_images))[:12]
-    # ── Preflight: пул картинок ──────────────────────────────────────────────────────────────────
-    # Проверяем ТОТ ЖЕ каскад (_creative_images_for_ct), что реальная сборка → preflight и факт
-    # всегда совпадают. Если пул физически меньше порога — кампанию НЕ создаём: создать и тут же
-    # получить UAC_IMAGES_LOW → delete → recreate → та же нехватка (живой цикл porg-pl6iavd5).
-    # Дефицит контента (≠ транзиентный сбой заливки): нечего пересоздавать, кампания не нужна.
-    _pool_size = len(it_images)
-    if _pool_size < _UAC_IMAGES_MIN:
-        _need = _UAC_IMAGES_MIN - _pool_size
-        _gap = (
-            f"CONTENT_GAP_IMAGES_LOW: пул картинок для ct={img_ct} slepok={_sk} — "
-            f"{_pool_size} шт. при необходимых ≥{_UAC_IMAGES_MIN}. "
-            f"Добавить {_need}+ PNG в Manual/{img_ct}/. "
-            "Кампания не создана (дефицит контента, не транзиентный сбой)."
-        )
-        _add_job_err(_job, f"{name}: {_gap}")
-        results.append({
-            "name": name, "ok": False, "error": _gap,
-            "blocked": True, "issue_code": "CONTENT_GAP_IMAGES_LOW",
-            "pool_size": _pool_size, "required": _UAC_IMAGES_MIN, "ct": img_ct,
-        })
-        _bump_job(_job, False)
-        _bump_item(_job)
-        if _job:
-            _job_db_progress(_job)
-        return results, _tp7_mf
-    # ────────────────────────────────────────────────────────────────────────────────────────────
+    _pool_size = len(it_images)                   # пул картинок ИМЕННО своего ct (без чужого/ct0000)
     try:                                          # видео per-кодер (ct): per-модель → фолбэк на логин
         # brand_hint=c_brand: для «Марки»-ct feeds_ct_model()[ct]=None → brand_word="" → пул пуст
         # (D3-create 2026-07-09, зеркало tp1-аудита MEMORY 2026-07-07). Прокидываем марку кодера,
@@ -973,7 +949,48 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             or kp.videos_for_login(login)
     except Exception:  # noqa: BLE001
         it_videos = []
+    # ── Мягкий порог картинок (решение Семёна 2026-07-27) ────────────────────────────────────────
+    # «Мне нужна кампания даже с 4 изображениями, это лучше чем вообще её не будет.»
+    # Пул считаем ТЕМ ЖЕ каскадом (_creative_images_for_ct), что и реальная сборка → preflight и
+    # факт не расходятся. Дефицит пула создание больше НЕ блокирует: кампания создаётся с тем, что
+    # есть, а факт дефицита уезжает WARNING'ом в результат позиции и в `images_pool` (его читает
+    # live-верификатор и НЕ считает ошибкой — см. uac_verifier.UAC_IMAGES_POOL_SHORT).
+    # Цикл создать-удалить-пересоздать при этом не возвращается: при коротком пуле верификатор
+    # выдаёт warn-код, которого нет ни в `repair_planner._RECREATE_CODES`, ни в
+    # `repair_gate._UAC_REPLACE_CODES`, т.е. recreate-действие не планируется вовсе.
+    # Единственный оставшийся блок — вырожденный: показывать нечего совсем (ни картинок, ни видео).
+    # Порог блокировки задаётся env `DIRECT_UAC_IMAGES_CREATE_MIN` (дефолт 1; 0 = не блокировать
+    # никогда, 5 = прежнее жёсткое поведение) — без правки кода.
+    _create_min = _uac_images_create_min()
+    _pool_warning = ""
+    if _pool_size < _create_min and not it_videos:
+        _gap = (
+            f"CONTENT_GAP_NO_CREATIVE: для ct={img_ct} slepok={_sk} нет ни одной картинки "
+            f"(пул {_pool_size} при пороге создания {_create_min}) и ни одного видео — "
+            f"показывать в кампании нечего. Добавить PNG в Manual/{img_ct}/. "
+            "Кампания не создана (нет ни одного креатива)."
+        )
+        _add_job_err(_job, f"{name}: {_gap}")
+        results.append({
+            "name": name, "ok": False, "error": _gap,
+            "blocked": True, "issue_code": "CONTENT_GAP_NO_CREATIVE",
+            "pool_size": _pool_size, "required": _create_min, "ct": img_ct,
+        })
+        _bump_job(_job, False)
+        _bump_item(_job)
+        if _job:
+            _job_db_progress(_job)
+        return results, _tp7_mf
+    if _pool_size < _UAC_IMAGES_MIN:
+        _pool_warning = (
+            f"IMAGES_POOL_SHORT: пул картинок для ct={img_ct} slepok={_sk} — {_pool_size} шт. "
+            f"(цель {_UAC_IMAGES_MIN}). Взяли все доступные; добор из чужого ct/ct0000 запрещён. "
+            f"Кампания создаётся с {_pool_size} картинками — это предупреждение, не ошибка."
+        )
+    # ────────────────────────────────────────────────────────────────────────────────────────────
     it_warnings: list[str] = []
+    if _pool_warning:
+        it_warnings.append(_pool_warning)
     if it_targeting_warnings:
         it_warnings.extend(it_targeting_warnings)
     if c_brand and re.search(r"(?i)\bhaval\b|хавал", c_brand) and not it_videos:
@@ -1215,6 +1232,10 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
                 raise
         _res = {"name": disp_name, "ok": True, "id": cid, "launched": launch,
                 "images": len(it_images), "videos": len(it_videos),
+                # images_pool — сколько картинок СВОЕГО ct физически было доступно (без добора из
+                # чужого ct/ct0000). Читает live-верификатор: «в пуле меньше цели, взяли всё» —
+                # warn, а «пул полный, а в кампании меньше» — error (uac_verifier, 2026-07-27).
+                "images_pool": _pool_size,
                 "sitelinks": len(it_sitelinks),
                 "url": f"https://direct.yandex.ru/wizard/campaigns/{cid}/?ulogin={login}",
                 # Эталон СТРУКТУРЫ слепка для этой позиции → live-верификатор сверяет кабинет

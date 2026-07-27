@@ -200,9 +200,18 @@ def verify_live_create_set(*, login: str, results: list[dict[str, Any]],
                     # result-строку (create_set_master_product `_res["struct"]`). 0 новых запросов.
                     _uac_row = c.get("result") or {}
                     _uac_struct = _uac_row.get("struct") if isinstance(_uac_row, dict) else None
+                    # images_pool — сколько картинок СВОЕГО ct физически было доступно при сборке
+                    # (create_set_master_product `_res["images_pool"]`). Без него verifier не может
+                    # отличить «в пуле меньше 5, взяли всё» (не дефект) от «пул полный, а картинки
+                    # потерялись по дороге» (дефект). 0 новых запросов.
+                    _uac_expected: dict[str, Any] = {}
+                    if isinstance(_uac_struct, dict):
+                        _uac_expected["struct"] = _uac_struct
+                    _uac_pool = _uac_row.get("images_pool") if isinstance(_uac_row, dict) else None
+                    if isinstance(_uac_pool, int) and not isinstance(_uac_pool, bool):
+                        _uac_expected["images_pool"] = _uac_pool
                     uac_issues, uac_repair = verify_uac_detail(
-                        nm, int(cid), detail,
-                        {"struct": _uac_struct} if isinstance(_uac_struct, dict) else None)
+                        nm, int(cid), detail, _uac_expected or None)
                     issues.extend(uac_issues)
                     repair.extend(uac_repair)
         else:
