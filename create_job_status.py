@@ -106,16 +106,18 @@ def compute_job_issues_breakdown(
     if (kind or "") not in CREATE_JOB_KINDS:
         return None
     d = data or {}
-    live_errors = _lv_summary_int(d, "errors")
-    ver_errors = _ver_summary_int(d, "errors")
-    total_errors = live_errors + ver_errors
+    lv_errors = _lv_summary_int(d, "errors")    # live_verification.summary.errors
+    ver_errors = _ver_summary_int(d, "errors")   # verification.summary.errors (static verifier)
+    total_errors = lv_errors + ver_errors
     if total_errors == 0:
         return None  # чистый done
     live_warnings = _lv_summary_int(d, "warnings")
     gate_skips = _as_int(d.get("gate_skips"))
     positions_with_errors = _count_positions_with_errors(d)
     return {
-        "live_errors": total_errors,  # sum: live_verification + verification
+        "lv_errors": lv_errors,           # live_verification.summary.errors
+        "ver_errors": ver_errors,          # verification.summary.errors
+        "live_errors": total_errors,       # сумма lv_errors + ver_errors; JS backward-compat (automation_jobs.js:582)
         "live_warnings": live_warnings,
         "gate_skips": gate_skips,
         "positions_with_errors": positions_with_errors,

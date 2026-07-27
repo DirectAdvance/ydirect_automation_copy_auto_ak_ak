@@ -238,6 +238,11 @@ def verify_live_create_set(*, login: str, results: list[dict[str, Any]],
             _row = c.get("result") or {}
             _build = (_row.get("build") or _row.get("tp1_build") or _row.get("tp5_build") or {})
             from .grid_content_verifier import verify_grid_content
+            # root_href_ok намеренно НЕ передаётся: доступного контекста для автодетекта нет.
+            # _build (tp1_build/tp5_build) содержит только счётчики (adgroups/ads/keywords),
+            # но не href отдельных групп — различить «баг» и «заглушку без модельных страниц»
+            # нельзя. Квизовые кампании детектор не задевает (href = domain/quiz, не корень).
+            # Если признак появится — добавить root_href_ok в expected здесь.
             grid_issues, grid_repair = verify_grid_content(
                 nm, int(cid), counts,
                 {"account_has_promo": account_promo,

@@ -34,7 +34,9 @@ def test_live_errors_trigger_has_issues():
     """live_verification.summary.errors > 0 → has_issues breakdown."""
     result = compute_job_issues_breakdown("set", _data(live_errors=2, live_warnings=5))
     assert result is not None
-    assert result["live_errors"] == 2
+    assert result["lv_errors"] == 2        # live_verification.summary.errors
+    assert result["ver_errors"] == 0       # verification.summary.errors (none here)
+    assert result["live_errors"] == 2      # JS backward-compat: sum of lv + ver
     assert result["live_warnings"] == 5
 
 
@@ -102,10 +104,14 @@ def test_none_data_is_clean():
 
 
 def test_breakdown_includes_all_fields():
-    """Breakdown always includes live_errors, live_warnings, gate_skips, positions_with_errors."""
+    """Breakdown always includes lv_errors, ver_errors, live_errors (compat), live_warnings, gate_skips, positions_with_errors."""
     result = compute_job_issues_breakdown("set", _data(live_errors=3, live_warnings=7, gate_skips=2))
     assert result is not None
-    assert set(result.keys()) == {"live_errors", "live_warnings", "gate_skips", "positions_with_errors"}
+    assert set(result.keys()) == {
+        "lv_errors", "ver_errors",        # source breakdown (new)
+        "live_errors",                     # JS backward-compat alias (= lv_errors + ver_errors)
+        "live_warnings", "gate_skips", "positions_with_errors",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +179,9 @@ def test_cpa_mismatch_reaches_has_issues_gate():
         "has_issues must fire when verification.summary.errors > 0 "
         "(regression: was None — CPA_COUNT_PLAN_MISMATCH was invisible to gate)"
     )
-    assert breakdown["live_errors"] > 0
+    assert breakdown["ver_errors"] > 0    # CPA_COUNT_PLAN_MISMATCH comes from static verifier
+    assert breakdown["lv_errors"] == 0    # no live_verification in this data
+    assert breakdown["live_errors"] > 0   # JS compat: sum = ver_errors + lv_errors
 
 
 def test_verification_errors_sum_with_live_errors():
@@ -193,7 +201,9 @@ def test_verification_errors_sum_with_live_errors():
     }
     breakdown = compute_job_issues_breakdown("set", job_data)
     assert breakdown is not None
-    assert breakdown["live_errors"] == ver_errors + 2
+    assert breakdown["ver_errors"] == ver_errors     # from static verifier
+    assert breakdown["lv_errors"] == 2               # from live_verification
+    assert breakdown["live_errors"] == ver_errors + 2  # JS compat: sum
 
 
 def test_verification_only_no_live_verification_clean():

@@ -14,6 +14,7 @@ from direct.uac_read import _filter_summary
 from direct.uac_verifier import verify_uac_detail
 from direct.grid_content_verifier import verify_grid_content
 from direct.verifier import verify_create_set
+from direct.live_verifier import verify_live_create_set
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -284,6 +285,35 @@ class TestAdHrefRootInsteadOfModel:
         )
         codes = [i["code"] for i in issues]
         assert "AD_HREF_ROOT_INSTEAD_OF_MODEL" in codes
+
+    def test_live_path_never_sets_root_href_ok(self):
+        """Интеграция: live_verifier → verify_grid_content НЕ передаёт root_href_ok.
+
+        root_href_ok не выводится из доступного контекста (_build содержит только счётчики,
+        не отдельные href групп; имя кампании не различает «баг» и «заглушку без модельных
+        страниц»). Детектор всегда срабатывает через live-путь при наличии root_href_ads_count.
+        Это ожидаемое поведение — false suppression опаснее false positive.
+        """
+        cid = 999
+        counts_by_id = {
+            cid: {
+                "adgroups": 1, "ads": 3,
+                "adaptive_images_read": True,
+                "root_href_ads_read": True,
+                "root_href_ads_count": 2,
+            }
+        }
+        results = [{"name": "tp1_cpa_site — Марки", "id": cid, "ok": True, "kind": "tp1"}]
+        report = verify_live_create_set(
+            login="test-login",
+            results=results,
+            grid_content_counts=counts_by_id,
+        )
+        codes = [i.get("code") for i in report.get("issues", [])]
+        assert "AD_HREF_ROOT_INSTEAD_OF_MODEL" in codes, (
+            "Детектор должен сработать через live-путь: root_href_ok не выставляется "
+            "автоматически (нет доступного сигнала), подавления нет."
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
