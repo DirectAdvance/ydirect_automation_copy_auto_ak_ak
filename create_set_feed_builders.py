@@ -1185,8 +1185,12 @@ def _create_tp3_single(data: dict, token: str, login: str, name: str, mode: str,
         # /sl1../sl8 давали 404 — исправлено: Href = главная для всех ссылок.
         sl = [{"Title": s.get("title", ""), "Description": s.get("description", ""),
                "Href": base} for s in data["sitelinks"]]
+        # Через общий `_get_or_reuse_sitelink_set`: (1) реюз набора с ТЕМ ЖЕ содержимым в
+        # рамках прохода — tp3 фан-аутится по фидам, а Href у всех ссылок = главная, поэтому
+        # набор у всех кампаний фан-аута идентичен; (2) Grid-фолбэк при 152 (нет баллов),
+        # которого у прямого `cl.add_sitelinks_set` не было. Провал → None, как и раньше.
         try:
-            slset = cl.add_sitelinks_set(sl)
+            slset = _get_or_reuse_sitelink_set(token, login, sl)
         except Exception:  # noqa: BLE001
             slset = None
     warn = None

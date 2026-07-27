@@ -2388,6 +2388,7 @@ def _create_set_tp1_builder_deps() -> dict:
         "_finalize_rsya": _finalize_rsya,
         "_first_url_feed": _first_url_feed,
         "_get_or_reuse_sitelink_set": _get_or_reuse_sitelink_set,
+        "_get_or_reuse_sitelink_sets": _get_or_reuse_sitelink_sets,   # батч: N наборов → 1 sitelinks.add
         "_grid_ad_price_payload": _grid_ad_price_payload,
         "_grid_bid_modifiers": _grid_bid_modifiers,
         "_grid_feed_offer_prices": _grid_feed_offer_prices,
@@ -2536,15 +2537,106 @@ def _norm_sitelinks_for_v501(sitelinks: list, href: str = "") -> list[dict]:
     return out[:8]
 
 
+# ── Реюз наборов быстрых ссылок ПО СОДЕРЖИМОМУ (перф, 2026-07-27) ────────────
+# Мотив: прогон 69a140093e78 — `v501:sitelinks.add` 444.0с / 774 вызова (17.4% wall).
+# Источник вызовов — per-group наборы tp1/tp5 (`create_set_tp1_builders:541`): кэш там
+# ЛОКАЛЬНЫЙ на кампанию, поэтому один и тот же набор (одинаковый deep-link группы)
+# пересоздавался заново в КАЖДОЙ из 14 tp1-кампаний слепка.
+# Ключ — сигнатура СОДЕРЖИМОГО (title/href-без-якоря/description + порядок) на login:
+# разные наборы → разные ключи → свои id (склейки разного быть не может).
+_SITELINK_SET_CACHE_LOCK = threading.Lock()
+_SITELINK_SET_CACHE: dict = {}   # (login, sig) → (set_id, ts)
+
+
+def _sitelink_set_cache_enabled() -> bool:
+    """Kill-switch: DIRECT_SITELINK_SET_CACHE=0 → каждый набор создаётся заново (старое поведение)."""
+    return os.environ.get("DIRECT_SITELINK_SET_CACHE", "1").strip().lower() not in (
+        "0", "false", "off", "no", "")
+
+
+def _sitelink_set_cache_ttl() -> int:
+    try:
+        return max(1, int(os.environ.get("DIRECT_SITELINK_SET_CACHE_TTL_SEC", "21600")))
+    except Exception:  # noqa: BLE001
+        return 21600
+
+
+def _sitelink_set_sig(sitelinks: list) -> str:
+    """Сигнатура набора по СОДЕРЖИМОМУ (не «один на аккаунт вслепую»).
+    Href нормализуем тем же `_strip_href_fragment`, что и оба пути отправки (v5 и Grid),
+    иначе наборы, различающиеся только служебным #якорем, получили бы разные ключи при
+    физически одинаковом результате. Пустая сигнатура ('') = кэш не применяем."""
+    norm = []
+    for s in sitelinks or []:
+        if not isinstance(s, dict):
+            return ""
+        norm.append([
+            str(s.get("Title", s.get("title", "")) or "").strip(),
+            _tn._strip_href_fragment(str(s.get("Href", s.get("href", "")) or "")),
+            str(s.get("Description", s.get("description", "")) or "").strip(),
+        ])
+    if not norm:
+        return ""
+    try:
+        raw = json.dumps(norm, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        return ""
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _sitelink_set_cache_get(login: str, sig: str) -> int | None:
+    if not sig or not _sitelink_set_cache_enabled():
+        return None
+    ttl = _sitelink_set_cache_ttl()
+    now = time.time()
+    with _SITELINK_SET_CACHE_LOCK:
+        ent = _SITELINK_SET_CACHE.get((login or "", sig))
+        if not ent:
+            return None
+        if now - ent[1] > ttl:
+            _SITELINK_SET_CACHE.pop((login or "", sig), None)
+            return None
+        return ent[0]
+
+
+def _sitelink_set_cache_put(login: str, sig: str, set_id: int | None) -> None:
+    """Кладём ТОЛЬКО успешный id: провал (None) не кэшируем — следующий вызов пробует снова."""
+    if not sig or not set_id or not _sitelink_set_cache_enabled():
+        return
+    with _SITELINK_SET_CACHE_LOCK:
+        _SITELINK_SET_CACHE[(login or "", sig)] = (set_id, time.time())
+        extra = len(_SITELINK_SET_CACHE) - 5000
+        if extra > 0:
+            for k in list(_SITELINK_SET_CACHE.keys())[:extra]:
+                _SITELINK_SET_CACHE.pop(k, None)
+
+
+def _sitelink_set_cache_clear(login: str | None = None) -> None:
+    """Сброс кэша (тесты/переиспользование процесса воркера между аккаунтами)."""
+    with _SITELINK_SET_CACHE_LOCK:
+        if login is None:
+            _SITELINK_SET_CACHE.clear()
+        else:
+            for k in [k for k in _SITELINK_SET_CACHE if k[0] == login]:
+                _SITELINK_SET_CACHE.pop(k, None)
+
+
 def _get_or_reuse_sitelink_set(token: str, login: str, sitelinks: list,
                                warns: list | None = None) -> int | None:
     """Создать набор быстрых ссылок через v5; при 152 — Grid (БЕЗ баллов).
     Grid-путь: GridClient.add_sitelink_set (реверс HAR23/entry262 AddSitelinkSets).
     Best-effort: при любой ошибке возвращает None (без ссылок).
     warns (опц., Fix 8): список для диагностики — реальные причины сбоя v5/Grid пишутся сюда
-    И в журнал, чтобы null-набор БЕЗ ошибки перестал быть «слепым» (раньше оба пути молчали)."""
+    И в журнал, чтобы null-набор БЕЗ ошибки перестал быть «слепым» (раньше оба пути молчали).
+
+    Реюз: набор с ТЕМ ЖЕ содержимым на том же login отдаётся из процессного кэша без
+    похода в API (см. `_sitelink_set_sig`)."""
     if not sitelinks:
         return None
+    _sig = _sitelink_set_sig(sitelinks)
+    _hit = _sitelink_set_cache_get(login, _sig)
+    if _hit:
+        return _hit
     def _warn(msg: str) -> None:
         print(f"[sitelink-set] {login}: {msg}", flush=True)
         if warns is not None:
@@ -2552,7 +2644,9 @@ def _get_or_reuse_sitelink_set(token: str, login: str, sitelinks: list,
     if token:
         cl = cmc.DirectV501Client(token, login)
         try:
-            return cl.add_sitelinks_set(sitelinks)
+            _sid = cl.add_sitelinks_set(sitelinks)
+            _sitelink_set_cache_put(login, _sig, _sid)
+            return _sid
         except cmc.DirectV501Error as e:
             if e.code != 152:
                 _warn(f"v5 add_sitelinks_set провал (code={e.code}): {str(e)[:180]}")
@@ -2564,10 +2658,103 @@ def _get_or_reuse_sitelink_set(token: str, login: str, sitelinks: list,
         gc = gf.get_grid_client(login)
         sid = gc.add_sitelink_set(sitelinks)
         if sid:
+            _sitelink_set_cache_put(login, _sig, sid)
             return sid
         _warn("Grid add_sitelink_set вернул пусто (набор НЕ создан)")
     except Exception as e:  # noqa: BLE001
         _warn(f"Grid add_sitelink_set исключение: {str(e)[:180]}")
+    return None
+
+
+def _get_or_reuse_sitelink_sets(token: str, login: str, sets: list,
+                                warns: list | None = None) -> list:
+    """Батч-версия `_get_or_reuse_sitelink_set`: N наборов → 1 запрос `sitelinks.add`
+    вместо N (v5 принимает массив SitelinksSets). Возвращает список id/None ПОЗИЦИОННО
+    по sets.
+
+    Порядок: (1) отдать из процессного кэша всё, что уже создано с тем же содержимым;
+    (2) уникальные промахи одним батч-вызовом v5; (3) на набор с 152 (нет баллов) —
+    Grid-фолбэк поштучно, как в одиночном пути; (4) прочая ошибка набора → None + warn.
+    Транспортный сбой всего батча → поштучный `_get_or_reuse_sitelink_set` (старый путь)."""
+    out: list = [None] * len(sets or [])
+    if not sets:
+        return out
+
+    def _warn(msg: str) -> None:
+        print(f"[sitelink-set] {login}: {msg}", flush=True)
+        if warns is not None:
+            warns.append(msg)
+
+    sigs = [(_sitelink_set_sig(sl) if sl else "") for sl in sets]
+    # ЛОКАЛЬНАЯ карта sig→id этого вызова. Отдельно от процессного кэша сознательно:
+    # kill-switch DIRECT_SITELINK_SET_CACHE=0 выключает КРОСС-вызовный реюз, но внутри
+    # одного батча одинаковые наборы всё равно создаются один раз — без локальной карты
+    # дубли получали бы None (кэш при выключенном флаге всегда отдаёт промах).
+    local: dict = {}
+    todo: dict = {}          # sig → первый индекс с этим содержимым
+    for i, sl in enumerate(sets):
+        if not sl:
+            continue
+        hit = _sitelink_set_cache_get(login, sigs[i])
+        if hit:
+            out[i] = hit
+            local[sigs[i]] = hit
+        elif sigs[i] and sigs[i] not in todo:
+            todo[sigs[i]] = i
+        elif not sigs[i]:
+            todo[f"_idx{i}"] = i   # без сигнатуры — создаём отдельно, без реюза
+    if not todo:
+        return out
+    order = list(todo.values())
+    if token:
+        try:
+            res = cmc.DirectV501Client(token, login).add_sitelinks_sets(
+                [sets[i] for i in order])
+        except Exception as e:  # noqa: BLE001 — транспорт/общий сбой батча → старый поштучный путь
+            _warn(f"v5 add_sitelinks_sets батч упал ({str(e)[:120]}) → поштучно")
+            res = None
+        if res is None:
+            for i in order:
+                out[i] = _get_or_reuse_sitelink_set(token, login, sets[i], warns=warns)
+                if out[i] and sigs[i]:
+                    local[sigs[i]] = out[i]
+        else:
+            for k, i in enumerate(order):
+                item = res[k] if k < len(res) else {"id": None, "code": 0,
+                                                    "message": "нет ответа на набор"}
+                if item.get("id"):
+                    out[i] = item["id"]
+                    _sitelink_set_cache_put(login, sigs[i], item["id"])
+                elif item.get("code") == 152:
+                    _warn("v5 add_sitelinks_sets 152 (нет баллов) → Grid-фолбэк")
+                    out[i] = _grid_sitelink_set(login, sets[i], sigs[i], _warn)
+                else:
+                    _warn(f"v5 add_sitelinks_sets провал (code={item.get('code')}): "
+                          f"{str(item.get('message'))[:180]}")
+                if out[i] and sigs[i]:
+                    local[sigs[i]] = out[i]
+    else:
+        for i in order:
+            out[i] = _grid_sitelink_set(login, sets[i], sigs[i], _warn)
+            if out[i] and sigs[i]:
+                local[sigs[i]] = out[i]
+    # дубли по содержимому получают тот же id, что и «первый» индекс
+    for i, sl in enumerate(sets):
+        if out[i] is None and sl and sigs[i]:
+            out[i] = local.get(sigs[i])
+    return out
+
+
+def _grid_sitelink_set(login: str, sitelinks: list, sig: str, warn) -> int | None:
+    """Grid-путь одного набора (БЕЗ баллов) + запись в кэш содержимого."""
+    try:
+        sid = gf.get_grid_client(login).add_sitelink_set(sitelinks)
+        if sid:
+            _sitelink_set_cache_put(login, sig, sid)
+            return sid
+        warn("Grid add_sitelink_set вернул пусто (набор НЕ создан)")
+    except Exception as e:  # noqa: BLE001
+        warn(f"Grid add_sitelink_set исключение: {str(e)[:180]}")
     return None
 
 
@@ -3199,6 +3386,7 @@ def _create_set_feed_builder_deps() -> dict:
         "_finalize_rsya": _finalize_rsya,
         "_finalize_search_via_grid": _finalize_search_via_grid,
         "_get_or_reuse_sitelink_set": _get_or_reuse_sitelink_set,
+        "_get_or_reuse_sitelink_sets": _get_or_reuse_sitelink_sets,   # батч: N наборов → 1 sitelinks.add
         "_grid_account_image_hashes": _grid_account_image_hashes,
         "_account_image_map": _account_image_map,   # кэш по логину — cookie tp2/tp4 звали сырой читатель на КАЖДОЙ РК
         "_grid_ad_price_payload": _grid_ad_price_payload,

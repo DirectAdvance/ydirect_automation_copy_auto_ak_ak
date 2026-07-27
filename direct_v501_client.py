@@ -111,6 +111,11 @@ _UC_CHANNEL_MODES = ("search", "network", "network_cpa", "network_payconv", "com
 # Консервативный дефолт = 10 пар (20 объявлений/вызов). Менять здесь при необходимости.
 _FEED_ADS_BATCH_SIZE = 10
 
+# Размер пачки для add_sitelinks_sets: сколько НАБОРОВ быстрых ссылок кладём в один
+# sitelinks.add. Официальный лимит не подтверждён живым API → консервативный дефолт 50
+# (одиночный путь add_sitelinks_set по-прежнему шлёт ровно 1 набор).
+_SITELINKS_SETS_BATCH_SIZE = 50
+
 
 @dataclass
 class UnifiedCampaignSpec:
@@ -777,46 +782,79 @@ class DirectV501Client:
         result = self._call("ads", "get", params)
         return result.get("Ads", [])
 
-    def add_sitelinks_set(self, sitelinks: list[dict]) -> int:
-        """Создать набор быстрых ссылок. sitelinks — список {Title, Href, Description}.
-        Возвращает SitelinkSetId.
+    @staticmethod
+    def _sitelinks_set_payload(sitelinks: list[dict]) -> dict:
+        """Один набор в формате v5: {"Sitelinks": [{Title, Href, Description}, ...]}."""
+        return {
+            "Sitelinks": [
+                {
+                    "Title": s.get("Title", s.get("title", "")),
+                    # #якорь — внутренняя метка этапа сборки, в живой Href не уходит.
+                    "Href": _strip_href_fragment(s.get("Href", s.get("href", ""))),
+                    "Description": s.get("Description", s.get("description", "")),
+                }
+                for s in sitelinks
+            ]
+        }
+
+    def add_sitelinks_sets(self, sets: list[list[dict]],
+                           *, chunk: int = _SITELINKS_SETS_BATCH_SIZE) -> list[dict]:
+        """Создать НЕСКОЛЬКО наборов быстрых ссылок за один запрос (API v5 принимает массив).
+
+        sets — список наборов, каждый набор — список {Title, Href, Description}.
+        Возвращает список dict'ов ПОЗИЦИОННО по sets: {"id": int|None, "code": int,
+        "message": str, "details": str}. Ошибка отдельного набора НЕ роняет весь батч
+        (в отличие от одиночного add_sitelinks_set) — вызывающий сам решает по code
+        (например 152 → Grid-фолбэк без баллов).
+        Транспортная/общая ошибка `_call` пробрасывается наружу как и раньше.
 
         ВАЖНО: имя параметра — SitelinksSets (двойное s), НЕ SitelinkSets.
         Проверено 2026-06-21: SitelinkSets → ошибка 8000; SitelinksSets → OK.
         """
-        params = {
-            "SitelinksSets": [
-                {
-                    "Sitelinks": [
-                        {
-                            "Title": s.get("Title", s.get("title", "")),
-                            # #якорь — внутренняя метка этапа сборки, в живой Href не уходит.
-                            "Href": _strip_href_fragment(s.get("Href", s.get("href", ""))),
-                            "Description": s.get("Description", s.get("description", "")),
-                        }
-                        for s in sitelinks
-                    ]
-                }
-            ]
-        }
-        result = self._call("sitelinks", "add", params)
-        add_results = result.get("AddResults", [])
-        if not add_results:
-            raise DirectV501Error("sitelinks.add", 0, "пустой AddResults", str(result))
-        first = add_results[0]
-        errors = first.get("Errors", [])
-        if errors:
-            err = errors[0]
+        if not sets:
+            return []
+        out: list[dict] = []
+        step = max(1, int(chunk or 1))
+        for i in range(0, len(sets), step):
+            part = sets[i:i + step]
+            params = {"SitelinksSets": [self._sitelinks_set_payload(sl) for sl in part]}
+            result = self._call("sitelinks", "add", params)
+            add_results = result.get("AddResults", []) or []
+            for k in range(len(part)):
+                if k >= len(add_results):
+                    out.append({"id": None, "code": 0, "message": "пустой AddResults",
+                                "details": str(result)[:400]})
+                    continue
+                item = add_results[k] or {}
+                errors = item.get("Errors") or []
+                if errors:
+                    err = errors[0]
+                    out.append({"id": None, "code": err.get("Code", 0),
+                                "message": err.get("Message", ""),
+                                "details": err.get("Details", "")})
+                    continue
+                sid = item.get("Id")
+                out.append({"id": sid, "code": 0, "message": "", "details": ""} if sid
+                           else {"id": None, "code": 0, "message": "нет Id в ответе",
+                                 "details": str(result)[:400]})
+        return out
+
+    def add_sitelinks_set(self, sitelinks: list[dict]) -> int:
+        """Создать набор быстрых ссылок. sitelinks — список {Title, Href, Description}.
+        Возвращает SitelinkSetId. Сигнатура и поведение (raise на любой ошибке,
+        в т.ч. code=152 → Grid-фолбэк у вызывающего) сохранены 1:1.
+        """
+        res = self.add_sitelinks_sets([sitelinks])
+        first = res[0] if res else {"id": None, "code": 0, "message": "пустой AddResults",
+                                    "details": ""}
+        if not first.get("id"):
             raise DirectV501Error(
                 "sitelinks.add",
-                err.get("Code", 0),
-                err.get("Message", ""),
-                err.get("Details", ""),
+                first.get("code", 0),
+                first.get("message", ""),
+                first.get("details", ""),
             )
-        sitelink_set_id = first.get("Id")
-        if not sitelink_set_id:
-            raise DirectV501Error("sitelinks.add", 0, "нет Id в ответе", str(result))
-        return sitelink_set_id
+        return first["id"]
 
     def get_callouts(self) -> dict[str, int]:
         """Существующие уточнения аккаунта → {текст: AdExtensionId}.
