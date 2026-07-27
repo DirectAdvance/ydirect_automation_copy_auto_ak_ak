@@ -27,6 +27,17 @@ _URL_CHECK_CACHE_LOCK = threading.Lock()
 _URL_CHECK_CACHE_TTL = 60 * 60    # 60 минут — перекрывает длительность одного job-прогона
 _URL_CHECK_CACHE_MAX = 2000       # мягкое ограничение; при переполнении чистим 10% старейших
 
+# ── Circuit breaker per host ──────────────────────────────────────────────────────────────
+# Если N подряд запросов к одному хосту завершились таймаутом — дальнейшие URL того же
+# хоста сразу возвращаются как есть (fail-open), без ожидания.
+# Через _CB_COOLDOWN секунд после размыкания — одна пробная попытка (half-open):
+# успех → счётчик сбрасывается, цепь замыкается; таймаут → цепь снова разомкнута.
+_CB_FAILURES: dict[str, int] = {}    # hostname → кол-во подряд идущих таймаутов
+_CB_OPEN_TS: dict[str, float] = {}   # hostname → time.time() когда цепь разомкнулась
+_CB_LOCK = threading.Lock()
+_CB_THRESHOLD = 3                     # порог подряд идущих таймаутов для размыкания цепи
+_CB_COOLDOWN = 120.0                  # секунды кулдауна до пробной попытки (half-open)
+
 
 # ── Вспомогательные функции ──────────────────────────────────────────────────────────
 
@@ -183,6 +194,25 @@ def resolve_urls_batch(urls: list[str], timeout: float = 3.0) -> dict[str, str]:
                 uncached.append(u)
 
     if uncached:
+        # Circuit-breaker pre-filter: хосты с открытой цепью — сразу fail-open, без обращения к сети.
+        # Если кулдаун истёк — сбрасываем счётчик и пускаем URL на пробную попытку (half-open).
+        _cb_pass: list[str] = []
+        with _CB_LOCK:
+            _now = time.time()
+            for u in uncached:
+                _h = urlsplit(u).netloc
+                if _CB_FAILURES.get(_h, 0) >= _CB_THRESHOLD:
+                    ts = _CB_OPEN_TS.get(_h, 0.0)
+                    if _now - ts < _CB_COOLDOWN:
+                        result[u] = u   # fail-open: возвращаем исходный без сетевого вызова
+                    else:
+                        _CB_FAILURES[_h] = 0   # кулдаун истёк → пробная попытка
+                        _cb_pass.append(u)
+                else:
+                    _cb_pass.append(u)
+        uncached = _cb_pass
+
+    if uncached:
         n_workers = min(len(uncached), 6)
         with _ThreadPoolExecutor(max_workers=n_workers) as ex:
             fut_to_url = {ex.submit(_do_resolve, u, timeout): u for u in uncached}
@@ -202,13 +232,47 @@ def resolve_urls_batch(urls: list[str], timeout: float = 3.0) -> dict[str, str]:
 
 def _do_resolve(url: str, timeout: float) -> str:
     """Основная логика цепочки фолбэков (без кэша). Вызывается только на cache miss."""
+    _hostname = urlsplit(url).netloc
+    # Circuit breaker: если хост уже набрал N подряд таймаутов — не ждём, сразу fail-open.
+    # Через _CB_COOLDOWN секунд — одна пробная попытка (half-open): сбрасываем счётчик,
+    # чтобы HTTP-вызов прошёл; если он снова упадёт — счётчик вырастет и цепь снова откроется.
+    with _CB_LOCK:
+        if _CB_FAILURES.get(_hostname, 0) >= _CB_THRESHOLD:
+            ts = _CB_OPEN_TS.get(_hostname, 0.0)
+            if time.time() - ts < _CB_COOLDOWN:
+                print(
+                    f"[link-check] circuit-breaker: {_hostname!r} open,"
+                    f" skipping {url!r}",
+                    flush=True,
+                )
+                return url
+            # Кулдаун истёк: сбрасываем счётчик для пробной попытки
+            _CB_FAILURES[_hostname] = 0
+            print(
+                f"[link-check] circuit-breaker: {_hostname!r} cooldown elapsed, probe attempt",
+                flush=True,
+            )
+
     candidate = url
     while candidate is not None:
         status = _http_status(candidate, timeout)
         if status is None:
-            # Таймаут или сетевая ошибка — не уходим в фолбэк, возвращаем ИСХОДНЫЙ
+            # Таймаут или сетевая ошибка — фиксируем отказ хоста, возвращаем ИСХОДНЫЙ
+            with _CB_LOCK:
+                _CB_FAILURES[_hostname] = _CB_FAILURES.get(_hostname, 0) + 1
+                if _CB_FAILURES[_hostname] == _CB_THRESHOLD:
+                    _CB_OPEN_TS[_hostname] = time.time()
+                    print(
+                        f"[link-check] circuit-breaker opened for {_hostname!r}"
+                        f" after {_CB_THRESHOLD} consecutive timeouts",
+                        flush=True,
+                    )
             print(f"[link-check] timeout/net-error for {candidate!r}, keeping original {url!r}", flush=True)
             return url
+        # Успешный ответ — сбрасываем счётчик отказов хоста
+        with _CB_LOCK:
+            if _CB_FAILURES.get(_hostname, 0) > 0:
+                _CB_FAILURES[_hostname] = 0
         if status >= 500:
             # 5xx — сайт может быть временно недоступен, не подменяем
             print(f"[link-check] {status} for {candidate!r}, keeping original {url!r}", flush=True)

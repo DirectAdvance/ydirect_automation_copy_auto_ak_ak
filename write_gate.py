@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time as _time
 from typing import Callable
 
 
@@ -15,6 +16,57 @@ _ENSURED = False
 _ENSURE_LOCK = threading.Lock()
 DEFAULT_TTL_SECONDS = int(os.environ.get("DIRECT_WRITE_GATE_TTL_SECONDS") or 4 * 60 * 60)
 GLOBAL_WRITE_RESOURCE_KEY = "direct-write:global"
+
+# ── Gate circuit breaker ──────────────────────────────────────────────────────────────────
+# После ПЕРВОГО отказа коннекта к Victory gate-проверки пропускаются на GATE_CB_COOLDOWN секунд,
+# затем одна пробная попытка. Это предотвращает ожидание 15 с × N на каждой gate-операции
+# при перемежающихся проблемах с подключением к Victory.
+# Диагноз (2026-07-27): сеть LXC101→Victory ИСПРАВНА (TCP 34 мс), отказы перемежающиеся.
+_GATE_CB_LOCK = threading.Lock()
+_GATE_CB_OPEN_TS: float = 0.0      # 0.0 = цепь замкнута; >0 = unix ts момента размыкания
+_GATE_CB_COOLDOWN = 120.0           # секунды кулдауна до пробной попытки
+_GATE_CB_SKIP_COUNT: int = 0        # суммарное кол-во пропущенных gate-вызовов (process-level)
+
+
+def gate_cb_should_skip() -> bool:
+    """Вернуть True если цепь разомкнута → вызывающий должен сразу fail-open.
+
+    После истечения кулдауна сбрасывает цепь (пробная попытка). При возврате True
+    инкрементирует _GATE_CB_SKIP_COUNT для последующей записи в errors_log джобы.
+    """
+    global _GATE_CB_OPEN_TS, _GATE_CB_SKIP_COUNT
+    with _GATE_CB_LOCK:
+        if _GATE_CB_OPEN_TS == 0.0:
+            return False
+        if _time.time() - _GATE_CB_OPEN_TS < _GATE_CB_COOLDOWN:
+            _GATE_CB_SKIP_COUNT += 1
+            return True
+        # Кулдаун истёк: сбрасываем цепь для пробной попытки
+        _GATE_CB_OPEN_TS = 0.0
+        return False
+
+
+def gate_cb_on_failure() -> None:
+    """Зафиксировать отказ коннекта → разомкнуть цепь (или продлить кулдаун)."""
+    global _GATE_CB_OPEN_TS
+    with _GATE_CB_LOCK:
+        _GATE_CB_OPEN_TS = _time.time()
+
+
+def gate_cb_on_success() -> None:
+    """Зафиксировать успешный коннект → замкнуть цепь."""
+    global _GATE_CB_OPEN_TS
+    with _GATE_CB_LOCK:
+        _GATE_CB_OPEN_TS = 0.0
+
+
+def drain_skip_count() -> int:
+    """Вернуть и атомарно обнулить счётчик пропущенных gate-проверок."""
+    global _GATE_CB_SKIP_COUNT
+    with _GATE_CB_LOCK:
+        n = _GATE_CB_SKIP_COUNT
+        _GATE_CB_SKIP_COUNT = 0
+    return n
 
 
 def _norm_agency(agency: str) -> str:
@@ -97,9 +149,18 @@ def try_acquire_agency(
     agency_norm = _norm_agency(agency)
     resource_key = agency_resource(agency)
     ttl = int(ttl_seconds or DEFAULT_TTL_SECONDS)
+    if gate_cb_should_skip():
+        print(f"[write-gate] circuit-open, skip acquire ({agency_norm})", flush=True)
+        return True  # fail-open: разрешаем джобе продолжить без gate enforcement
     try:
         ensure_table(conn_factory)
-        conn = conn_factory()
+        try:
+            conn = conn_factory()
+        except Exception as e:  # noqa: BLE001  — ошибка коннекта → разомкнуть цепь
+            gate_cb_on_failure()
+            print(f"[write-gate] acquire fail-open ({agency_norm}): {str(e)[:160]}", flush=True)
+            return True
+        gate_cb_on_success()
         try:
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM public.direct_api_write_locks WHERE expires_at < now()")
@@ -149,9 +210,18 @@ def release_agency(conn_factory: Callable, agency: str, job_id: str) -> None:
     # acquired before the per-agency migration), and the legacy "agency:" prefix
     # that was the partially-prepared format in release before the migration.
     keys = list({resource_key, GLOBAL_WRITE_RESOURCE_KEY, "agency:" + agency_norm})
+    if gate_cb_should_skip():
+        print(f"[write-gate] circuit-open, skip release ({agency_norm})", flush=True)
+        return  # fail-open: lock истечёт по TTL
     try:
         ensure_table(conn_factory)
-        conn = conn_factory()
+        try:
+            conn = conn_factory()
+        except Exception as e:  # noqa: BLE001
+            gate_cb_on_failure()
+            print(f"[write-gate] release fail-open ({agency_norm}): {str(e)[:160]}", flush=True)
+            return
+        gate_cb_on_success()
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -191,9 +261,18 @@ def release_owner(conn_factory: Callable, owner_service: str) -> int:
 
 
 def cleanup_expired(conn_factory: Callable) -> int:
+    if gate_cb_should_skip():
+        print("[write-gate] circuit-open, skip cleanup_expired", flush=True)
+        return 0  # fail-open: устаревшие строки доживут до следующего прохода
     try:
         ensure_table(conn_factory)
-        conn = conn_factory()
+        try:
+            conn = conn_factory()
+        except Exception as e:  # noqa: BLE001
+            gate_cb_on_failure()
+            print(f"[write-gate] cleanup fail-open: {str(e)[:160]}", flush=True)
+            return 0
+        gate_cb_on_success()
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -227,9 +306,18 @@ def cleanup_direct_automation_inactive(
     owners = [str(x or "").strip() for x in owner_services if str(x or "").strip()]
     if not owners:
         return 0
+    if gate_cb_should_skip():
+        print("[write-gate] circuit-open, skip cleanup_direct_automation_inactive", flush=True)
+        return 0  # fail-open: неактивные блокировки доживут до следующего sweep
     try:
         ensure_table(conn_factory)
-        conn = conn_factory()
+        try:
+            conn = conn_factory()
+        except Exception as e:  # noqa: BLE001
+            gate_cb_on_failure()
+            print(f"[write-gate] direct jobs cleanup fail-open: {str(e)[:160]}", flush=True)
+            return 0
+        gate_cb_on_success()
         try:
             with conn.cursor() as cur:
                 cur.execute(

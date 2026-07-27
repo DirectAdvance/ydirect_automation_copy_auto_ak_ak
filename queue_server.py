@@ -20,7 +20,11 @@ from . import write_gate as _write_gate
 from .copy_engine import (
     _copy_run_job, _copy_jobs_recover, _COPY_JOBS, _COPY_JOBS_LOCK,
 )
-from .direct_repository import victory_conn as _victory_conn, victory_conn_rw as _victory_conn_rw
+from .direct_repository import (
+    victory_conn as _victory_conn,
+    victory_conn_rw as _victory_conn_rw,
+    victory_conn_rw_gate as _victory_conn_rw_gate,
+)
 from .job_repository import (
     _JOB_DB_LAST,
     _jobs_db_init, _job_db_save, _job_db_get, _job_db_active_by_login,
@@ -1950,8 +1954,17 @@ def _write_gate_owner(job_kind: str) -> str:
 
 def _agency_gate_claim(agency: str, job_id: str, job_kind: str = "") -> bool:
     """Занять кросс-процессный слот агентства. True = слот наш / не применимо; False = занят другим процессом."""
+    if _write_gate.gate_cb_should_skip():
+        print(f"[agency-gate] circuit-open, skip claim ({agency})", flush=True)
+        return True  # fail-open: разрешаем джобе стартовать без кросс-процессной координации
     try:
-        conn = _victory_conn_rw()
+        try:
+            conn = _victory_conn_rw_gate()   # короткий таймаут коннекта (3 с) для gate-операции
+        except Exception as e:  # noqa: BLE001
+            _write_gate.gate_cb_on_failure()
+            print(f"[agency-gate] claim fail-open ({agency}): {str(e)[:120]}", flush=True)
+            return True
+        _write_gate.gate_cb_on_success()
         try:
             cur = conn.cursor()
             cur.execute(
@@ -1968,7 +1981,7 @@ def _agency_gate_claim(agency: str, job_id: str, job_kind: str = "") -> bool:
         print(f"[agency-gate] claim fail-open ({agency}): {str(e)[:120]}", flush=True)
         return True
     if not _write_gate.try_acquire_agency(
-        _victory_conn_rw,
+        _victory_conn_rw_gate,
         agency,
         job_id,
         job_kind=job_kind or "direct_automation",
@@ -1980,8 +1993,17 @@ def _agency_gate_claim(agency: str, job_id: str, job_kind: str = "") -> bool:
 
 def _agency_gate_release(agency: str, job_id: str) -> None:
     """Освободить СВОЙ слот агентства (идемпотентно, только своя job_id). FAIL-OPEN."""
+    if _write_gate.gate_cb_should_skip():
+        print(f"[agency-gate] circuit-open, skip release ({agency}) — lock истечёт по TTL", flush=True)
+        return
     try:
-        conn = _victory_conn_rw()
+        try:
+            conn = _victory_conn_rw_gate()
+        except Exception as e:  # noqa: BLE001
+            _write_gate.gate_cb_on_failure()
+            print(f"[agency-gate] release fail-open ({agency}): {str(e)[:120]}", flush=True)
+            return
+        _write_gate.gate_cb_on_success()
         try:
             cur = conn.cursor()
             cur.execute("DELETE FROM public.direct_agency_active WHERE agency=%s AND job_id=%s",
@@ -1991,13 +2013,22 @@ def _agency_gate_release(agency: str, job_id: str) -> None:
             conn.close()
     except Exception as e:  # noqa: BLE001
         print(f"[agency-gate] release fail-open ({agency}): {str(e)[:120]}", flush=True)
-    _write_gate.release_agency(_victory_conn_rw, agency, job_id)
+    _write_gate.release_agency(_victory_conn_rw_gate, agency, job_id)
 
 def _agency_gate_sweep() -> None:
     """Backstop (из watchdog): освободить слоты, чей job больше не running/claimed
     (терминальный/пропал/краш процесса — после того как watchdog пометил его interrupted)."""
+    if _write_gate.gate_cb_should_skip():
+        print("[agency-gate] circuit-open, skip sweep", flush=True)
+        return  # fail-open: sweep выполнится на следующем тике watchdog
     try:
-        conn = _victory_conn_rw()
+        try:
+            conn = _victory_conn_rw_gate()
+        except Exception as e:  # noqa: BLE001
+            _write_gate.gate_cb_on_failure()
+            print(f"[agency-gate] sweep fail-open: {str(e)[:120]}", flush=True)
+            return
+        _write_gate.gate_cb_on_success()
         try:
             cur = conn.cursor()
             cur.execute(
@@ -2009,8 +2040,8 @@ def _agency_gate_sweep() -> None:
             conn.close()
     except Exception as e:  # noqa: BLE001
         print(f"[agency-gate] sweep fail-open: {str(e)[:120]}", flush=True)
-    _write_gate.cleanup_direct_automation_inactive(_victory_conn_rw)
-    _write_gate.cleanup_expired(_victory_conn_rw)
+    _write_gate.cleanup_direct_automation_inactive(_victory_conn_rw_gate)
+    _write_gate.cleanup_expired(_victory_conn_rw_gate)
 
 def _claim_next_job():
     """Берёт из очереди следующую джобу, если по агентству ещё не достигнут лимит параллельности.
@@ -2125,6 +2156,17 @@ def _create_worker_loop(app):
                         j = None
                 if j is not None:
                     j["result"] = data
+                    # Счётчик gate-проверок, пропущенных из-за circuit-breaker за время этой джобы.
+                    # Fail-open молча пропускал проверки — теперь это видно в errors_log/result.
+                    _gate_skips = _write_gate.drain_skip_count()
+                    if _gate_skips:
+                        _add_job_err(
+                            j,
+                            f"[gate-cb] {_gate_skips} gate check(s) skipped"
+                            " (Victory connect timeout, circuit-breaker open)",
+                        )
+                        if isinstance(data, dict):
+                            data["gate_skips"] = _gate_skips
                     if data:
                         j["created"] = data.get("created", j["created"])
                         j["failed"] = data.get("failed", j["failed"])

@@ -8,7 +8,7 @@ from urllib.parse import urlsplit, urlunsplit
 from . import campaign as cmc
 from . import create_set_context as _csctx  # _parse_targeting_modes (чистый хелпер, без configure)
 from . import kontent_pack as kp
-from .link_check import resolve_or_fallback_url as _resolve_url
+from .link_check import resolve_or_fallback_url as _resolve_url, resolve_urls_batch as _resolve_urls_batch
 from .model_urls import _brand_level_url, _model_page_href, _strip_site_domain_label, _strip_url_query
 
 
@@ -312,7 +312,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             it_href = _model_page_href(_site_href, eff_site, c_brand)
     elif is_product and not c_brand and it_sq != "kviz":
         it_href = re.sub(r"/+$", "", href) + "/auto"
-    it_href = _resolve_url(it_href)
+    it_href = _resolve_url(it_href)  # single-URL resolve: circuit-breaker + кэш, без overhead пула
     _sc = _slepok_campaign_content(agent, eff_site)
     _is_pavlov_multibrand = ((agent or "").strip().lower() == "pavlov"
                              and (eff_site or "").strip() == "Мультибренд")

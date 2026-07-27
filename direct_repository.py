@@ -159,6 +159,25 @@ def victory_conn_rw():
     return conn
 
 
+VICTORY_GATE_CONNECT_TIMEOUT = 3  # seconds; intentionally short for gate-only checks
+
+
+def victory_conn_rw_gate():
+    """Short-timeout (3 s) read-write connection for gate/sweep checks only.
+
+    Gate operations (agency-gate, write-gate sweeps) use this factory so that a
+    transient Victory connect stall costs at most 3 s — not 15 s — before the
+    gate circuit-breaker in write_gate opens.  The main creation/copy/finalize
+    path continues to use victory_conn_rw() with the standard 15 s timeout.
+    """
+    import psycopg2
+
+    kw = dict(_connect_kwargs(), connect_timeout=VICTORY_GATE_CONNECT_TIMEOUT)
+    conn = psycopg2.connect(**kw)
+    conn.autocommit = False
+    return conn
+
+
 def _close_readonly_pool() -> None:
     pool = _VICTORY_RO_POOL
     if pool is not None and not pool.closed:
