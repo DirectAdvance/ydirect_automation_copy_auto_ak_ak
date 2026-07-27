@@ -304,7 +304,8 @@ class GridReadClient:
             gid = int(grp.get("adgroup_id") or 0)
             group_rows.append((int(cid), gid, int(grp.get("keyword_count") or 0),
                                grp.get("relevance_match") or {}, int(tp),
-                               list(grp.get("region_ids") or []), grp.get("tracking_params")))
+                               list(grp.get("region_ids") or []), grp.get("tracking_params"),
+                               str(grp.get("adgroup_name") or "")))
             if tp in (2, 4, 5):
                 search_cids.add(int(cid))
         # Авторитетный счётчик ключей (showConditions). None → откат на edit-view keyword_count.
@@ -318,12 +319,13 @@ class GridReadClient:
         # не выдавать BUILD_LIVE_MISSING по ключам на автотаргетинговых кампаниях.
         at_kw: dict[int, int] = defaultdict(int)
         wrong_at: dict[int, int] = defaultdict(int)
+        wrong_at_rsya: dict[int, int] = defaultdict(int)  # tp1 РСЯ: isActive vs _aon_/_aoff_ в имени
         kw_total: dict[int, int] = defaultdict(int)   # для keywords_count
         geo_missing: dict[int, int] = defaultdict(int)
         utm_missing: dict[int, int] = defaultdict(int)
         regions_seen: dict[int, set[tuple[int, ...]]] = defaultdict(set)
         seen_groups: set[int] = set()
-        for cid, gid, edit_kw, rm, tp, region_ids, tracking in group_rows:
+        for cid, gid, edit_kw, rm, tp, region_ids, tracking, grp_name in group_rows:
             seen_groups.add(cid)
             # max(showConditions, edit-view): группа считается пустой только если ОБА источника дали 0.
             # showConditions авторитетен (живые GdKeyword), но при пустом/частичном/лаг-ответе edit-view
@@ -347,6 +349,16 @@ class GridReadClient:
             brands = {str(x).upper() for x in (rm.get("autotargetingBrandSettings") or [])}
             if not (_rm_active and cats == {"EXACT_V2_MARK"} and brands == {"WITHOUT_BRAND"}):
                 wrong_at[cid] += 1
+            # tp1 РСЯ: проверяем соответствие isActive токену _aon_/_aoff_ в имени группы.
+            # Дефект = (имя содержит _aon_ и isActive=False) ИЛИ (_aoff_ и isActive=True).
+            # Только при наличии токена в имени — группы без него пропускаем (fail-safe).
+            if tp == 1:
+                _has_aon = "_aon_" in grp_name
+                _has_aoff = "_aoff_" in grp_name
+                if _has_aon and not _rm_active:
+                    wrong_at_rsya[cid] += 1
+                elif _has_aoff and _rm_active:
+                    wrong_at_rsya[cid] += 1
             # Гео: пустой regionIds = группа без таргетинга (build_update_item дефолтит на [225],
             # так что пусто здесь — реальный дефект, а не форма записи).
             _regs = tuple(sorted(int(r) for r in region_ids))
@@ -375,6 +387,7 @@ class GridReadClient:
                 counts[cid]["search_zero_kw_groups"] = int(zero_kw.get(cid, 0))
                 counts[cid]["at_by_design_kw_groups"] = int(at_kw.get(cid, 0))
                 counts[cid]["wrong_autotarget_groups"] = int(wrong_at.get(cid, 0))
+                counts[cid]["wrong_autotarget_rsya_groups"] = int(wrong_at_rsya.get(cid, 0))
                 counts[cid]["groups_edit_read"] = True
                 # keywords_count заполняется здесь (GdKeywordsContainerInput FieldUndefined)
                 counts[cid]["keywords_count"] = int(kw_total.get(cid, 0))
@@ -458,6 +471,7 @@ class GridReadClient:
                 "promo_extension_id": None, "settings_read": False,
                 "has_ad_price": None, "ad_price_count": None, "ad_price_read": False,
                 "search_zero_kw_groups": None, "wrong_autotarget_groups": None,
+                "wrong_autotarget_rsya_groups": None,
                 "groups_edit_read": False,
                 # Обрезка ключевого измерения по лимиту Grid (>10000 строк) — при True по
                 # ключам НЕ судим (недосчёт дал бы ложный «live < build» и ложный ремонт).

@@ -111,6 +111,16 @@ def verify_grid_content(name: str, campaign_id: int | None,
                            "name": nm, "id": cid, "groups": wrong_at,
                            "note": "неверный профиль автотаргета (нужен EXACT_V2_MARK/WITHOUT_BRAND)"})
             repair.append(_keywords_repair(nm, cid))
+        # WRONG_AUTOTARGET tp1 РСЯ: проверяем isActive vs _aon_/_aoff_ в имени группы.
+        # Дефект = aon→isActive=False (ВКЛ-ожидали, ВЫКЛ-реально) или aoff→isActive=True.
+        # Ключ wrong_autotarget_rsya_groups проставляется grid_read только когда группы прочитаны,
+        # поэтому isinstance(..., int) является fail-safe гейтом от ложного детекта.
+        _wrong_rsya = counts.get("wrong_autotarget_rsya_groups")
+        if tp == 1 and isinstance(_wrong_rsya, int) and _wrong_rsya > 0:
+            _at_rsya_sev = "error" if str(exp.get("phase") or "in_job") == "delayed" else "warn"
+            issues.append({"severity": _at_rsya_sev, "code": "WRONG_AUTOTARGET",
+                           "name": nm, "id": cid, "groups": _wrong_rsya,
+                           "note": "неверный isActive автотаргета tp1 РСЯ: aon→ВЫКЛ или aoff→ВКЛ"})
     else:
         # Фолбэк на агрегат keywords_count (report-only), когда per-group чтение недоступно.
         kw = counts.get("keywords_count")

@@ -400,7 +400,14 @@ def _build_tp1_adgroups(
                 _upd15 = gf.get_grid_client(login, cookie=grid_cookie).update_unified_adgroups(_rm15_items)
                 rep["relevance_match_set"] = len(_upd15)
             except Exception as _e15:  # noqa: BLE001
-                rep["errors"].append(f"relevanceMatch(1.5): {str(_e15)[:200]}")
+                _e15_msg = f"relevanceMatch(1.5): {str(_e15)[:200]}"
+                rep["errors"].append(_e15_msg)
+                # Группы созданы, но isActive остался на дефолте Яндекса (aoff→ВКЛ, aon→ВЫКЛ) —
+                # та же инверсия кодера, которую Phase 1.5 устраняла. Устанавливаем rep["error"]
+                # (singular), чтобы вызывающий код (:1471) вызвал _cleanup_partial и снёс черновик.
+                # Верификатор для tp1 к этому классу слеп → дефект иначе невидим молча.
+                # Черновик безопасно пересоздать на следующем прогоне.
+                rep["error"] = _e15_msg
 
     # ── Фаза 2: keywords — транспорт по tp_code ──────────────────────────────
     # TP5: Grid-транспорт (тот же _gcl5 из Фазы 1) — смешанный транспорт (Grid группы + v5
@@ -449,6 +456,9 @@ def _build_tp1_adgroups(
         for chunk in _chunks(kw_items, _AC_CHUNK_KW):
             jk = _v5_call("keywords", "add", token, login, {"Keywords": chunk})
             if "error" not in jk:
+                # Legacy-страховка: _AUTOTARGET_KW ("---autotargeting") упразднён из Phase 2
+                # (псевдоключ был причиной инверсии aon→ВЫКЛ) — в chunk больше не попадает,
+                # но skip_keyword оставлен на случай попадания ключа другим путём.
                 _kw_ids |= _v5_added_keyword_ids(
                     chunk, (jk.get("result") or {}).get("AddResults", []), _AUTOTARGET_KW)
             else:

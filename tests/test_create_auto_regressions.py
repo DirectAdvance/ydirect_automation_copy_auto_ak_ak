@@ -724,6 +724,109 @@ def test_tp1_aon_keep_keywords_preserves_real_keywords():
     assert "---autotargeting" not in all_kw_texts, "Псевдоключ всё ещё в keywords.add"
 
 
+def test_tp1_phase15_exception_sets_error_field():
+    """Phase 1.5: сетевой сбой update_unified_adgroups → rep['error'] проставлен, не только errors[].
+
+    Смысл: вызывающий код (:1471) проверяет tp1_build.get('error') (singular).
+    Без этой проверки кампания с неверным isActive вернёт ok=True молча (Случай B).
+    """
+    deps, _update_calls, _kw_calls = _make_tp1_test_deps()
+
+    class _FailingGridClient:
+        def update_unified_adgroups(self, items):  # noqa: ARG002
+            raise RuntimeError("сетевой сбой Grid")
+
+    deps["gf"] = types.SimpleNamespace(
+        get_grid_client=lambda login, cookie=None: _FailingGridClient(),
+    )
+    create_set_tp1_builders.configure(deps)
+
+    groups = [{"name": "тест-группа", "keywords": [], "titles": [], "texts": []}]
+    rep = create_set_tp1_builders._build_tp1_adgroups(
+        token="tok",
+        login="porg-test",
+        campaign_id=999,
+        region_ids=[213],
+        href="https://example.com",
+        groups=groups,
+        autotarget=False,
+        keep_keywords=False,
+        tp_code="tp1",
+    )
+
+    assert rep.get("error"), (
+        "При сбое Phase 1.5 rep['error'] должен быть заполнен, "
+        f"получили: error={rep.get('error')!r}, errors={rep.get('errors')!r}"
+    )
+    assert any("relevanceMatch(1.5)" in str(e) for e in (rep.get("errors") or [])), (
+        "Детали сбоя Phase 1.5 должны быть в rep['errors']"
+    )
+
+
+def test_tp1_rsya_verifier_detects_aon_isactive_false():
+    """Верификатор выдаёт WRONG_AUTOTARGET для tp1 группы с _aon_ в имени и isActive=False."""
+    issues, repair = grid_content_verifier.verify_grid_content(
+        "tp1_cpc_site_ct0146_aon_n000_r0002_ct001_ag011_g00 — Haval",
+        713,
+        {
+            "adgroups": 1,
+            "ads": 1,
+            "groups_edit_read": True,
+            "wrong_autotarget_rsya_groups": 1,  # aon+isActive=False — дефект
+        },
+        {"phase": "delayed"},
+    )
+
+    codes = [i.get("code") for i in issues]
+    assert "WRONG_AUTOTARGET" in codes, (
+        f"aon+isActive=False должен детектироваться как WRONG_AUTOTARGET, issues={issues!r}"
+    )
+    at_issue = next(i for i in issues if i.get("code") == "WRONG_AUTOTARGET")
+    assert at_issue.get("severity") == "error", (
+        f"В фазе delayed severity должен быть error, получили {at_issue.get('severity')!r}"
+    )
+
+
+def test_tp1_rsya_verifier_detects_aoff_isactive_true():
+    """Верификатор выдаёт WRONG_AUTOTARGET для tp1 группы с _aoff_ в имени и isActive=True."""
+    issues, repair = grid_content_verifier.verify_grid_content(
+        "tp1_cpc_site_ct0301_aoff_n000_r0002_ct001_ag011_g00 — KIA",
+        714,
+        {
+            "adgroups": 1,
+            "ads": 1,
+            "groups_edit_read": True,
+            "wrong_autotarget_rsya_groups": 1,  # aoff+isActive=True — дефект
+        },
+        {"phase": "delayed"},
+    )
+
+    codes = [i.get("code") for i in issues]
+    assert "WRONG_AUTOTARGET" in codes, (
+        f"aoff+isActive=True должен детектироваться как WRONG_AUTOTARGET, issues={issues!r}"
+    )
+
+
+def test_tp1_rsya_verifier_no_false_positive_correct_combinations():
+    """Верификатор молчит при корректных комбинациях aon+True и aoff+False."""
+    for wrong_rsya in (0, None):
+        issues, repair = grid_content_verifier.verify_grid_content(
+            "tp1_cpc_site_ct0146_aon_n000_r0002_ct001_ag011_g00 — Haval",
+            715,
+            {
+                "adgroups": 1,
+                "ads": 1,
+                "groups_edit_read": True,
+                "wrong_autotarget_rsya_groups": wrong_rsya,
+            },
+            {"phase": "delayed"},
+        )
+        at_issues = [i for i in issues if i.get("code") == "WRONG_AUTOTARGET"]
+        assert not at_issues, (
+            f"wrong_autotarget_rsya_groups={wrong_rsya!r}: ложный WRONG_AUTOTARGET, issues={at_issues!r}"
+        )
+
+
 def test_tp7_listing_plus_filter_uses_equals_not_contains(monkeypatch):
     """_tp7_listings_plus_filter возвращает EQUALS+values+value (эталон: HAR entry 59,
     PATCH /web-api/uac/campaign/713081184). CONTAINS без values — не рабочий вариант.
