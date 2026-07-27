@@ -368,6 +368,53 @@ def _txt_autotarget(name: str, tgt: str) -> bool:
     return _txt_targeting_mode(name, tgt)[0]
 
 
+def _metrika_alert_for(login: str, body: dict) -> dict:
+    """Счётчик/цель Метрики на шаге ПЛАНА — тем же `prepare_metrika`, что и создание.
+
+    Раньше единственная валидация стояла в `create_set_orchestrator` (шаг СОЗДАНИЯ), и о
+    недостающей метрике пользователь узнавал только после нажатия «Создать». Вторую проверку
+    рядом НЕ пишем — зовём ту же функцию, иначе логика разъедется.
+
+    → {needed, error, counter_id, goal_id, metrika_note}. План НЕ блокируется (ответ всегда 200):
+    `needed=True` — сигнал фронту показать плашку и погасить кнопку «Создать».
+    Легальные случаи `prepare_metrika` сохраняются как есть:
+      • via_cookie+no_cpa → optional: `ok=True` + `metrika_note`, алерт НЕ поднимаем;
+      • counter без goal → цель доподтягивает `goal_vse_formy`; алерт только если и после этого нет.
+    Зависимости берём из globals() (их кладёт туда `configure`, тесты — monkeypatch'ем):
+    проводки нет → тихо не блокируем, гейт создания в оркестраторе остаётся на месте.
+    """
+    empty = {"needed": False, "error": None, "counter_id": 0, "goal_id": 0, "metrika_note": None}
+    g = globals()
+    goals_for = g.get("_metrika_goals_for")
+    goal_vse_formy = g.get("_goal_vse_formy")
+    foreign_owner = g.get("_counter_foreign_owner")
+    if not (callable(goals_for) and callable(goal_vse_formy) and callable(foreign_owner)):
+        return empty
+
+    def _int(val) -> int:
+        try:
+            return int(str(val if val is not None else "").strip() or 0)
+        except Exception:  # noqa: BLE001
+            return 0
+    from .create_set_metrika import prepare_metrika
+    try:
+        res = prepare_metrika(
+            login=login,
+            counter_id=_int(body.get("counter_id")),
+            goal_id=_int(body.get("goal_id")),
+            via_cookie=bool(body.get("via_cookie")),
+            no_cpa=bool(body.get("no_cpa") or body.get("n")),
+            metrika_goals_for=goals_for,
+            goal_vse_formy=goal_vse_formy,
+            counter_foreign_owner=foreign_owner,
+        )
+    except Exception:  # noqa: BLE001 — план обязан посчитаться даже при сбое Метрики/БД
+        return empty
+    return {"needed": not bool(res.get("ok")), "error": res.get("error"),
+            "counter_id": _int(res.get("counter_id")), "goal_id": _int(res.get("goal_id")),
+            "metrika_note": res.get("metrika_note")}
+
+
 def _set_plan_response():
     """План набора (предпросмотр, БЕЗ создания): какие кампании и с какими именами создадутся."""
     import psycopg2.extras
@@ -402,6 +449,9 @@ def _set_plan_response():
         return [s for s in (v or []) if s in ("site", "kviz")] or ["site"]
     if not login:
         return jsonify({"error": "login обязателен"}), 400
+    # Метрика проверяется ЗДЕСЬ, на шаге плана (а не только при создании) — пользователь узнаёт
+    # о недостающем счётчике/цели сразу. План при этом считается и отдаётся всегда (200).
+    metrika_alert = _metrika_alert_for(login, body)
     ov_site = (body.get("site_type") or "").strip()      # ручной override типа сайта (правится в форме)
     ov_city = (body.get("city") or "").strip()           # ручной override города
     ov_domain = (body.get("domain") or "").strip()       # ручной override домена (для новых аккаунтов без БД-записи)
@@ -734,6 +784,7 @@ def _set_plan_response():
             "pre_draft_blockers": list(dict.fromkeys(blockers)),
             "feed_alert": {"needed": False, "missing": [], "will_skip_types": [],
                            "fallback_feed": None},
+            "metrika_alert": metrika_alert,
         })
 
     # #4 (Семён 2026-07-12): галочка «под стиль сайта» (n) — ЕДИНО для ВСЕХ слепков (авто и dmp):
@@ -1469,4 +1520,5 @@ def _set_plan_response():
                         "fallback_feed": ({"id": _sf_fallback_id,
                                            "name": (_sf_fallback_name or _FB_KEY)}
                                           if (_fal_needed and _sf_fallback_id) else None),
-                    }})
+                    },
+                    "metrika_alert": metrika_alert})

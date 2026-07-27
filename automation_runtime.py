@@ -1452,6 +1452,11 @@ def _create_set_plan_deps() -> dict:
         "_grid_list_campaigns": _grid_list_campaigns,
         "_is_site_domain_name": _is_site_domain_name,
         "_json": _json,
+        # Метрика на шаге плана (_metrika_alert_for → prepare_metrika): те же три коллбэка,
+        # что получает оркестратор на шаге создания — проверка одна и та же, не вторая копия.
+        "_metrika_goals_for": _metrika_goals_for,
+        "_goal_vse_formy": _goal_vse_formy,
+        "_counter_foreign_owner": _counter_foreign_owner,
         "_segment_donor": _segment_donor,
         "_slepok_interest_for_struct": _slepok_interest_for_struct,
         "_slepok_profile_excludes_tp": _slepok_profile_excludes_tp,

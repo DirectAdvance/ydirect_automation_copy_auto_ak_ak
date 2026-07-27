@@ -158,6 +158,18 @@ def register_job_routes(
                                      f"а не «{login}» — Яндекс отклонит цель как «не найдена». "
                                      f"Укажите счётчик и цель самого «{login}»."}), 400
 
+        # Гейт по metrika_alert из шага плана (create_set_plan._metrika_alert_for) — симметричен
+        # feed_alert ниже, но БЕЗ подтверждения-обхода: недостающий счётчик/цель нельзя
+        # «подтвердить и продолжить», только заполнить. Отбиваем ДО job_new, иначе в очереди
+        # осталась бы осиротевшая задача. Клиенты без metrika_alert в body (внешний API) идут как
+        # раньше — их страхует prepare_metrika в create_set_orchestrator.
+        _metrika_alert = body.get("metrika_alert") or {}
+        if isinstance(_metrika_alert, dict) and _metrika_alert.get("needed"):
+            return jsonify({
+                "error": _metrika_alert.get("error") or "укажите счётчик Метрики и цель (goal_id)",
+                "metrika_alert": True,
+            }), 400
+
         try:
             from .create_set_content_preflight import create_set_pack_gap_note
             _gap_note = create_set_pack_gap_note(body)
