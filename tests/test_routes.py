@@ -1,5 +1,9 @@
+import json
+
 from direct.main import app
 from direct.content_main import app as content_app
+from direct.copy_main import app as copy_app
+from direct.slepki_main import app as slepki_app
 from direct import campaign
 from direct import create_set_input
 from direct import grid_finalize
@@ -56,6 +60,59 @@ def test_create_set_async_rejects_pre_draft_source_plan():
 
     assert response.status_code == 409
     assert "до этапа создания черновиков" in response.get_json()["error"]
+
+
+def test_create_set_async_rejects_stream_single_feed_stale_client():
+    app.testing = True
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["logged_in"] = True
+        session["is_admin"] = True
+        session["username"] = "route-smoke"
+
+    response = client.post("/direct/api/create_set_async", json={
+        "login": "gen-ses-test",
+        "agent": "scherbakova",
+        "site_type": "Мультибренд",
+        "stream_content": True,
+        "single_feed": True,
+        "items": [{
+            "name": "tp7_cpc_site — ТК - Haval - КС + Автотаргетинг",
+            "_plan_agent": "scherbakova",
+            "_plan_site_type": "Мультибренд",
+        }],
+    })
+
+    data = response.get_json()
+    assert response.status_code == 409
+    assert data["stale_client_single_feed"] is True
+
+
+def test_create_set_async_rejects_stream_product_only_stale_client():
+    app.testing = True
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["logged_in"] = True
+        session["is_admin"] = True
+        session["username"] = "route-smoke"
+
+    response = client.post("/direct/api/create_set_async", json={
+        "login": "gen-ses-test",
+        "agent": "scherbakova",
+        "site_type": "Мультибренд",
+        "stream_content": True,
+        "single_feed": False,
+        "items": [{
+            "type": "product",
+            "name": "tp7_cpc_site — ТК - Haval - КС + Автотаргетинг",
+            "_plan_agent": "scherbakova",
+            "_plan_site_type": "Мультибренд",
+        }],
+    })
+
+    data = response.get_json()
+    assert response.status_code == 409
+    assert data["stale_client_product_only_stream"] is True
 
 
 def test_single_feed_prefers_yandex_xml_rows_and_items():
@@ -126,10 +183,6 @@ def test_direct_route_map_smoke_for_extraction_groups():
         ("/direct/api/content-preview/<token>", "GET"): "api_content_preview",
         ("/direct/api/content-thumb/<token>", "GET"): "api_content_thumb",
         ("/direct/api/content-rules", "POST"): "api_content_rules_post",
-        ("/direct/api/copy_campaigns", "GET"): "api_copy_campaigns",
-        ("/direct/api/copy_target_prefill", "GET"): "api_copy_target_prefill",
-        ("/direct/api/copy_start", "POST"): "api_copy_start",
-        ("/direct/api/copy_status/<job_id>", "GET"): "api_copy_status",
         ("/direct/api/campaigns", "GET"): "api_campaigns",
         ("/direct/api/campaigns/stop_all", "POST"): "api_stop_all",
         ("/direct/api/campaigns/delete_drafts", "POST"): "api_delete_drafts",
@@ -159,6 +212,38 @@ def test_direct_route_map_smoke_for_extraction_groups():
         rule = _route(path, method)
         assert rule.endpoint == f"direct.{view_name}"
         assert app.view_functions[rule.endpoint].__name__ == view_name
+
+
+def test_copy_standalone_app_owns_copy_routes():
+    expected = {
+        ("/direct/api/copy_campaigns", "GET"): "api_copy_campaigns",
+        ("/direct/api/copy_target_prefill", "GET"): "api_copy_target_prefill",
+        ("/direct/api/copy_start", "POST"): "api_copy_start",
+        ("/direct/api/copy_status/<job_id>", "GET"): "api_copy_status",
+    }
+
+    for (path, method), view_name in expected.items():
+        rule = _route_in(copy_app, path, method)
+        assert rule.endpoint == f"direct.{view_name}"
+        assert copy_app.view_functions[rule.endpoint].__name__ == view_name
+
+    assert not any(r.rule == "/direct/api/copy_campaigns" for r in app.url_map.iter_rules())
+
+
+def test_slepki_standalone_app_owns_slepki_page_and_read_models():
+    expected = {
+        ("/direct/automation/slepki", "GET"): "slepki_page",
+        ("/direct/api/slepki/ui_structure", "GET"): "slepki_api_ui_structure",
+        ("/direct/api/slepki/minus-places", "GET"): "slepki_api_minus_places_get",
+        ("/direct/api/slepki/minus-places", "POST"): "slepki_api_minus_places_post",
+    }
+
+    for (path, method), view_name in expected.items():
+        rule = _route_in(slepki_app, path, method)
+        assert rule.endpoint == f"direct.{view_name}"
+        assert slepki_app.view_functions[rule.endpoint].__name__ == view_name
+
+    assert not any(r.rule == "/direct/api/ui_structure" for r in slepki_app.url_map.iter_rules())
 
 
 def test_content_editor_standalone_app_owns_only_content_routes():
@@ -514,6 +599,128 @@ def test_content_editor_replace_never_writes_via_oauth_api():
     assert sitelink_desc_out["replaced"] == 1
 
 
+def test_content_editor_sitelink_retry_succeeds_when_new_text_already_live():
+    def fail_api(*args, **kwargs):
+        raise AssertionError("already-applied retry must not write through API")
+
+    class FailGrid:
+        def __init__(self, login):
+            raise AssertionError("already-applied retry must not create Grid client")
+
+    content = {
+        "sitelinks": [
+            {
+                "set_id": 30,
+                "level": "campaign",
+                "items": [{"title": "Новая", "description": "Описание", "href": "https://example.com"}],
+                "campaign_ids": [1, 2],
+                "usages": [
+                    {"campaign_id": 1, "campaign_name": "camp1", "adgroup_id": 0},
+                    {"campaign_id": 2, "campaign_name": "camp2", "adgroup_id": 0},
+                ],
+            },
+            {
+                "set_id": "uac:3",
+                "source": "uac",
+                "items": [{"title": "Новая", "description": "Описание", "href": "https://example.com"}],
+                "campaign_id": 3,
+                "usages": [{"campaign_id": 3, "campaign_name": "uac", "adgroup_id": 0}],
+            },
+        ],
+    }
+
+    out = content_editor._do_replace(
+        "token", "login", "sitelink_title", "Старая", "Новая", content, fail_api, fail_api,
+        grid_client_factory=FailGrid,
+    )
+
+    assert out["errors"] == []
+    assert out["already_applied"] is True
+    assert out["replaced"] == 3
+    assert out["matched_new_sitelink_sets"] == 2
+
+
+def test_content_editor_rebinds_responsive_ad_sitelinks_via_grid_rmw():
+    class FakeGrid:
+        def __init__(self, login):
+            self.login = login
+            self.last_ad_update_errors = []
+            self.current_set_id = "3"
+            self.updated_items = []
+
+        def _read_unified_campaign_update_payloads(self, campaign_ids):
+            assert campaign_ids == [1]
+            return {1: {"inheritableSitelinkSet": {"sitelinkSetId": None}}}
+
+        def add_sitelink_set(self, sitelinks):
+            assert sitelinks == [{
+                "title": "Новая",
+                "description": "Описание",
+                "href": "https://example.com",
+            }]
+            return 40
+
+        def adaptive_ads_for_update(self, campaign_ids, ad_ids):
+            assert campaign_ids == [1]
+            assert ad_ids == [10]
+            return {
+                10: {
+                    "id": 10,
+                    "campaignId": 1,
+                    "href": "https://example.com/landing",
+                    "displayHref": "example.com/landing",
+                    "titles": [{"text": "Заголовок"}],
+                    "bodies": [{"text": "Текст"}],
+                    "imageHashes": [],
+                    "images": [],
+                    "adPrice": None,
+                    "creativeIds": [],
+                    "button": None,
+                    "inheritableCallouts": {"policy": "INHERIT"},
+                    "inheritableSitelinkSet": {"policy": "OVERRIDE", "sitelinkSetId": self.current_set_id},
+                    "permalinkId": None,
+                    "phoneId": None,
+                }
+            }
+
+        def update_ad_images(self, items, allow_empty_images=False):
+            assert allow_empty_images is True
+            assert len(items) == 1
+            self.updated_items = items
+            assert items[0]["inheritableSitelinkSet"] == {"policy": "OVERRIDE", "sitelinkSetId": "40"}
+            self.current_set_id = "40"
+            self.last_ad_update_errors = []
+            return 1
+
+    def fail_api(*args, **kwargs):
+        raise AssertionError("OAuth API must not be used for ResponsiveAd sitelink replace")
+
+    content = {
+        "ads": [],
+        "sitelinks": [{
+            "set_id": 3,
+            "items": [{"title": "Ссылка", "description": "Описание", "href": "https://example.com"}],
+            "usages": [{"campaign_id": 1, "campaign_name": "camp", "adgroup_id": 2}],
+        }],
+        "callouts": [],
+        "_ads_by_set": {"3": [{
+            "ad_id": 10,
+            "subtype": "ResponsiveAd",
+            "campaign_name": "camp",
+            "adgroup_name": "group",
+        }]},
+    }
+
+    out = content_editor._do_replace(
+        "token", "login", "sitelink_title", "Ссылка", "Новая", content, fail_api, fail_api,
+        grid_client_factory=FakeGrid,
+    )
+
+    assert out["replaced"] == 1
+    assert out["errors"] == []
+    assert out["grid"]["new_sitelink_set_ids"] == [40]
+
+
 def test_content_editor_replaces_uac_titles_and_texts_with_patch():
     class FakeUacClient:
         def __init__(self, login):
@@ -761,16 +968,25 @@ def test_grid_set_campaign_callouts_sends_required_attribution_model(monkeypatch
     monkeypatch.setattr(client, "_bootstrap_csrf", lambda: None)
     monkeypatch.setattr(client, "_read_unified_campaign_update_payloads", lambda ids: {
         123: {
-            "id": "123",
             "name": "Campaign",
             "state": "COMPLETE",
             "startDate": "2026-07-03",
+            "dayBudget": "0",
+            "enableCompanyInfo": False,
+            "excludePausedCompetingAds": False,
+            "hasAddMetrikaTagToUrl": False,
+            "hasAddOpenstatTagToUrl": False,
+            "hasExtendedGeoTargeting": False,
             "attributionModel": "AUTOMATIC",
-            "inheritableCallouts": {"calloutIds": ["9"]},
+            "broadMatch": {"broadMatchFlag": False, "broadMatchGoalId": None, "broadMatchLimit": 0},
+            "id": "123",
         }
     })
 
     class Response:
+        status_code = 200
+        text = "{}"
+
         def json(self):
             return {
                 "data": {
@@ -798,6 +1014,63 @@ def test_grid_set_campaign_callouts_sends_required_attribution_model(monkeypatch
     assert item["inheritableCallouts"] == {"calloutIds": ["10", "20"]}
 
 
+def test_grid_set_campaign_callouts_retries_transient_grid_errors(monkeypatch):
+    client = grid_finalize.GridClient.__new__(grid_finalize.GridClient)
+    client.login = "login"
+    attempts = []
+
+    monkeypatch.setattr(client, "_bootstrap_csrf", lambda: None)
+    monkeypatch.setattr(client, "_read_unified_campaign_update_payloads", lambda ids: {
+        123: {
+            "name": "Campaign",
+            "state": "COMPLETE",
+            "startDate": "2026-07-03",
+            "dayBudget": "0",
+            "enableCompanyInfo": False,
+            "excludePausedCompetingAds": False,
+            "hasAddMetrikaTagToUrl": False,
+            "hasAddOpenstatTagToUrl": False,
+            "hasExtendedGeoTargeting": False,
+            "attributionModel": "AUTOMATIC",
+            "broadMatch": {"broadMatchFlag": False, "broadMatchGoalId": None, "broadMatchLimit": 0},
+            "id": "123",
+        }
+    })
+
+    class Response:
+        def __init__(self, payload):
+            self.status_code = 200
+            self._payload = payload
+            self.text = json.dumps(payload, ensure_ascii=False)
+
+        def json(self):
+            return self._payload
+
+    def fake_post(op, query, variables):
+        attempts.append(op)
+        if len(attempts) == 1:
+            return Response({
+                "errors": [{
+                    "message": "Внутренняя ошибка сервера. При обращении в службу поддержки укажите reqid",
+                }]
+            })
+        return Response({
+            "data": {
+                "updateCampaigns": {
+                    "updatedCampaigns": [{"id": "123"}],
+                    "validationResult": {"errors": []},
+                }
+            }
+        })
+
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    out = client.set_campaign_callouts([123], [10, 20])
+
+    assert out == [{"id": "123"}]
+    assert attempts == ["UpdateCampaigns", "UpdateCampaigns"]
+
+
 def test_grid_set_campaign_sitelink_set_sends_required_attribution_model(monkeypatch):
     client = grid_finalize.GridClient.__new__(grid_finalize.GridClient)
     client.login = "login"
@@ -806,16 +1079,25 @@ def test_grid_set_campaign_sitelink_set_sends_required_attribution_model(monkeyp
     monkeypatch.setattr(client, "_bootstrap_csrf", lambda: None)
     monkeypatch.setattr(client, "_read_unified_campaign_update_payloads", lambda ids: {
         123: {
-            "id": "123",
             "name": "Campaign",
             "state": "COMPLETE",
             "startDate": "2026-07-03",
+            "dayBudget": "0",
+            "enableCompanyInfo": False,
+            "excludePausedCompetingAds": False,
+            "hasAddMetrikaTagToUrl": False,
+            "hasAddOpenstatTagToUrl": False,
+            "hasExtendedGeoTargeting": False,
             "attributionModel": "AUTOMATIC",
-            "inheritableSitelinkSet": {"sitelinkSetId": "111"},
+            "broadMatch": {"broadMatchFlag": False, "broadMatchGoalId": None, "broadMatchLimit": 0},
+            "id": "123",
         }
     })
 
     class Response:
+        status_code = 200
+        text = "{}"
+
         def json(self):
             return {
                 "data": {
@@ -841,6 +1123,63 @@ def test_grid_set_campaign_sitelink_set_sends_required_attribution_model(monkeyp
     assert item["name"] == "Campaign"
     assert item["state"] == "COMPLETE"
     assert item["inheritableSitelinkSet"] == {"sitelinkSetId": "456"}
+
+
+def test_grid_set_campaign_sitelink_set_retries_transient_grid_errors(monkeypatch):
+    client = grid_finalize.GridClient.__new__(grid_finalize.GridClient)
+    client.login = "login"
+    attempts = []
+
+    monkeypatch.setattr(client, "_bootstrap_csrf", lambda: None)
+    monkeypatch.setattr(client, "_read_unified_campaign_update_payloads", lambda ids: {
+        123: {
+            "name": "Campaign",
+            "state": "COMPLETE",
+            "startDate": "2026-07-03",
+            "dayBudget": "0",
+            "enableCompanyInfo": False,
+            "excludePausedCompetingAds": False,
+            "hasAddMetrikaTagToUrl": False,
+            "hasAddOpenstatTagToUrl": False,
+            "hasExtendedGeoTargeting": False,
+            "attributionModel": "AUTOMATIC",
+            "broadMatch": {"broadMatchFlag": False, "broadMatchGoalId": None, "broadMatchLimit": 0},
+            "id": "123",
+        }
+    })
+
+    class Response:
+        def __init__(self, payload):
+            self.status_code = 200
+            self._payload = payload
+            self.text = json.dumps(payload, ensure_ascii=False)
+
+        def json(self):
+            return self._payload
+
+    def fake_post(op, query, variables):
+        attempts.append(op)
+        if len(attempts) == 1:
+            return Response({
+                "errors": [{
+                    "message": "Внутренняя ошибка сервера. При обращении в службу поддержки укажите reqid",
+                }]
+            })
+        return Response({
+            "data": {
+                "updateCampaigns": {
+                    "updatedCampaigns": [{"id": "123"}],
+                    "validationResult": {"errors": []},
+                }
+            }
+        })
+
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    out = client.set_campaign_sitelink_set([123], 456)
+
+    assert out == [{"id": "123"}]
+    assert attempts == ["UpdateCampaigns", "UpdateCampaigns"]
 
 
 def test_load_cookie_local_accepts_yandex_direct_nested_cookie_file(tmp_path, monkeypatch):
@@ -978,6 +1317,42 @@ def test_make_job_executor_passes_scope_then_reaches_token_stage():
     assert "нет агентских токенов" in str(ei.value)
 
 
+def test_make_job_executor_campaign_rename_skips_account_snapshot(monkeypatch):
+    conn = _FakeScopeConn(row={"directologist": "Иванов"})
+    calls = []
+
+    def boom_load_account(*_args, **_kwargs):
+        raise AssertionError("campaign_rename must not load full account snapshot")
+
+    def fake_do_replace(token, login, typ, old_text, new_text, content, v5_call, v501_svc, *, mode):
+        calls.append((token, login, typ, old_text, new_text, content, mode))
+        return {"replaced": 1, "errors": []}
+
+    monkeypatch.setattr(content_editor, "_load_account", boom_load_account)
+    monkeypatch.setattr(content_editor, "_do_replace", fake_do_replace)
+
+    execute = content_editor.make_job_executor(
+        victory_conn=lambda: conn,
+        token_for_login=lambda *a, **k: ("tok", "agency"),
+        direct_tokens=lambda: {"agency": "tok"},
+        v5_call=lambda *a, **k: None,
+        v501_svc=lambda *a, **k: None,
+    )
+
+    payload = json.dumps({"campaign_renames": {"1": "new"}}, ensure_ascii=False)
+    out = execute({
+        "login": "acc-login",
+        "access_directologists": ["Иванов"],
+        "type": "campaign_rename",
+        "old_text": payload,
+        "new_text": payload,
+        "mode": "rename",
+    })
+
+    assert out == {"replaced": 1, "errors": []}
+    assert calls == [("tok", "acc-login", "campaign_rename", payload, payload, {}, "rename")]
+
+
 # ── _validate_permutation ────────────────────────────────────────────────────
 def test_validate_permutation_valid_swap():
     perm, why = content_editor._validate_permutation([1, 0])
@@ -1082,6 +1457,36 @@ def test_reorder_sitelinks_campaign_level_applies_and_reads_back():
     # порядок реально применён к новому набору
     assert [it["title"] for it in grid.added[0]] == ["Вторая", "Первая"]
     assert grid.rebinds[0][0] == [11, 12]
+
+
+def test_reorder_sitelinks_target_set_uses_edited_items_instead_of_raw_permutation():
+    grid = _FakeReorderGrid("login")
+    content = {
+        "sitelinks": [{
+            "set_id": 55, "set_title": "Набор", "source": "grid", "level": "campaign",
+            "campaign_ids": [11],
+            "items": [
+                {"title": "Первая", "href": "https://a", "description": "d1"},
+                {"title": "Вторая", "href": "https://b", "description": "d2"},
+            ],
+        }],
+    }
+
+    out = content_editor._reorder_sitelinks(
+        "token", "login", [1, 0], content, lambda *a, **k: None,
+        target_set_id=55,
+        edited_items=[
+            {"title": "Новый 1", "href": "https://x", "description": "dx"},
+            {"title": "Новый 2", "href": "https://y", "description": "dy"},
+        ],
+        grid_client_factory=lambda login: grid,
+    )
+
+    assert out["replaced"] == 1
+    assert grid.added[0] == [
+        {"title": "Новый 1", "href": "https://x", "description": "dx"},
+        {"title": "Новый 2", "href": "https://y", "description": "dy"},
+    ]
 
 
 def test_reorder_sitelinks_skips_when_order_unchanged():
@@ -1203,3 +1608,493 @@ def test_reorder_sitelinks_uac_branch_patches_and_confirms_read_back():
     assert rep["status"] == "applied"
     assert rep["orig_order"] == ["П1", "П2"]
     assert [x["title"] for x in client.patched[0]["sitelinks"]] == ["П2", "П1"]
+
+
+def test_reorder_sitelinks_responsive_ad_level_uses_grid_rmw_rebind():
+    class _Grid:
+        def __init__(self, login):
+            self.login = login
+            self.added = []
+            self.current_set_id = "55"
+            self.last_ad_update_errors = []
+
+        def add_sitelink_set(self, sitelinks):
+            self.added.append(list(sitelinks))
+            return 901
+
+        def set_campaign_sitelink_set(self, campaign_ids, sitelink_set_id):
+            assert campaign_ids == [11]
+            assert sitelink_set_id == 901
+            return [{"id": "11"}]
+
+        def adaptive_ads_for_update(self, campaign_ids, ad_ids):
+            assert campaign_ids == [11]
+            assert ad_ids == [101]
+            return {
+                101: {
+                    "id": 101,
+                    "campaignId": 11,
+                    "href": "https://example.com",
+                    "displayHref": "example.com",
+                    "titles": [{"text": "T1"}],
+                    "bodies": [{"text": "B1"}],
+                    "imageHashes": [],
+                    "images": [],
+                    "adPrice": None,
+                    "creativeIds": [],
+                    "button": None,
+                    "inheritableCallouts": {"policy": "INHERIT"},
+                    "inheritableSitelinkSet": {"policy": "OVERRIDE", "sitelinkSetId": self.current_set_id},
+                    "permalinkId": None,
+                    "phoneId": None,
+                }
+            }
+
+        def update_ad_images(self, items, allow_empty_images=False):
+            assert allow_empty_images is True
+            assert items[0]["inheritableSitelinkSet"] == {"policy": "INHERIT"}
+            self.current_set_id = None
+            self.last_ad_update_errors = []
+            return 1
+
+    content = {
+        "sitelinks": [{
+            "set_id": 55,
+            "set_title": "Набор",
+            "source": "grid",
+            "level": "ad",
+            "campaign_ids": [],
+            "usages": [{"campaign_id": 11, "adgroup_id": 22}],
+            "items": [
+                {"title": "Первая", "href": "https://a", "description": "d1"},
+                {"title": "Вторая", "href": "https://b", "description": "d2"},
+            ],
+        }],
+        "_ads_by_set": {"55": [{"ad_id": 101, "subtype": "ResponsiveAd"}]},
+        "_ads_inventory": [{"ad_id": 101, "campaign_id": 11, "subtype": "ResponsiveAd"}],
+    }
+
+    out = content_editor._reorder_sitelinks(
+        "token", "login", [1, 0], content, lambda *a, **k: None,
+        grid_client_factory=lambda login: _Grid(login),
+    )
+
+    assert out["replaced"] == 1
+    assert out["ads_touched"] == 1
+    rep = out["reports"][0]
+    assert rep["status"] == "applied"
+    assert rep["new_set_id"] == 901
+    assert rep["campaign_ids"] == [11]
+    assert rep["ads_cleared"] == 1
+
+
+def test_assign_sitelinks_accountwide_propagates_full_items_to_campaigns_responsive_and_uac():
+    class _Grid:
+        def __init__(self, login):
+            self.login = login
+            self.last_ad_update_errors = []
+            self.current_resp_set_id = "55"
+            self.campaign_rebinds = []
+
+        def add_sitelink_set(self, sitelinks):
+            assert sitelinks == [{
+                "title": "Эталон 1",
+                "href": "https://example.com/one",
+                "description": "Desc 1",
+            }, {
+                "title": "Эталон 2",
+                "href": "https://example.com/two",
+                "description": "Desc 2",
+            }]
+            return 990
+
+        def set_campaign_sitelink_set(self, campaign_ids, sitelink_set_id):
+            self.campaign_rebinds.append((list(campaign_ids), sitelink_set_id))
+            return [{"id": str(cid)} for cid in campaign_ids]
+
+        def text_ads_for_update(self, campaign_ids, ad_ids):
+            assert campaign_ids == [11, 12]
+            assert ad_ids == [100]
+            return {
+                100: {
+                    "id": 100,
+                    "href": "https://example.com/text",
+                    "hrefParams": "",
+                    "displayHref": "",
+                    "title": "Text",
+                    "titleExtension": None,
+                    "body": "Body",
+                    "isMobile": False,
+                    "erirAdDescription": None,
+                    "imageHashes": [],
+                    "images": [],
+                    "logoImageHash": None,
+                    "button": None,
+                    "adPrice": None,
+                    "creativeId": None,
+                    "inheritableSitelinkSet": {"policy": "OVERRIDE", "sitelinkSetId": "44"},
+                    "inheritableCallouts": {"policy": "INHERIT"},
+                    "permalinkWithPhone": {"policy": "CLEAR"},
+                    "rmw_unsafe": "",
+                }
+            }
+
+        def update_text_ads(self, items, allow_empty_image_hashes=False):
+            assert allow_empty_image_hashes is True
+            assert items[0]["inheritableSitelinkSet"] == {"policy": "INHERIT"}
+            return 1
+
+        def adaptive_ads_for_update(self, campaign_ids, ad_ids):
+            assert campaign_ids == [11, 12]
+            assert ad_ids == [101]
+            return {
+                101: {
+                    "id": 101,
+                    "campaignId": 11,
+                    "href": "https://example.com",
+                    "displayHref": "example.com",
+                    "titles": [{"text": "T1"}],
+                    "bodies": [{"text": "B1"}],
+                    "imageHashes": [],
+                        "images": [],
+                        "adPrice": None,
+                        "creativeIds": [],
+                        "button": None,
+                        "inheritableCallouts": {"policy": "INHERIT"},
+                        "inheritableSitelinkSet": {"policy": "OVERRIDE", "sitelinkSetId": self.current_resp_set_id},
+                        "permalinkId": None,
+                        "phoneId": None,
+                    }
+                }
+
+        def update_ad_images(self, items, allow_empty_images=False):
+            assert allow_empty_images is True
+            assert items[0]["inheritableSitelinkSet"] == {"policy": "INHERIT"}
+            self.current_resp_set_id = None
+            return 1
+
+    class _FakeUacClient:
+        def __init__(self, login):
+            self.login = login
+            self.csrf = "csrf"
+            self.details = {
+                7001: {"id": 7001, "sitelinks": [{"title": "Old", "href": "https://old", "description": "old"}]},
+            }
+
+        def link_info(self, _url):
+            return {}
+
+        def _request(self, method, path, json_body=None, step=""):
+            cid = int(path.rsplit("/", 1)[-1])
+            if method == "GET":
+                return {"result": dict(self.details[cid])}
+            if method == "PATCH":
+                self.details[cid]["sitelinks"] = [dict(x) for x in (json_body.get("sitelinks") or [])]
+                return {"result": dict(self.details[cid])}
+            raise AssertionError((method, path, step))
+
+    def fake_v5_call(*args, **kwargs):
+        raise AssertionError("v5 rebind path is not expected in this scenario")
+
+    content = {
+        "_campaign_ids": [11, 12, 7001],
+        "_campaign_types": {11: "TEXT_CAMPAIGN", 12: "TEXT_CAMPAIGN", 7001: "UNIFIED_CAMPAIGN"},
+        "_uac_campaign_ids": [7001],
+        "_ads_inventory": [
+            {"ad_id": 100, "campaign_id": 11, "subtype": "TextAd"},
+            {"ad_id": 101, "campaign_id": 11, "subtype": "ResponsiveAd"},
+        ],
+    }
+    items = [
+        {"title": "Эталон 1", "href": "https://example.com/one", "description": "Desc 1"},
+        {"title": "Эталон 2", "href": "https://example.com/two", "description": "Desc 2"},
+    ]
+
+    out = content_editor._assign_sitelink_items_accountwide(
+        "token", "login", items, content, fake_v5_call,
+        grid_client_factory=lambda login: _Grid(login),
+        uac_client_factory=lambda login: _FakeUacClient(login),
+    )
+
+    assert out["replaced"] == 1
+    assert out["errors"] == []
+    assert out["new_sitelink_set_id"] == 990
+    assert out["campaigns_touched"] == 2
+    assert out["ads_touched"] == 2
+    assert out["uac_campaigns_touched"] == 1
+
+
+def test_assign_callout_accountwide_creates_and_binds_to_supported_campaigns():
+    class _Grid:
+        def __init__(self, login):
+            self.login = login
+            self.calls = []
+
+        def add_callouts(self, texts):
+            assert texts == ["Номера уже в CRM", "Спрос уже есть"]
+            return {"Номера уже в CRM": 777, "Спрос уже есть": 778}
+
+        def set_campaign_callouts(self, campaign_ids, callout_ids):
+            self.calls.append((list(campaign_ids), list(callout_ids)))
+            return [{"id": str(cid)} for cid in campaign_ids]
+
+    content = {
+        "_campaign_ids": [11, 12, 13],
+        "_campaign_types": {11: "TEXT_CAMPAIGN", 12: "TEXT_CAMPAIGN", 13: "UNIFIED_CAMPAIGN"},
+    }
+
+    out = content_editor._assign_callout_accountwide(
+        "login",
+        ["Номера уже в CRM.", "Спрос уже есть"],
+        content,
+        grid_client_factory=lambda login: _Grid(login),
+    )
+
+    assert out["replaced"] == 1
+    assert out["errors"] == []
+    assert out["new_callout_ids"] == [777, 778]
+    assert out["new_texts"] == ["Номера уже в CRM", "Спрос уже есть"]
+    assert out["campaigns_touched"] == 2
+    assert out["updated_campaign_ids"] == [11, 12]
+    assert out["skipped_campaign_ids"] == [13]
+    assert out["skipped_reasons"] == {"13": "Мастер кампаний / Товарный мастер не поддерживает уточнения"}
+    assert out["warnings"] == []
+
+
+def test_assign_sitelink_accountwide_clears_responsive_override_before_campaign_bind():
+    class _Grid:
+        def __init__(self, login):
+            self.login = login
+            self.current_set_id = "501"
+
+        def add_sitelink_set(self, sitelinks):
+            assert sitelinks == [{
+                "title": "Новая 1",
+                "href": "https://example.com/one",
+                "description": "Desc 1",
+            }]
+            return 990
+
+        def set_campaign_sitelink_set(self, campaign_ids, sitelink_set_id):
+            assert campaign_ids == [11, 12]
+            assert sitelink_set_id == 990
+            return [{"id": "11"}, {"id": "12"}]
+
+        def adaptive_ads_for_update(self, campaign_ids, ad_ids):
+            assert campaign_ids == [11, 12]
+            assert ad_ids == [101]
+            return {
+                101: {
+                    "id": 101,
+                    "campaignId": 12,
+                    "href": "https://example.com",
+                    "displayHref": "example.com",
+                    "titles": [{"text": "T1"}],
+                    "bodies": [{"text": "B1"}],
+                    "imageHashes": [],
+                    "images": [],
+                    "adPrice": None,
+                    "creativeIds": [],
+                    "button": None,
+                    "inheritableCallouts": {"policy": "INHERIT"},
+                    "inheritableSitelinkSet": {"policy": "OVERRIDE", "sitelinkSetId": self.current_set_id},
+                    "permalinkId": None,
+                    "phoneId": None,
+                }
+            }
+
+        def update_ad_images(self, items, allow_empty_images=False):
+            assert allow_empty_images is True
+            assert items == [{
+                "id": 101,
+                "campaignId": 12,
+                "href": "https://example.com",
+                "displayHref": "example.com",
+                "titles": [{"text": "T1"}],
+                "bodies": [{"text": "B1"}],
+                "imageHashes": [],
+                "images": [],
+                "adPrice": None,
+                "creativeIds": [],
+                "button": None,
+                "inheritableCallouts": {"policy": "INHERIT"},
+                "inheritableSitelinkSet": {"policy": "INHERIT"},
+                "permalinkId": None,
+                "phoneId": None,
+            }]
+            self.current_set_id = None
+            return 1
+
+    def fake_v5_call(*args, **kwargs):
+        raise AssertionError("v5 ad rebind is not expected in this scenario")
+
+    content = {
+        "_campaign_ids": [11, 12],
+        "_campaign_types": {11: "TEXT_CAMPAIGN", 12: "TEXT_CAMPAIGN"},
+        "_uac_campaign_ids": [],
+        "_ads_inventory": [
+            {"ad_id": 101, "campaign_id": 12, "subtype": "ResponsiveAd"},
+        ],
+    }
+    items = [{"title": "Новая 1", "href": "https://example.com/one", "description": "Desc 1"}]
+
+    out = content_editor._assign_sitelink_items_accountwide(
+        "token", "login", items, content, fake_v5_call,
+        grid_client_factory=lambda login: _Grid(login),
+    )
+
+    assert out["replaced"] == 1
+    assert out["errors"] == []
+    assert out["warnings"] == []
+    assert out["campaigns_touched"] == 2
+    assert out["ads_touched"] == 1
+    assert out["skipped_campaign_ids"] == []
+
+
+def test_assign_callout_accountwide_clears_responsive_overrides_before_campaign_bind():
+    class _Grid:
+        def __init__(self, login):
+            self.login = login
+            self.last_ad_update_errors = []
+            self.callouts_policy = {"policy": "OVERRIDE", "calloutIds": ["12"]}
+
+        def add_callouts(self, texts):
+            assert texts == ["Спрос уже есть"]
+            return {"Спрос уже есть": 778}
+
+        def adaptive_ads_for_update(self, campaign_ids, ad_ids):
+            assert campaign_ids == [13]
+            assert ad_ids == [501]
+            return {
+                501: {
+                    "id": 501,
+                    "campaignId": "13",
+                    "href": "https://example.com",
+                    "displayHref": "example",
+                    "titles": [{"text": "T"}],
+                    "bodies": [{"text": "B"}],
+                    "imageHashes": [],
+                    "images": [],
+                    "adPrice": None,
+                    "creativeIds": [],
+                    "button": None,
+                    "inheritableCallouts": dict(self.callouts_policy),
+                    "inheritableSitelinkSet": {"policy": "INHERIT"},
+                    "permalinkId": None,
+                    "phoneId": None,
+                }
+            }
+
+        def update_ad_images(self, items, allow_empty_images=False):
+            assert allow_empty_images is True
+            assert items[0]["inheritableCallouts"] == {"policy": "INHERIT"}
+            self.last_ad_update_errors = []
+            self.callouts_policy = {"policy": "INHERIT"}
+            return 1
+
+        def set_campaign_callouts(self, campaign_ids, callout_ids):
+            assert campaign_ids == [13]
+            assert callout_ids == [778]
+            return [{"id": "13"}]
+
+    grid = _Grid("login")
+
+    content = {
+        "_campaign_ids": [13],
+        "_campaign_types": {13: "TEXT_CAMPAIGN"},
+        "_ads_inventory": [
+            {"ad_id": 501, "campaign_id": 13, "subtype": "ResponsiveAd"},
+        ],
+    }
+
+    out = content_editor._assign_callout_accountwide(
+        "login",
+        ["Спрос уже есть"],
+        content,
+        grid_client_factory=lambda login: grid,
+    )
+
+    assert out["replaced"] == 1
+    assert out["errors"] == []
+    assert out["updated_campaign_ids"] == [13]
+    assert out["skipped_campaign_ids"] == []
+    assert out["warnings"] == []
+    assert out["ads_touched"] == 1
+
+
+def test_assign_callout_accountwide_rejects_empty_text_after_normalization():
+    out = content_editor._assign_callout_accountwide(
+        "login",
+        ["...", ""],
+        {"_campaign_ids": [11]},
+        grid_client_factory=lambda login: (_ for _ in ()).throw(AssertionError("grid should not be called")),
+    )
+
+    assert out == {
+        "replaced": 0,
+        "errors": ["после удаления недопустимых символов список уточнений пустой"],
+    }
+
+
+def test_normalize_callout_texts_dedupes_and_limits_to_10():
+    out = content_editor._normalize_callout_texts([
+        "  Спрос уже есть  ",
+        "Спрос уже есть",
+        "Номера уже в CRM.",
+        "Без подрядчиков",
+        "Лиды без рекламы",
+        "50 номеров бесплатно",
+        "Номера уже сегодня",
+        "Звоните им первыми",
+        "От 6 ₽ за номер",
+        "Без предоплаты",
+        "Горячие лиды сегодня",
+        "Лишняя строка сверх лимита",
+    ])
+
+    assert out == [
+        "Спрос уже есть",
+        "Номера уже в CRM",
+        "Без подрядчиков",
+        "Лиды без рекламы",
+        "50 номеров бесплатно",
+        "Номера уже сегодня",
+        "Звоните им первыми",
+        "От 6 ₽ за номер",
+        "Без предоплаты",
+        "Горячие лиды сегодня",
+    ]
+
+
+def test_assign_callout_accountwide_skips_uac_campaigns_before_grid():
+    class _Grid:
+        def __init__(self, login):
+            self.login = login
+
+        def _read_unified_campaign_update_payloads(self, ids):
+            assert ids == [11]
+            return {11: {"inheritableCallouts": {"calloutIds": []}}}
+
+        def _narrow_bases(self, payloads, ids, op):
+            return ({11: {"inheritableCallouts": {"calloutIds": []}}}, {})
+
+        def add_callouts(self, texts):
+            return {"Спрос уже есть": 701}
+
+        def set_campaign_callouts(self, campaign_ids, callout_ids):
+            return [{"id": "11"}]
+
+    out = content_editor._assign_callout_accountwide(
+        "login",
+        ["Спрос уже есть"],
+        {
+            "_campaign_ids": [11, 21],
+            "_campaign_types": {11: "TEXT_CAMPAIGN", 21: "UAC"},
+        },
+        grid_client_factory=lambda login: _Grid(login),
+    )
+
+    assert out["replaced"] == 1
+    assert out["updated_campaign_ids"] == [11]
+    assert out["skipped_campaign_ids"] == [21]
+    assert out["skipped_reasons"] == {"21": "Мастер кампаний / Товарный мастер не поддерживает уточнения"}
