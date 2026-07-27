@@ -19,7 +19,9 @@ def build_create_set_response(*, created: int, failed: int, launch: bool,
                               prepare_report: dict[str, Any] | None = None,
                               repair_gate_summary: dict[str, Any] | None = None,
                               auto_repair: dict[str, Any] | None = None,
-                              skipped_existing: int = 0) -> dict[str, Any]:
+                              skipped_existing: int = 0,
+                              chan_A_wall_sec: float | None = None,
+                              chan_B_wall_sec: float | None = None) -> dict[str, Any]:
     """Return the public create_set JSON payload."""
     return {
         "created": created,
@@ -44,4 +46,9 @@ def build_create_set_response(*, created: int, failed: int, launch: bool,
         "prepare": prepare_report,
         "repair_gate": repair_gate_summary,
         "auto_repair": auto_repair,
+        # Wall-clock таймеры параллельных каналов. None при DIRECT_PARALLEL_CHANNELS=0.
+        # Базовая точка: job 446ab5bd0ab3 = 2397s, 23 A-item, один токен-поток.
+        # При двух суб-потоках ожидаемый выигрыш: chan_A_wall_sec ≈ 1200s (-50%).
+        "chan_A_wall_sec": chan_A_wall_sec,
+        "chan_B_wall_sec": chan_B_wall_sec,
     }

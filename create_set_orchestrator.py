@@ -26,6 +26,69 @@ def _api_first_enabled() -> bool:
 _API_FIRST_FLIP_STREAK = 2
 
 
+class _ASharedCookieState:
+    """Общий флаг via_cookie для всех суб-потоков канала A.
+
+    Когда один суб-поток детектирует исчерпание баллов (152) и флипает via_cookie,
+    второй подхватывает это изменение перед обработкой своего следующего item'а.
+    Атомарность обеспечивается threading.Lock — гонка записи исключена.
+
+    Используется только когда DIRECT_TOKEN_THREADS >= 2 (дефолт) и в канале A
+    больше одного item'а. В остальных случаях (один суб-поток, DIRECT_PARALLEL_CHANNELS=0)
+    каждый _Chan живёт в собственном потоке и синхронизация не нужна.
+    """
+    __slots__ = ("_lock", "via_cookie")
+
+    def __init__(self, via_cookie_init: bool) -> None:
+        self._lock = threading.Lock()
+        self.via_cookie = bool(via_cookie_init)
+
+    def sync_to(self, ch) -> None:
+        """Синхронизировать ch.via_cookie из общего состояния (вызывать ПЕРЕД item'ом).
+
+        Если другой суб-поток уже флипнул общий флаг, подтягиваем и локальный.
+        Операция идемпотентна: повторный вызов после уже выставленного ch.via_cookie=True —
+        no-op (проверка `not ch.via_cookie`).
+        """
+        with self._lock:
+            if self.via_cookie and not ch.via_cookie:
+                ch.via_cookie = True
+
+    def flip_from(self, ch) -> None:
+        """Распространить флип ch.via_cookie на общее состояние (вызывать ПОСЛЕ item'а).
+
+        Если текущий суб-поток только что флипнул ch.via_cookie, пишем в общий флаг
+        под локом — другой суб-поток подхватит на следующем sync_to.
+        Операция идемпотентна: если общий флаг уже True, лок берётся, но запись — no-op.
+        """
+        if ch.via_cookie:
+            with self._lock:
+                self.via_cookie = True
+
+
+def _partition_a_indices(sorted_idx_a: list) -> tuple:
+    """Разбить отсортированный список индексов канала A на ДВЕ дизъюнктные партиции.
+
+    Возвращает (idx_a1, idx_a2) — interleaved split:
+      idx_a1 = sorted_idx_a[0::2]   (позиции 0, 2, 4, …)
+      idx_a2 = sorted_idx_a[1::2]   (позиции 1, 3, 5, …)
+
+    Гарантии:
+    - Дизъюнктность: set(idx_a1) ∩ set(idx_a2) == ∅
+    - Полнота: set(idx_a1) | set(idx_a2) == set(sorted_idx_a)
+    - Каждый item ЦЕЛИКОМ в одном потоке (партиция не разрывает item по полупути)
+    - Баланс нагрузки: оба суб-потока получают смешанную нагрузку (лёгкие tp5 +
+      тяжёлые tp1), т.к. `_item_priority` уже отсортировал их вперемешку
+
+    Пример (20 A-items: 6 лёгких tp5 + 14 тяжёлых tp1):
+      sorted = [tp5₀, tp5₁, tp5₂, tp5₃, tp5₄, tp5₅, tp1₀, …, tp1₁₃]
+      A1     = [tp5₀, tp5₂, tp5₄, tp1₀, tp1₂, tp1₄, tp1₆, tp1₈, tp1₁₀, tp1₁₂]
+      A2     = [tp5₁, tp5₃, tp5₅, tp1₁, tp1₃, tp1₅, tp1₇, tp1₉, tp1₁₁, tp1₁₃]
+    Оба получают 3 лёгких + 7 тяжёлых → нагрузка сбалансирована.
+    """
+    return sorted_idx_a[0::2], sorted_idx_a[1::2]
+
+
 def create_set_response(deps: dict):
     """Создание набора кампаний через UAC-движок. Только переданные items.
     ⛔ ПРАВИЛО: ВСЕ кампании создаются ТОЛЬКО ЧЕРНОВИКАМИ (launch принудительно False для всех типов,
@@ -410,6 +473,17 @@ def create_set_response(deps: dict):
         # ON (дефолт): tp2-tp5 могут идти параллельно tp6/tp7, tp1 остаётся последним.
         _PARALLEL = os.environ.get("DIRECT_PARALLEL_CHANNELS", "1").strip().lower() in (
             "1", "true", "on", "yes")
+        # Число суб-потоков внутри канала A (токен/v501). Дефолт 2 — лимит Директа «≤2 потока».
+        # Значения >2 запрещены (лимит площадки) и автоматически сбрасываются до 2.
+        # DIRECT_TOKEN_THREADS=1 — один поток A (прежнее поведение, мгновенный откат без деплоя).
+        _TOKEN_THREADS_RAW = int(os.environ.get("DIRECT_TOKEN_THREADS", "2") or "2")
+        _TOKEN_THREADS = max(1, min(2, _TOKEN_THREADS_RAW))
+        if _TOKEN_THREADS_RAW > 2:
+            import logging as _log_tt
+            _log_tt.getLogger("direct.orchestrator").warning(
+                "DIRECT_TOKEN_THREADS=%s превышает лимит Директа (2), применяем 2",
+                _TOKEN_THREADS_RAW,
+            )
         # _guard: сериализует мутации ОБЩЕГО состояния (job-счётчики, _generated_content_by_key,
         # prefetch-словари). ON → RLock (реентерабельный: нет дедлока при случайной вложенности);
         # OFF → nullcontext (нулевой оверхед, поведение байт-в-байт прежнее).
@@ -1240,7 +1314,13 @@ def create_set_response(deps: dict):
             ch.results.extend(_prod_results)
 
         # ── Драйвер: OFF = последовательный проход одним каналом (прежнее поведение);
-        #    ON = два НЕконкурирующих канала в двух потоках, общий wall-clock ≈ max(A,B). ─────────
+        #    ON = два НЕконкурирующих канала в отдельных потоках, wall-clock ≈ max(A,B). ──────────
+        # Таймеры wall-clock (замер выигрыша, пишутся в ответ джобы).
+        # Базовая точка для сравнения: job 446ab5bd0ab3 = 2397s на 23 A-item (один поток).
+        import time as _time_mod
+        _chan_A_wall: float | None = None   # wall-clock канала A (сек), None при PARALLEL=OFF
+        _chan_B_wall: float | None = None   # wall-clock канала B (сек), None при PARALLEL=OFF
+
         if not _PARALLEL:
             # OFF: единственный канал получает СУЩЕСТВУЮЩИЙ список results (тот же объект) → все
             # append/extend попадают прямо в него; порядок и семантика (152→via_cookie флип, cancel,
@@ -1253,43 +1333,103 @@ def create_set_response(deps: dict):
                     break
             _units_switched = _chan.units_switched
         else:
-            # ON: партиция по индексу — Канал A (units) и Канал B (cookie) не пересекаются по items.
-            # Раздельные списки результатов → нет гонки append и скан-152 канала A видит ТОЛЬКО свои
-            # результаты (результаты канала B на via_cookie/units не влияют). 152 в A: остаток A с
-            # этого пункта уходит по куке (ch_A.via_cookie=True) — БЕЗ гонки с B (B уже cookie и
-            # игнорирует via_cookie); финальный сбор остатка в deferred/авто-куки-джобу — как прежде,
-            # по именам из общего results. Каждый канал внутри себя строго ПОСЛЕДОВАТЕЛЕН.
-            ch_A = _Chan([], via_cookie)
+            # ON: канал A (токен/v501) и канал B (cookie/Grid/UAC) в отдельных потоках.
+            # Канал A может иметь 1 или 2 суб-потока (DIRECT_TOKEN_THREADS, дефолт 2).
+            # Канал B — всегда один поток: apply_campaign_aspects и cookie-слой сериализованы.
+            # Раздельные _Chan (отдельный results-список) → нет гонки append; скан-152 канала A
+            # видит только свои результаты (канал B на via_cookie/units не влияет).
+            # 152 в A: _ASharedCookieState синхронизирует flip между A-суб-потоками атомарно.
+
             ch_B = _Chan([], via_cookie)
-            _idx_A = sorted([i for i, _it in enumerate(items) if _channel_of(_it) == "A"],
-                            key=_item_priority)
             _idx_B = sorted([i for i, _it in enumerate(items) if _channel_of(_it) == "B"],
                             key=_item_priority)
+            _idx_A_all = sorted([i for i, _it in enumerate(items) if _channel_of(_it) == "A"],
+                                key=_item_priority)
 
             def _run_channel(ch, idxs):
+                """Один поток канала: строго последовательно, падение пункта не валит канал."""
                 for _ci in idxs:
                     if ch.stop:
                         break
                     try:
                         _run_item(_ci, items[_ci], ch)
-                    except Exception as _e:              # noqa: BLE001 — падение пункта не валит канал/набор
+                    except Exception as _e:              # noqa: BLE001
                         _aje(_job, f"[parallel-channel] пункт #{_ci} упал: {str(_e)[:200]}")
                         ch.results.append({"ok": False, "name": (items[_ci].get("name") or ""),
                                            "error": f"исключение канала создания: {str(_e)[:200]}"})
                     if ch.stop:
                         break
 
-            _tA = threading.Thread(target=_run_channel, args=(ch_A, _idx_A),
-                                   name="createset-chanA-units", daemon=True)
+            _t0_parallel = _time_mod.monotonic()
             _tB = threading.Thread(target=_run_channel, args=(ch_B, _idx_B),
                                    name="createset-chanB-cookie", daemon=True)
-            _tA.start(); _tB.start()
-            _tA.join(); _tB.join()
-            # Слияние: считалки (created/failed/skipped) порядко-независимы; собираем в исходном
-            # порядке пунктов для стабильного отчёта (A-пункты и B-пункты по возрастанию индекса).
-            results.extend(ch_A.results)
-            results.extend(ch_B.results)
-            _units_switched = ch_A.units_switched or ch_B.units_switched
+            _tB.start()
+
+            if _TOKEN_THREADS >= 2 and len(_idx_A_all) >= 2:
+                # Два суб-потока канала A: interleaved split по позиции в отсортированном списке.
+                # A1=[pos 0,2,4,…], A2=[pos 1,3,5,…] — оба получают смешанную нагрузку
+                # (лёгкие tp5 + тяжёлые tp1), ни один не простаивает на лёгких.
+                # Каждый item ЦЕЛИКОМ в одном потоке — порядок кампания→группа→объявление сохранён.
+                _idx_A1, _idx_A2 = _partition_a_indices(_idx_A_all)
+
+                # Общий via_cookie для A-суб-потоков: атомарный флип при 152.
+                # sync_to ПЕРЕД item'ом: подхватить флип от другого суб-потока.
+                # flip_from ПОСЛЕ item'а: распространить флип на другой суб-поток.
+                _a_shared = _ASharedCookieState(via_cookie)
+                ch_A1 = _Chan([], via_cookie)
+                ch_A2 = _Chan([], via_cookie)
+
+                def _run_channel_a_shared(ch, idxs):
+                    """Суб-поток канала A с синхронизацией общего via_cookie."""
+                    for _ci in idxs:
+                        if ch.stop:
+                            break
+                        # Подхватить флип от другого A-суб-потока перед item'ом (атомарно).
+                        _a_shared.sync_to(ch)
+                        try:
+                            _run_item(_ci, items[_ci], ch)
+                        except Exception as _e:          # noqa: BLE001
+                            _aje(_job, f"[parallel-channel] пункт #{_ci} упал: {str(_e)[:200]}")
+                            ch.results.append({
+                                "ok": False, "name": (items[_ci].get("name") or ""),
+                                "error": f"исключение канала создания: {str(_e)[:200]}"})
+                        # Распространить флип на другой A-суб-поток после item'а (атомарно).
+                        _a_shared.flip_from(ch)
+                        if ch.stop:
+                            break
+
+                _tA1 = threading.Thread(target=_run_channel_a_shared, args=(ch_A1, _idx_A1),
+                                        name="createset-chanA1-units", daemon=True)
+                _tA2 = threading.Thread(target=_run_channel_a_shared, args=(ch_A2, _idx_A2),
+                                        name="createset-chanA2-units", daemon=True)
+                _tA1.start(); _tA2.start()
+                _tA1.join(); _tA2.join()
+                _chan_A_wall = round(_time_mod.monotonic() - _t0_parallel, 1)
+                _tB.join()
+                _chan_B_wall = round(_time_mod.monotonic() - _t0_parallel, 1)
+
+                # Слияние: считалки порядко-независимы; A1+A2 — чётные и нечётные позиции
+                # исходного _idx_A_all; B — cookie-items. Итоговый порядок: A1, A2, B.
+                results.extend(ch_A1.results)
+                results.extend(ch_A2.results)
+                results.extend(ch_B.results)
+                _units_switched = ch_A1.units_switched or ch_A2.units_switched or ch_B.units_switched
+            else:
+                # DIRECT_TOKEN_THREADS=1 или в канале A только 1 item — один суб-поток A.
+                # Поведение байт-в-байт прежнее (одиночный _Chan, одиночный поток).
+                ch_A = _Chan([], via_cookie)
+                _tA = threading.Thread(target=_run_channel, args=(ch_A, _idx_A_all),
+                                       name="createset-chanA-units", daemon=True)
+                _tA.start()
+                _tA.join()
+                _chan_A_wall = round(_time_mod.monotonic() - _t0_parallel, 1)
+                _tB.join()
+                _chan_B_wall = round(_time_mod.monotonic() - _t0_parallel, 1)
+
+                # Слияние: A-пункты, затем B-пункты (сохраняет прежний порядок результатов).
+                results.extend(ch_A.results)
+                results.extend(ch_B.results)
+                _units_switched = ch_A.units_switched or ch_B.units_switched
 
         if _content_executor is not None:
             try:
@@ -1681,6 +1821,8 @@ def create_set_response(deps: dict):
             repair_gate_summary=repair_gate_summary,
             auto_repair=auto_repair,
             skipped_existing=skipped_existing,
+            chan_A_wall_sec=_chan_A_wall,
+            chan_B_wall_sec=_chan_B_wall,
         ))
     finally:
         # Сводка деградации контента за набор: сколько РК уехало на статический фолбэк и почему.
