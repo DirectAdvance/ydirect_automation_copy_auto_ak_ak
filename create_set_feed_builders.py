@@ -375,6 +375,12 @@ def _create_text_via_token(
     login: str, name: str, tp_code: str, counter_id: int, goal_id: int, cpa_rub: int,
     budget_rub: int, region_ids: list, href: str, slepok: str, site_type: str, r_code: str,
     titles: list | None, texts: list, pay: str = "cpa", city: str = "", autotarget: bool = False,
+    # keep_keywords — тот же режимный флаг, что у cookie-близнеца (_create_text_via_cookie:94).
+    # run_create_set_text шлёт ОДИН и тот же kwargs-набор в оба пути (create_set_text.py:53-83,
+    # «token_kwargs == cookie_kwargs»), а тело ниже уже прокидывает его в _build_text_from_pack →
+    # _build_tp2_adgroups (create_set_text_builders.py:168 `if autotarget and not keep_keywords:
+    # continue`). Без параметра в сигнатуре token-путь падал TypeError ещё до shell-кампании.
+    keep_keywords: bool = False,
     segment: str | None = None,
     only_cts: list[str] | None = None,
     only_gks: set | None = None,
