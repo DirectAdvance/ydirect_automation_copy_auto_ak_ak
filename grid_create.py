@@ -19,6 +19,7 @@ from typing import Any
 import requests
 
 from . import campaign as cmc
+from . import stage_timing as _timing   # STAGE_TIMING: пер-стадийный замер (только замер + лог)
 from .text_norm import _trim_clean  # используется в add_shopping_content_to_existing (line ~878)
 from .grid_create_payloads import (   # ре-экспорт: gc.build_ad и др. остаются доступны для внешних импортёров
     _PLATFORMS_OFF, build_unified_campaign, build_adgroup,
@@ -140,32 +141,35 @@ class GridCreateClient:
     def _mutate(self, op: str, query: str, variables: dict) -> dict:
         """POST мутации с ретраем на 403 (свежий CSRF) И на транзиентную серверную ошибку Яндекса
         ('Внутренняя ошибка сервера' в top-level errors) — tries+backoff. → JSON. GridCreateError на сбое."""
-        _last_transient = None
-        for srv_try in range(3):                     # до 3 попыток на транзиентную 5xx-подобную ошибку
-            for attempt in range(2):                 # внутренний ретрай: 403(CSRF)/страница логина
-                if self.csrf is None:
-                    self._bootstrap_csrf()
-                r = self._post(op, query, variables)
-                if r.status_code == 403:
+        # STAGE_TIMING: замер одной Grid-мутации целиком (включая CSRF/транзиент-ретраи) — только
+        # внутри item-контекста создания набора. Поведение не меняется, это чистый замер.
+        with _timing.stage(f"grid:{op}", only_in_item=True):
+            _last_transient = None
+            for srv_try in range(3):                     # до 3 попыток на транзиентную 5xx-подобную ошибку
+                for attempt in range(2):                 # внутренний ретрай: 403(CSRF)/страница логина
+                    if self.csrf is None:
+                        self._bootstrap_csrf()
                     r = self._post(op, query, variables)
-                if self._looks_like_login_page(r) and attempt == 0:
-                    self._refresh_cookie()
-                    continue
-                break
-            try:
-                j = r.json()
-            except Exception as e:  # noqa: BLE001
-                raise GridCreateError(f"{op}: не-JSON HTTP {r.status_code}: {r.text[:160]}") from e
-            errs = j.get("errors")
-            if errs:
-                _msg = str(errs).lower()
-                if any(t in _msg for t in self._TRANSIENT_ERR) and srv_try < 2:
-                    _last_transient = str(errs)[:240]
-                    time.sleep(0.6 * (srv_try + 1))  # backoff 0.6s → 1.2s перед повтором
-                    continue                         # транзиент Яндекса → повторяем мутацию
-                raise GridCreateError(f"{op}: {str(errs)[:240]}")
-            return j
-        raise GridCreateError(f"{op}: транзиент Яндекса не ушёл за 3 попытки: {_last_transient}")
+                    if r.status_code == 403:
+                        r = self._post(op, query, variables)
+                    if self._looks_like_login_page(r) and attempt == 0:
+                        self._refresh_cookie()
+                        continue
+                    break
+                try:
+                    j = r.json()
+                except Exception as e:  # noqa: BLE001
+                    raise GridCreateError(f"{op}: не-JSON HTTP {r.status_code}: {r.text[:160]}") from e
+                errs = j.get("errors")
+                if errs:
+                    _msg = str(errs).lower()
+                    if any(t in _msg for t in self._TRANSIENT_ERR) and srv_try < 2:
+                        _last_transient = str(errs)[:240]
+                        time.sleep(0.6 * (srv_try + 1))  # backoff 0.6s → 1.2s перед повтором
+                        continue                         # транзиент Яндекса → повторяем мутацию
+                    raise GridCreateError(f"{op}: {str(errs)[:240]}")
+                return j
+            raise GridCreateError(f"{op}: транзиент Яндекса не ушёл за 3 попытки: {_last_transient}")
 
     # ── шаги создания ────────────────────────────────────────────────────────
     def add_campaign(self, unified_campaign: dict) -> int:

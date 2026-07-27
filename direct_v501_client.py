@@ -26,6 +26,11 @@ try:
 except ImportError:                     # плоский запуск (локальные тесты из direct/)
     from text_norm import _strip_href_fragment
 
+try:                                    # STAGE_TIMING: пер-стадийный замер (только замер + лог)
+    from . import stage_timing as _timing
+except ImportError:                     # плоский запуск (локальные тесты из direct/)
+    import stage_timing as _timing
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── Per-token rate limiter (межпотоковый троттл v501) ───────────────────────
@@ -235,39 +240,42 @@ class DirectV501Client:
         # Межпотоковый троттл: ≤4.5 req/s суммарно для одного OAuth-токена.
         # При двух A-суб-потоках (A1+A2) без троттла суммарная частота может превысить
         # 5 req/s → 429. Acquire один раз перед циклом; при 429 retry ждёт Retry-After.
-        _get_v501_limiter(self._token).acquire()
-        url = f"{V501_BASE}/{service}"
-        body = {"method": method, "params": params}
-        _transient_err = None
-        for attempt in range(3):
-            resp = self.sess.post(url, json=body, timeout=self.timeout)
-            if resp.status_code == 429:
-                retry_after = int(resp.headers.get("Retry-After", 5))
-                time.sleep(retry_after)
-                continue
-            data = resp.json()
-            if "error" in data:
-                err = data["error"]
-                _code = err.get("error_code", 0)
-                _msg = err.get("error_string", "") or ""
-                # Транзиентные ошибки Яндекса («Сервис/операция временно недоступна», code 1000) —
-                # РЕТРАИМ с backoff, а не роняем создание РК на моргании API (живой кейс 5de58f8ad0d9:
-                # [v501:campaigns.add] 1000 → одна РК failed). До 3 попыток (как 429), потом бросаем.
-                if (_code == 1000 or "временно недоступ" in _msg.lower()) and attempt < 2:
-                    _transient_err = DirectV501Error(f"{service}.{method}", _code, _msg,
-                                                     err.get("error_detail", ""))
-                    time.sleep(3 * (attempt + 1))     # backoff 3с, 6с
+        # STAGE_TIMING: замер одной v501-операции целиком (включая троттл и ретраи) — только
+        # внутри item-контекста создания набора. Поведение не меняется, это чистый замер.
+        with _timing.stage(f"v501:{service}.{method}", only_in_item=True):
+            _get_v501_limiter(self._token).acquire()
+            url = f"{V501_BASE}/{service}"
+            body = {"method": method, "params": params}
+            _transient_err = None
+            for attempt in range(3):
+                resp = self.sess.post(url, json=body, timeout=self.timeout)
+                if resp.status_code == 429:
+                    retry_after = int(resp.headers.get("Retry-After", 5))
+                    time.sleep(retry_after)
                     continue
-                raise DirectV501Error(
-                    f"{service}.{method}",
-                    _code,
-                    _msg,
-                    err.get("error_detail", ""),
-                )
-            return data.get("result", {})
-        if _transient_err is not None:
-            raise _transient_err
-        raise DirectV501Error(f"{service}.{method}", 429, "превышен лимит запросов (3 ретрая)")
+                data = resp.json()
+                if "error" in data:
+                    err = data["error"]
+                    _code = err.get("error_code", 0)
+                    _msg = err.get("error_string", "") or ""
+                    # Транзиентные ошибки Яндекса («Сервис/операция временно недоступна», code 1000) —
+                    # РЕТРАИМ с backoff, а не роняем создание РК на моргании API (живой кейс 5de58f8ad0d9:
+                    # [v501:campaigns.add] 1000 → одна РК failed). До 3 попыток (как 429), потом бросаем.
+                    if (_code == 1000 or "временно недоступ" in _msg.lower()) and attempt < 2:
+                        _transient_err = DirectV501Error(f"{service}.{method}", _code, _msg,
+                                                         err.get("error_detail", ""))
+                        time.sleep(3 * (attempt + 1))     # backoff 3с, 6с
+                        continue
+                    raise DirectV501Error(
+                        f"{service}.{method}",
+                        _code,
+                        _msg,
+                        err.get("error_detail", ""),
+                    )
+                return data.get("result", {})
+            if _transient_err is not None:
+                raise _transient_err
+            raise DirectV501Error(f"{service}.{method}", 429, "превышен лимит запросов (3 ретрая)")
 
     # -- высокий уровень --
 

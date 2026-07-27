@@ -32,6 +32,11 @@ try:
 except ImportError:                     # плоский запуск (локальные тесты из direct/)
     from text_norm import _strip_href_fragment
 
+try:                                    # STAGE_TIMING: пер-стадийный замер (только замер + лог)
+    from . import stage_timing as _timing
+except ImportError:                     # плоский запуск (локальные тесты из direct/)
+    import stage_timing as _timing
+
 urllib3.disable_warnings()
 
 _DIR = Path(__file__).parent
@@ -386,28 +391,31 @@ class GridClient:
         if self.csrf:
             headers["x-csrf-token"] = self.csrf
         url = f"{GRID_URL}?operationName={op}&ulogin={self.login}"
-        # БЕЗ транспортного ретрая: add_shopping_ads/add_listing_ads/add_callouts/add_keywords —
-        # НЕ идемпотентны (обрыв ответа после commit + ретрай = ДУБЛЬ). Идемпотентные RMW-сеттеры
-        # (disabledPlaces/age/callouts full-RMW) переживают единичный обрыв через ре-ран джобы.
-        _had_csrf = self.csrf is not None   # A2-heal: различаем bootstrap-403 и stale-cookie-403
-        r = self.sess.post(url, json={"operationName": op, "query": query, "variables": variables},
-                           headers=headers, timeout=40)
-        _remember_csrf(r)
-        # A2-heal: если CSRF уже был установлен, но всё равно 403 — кука протухла после
-        # кэширования (ротация сессии Яндекса). Переподхватываем куку + CSRF и повторяем ОДИН раз.
-        # Случай первого bootstrap-403 (_had_csrf=False) сюда не попадает — им управляет
-        # _bootstrap_csrf (ретрай снаружи). Рекурсии нет: _reauth обнуляет self.csrf → вложенный
-        # вызов _post из _bootstrap_csrf видит _had_csrf=False и не заходит в эту ветку.
-        if ((r.status_code == 403 and _had_csrf) or _looks_like_login_page(r)) and not getattr(self, "_reauth_depth", 0):
-            reason = "stale-cookie 403" if r.status_code == 403 else "login-page"
-            print(f"[grid] {reason} {self.login}/{op}: reauth → retry", flush=True)
-            self._reauth()
-            headers["Cookie"] = self.cookie
-            if self.csrf:
-                headers["x-csrf-token"] = self.csrf
+        # STAGE_TIMING: замер одной Grid-операции (только внутри item-контекста создания набора —
+        # тот же транспорт в content/copy сервисах строк не пишет). Поведение не меняется.
+        with _timing.stage(f"grid:{op}", only_in_item=True):
+            # БЕЗ транспортного ретрая: add_shopping_ads/add_listing_ads/add_callouts/add_keywords —
+            # НЕ идемпотентны (обрыв ответа после commit + ретрай = ДУБЛЬ). Идемпотентные RMW-сеттеры
+            # (disabledPlaces/age/callouts full-RMW) переживают единичный обрыв через ре-ран джобы.
+            _had_csrf = self.csrf is not None   # A2-heal: различаем bootstrap-403 и stale-cookie-403
             r = self.sess.post(url, json={"operationName": op, "query": query, "variables": variables},
                                headers=headers, timeout=40)
             _remember_csrf(r)
+            # A2-heal: если CSRF уже был установлен, но всё равно 403 — кука протухла после
+            # кэширования (ротация сессии Яндекса). Переподхватываем куку + CSRF и повторяем ОДИН раз.
+            # Случай первого bootstrap-403 (_had_csrf=False) сюда не попадает — им управляет
+            # _bootstrap_csrf (ретрай снаружи). Рекурсии нет: _reauth обнуляет self.csrf → вложенный
+            # вызов _post из _bootstrap_csrf видит _had_csrf=False и не заходит в эту ветку.
+            if ((r.status_code == 403 and _had_csrf) or _looks_like_login_page(r)) and not getattr(self, "_reauth_depth", 0):
+                reason = "stale-cookie 403" if r.status_code == 403 else "login-page"
+                print(f"[grid] {reason} {self.login}/{op}: reauth → retry", flush=True)
+                self._reauth()
+                headers["Cookie"] = self.cookie
+                if self.csrf:
+                    headers["x-csrf-token"] = self.csrf
+                r = self.sess.post(url, json={"operationName": op, "query": query, "variables": variables},
+                                   headers=headers, timeout=40)
+                _remember_csrf(r)
         return r
 
     def _bootstrap_csrf(self) -> None:

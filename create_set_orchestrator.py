@@ -10,6 +10,7 @@ from flask import jsonify, request
 
 from . import campaign as cmc
 from . import grid_finalize as gf
+from . import stage_timing as _timing
 
 
 def _api_first_enabled() -> bool:
@@ -849,6 +850,12 @@ def create_set_response(deps: dict):
 
         def _run_item(_ci, it, ch):
             nonlocal _llm_gate_stopped, _llm_gate_stop_reason
+            # STAGE_TIMING: контекст item'а для этого потока канала — его подхватывают глубокие
+            # стадии (Grid/v501-транспорт) без протаскивания параметров. Только замер, поведение
+            # не меняет; item целиком исполняется в одном потоке, поэтому threading.local корректен.
+            _timing.set_item(job=(body.get("_job_id") or ""), login=login, item=_ci,
+                             tp=(_TYPE_TO_TP.get(it.get("type") or "") or str(it.get("tp") or "")),
+                             type=(it.get("type") or ""))
             # Обработка ОДНОГО пункта плана в контексте канала `ch`. break-точки прежнего цикла →
             # ch.stop=True + return; continue → return. Всё общее состояние (results/units/via_cookie/
             # tp7-кэш) — на ch (изолировано по каналу); job-счётчики/prefetch/контент-кэш — под _guard.
@@ -1077,7 +1084,8 @@ def create_set_response(deps: dict):
                 _c = {}
                 _gen_error = ""
                 try:
-                    _c = _take_prefetched_content(_ci, it) or {}
+                    with _timing.stage("content_gen"):     # LLM-генерация/ожидание префетча
+                        _c = _take_prefetched_content(_ci, it) or {}
                     if _c.get("titles") and not it.get("titles"):
                         it["titles"] = _c["titles"]
                     if _c.get("texts") and not it.get("texts"):
@@ -1154,7 +1162,8 @@ def create_set_response(deps: dict):
 
             # ── tp1 РСЯ: ЕПК v501 mode=network_cpa с бренд-группами из пака M3 ──────
             if it.get("type") == "tp1_rsy":
-                _wait_tp1_images()
+                with _timing.stage("wait_tp1_images"):     # ожидание прогрева картинок tp1
+                    _wait_tp1_images()
                 from .create_set_tp1 import run_create_set_tp1
                 ch.results.extend(run_create_set_tp1(
                     it=it, name=name,
@@ -1340,9 +1349,11 @@ def create_set_response(deps: dict):
             _chan = _Chan(results, via_cookie)
             for _ci in sorted(range(len(items)), key=_item_priority):
                 it = items[_ci]
-                _run_item(_ci, it, _chan)
+                with _timing.stage("item_total"):
+                    _run_item(_ci, it, _chan)
                 if _chan.stop:                           # прежний break (cancel / M3-гейт-отмена)
                     break
+            _timing.clear_item()                         # postprocess не приписывается последнему item'у
             _units_switched = _chan.units_switched
         else:
             # ON: канал A (токен/v501) и канал B (cookie/Grid/UAC) в отдельных потоках.
@@ -1364,13 +1375,15 @@ def create_set_response(deps: dict):
                     if ch.stop:
                         break
                     try:
-                        _run_item(_ci, items[_ci], ch)
+                        with _timing.stage("item_total"):
+                            _run_item(_ci, items[_ci], ch)
                     except Exception as _e:              # noqa: BLE001
                         _aje(_job, f"[parallel-channel] пункт #{_ci} упал: {str(_e)[:200]}")
                         ch.results.append({"ok": False, "name": (items[_ci].get("name") or ""),
                                            "error": f"исключение канала создания: {str(_e)[:200]}"})
                     if ch.stop:
                         break
+                _timing.clear_item()
 
             _t0_parallel = _time_mod.monotonic()
             _tB = threading.Thread(target=_run_channel, args=(ch_B, _idx_B),
@@ -1399,7 +1412,8 @@ def create_set_response(deps: dict):
                         # Подхватить флип от другого A-суб-потока перед item'ом (атомарно).
                         _a_shared.sync_to(ch)
                         try:
-                            _run_item(_ci, items[_ci], ch)
+                            with _timing.stage("item_total"):
+                                _run_item(_ci, items[_ci], ch)
                         except Exception as _e:          # noqa: BLE001
                             _aje(_job, f"[parallel-channel] пункт #{_ci} упал: {str(_e)[:200]}")
                             ch.results.append({
@@ -1414,6 +1428,7 @@ def create_set_response(deps: dict):
                         _a_shared.flip_from(ch)
                         if ch.stop:
                             break
+                    _timing.clear_item()
 
                 _tA1 = threading.Thread(target=_run_channel_a_shared, args=(ch_A1, _idx_A1),
                                         name="createset-chanA1-units", daemon=True)
