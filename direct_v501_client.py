@@ -13,6 +13,7 @@ Direct API v501 (Unified Performance Campaign / ЕПК).
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -26,6 +27,49 @@ except ImportError:                     # плоский запуск (лока�
     from text_norm import _strip_href_fragment
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ─── Per-token rate limiter (межпотоковый троттл v501) ───────────────────────
+# Лимит Директа: 5 req/s на один OAuth-токен. При двух A-суб-потоках (A1+A2) без
+# троттла суммарная частота ≈6 req/s → 429 → реактивный backoff → общее замедление.
+# Цель: ≤4.5 req/s суммарно для ОДНОГО токена — запас к лимиту 5 req/s.
+# При DIRECT_TOKEN_THREADS=1 только один поток вызывает _call → интервал между
+# вызовами >> 222ms (сетевая задержка), троттл практически не срабатывает.
+
+_V501_MAX_RATE: float = 4.5           # req/s на токен
+_v501_limiters: dict[str, "_V501RateLimiter"] = {}
+_v501_limiters_lock = threading.Lock()
+
+
+class _V501RateLimiter:
+    """Token-bucket: минимальный интервал между вызовами = 1/max_rate секунды.
+
+    Гарантирует, что любые два вызова _call для одного OAuth-токена
+    разделены не менее чем ``min_interval`` секунд. Thread-safe через Lock.
+    """
+
+    def __init__(self, max_rate: float = _V501_MAX_RATE) -> None:
+        self._min_interval = 1.0 / max_rate
+        self._lock = threading.Lock()
+        self._last_call: float = 0.0
+
+    def acquire(self) -> None:
+        """Заблокировать, если вызов раньше разрешённого времени."""
+        with self._lock:
+            now = time.monotonic()
+            wait = self._last_call + self._min_interval - now
+            if wait > 0:
+                time.sleep(wait)
+            self._last_call = time.monotonic()
+
+
+def _get_v501_limiter(token: str) -> _V501RateLimiter:
+    """Вернуть (создав при необходимости) лимитер для данного OAuth-токена."""
+    if token not in _v501_limiters:
+        with _v501_limiters_lock:
+            if token not in _v501_limiters:      # double-checked locking
+                _v501_limiters[token] = _V501RateLimiter()
+    return _v501_limiters[token]
+
 
 # ─── Direct API v501 (UNIFIED_CAMPAIGN / ЕПК) ────────────────────────────────
 
@@ -174,6 +218,7 @@ class DirectV501Client:
     def __init__(self, oauth_token: str, client_login: str, *, timeout: int = 30):
         self.client_login = client_login
         self.timeout = timeout
+        self._token = oauth_token          # ключ для per-token лимитера
         self.sess = requests.Session()
         self.sess.headers.update({
             "Authorization": f"Bearer {oauth_token}",
@@ -187,6 +232,10 @@ class DirectV501Client:
 
     def _call(self, service: str, method: str, params: dict) -> dict:
         """Вызов метода v501. Возвращает result-словарь или бросает DirectV501Error."""
+        # Межпотоковый троттл: ≤4.5 req/s суммарно для одного OAuth-токена.
+        # При двух A-суб-потоках (A1+A2) без троттла суммарная частота может превысить
+        # 5 req/s → 429. Acquire ПЕРЕД каждым HTTP-запросом (вкл. ретраи).
+        _get_v501_limiter(self._token).acquire()
         url = f"{V501_BASE}/{service}"
         body = {"method": method, "params": params}
         _transient_err = None

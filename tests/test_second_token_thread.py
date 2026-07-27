@@ -15,7 +15,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from direct.create_set_orchestrator import _ASharedCookieState, _partition_a_indices
+from direct.create_set_orchestrator import (
+    _ASharedCookieState,
+    _compute_token_threads,
+    _partition_a_indices,
+)
 from direct.create_set_response import build_create_set_response
 
 
@@ -264,31 +268,131 @@ class TestBuildCreateSetResponseTimingFields:
 # ── Feature flag: DIRECT_TOKEN_THREADS env var logic ─────────────────────────
 
 class TestTokenThreadsEnvVar:
-    """Verify that _TOKEN_THREADS is correctly capped (1 ≤ x ≤ 2).
+    """Verify that _compute_token_threads() correctly caps DIRECT_TOKEN_THREADS (1 ≤ x ≤ 2).
 
-    The actual capping logic is inside create_set_response (a closure), so
-    we test the arithmetic separately here, mirroring the production code.
+    Tests call the REAL production function via monkeypatch.setenv so that
+    os.environ reads are exercised end-to-end (previously the test mirrored
+    the arithmetic locally and never exercised the actual env-var read path).
     """
 
-    @staticmethod
-    def _compute_token_threads(env_value: str) -> int:
-        raw = int(env_value or "2")
-        return max(1, min(2, raw))
+    def test_default_is_2(self, monkeypatch):
+        monkeypatch.setenv("DIRECT_TOKEN_THREADS", "2")
+        assert _compute_token_threads() == 2
 
-    def test_default_is_2(self):
-        assert self._compute_token_threads("2") == 2
+    def test_value_1_gives_1(self, monkeypatch):
+        monkeypatch.setenv("DIRECT_TOKEN_THREADS", "1")
+        assert _compute_token_threads() == 1
 
-    def test_value_1_gives_1(self):
-        assert self._compute_token_threads("1") == 1
+    def test_value_0_clamped_to_1(self, monkeypatch):
+        monkeypatch.setenv("DIRECT_TOKEN_THREADS", "0")
+        assert _compute_token_threads() == 1
 
-    def test_value_0_clamped_to_1(self):
-        assert self._compute_token_threads("0") == 1
+    def test_value_3_clamped_to_2(self, monkeypatch):
+        monkeypatch.setenv("DIRECT_TOKEN_THREADS", "3")
+        assert _compute_token_threads() == 2
 
-    def test_value_3_clamped_to_2(self):
-        assert self._compute_token_threads("3") == 2
+    def test_value_100_clamped_to_2(self, monkeypatch):
+        monkeypatch.setenv("DIRECT_TOKEN_THREADS", "100")
+        assert _compute_token_threads() == 2
 
-    def test_value_100_clamped_to_2(self):
-        assert self._compute_token_threads("100") == 2
+    def test_value_2_preserved(self, monkeypatch):
+        monkeypatch.setenv("DIRECT_TOKEN_THREADS", "2")
+        assert _compute_token_threads() == 2
 
-    def test_value_2_preserved(self):
-        assert self._compute_token_threads("2") == 2
+    def test_env_absent_defaults_to_2(self, monkeypatch):
+        """Env var missing entirely → default 2."""
+        monkeypatch.delenv("DIRECT_TOKEN_THREADS", raising=False)
+        assert _compute_token_threads() == 2
+
+    def test_warning_threshold_value_above_2_clamped(self, monkeypatch):
+        """Values >2 are clamped (warning is a side-effect, not tested here)."""
+        monkeypatch.setenv("DIRECT_TOKEN_THREADS", "5")
+        assert _compute_token_threads() == 2
+
+
+# ── V501 inter-thread rate limiter ───────────────────────────────────────────
+
+class TestV501RateLimiter:
+    """Verify _V501RateLimiter enforces per-token rate ceiling.
+
+    Tests use a very small max_rate to keep wall time short while still
+    exercising the timing logic reliably.
+    """
+
+    def test_single_thread_no_delay_first_call(self):
+        """First acquire() should not sleep (no previous call to space from)."""
+        from direct.direct_v501_client import _V501RateLimiter
+        limiter = _V501RateLimiter(max_rate=1000.0)  # 1ms interval
+        t0 = time.monotonic()
+        limiter.acquire()
+        elapsed = time.monotonic() - t0
+        assert elapsed < 0.1, f"First acquire should not sleep, took {elapsed:.3f}s"
+
+    def test_two_rapid_calls_are_throttled(self):
+        """Two rapid acquire() calls must be separated by ≥ min_interval."""
+        from direct.direct_v501_client import _V501RateLimiter
+        max_rate = 20.0  # 50ms interval — fast enough for CI, slow enough to measure
+        limiter = _V501RateLimiter(max_rate=max_rate)
+        limiter.acquire()   # 1st call
+        t1 = time.monotonic()
+        limiter.acquire()   # 2nd call — must wait
+        elapsed = time.monotonic() - t1
+        min_expected = (1.0 / max_rate) * 0.8   # 80% tolerance for timing noise
+        assert elapsed >= min_expected, (
+            f"Expected throttle of ≥{min_expected:.3f}s, got {elapsed:.3f}s")
+
+    def test_two_threads_combined_rate_below_limit(self):
+        """Two concurrent threads must not exceed max_rate together."""
+        from direct.direct_v501_client import _V501RateLimiter
+        max_rate = 20.0   # 50ms interval
+        n_calls_each = 5
+        limiter = _V501RateLimiter(max_rate=max_rate)
+        timestamps: list[float] = []
+        lock = threading.Lock()
+
+        def caller():
+            for _ in range(n_calls_each):
+                limiter.acquire()
+                with lock:
+                    timestamps.append(time.monotonic())
+
+        t1 = threading.Thread(target=caller)
+        t2 = threading.Thread(target=caller)
+        t_start = time.monotonic()
+        t1.start(); t2.start()
+        t1.join(); t2.join()
+        total_time = time.monotonic() - t_start
+
+        # 10 calls total at max_rate=20/s should take ≥ (10-1)/20 = 0.45s
+        min_expected_total = (n_calls_each * 2 - 1) / max_rate * 0.8
+        assert total_time >= min_expected_total, (
+            f"10 calls should take ≥{min_expected_total:.3f}s, got {total_time:.3f}s; "
+            f"rate limiter not throttling correctly")
+
+    def test_per_token_isolation(self):
+        """Different tokens get independent limiters — no cross-token throttle."""
+        from direct.direct_v501_client import _get_v501_limiter
+        import uuid
+        tok_a = f"test-token-{uuid.uuid4()}"
+        tok_b = f"test-token-{uuid.uuid4()}"
+        lim_a = _get_v501_limiter(tok_a)
+        lim_b = _get_v501_limiter(tok_b)
+        assert lim_a is not lim_b, "Different tokens must have independent limiters"
+        # Same token returns the same instance
+        assert _get_v501_limiter(tok_a) is lim_a, "Same token must return same limiter"
+
+    def test_single_thread_no_extra_delay_between_spaced_calls(self):
+        """At DIRECT_TOKEN_THREADS=1, calls are naturally spaced — no synthetic delay."""
+        from direct.direct_v501_client import _V501RateLimiter
+        max_rate = 4.5   # production default
+        min_interval = 1.0 / max_rate   # ≈0.222s
+        limiter = _V501RateLimiter(max_rate=max_rate)
+        limiter.acquire()   # prime the limiter
+        # Simulate single-thread: next call arrives after natural API latency (≥300ms >> 222ms)
+        time.sleep(min_interval + 0.05)   # 272ms > 222ms — no throttle expected
+        t0 = time.monotonic()
+        limiter.acquire()
+        elapsed = time.monotonic() - t0
+        assert elapsed < 0.05, (
+            f"Single-thread call arriving after natural gap should not be throttled, "
+            f"got {elapsed:.3f}s")

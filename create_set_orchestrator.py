@@ -20,6 +20,18 @@ def _api_first_enabled() -> bool:
     return os.getenv("DIRECT_API_FIRST", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _compute_token_threads() -> int:
+    """Число суб-потоков внутри канала A (токен/v501) из переменной DIRECT_TOKEN_THREADS.
+
+    Допустимый диапазон [1, 2]: значения <1 зажимаются до 1, >2 — до 2.
+    Дефолт 2 — лимит Директа «≤2 параллельных потока на токен».
+    При значении >2 дополнительно пишет warning в лог (caller-уровень).
+    Вынесено как module-level функция для удобства тестирования (monkeypatch.setenv).
+    """
+    _raw = int(os.environ.get("DIRECT_TOKEN_THREADS", "2") or "2")
+    return max(1, min(2, _raw))
+
+
 # Порог строгого 152-флипа при API-first: столько РЕАЛЬНЫХ 152-провалов подряд (или подтверждённый
 # units≈0) до перевода остатка набора на куку. Мелкий/транзиентный/ложный 152 при живых баллах не
 # уводит на куку зря (у агентства баллов много — одиночный 152 обычно транзиент).
@@ -477,7 +489,7 @@ def create_set_response(deps: dict):
         # Значения >2 запрещены (лимит площадки) и автоматически сбрасываются до 2.
         # DIRECT_TOKEN_THREADS=1 — один поток A (прежнее поведение, мгновенный откат без деплоя).
         _TOKEN_THREADS_RAW = int(os.environ.get("DIRECT_TOKEN_THREADS", "2") or "2")
-        _TOKEN_THREADS = max(1, min(2, _TOKEN_THREADS_RAW))
+        _TOKEN_THREADS = _compute_token_threads()
         if _TOKEN_THREADS_RAW > 2:
             import logging as _log_tt
             _log_tt.getLogger("direct.orchestrator").warning(
@@ -1393,7 +1405,12 @@ def create_set_response(deps: dict):
                             ch.results.append({
                                 "ok": False, "name": (items[_ci].get("name") or ""),
                                 "error": f"исключение канала создания: {str(_e)[:200]}"})
-                        # Распространить флип на другой A-суб-поток после item'а (атомарно).
+                        # Распространить флип на другой А-суб-поток после item'а (атомарно).
+                        # Допустимое одно-item окно: если A1 детектирует 152 в середине своего
+                        # item'а и устанавливает ch.via_cookie=True, A2 может взять ещё ОДИН
+                        # следующий item с токеном до того, как sync_to() передаст флип. Это
+                        # ожидаемое поведение (не race condition): flip_from пишется ПОСЛЕ завершения
+                        # item'а A1, а sync_to A2 читается ПЕРЕД своим следующим item'ом.
                         _a_shared.flip_from(ch)
                         if ch.stop:
                             break
