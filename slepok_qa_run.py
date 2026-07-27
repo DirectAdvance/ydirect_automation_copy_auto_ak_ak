@@ -51,7 +51,10 @@ ORDER = ["pavlov", "kryuchkova", "karavaev", "gordeeva", "zubakin", "chepelev",
          "gen_ses", "dmp",
          # Новые слепки (2026-07-16). Без них --only avto_sk молча давал пустой
          # прогон: order фильтруется по ORDER, а не по slepki_structure.json.
-         "avto_sk", "avtolajt_bu", "sk_krs"]
+         "avto_sk", "avtolajt_bu", "sk_krs",
+         # piterkina добавлена 2026-07-21 (была в slepki/_order.json, но отсутствовала
+         # здесь → --only piterkina молча давал пустой прогон).
+         "piterkina"]
 
 # --fast: один лёгкий site_type на слепок (Монобренд = 1 бренд = мало групп = быстро).
 FAST_SITETYPE = {s: "Монобренд" for s in ORDER}
@@ -70,6 +73,12 @@ RESULTS_PATH = os.environ.get("SLEPOK_QA_RESULTS") or os.path.join(
     os.path.dirname(__file__), "slepok_qa_results.json")
 REPORT_PATH = os.environ.get("SLEPOK_QA_REPORT") or os.path.join(
     os.path.dirname(__file__), "slepok_qa_report.md")
+
+# После done-джобы ждём отложенный автофикс (_delayed_repair_daemon_loop, ~180с)
+# и только потом снимаем ФИНАЛЬНЫЙ пост-ремонтный вердикт.
+# Без этой паузы delete_drafts следующего слепка отменяет repair (superseded),
+# и все FAIL фиксируются ДО починки — ложные.
+_REPAIR_WAIT = 210  # секунды (180с автофикс + 30с буфер)
 
 
 def _log(msg):
@@ -302,8 +311,20 @@ def main():
 
             for st in site_types:
                 _log(f"  -- site_type={st}")
+                # single_feed_fallback=True — автопрогон без человека у поп-апа: если профильных
+                # фидов (/yandex.xml, /yandex-used-auto.xml) на аккаунте нет, план сразу строится
+                # на фолбэк-фиде FALLBACK_SINGLE_FEED_KEY. Без этого ключа /set_plan отдаёт
+                # feeds=[] → в плане НЕТ product-item'ов и tp7 тихо не создаётся (см.
+                # ERRORS_JOURNAL: FEED_FALLBACK_PLAN_VS_BUILDER_DESYNC). Ключ читается
+                # create_set_plan.py:468 именно на этапе ПЛАНА — слать его в /create_set поздно.
+                # "n": True — «без CPA»: план эмитит только CPC-вариант каждой позиции.
+                # ⚠️ Флаг читается ПЛАНОМ под именем "n" (create_set_plan.py:357), а не "no_cpa":
+                # тот шлётся ниже в /create_set и на состав плана НЕ влияет. Без "n" здесь план
+                # всегда строил cpc+cpa (×2 кампаний) — требование Семёна «без спа кампаний»
+                # молча не выполнялось.
                 body_plan = {"login": login, "agent": slepok, "site_type": st,
                              "variants": VARIANTS, "tp_sq": TP_SQ, "single_feed": True,
+                             "single_feed_fallback": True, "n": True,
                              "counter_id": COUNTER, "goal_id": GOAL}
                 r = cli.post("/direct/api/set_plan", json=body_plan)
                 if r.status_code != 200:
@@ -339,6 +360,25 @@ def main():
                     _log(f"     ⚠ existing job reused (busy?) job_id={job_id}")
                 _log(f"     job_id={job_id} total={cj.get('total')}")
                 st_status, res = _wait_job(job_id, args.jtimeout)
+
+                # ПОСТ-РЕМОНТНАЯ ПАУЗА + ПОВТОРНАЯ ВЕРИФИКАЦИЯ
+                # Отложенный автофикс срабатывает ~180с после done.
+                # Ждём _REPAIR_WAIT, потом снимаем свежий live_verification.
+                if st_status == "done" and isinstance(res, dict):
+                    _log(f"     Пауза {_REPAIR_WAIT}с (ожидание отложенного автофикса)...")
+                    time.sleep(_REPAIR_WAIT)
+                    _log(f"     Повторная live_verification (пост-ремонтная)...")
+                    try:
+                        with app.app_context():
+                            re_results = res.get("results") or []
+                            new_lv = B.create_set_live_verification(login, re_results)
+                        new_lvs = (new_lv.get("summary") or {}) if isinstance(new_lv, dict) else {}
+                        _log(f"     Пост-ремонтная: status={new_lv.get('status') if isinstance(new_lv, dict) else '?'} "
+                             f"errors={new_lvs.get('errors', 0)} warnings={new_lvs.get('warnings', 0)}")
+                        res["live_verification"] = new_lv
+                    except Exception as _re_err:
+                        _log(f"     ⚠ Пост-ремонтная верификация не удалась: {_re_err}")
+
                 summary, lv = {}, {}
                 if isinstance(res, dict):
                     summary = {"created": res.get("created"), "failed": res.get("failed")}

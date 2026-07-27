@@ -5,28 +5,27 @@ Run it behind nginx:
 
 This process owns only:
     /direct/automation/slepki
-    /direct/api/slepki/*   (13 эндпоинтов routes_slepki_edit)
+    /direct/api/slepki/*   (routes_slepki_edit + read-only ui_structure/minus-places)
 
 Зачем отдельный процесс (решение Семёна 2026-07-17): рестарт редактора структуры не должен
 ронять очередь создания РК, и наоборот — рестарт direct-create.service (частый) не должен
 ронять страницу слепков.
 
-Обмен со сервисом создания — ФАЙЛОМ на общей ФС, БЕЗ HTTP-API между процессами:
-  • правки пишутся АТОМАРНО (temp + os.replace, см. slepki_editor.py) — читатель видит либо
-    старый, либо новый ЦЕЛЫЙ снимок slepki_structure.json;
-  • direct-create перечитывает структуру свежей на каждый _json() (инвалидация по mtime+size).
-Этот процесс правки НЕ применяет: он только КЛАДЁТ edit-джобу в БД (job_new при DIRECT_ROLE=web),
-а исполняет её direct-create-worker (queue_server._is_edit_job → slepki_editor.handle_job).
+Обмен с сервисом создания — через общую ФС и очередь, БЕЗ HTTP-зависимости страницы от :5020:
+  • структура живёт в direct/slepki/<key>.json + _order.json;
+  • read-only срез страницы отдаёт этот процесс через /direct/api/slepki/ui_structure;
+  • правки кладутся edit-джобами в БД, применяет direct-slepki-worker.
 
 The main Direct automation app remains in direct-create.service on port 5020.
 """
+import gzip
 import json
 import os
 import sys
 from datetime import timedelta
 from pathlib import Path
 
-from flask import Blueprint, Flask, redirect, render_template, session
+from flask import Blueprint, Flask, jsonify, make_response, redirect, render_template, request, session
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +55,21 @@ from auth import _service_required_any  # noqa: E402
 from direct import automation_runtime as _runtime  # noqa: E402
 from direct import slepki_editor as _sed  # noqa: E402
 from direct.routes_slepki_edit import register_slepki_edit_routes  # noqa: E402
+from direct.routes_settings import save_global_minus_places_payload  # noqa: E402
+
+
+def _gzip_response(resp):
+    """Compress large page/API responses for browser refreshes behind nginx."""
+    if resp.status_code == 304 or len(resp.get_data()) < 1024:
+        return resp
+    if "gzip" not in (request.headers.get("Accept-Encoding") or "").lower():
+        return resp
+    gz = gzip.compress(resp.get_data(), compresslevel=5)
+    resp.set_data(gz)
+    resp.headers["Content-Encoding"] = "gzip"
+    resp.headers["Content-Length"] = str(len(gz))
+    resp.headers["Vary"] = "Accept-Encoding"
+    return resp
 
 
 def _inject_nav_context():
@@ -85,6 +99,9 @@ def create_app() -> Flask:
         static_folder=str(ROOT / "static"),
     )
     app.secret_key = _get("FLASK_SECRET_KEY")
+    app.json.ensure_ascii = False
+    app.json.compact = True
+    app.json.sort_keys = False
     app.permanent_session_lifetime = timedelta(days=30)
     app.context_processor(_inject_nav_context)
 
@@ -108,9 +125,58 @@ def create_app() -> Flask:
     @access
     def slepki_page():
         """Отдельная изолированная страница «Структура слепков» (свой процесс
-        direct-slepki.service). Срез структуры страница тянет с /direct/api/ui_structure
-        (:5020, общая сессия через nginx) — этот процесс его не рендерит."""
-        return render_template("direct/slepki.html", is_admin=bool(session.get("is_admin")))
+        direct-slepki.service). Срез структуры отдаётся тем же процессом, чтобы рестарт
+        direct-create.service не ломал открытие страницы."""
+        initial_payload = _runtime._ui_structure_payload(selected_slepok="pavlov", light=True)
+        initial_json = json.dumps(initial_payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+        resp = make_response(render_template(
+            "direct/slepki.html",
+            is_admin=bool(session.get("is_admin")),
+            initial_ui_json=initial_json,
+        ))
+        resp.headers["Cache-Control"] = "no-store"
+        return _gzip_response(resp)
+
+    @bp.route("/api/slepki/ui_structure")
+    @access
+    def slepki_api_ui_structure():
+        """Read-only срез структуры для отдельной страницы слепков (:5023)."""
+        light_arg = (request.args.get("light") or "").strip()
+        payload = _runtime._ui_structure_payload(
+            selected_slepok=(request.args.get("selected") or "").strip(),
+            # This endpoint belongs only to the isolated slepki page. Default to the fast
+            # light slice so stale HTML without `light=1` cannot pull the old 11MB payload.
+            light=(request.args.get("full") or "") != "1" and light_arg != "0",
+        )
+        resp = jsonify(payload)
+        sig = payload.get("sig")
+        if sig:
+            resp.set_etag(sig)
+            resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+            return _gzip_response(resp.make_conditional(request))
+        resp.headers["Cache-Control"] = "no-store"
+        return _gzip_response(resp)
+
+    @bp.route("/api/slepki/minus-places")
+    @access
+    def slepki_api_minus_places_get():
+        """Общий disabledPlaces list через slepki-сервис, без зависимости страницы от :5020."""
+        return jsonify({"places": _runtime._global_minus_places()})
+
+    @bp.route("/api/slepki/minus-places", methods=["POST"])
+    @access
+    def slepki_api_minus_places_post():
+        """Admin-only replace-all для общего disabledPlaces list через slepki-сервис."""
+        if not session.get("is_admin"):
+            return jsonify({"ok": False, "error": "только администратор"}), 403
+        payload, status = save_global_minus_places_payload(
+            request.json or {},
+            global_minus_places=_runtime._global_minus_places,
+            minus_places_ensure=_runtime._minus_places_ensure,
+            place_host=_runtime._place_host,
+            victory_conn_rw=_runtime._victory_conn_rw,
+        )
+        return jsonify(payload), status
 
     register_slepki_edit_routes(
         bp,

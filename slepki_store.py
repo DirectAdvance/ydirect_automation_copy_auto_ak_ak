@@ -44,7 +44,7 @@ def _is_part(stem: str) -> bool:
     ровно один хардкоженный `_order.json`, и `_proposed_dmp.json` уезжал в структуру как
     настоящий слепок (дубль `dmp`).
     """
-    return bool(stem) and not stem.startswith("_")
+    return bool(stem) and not stem.startswith("_") and not stem.startswith(".")
 
 
 def _order() -> list[str]:
@@ -113,6 +113,38 @@ def assemble(*, mutable: bool = False) -> dict:
         _CACHE_VAL = val
     # свежесобранный val уже лежит в кэше → отдавать его наружу мутатору тоже нельзя
     return copy.deepcopy(val) if mutable else val
+
+
+def assemble_light_for_selected(selected_key: str = "") -> dict:
+    """Light UI tree: full selected slepok + shell records for the dropdown.
+
+    Unlike ``assemble()``, this does not keep a full shared tree in memory for the caller and
+    avoids deepcopying every slepok when the UI needs only one opened structure after refresh.
+    """
+    keys = _order()
+    if not selected_key and keys:
+        selected_key = keys[0]
+    dirs = []
+    for key in keys:
+        try:
+            d = json.loads(_part_path(key).read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — bitый part не должен ронять всю light-структуру
+            continue
+        if key == selected_key:
+            dirs.append(d)
+            continue
+        shell = {
+            "key": d.get("key"),
+            "name": d.get("name"),
+            "ui_group": d.get("ui_group") or "auto",
+            "site_types": [{"name": s.get("name")} for s in (d.get("site_types") or [])],
+        }
+        if "auto" in d:
+            shell["auto"] = d.get("auto")
+        if d.get("ruleset"):
+            shell["ruleset"] = d.get("ruleset")
+        dirs.append(shell)
+    return {"directologists": dirs}
 
 
 def invalidate() -> None:

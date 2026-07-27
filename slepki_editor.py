@@ -41,6 +41,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import kontent_pack as kp
+from .geo_strip import normalize_geo_lines
 
 # preflight — из scripts/ (тот же корень пакета)
 import importlib.util as _ilu
@@ -90,6 +91,10 @@ def _ag_part1_map() -> dict:
 def _tp67_keywords_for(*a, **k) -> tuple:
     """DI: create_set_context._tp67_keywords_for (пак → библиотека реальных UAC-ключей → tp7↦tp6).
     Без configure — фолбэка нет, читается только пак (прежнее поведение)."""
+    return [], []
+
+def _tp67_keywords_for_groups(*a, **k) -> tuple:
+    """DI: create_set_context._tp67_keywords_for_groups for merged tp6/tp7 positions."""
     return [], []
 
 
@@ -302,6 +307,16 @@ _M3_WRITE_MAP_PY = (
     "    os.replace(tmp,path)\n"
 )
 
+_PACK_CACHE_MARKER = Path(__file__).resolve().parent / "slepki_pack_cache.marker"
+
+
+def _touch_pack_cache_marker() -> None:
+    """Invalidate web cached pack_facts/kw_totals after local pack writes."""
+    try:
+        _PACK_CACHE_MARKER.write_text(str(time.time_ns()), encoding="utf-8")
+    except Exception:  # noqa: BLE001 — marker is cache invalidation only; never fail the edit job
+        pass
+
 
 def _ssh_write_m3_map(mapping: dict) -> tuple[bool, str]:
     """Записать {абсолютный_путь_M3: текст} за ОДНУ ssh-сессию. Пустая карта → no-op."""
@@ -331,6 +346,8 @@ def _dual_write_pack_files_map(mapping: dict) -> dict:
             _atomic_write_local(_dst_abs(rel), text)
         except Exception as e:  # noqa: BLE001
             dst_fail.append({"rel": rel, "error": str(e)[:120]})
+    if mapping and not dst_fail:
+        _touch_pack_cache_marker()
     m3_ok, m3_err = _ssh_write_m3_map({_m3_abs(r): t for r, t in mapping.items()})
     return {"ok": (not dst_fail) and m3_ok,
             "count": len(mapping), "dst_ok": len(mapping) - len(dst_fail),
@@ -346,6 +363,7 @@ def _dual_write_pack_file(rel: str, text: str) -> dict:
     try:
         _atomic_write_local(_dst_abs(rel), text)
         res["dst"] = {"ok": True, "path": _dst_abs(rel)}
+        _touch_pack_cache_marker()
     except Exception as e:  # noqa: BLE001
         res["dst"] = {"ok": False, "error": str(e)[:200]}
     # M3-источник
@@ -488,8 +506,20 @@ def _write_profile(profile: dict) -> str:
 
 
 # ── чтение ключей группы (для просмотра в UI) ────────────────────────────────
+def _tp67_suppress_keywords_for_label(tp: str, position: str = "", target_label: str = "") -> bool:
+    """tp6/tp7 pure auto/audience rows must not borrow common ct0000 keyword packs."""
+    if tp not in ("tp6", "tp7"):
+        return False
+    label = str(target_label or position or "").strip().lower().replace("ё", "е")
+    if not label:
+        return False
+    if re.search(r"(^|[^0-9a-zа-я])кс([^0-9a-zа-я]|$)|ключ", label):
+        return False
+    return "автотаргет" in label or "аудитори" in label
+
+
 def read_group_keywords(site_type: str, tp: str, ct: str, slepok: str, group: str = "",
-                        position: str = "") -> dict:
+                        position: str = "", groups=None, target_label: str = "") -> dict:
     """{positive, minus, minus_shared, callouts, kw_source} по (тип сайта, tp, ct, слепок[, group]).
     minus_shared — библиотечный набор (просмотр, пер-ct); callouts — уточнения кампании.
     group непустой → per-group файлы ``{slepok}__{slug}...`` с фолбэком на легаси; ``group=""`` —
@@ -503,20 +533,69 @@ def read_group_keywords(site_type: str, tp: str, ct: str, slepok: str, group: st
     slepok = _safe_token(slepok, "slepok")
     ctn = kp._norm_ct(ct) or kp.GENERAL_CT
     kd = os.path.join(kp._ct_dir(site_type, tp, ctn), "keywords")
-    slug = kp._group_slug(group)
-    if slug:
-        pos, fp = kp._read_lines_opt(os.path.join(kd, f"{slepok}__{slug}.txt"))
-        if not fp:
-            pos = kp._read_lines(os.path.join(kd, f"{slepok}.txt"))
-        neg, fm = kp._read_lines_opt(os.path.join(kd, f"{slepok}__{slug}_minus.txt"))
-        if not fm:
-            neg = kp._read_lines(os.path.join(kd, f"{slepok}_minus.txt"))
-    else:
-        pos = kp._read_lines(os.path.join(kd, f"{slepok}.txt"))
-        neg = kp._read_lines(os.path.join(kd, f"{slepok}_minus.txt"))
+    group_list = []
+    if groups is not None:
+        group_list = [str(x).strip() for x in (groups or []) if str(x).strip()]
+    elif group:
+        group_list = [str(group).strip()]
+    def _read_pack_for(read_tp: str) -> tuple[list[str], list[str], bool]:
+        kd2 = os.path.join(kp._ct_dir(site_type, read_tp, ctn), "keywords")
+        pos2: list[str] = []
+        neg2: list[str] = []
+        found2 = False
+        if group_list:
+            for one_group in group_list:
+                slug2 = kp._group_slug(one_group)
+                if not slug2:
+                    continue
+                p2, fp2 = kp._read_lines_opt(os.path.join(kd2, f"{slepok}__{slug2}.txt"))
+                n2, fm2 = kp._read_lines_opt(os.path.join(kd2, f"{slepok}__{slug2}_minus.txt"))
+                if fp2:
+                    pos2.extend(p2)
+                    found2 = True
+                if fm2:
+                    neg2.extend(n2)
+            if not found2:
+                pos2 = kp._read_lines(os.path.join(kd2, f"{slepok}.txt"))
+            if not neg2:
+                neg2 = kp._read_lines(os.path.join(kd2, f"{slepok}_minus.txt"))
+        else:
+            pos2 = kp._read_lines(os.path.join(kd2, f"{slepok}.txt"))
+            neg2 = kp._read_lines(os.path.join(kd2, f"{slepok}_minus.txt"))
+        return pos2, neg2, found2
+
+    def _has_real_positive(lines: list[str]) -> bool:
+        return any(str(x or "").strip() and str(x or "").strip().lower() != "---autotargeting"
+                   for x in (lines or []))
+
+    suppress_tp67_keywords = _tp67_suppress_keywords_for_label(tp, position, target_label)
+    pos: list[str] = []
+    neg: list[str] = []
+    pos, neg, _ = _read_pack_for(tp)
+    if suppress_tp67_keywords:
+        pos = []
     neg_shared = kp._read_lines(os.path.join(kd, f"{slepok}_minus_shared.txt"))
     callouts = kp.read_callouts(site_type, tp, ctn, slepok, group=group)
-    kw_source = "pack"
+    kw_source = "autotargeting" if suppress_tp67_keywords else "pack"
+    if not suppress_tp67_keywords and tp in ("tp2", "tp4") and not _has_real_positive(pos):
+        donors = ("tp2", "tp1") if tp == "tp4" else ("tp1",)
+        for donor_tp in donors:
+            f_pos, f_neg, _ = _read_pack_for(donor_tp)
+            if _has_real_positive(f_pos):
+                pos = list(f_pos)
+                if not neg:
+                    neg = list(f_neg or [])
+                kw_source = f"{donor_tp}_fallback"
+                break
+    if not suppress_tp67_keywords and tp in ("tp6", "tp7") and position and len(group_list) > 1:
+        try:
+            f_pos, f_neg = _tp67_keywords_for_groups(
+                slepok, site_type, tp, ctn, "", position or None, None, groups=group_list
+            )
+        except Exception:  # noqa: BLE001
+            f_pos, f_neg = [], []
+        if f_pos:
+            pos, neg, kw_source = list(f_pos), list(f_neg or []), "merged"
     # tp6/tp7: M3-пака может не быть вовсе, а ключи всё равно уедут в кабинет — СОЗДАНИЕ берёт их
     # фолбэком из библиотеки реальных UAC-payload (create_set_context._tp67_keywords_for →
     # tp67_real_keywords.json). Без этого же фолбэка карточка врала: dmp/tp6/ct0834 показывал
@@ -525,21 +604,23 @@ def read_group_keywords(site_type: str, tp: str, ct: str, slepok: str, group: st
     # city="" — аккаунта в контексте структуры слепка нет; без своего города гео-фильтр ничего
     # не режет (city_morph._drop_foreign_city_keywords:191), т.е. показываем ДО-гео состав.
     #
-    # ГЕЙТ РЕЖИМА (обязателен): создание берёт ключи ТОЛЬКО для keyword-позиций
-    # (create_set_master_product.py:124 `if _want_keywords`). Без гейта карточка автотаргет-строки
-    # («МК - Общая - Автотаргетинг», tp6/tp7 авто-слепков) показала бы библиотечные ключи, которые
-    # в кабинет НЕ уедут — то же враньё, только наизнанку. position пуст (режим неизвестен) →
-    # фолбэк НЕ включаем: остаётся прежнее поведение «только пак».
-    if (not pos and tp in ("tp6", "tp7") and position
-            and _tp67_targeting_mode({"name": position}) == "keywords"):
+    # Режим tp6/tp7 больше НЕ выводится regex-ом из display-имени: создание считает его по
+    # содержимому структуры/пака в tp67_struct_expectations. Поэтому просмотр делает тот же
+    # group-aware lookup и показывает fallback-ключи только если тот путь реально нашёл фразы.
+    # position пуст (режим/позиция неизвестны) → фолбэк НЕ включаем: остаётся прежнее поведение
+    # «только пак».
+    if not suppress_tp67_keywords and not pos and tp in ("tp6", "tp7") and position:
         try:
-            f_pos, f_neg = _tp67_keywords_for(slepok, site_type, tp, ctn, "", position or None, None)
+            f_pos, f_neg = _tp67_keywords_for(
+                slepok, site_type, tp, ctn, "", position or None, None, group=group
+            )
         except Exception:  # noqa: BLE001 — фолбэк best-effort, карточка не должна падать
             f_pos, f_neg = [], []
         if f_pos:
             pos, kw_source = list(f_pos), "real_library"
             if not neg:
                 neg = list(f_neg or [])
+    pos = normalize_geo_lines(pos, dedup=True)
     return {"positive": kp._dedup(pos), "minus": kp._dedup(neg),
             "minus_shared": kp._dedup(neg_shared), "callouts": callouts,
             "kw_source": kw_source}
@@ -1013,7 +1094,8 @@ def apply_toggle_aon_aoff(spec: dict, actor: str = "") -> dict:
 def _gen_item_desc(tp: str, brand: str, segment: str) -> str:
     """Описание элемента (поле t), как в реальной структуре: «РСЯ {Бренд} марка» / «Поиск …»."""
     surf = {"tp1": "РСЯ", "tp2": "Поиск", "tp3": "ТГ РСЯ", "tp4": "Поиск",
-            "tp5": "Поиск", "tp6": "МК", "tp7": "ТК"}.get(tp, tp)
+            "tp5": "Поиск", "tp6": "МК", "tp7": "ТК",
+            "tp8": "Telegram", "tp9": "Max", "tp10": "ТГ+Макс"}.get(tp, tp)
     seg_word = {"Марки": "марка", "Модели": "модель", "Общее": "общая"}.get(segment, "")
     return f"{surf} {brand} {seg_word}".strip()
 

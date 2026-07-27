@@ -114,9 +114,9 @@ _EX_AT = re.compile(r"\bat\b")
 _EX_MANUAL = re.compile(r"manual")
 # запечённая метка tp.tgt → полная форма (эквивалент _TGT_BADGE_MAP)
 _EX_TGT_LABELS = {
-    "автотаргетинг": "автотаргетинг", "КС": "КС", "КС+авто": "КС+автотаргетинг",
-    "аудитории": "аудитории", "ауд+авто": "аудитории+автотаргетинг",
-    "КС+аудитории": "КС+аудитории", "КС+ауд+авто": "КС+аудитории+автотаргетинг",
+    "автотаргетинг": "Автотаргетинг", "КС": "КС", "КС+авто": "КС+Автотаргетинг",
+    "аудитории": "аудитории", "ауд+авто": "аудитории+Автотаргетинг",
+    "КС+аудитории": "КС+аудитории", "КС+ауд+авто": "КС+аудитории+Автотаргетинг",
 }
 
 
@@ -143,7 +143,7 @@ def _ex_tgt_from(aud: bool, state: str) -> str:
     """Эквивалент _tgtFrom(aud, state) из index.html."""
     if aud:
         return "КС+аудитории" if state == "aoff" else "аудитории"
-    return "КС" if state == "aoff" else "автотаргетинг"
+    return "КС" if state == "aoff" else "Автотаргетинг"
 
 
 def _ex_seg_tgt(tpn: int, gc: str, baked: str | None) -> str:
@@ -154,7 +154,7 @@ def _ex_seg_tgt(tpn: int, gc: str, baked: str | None) -> str:
         return "Товарная галерея"
     aud = _ex_first_ct(gc) in _EX_AUD_CTS
     lbl = _ex_tgt_from(aud, _ex_state(gc))
-    if tpn in (2, 4) and lbl == "автотаргетинг":  # tp2/tp4 aon = КС, не автотаргет
+    if tpn in (2, 4) and lbl.lower() == "автотаргетинг":  # tp2/tp4 aon = КС, не автотаргет
         lbl = "КС"
     return lbl
 
@@ -165,17 +165,52 @@ def _ex_tp67_tgt(it: dict) -> str:
     if _EX_KS_AUD.search(t):
         return "КС+аудитории"
     if _EX_AUTOT.search(t):
-        return "автотаргетинг"
+        return "Автотаргетинг"
     if _EX_AUD.search(t):
-        return "аудитории"
+        return "интересы"
     if _EX_KS.search(t):
         return "КС"
     if _EX_AT.search(t):
-        return "автотаргетинг"
+        return "Автотаргетинг"
     if _EX_MANUAL.search(t):
         return "КС"
     st = _ex_state(it.get("gc") or "") or _ex_state(it.get("c") or "")
-    return "КС" if st == "aoff" else "автотаргетинг"
+    return "КС" if st == "aoff" else "Автотаргетинг"
+
+
+def _ex_tp67_actual_name_and_tgt(slepok: str, site_type: str, tp_code: str, it: dict) -> tuple[str, str]:
+    """tp6/tp7 export label from the same keyword/audience fact used by creation/UI."""
+    raw = ""
+    camp_names = it.get("camp_names") or []
+    if camp_names:
+        raw = str(camp_names[0] or "").strip()
+    raw = raw or str(it.get("t") or "").strip()
+    try:
+        try:
+            from . import automation_runtime as ar
+            cctx = ar._create_set_context_module()
+        except Exception:  # noqa: BLE001
+            from . import create_set_context as cctx
+
+        ct = _ex_first_ct(it.get("gc") or it.get("c") or "") or "ct0000"
+        groups = [str(it.get("gk") or "").strip()]
+        groups.extend(str(x).strip() for x in (it.get("merged_gks") or []) if str(x).strip())
+        pos, _neg = cctx._tp67_keywords_for_groups(
+            slepok, site_type, tp_code, ct, "", raw or None, None, groups=groups
+        )
+        has_kw = bool(cctx._real_keywords(pos))
+        has_aud = bool(it.get("audiences") or [])
+        modes = cctx._tp67_modes_from_content(has_kw, has_aud, it.get("targeting_mode") or "")
+        tgt = cctx.tp67_targeting_label_from_modes(modes, tp_code)
+        base = cctx.tp67_clean_position_name_for_targeting(raw, "ТК" if tp_code == "tp7" else "МК")
+        prefix = "ТК" if tp_code == "tp7" else "МК"
+        if base and not re.match(r"^\s*(мк|тк)\b", base, re.I):
+            base = f"{prefix} - {base}"
+        elif not base:
+            base = prefix
+        return ((f"{base} - {tgt}" if base else tgt), tgt)
+    except Exception:  # noqa: BLE001 — export must remain available on partial DI failures
+        return raw, _ex_tp67_tgt(it)
 
 
 def _ex_iter_items(t: dict):
@@ -219,6 +254,11 @@ def _build_export_rows(slepki_editor, slepok: str, site_type: str) -> list:
     """Строки экспорта структуры слепка × типа сайта. Группировка кампаний = как в UI
     (index.html _campaignize / slepkiTpTree). Возвращает список списков (7 колонок)."""
     from . import blueprint_targeting as _btg  # ct→сегмент (leaf-модуль, без цикла)
+    from .create_set_structure import (
+        canonical_campaign_name as _canonical_campaign_name,
+        duplicate_group_base as _dup_group_base,
+        filtered_camp_names_for_group as _filtered_camp_names,
+    )
 
     struct = slepki_editor._load_struct(mutable=False)   # read-only обход → копия не нужна
     d = slepki_editor._find_dir(struct, slepok)
@@ -245,39 +285,54 @@ def _build_export_rows(slepki_editor, slepok: str, site_type: str) -> list:
         baked = _EX_TGT_LABELS.get((t.get("tgt") or "").strip()) if (t.get("tgt") or "").strip() else None
 
         if tpn in (6, 7):
-            # каждая группа = своя кампания (имя из item.t); таргетинг из хвоста имени
+            # каждая item-позиция = своя кампания; имя/таргетинг — по фактическим ключам/аудиториям
             for _lbl, it in _ex_iter_items(t):
-                nm = _ex_strip_prefix(it.get("t") or "")
-                camp = it.get("t") or nm
-                rows.append([site_type, code, title, camp, camp,
-                             _ex_tp67_tgt(it), it.get("gc") or ""])
+                camp, tgt = _ex_tp67_actual_name_and_tgt(slepok, site_type, code, it)
+                rows.append([site_type, code, title, camp, camp, tgt, it.get("gc") or ""])
             continue
 
         # сегментные tp1/2/4/5 + tp3: кампании = item.camp_names (иначе split-label/сегмент по gc)
         seg_tp = (tpn in (1, 2, 4, 5)) and not (tpn == 2 and slepok in non_auto)
-        seen: set = set()
+        raw_rows: list[tuple] = []
+        bases: set[tuple[str, str, str]] = set()
+        counts: dict[tuple[str, str, str], int] = {}
         for split_label, it in _ex_iter_items(t):
             gc = it.get("gc") or ""
             if not gc:
                 continue
             nm = _ex_strip_prefix(it.get("t") or "")
             grp = nm or gc
-            cn_list = it.get("camp_names") or []
+            seg = _seg_of(gc)
+            cn_list = _filtered_camp_names(it.get("camp_names") or [], seg, tpn)
+            from_camp_names = bool(cn_list)
             if not cn_list:
                 if split_label:
                     cn_list = [split_label]
                 elif seg_tp:
-                    cn_list = [_seg_of(gc)]
+                    cn_list = [seg]
                 else:
                     cn_list = [nm or "Общее"]
             tgt = _ex_seg_tgt(tpn, gc, baked)
             for cn0 in cn_list:
-                cn = cn0 or "Общее"
-                key = (code, cn, grp)
-                if key in seen:
-                    continue
-                seen.add(key)
-                rows.append([site_type, code, title, cn, grp, tgt, gc])
+                cn = _canonical_campaign_name(cn0 or "Общее", tgt, from_camp_names=from_camp_names)
+                raw_rows.append((cn, grp, tgt, gc))
+                base = _dup_group_base(grp)
+                exact = re.sub(r"\s+", " ", str(grp or "").strip().lower()).strip()
+                bkey = (cn, gc, base)
+                counts[bkey] = counts.get(bkey, 0) + 1
+                if base == exact:
+                    bases.add(bkey)
+        seen: set = set()
+        for cn, grp, tgt, gc in raw_rows:
+            base = _dup_group_base(grp)
+            exact = re.sub(r"\s+", " ", str(grp or "").strip().lower()).strip()
+            bkey = (cn, gc, base)
+            gkey = base if (bkey in bases or counts.get(bkey, 0) > 1) else exact
+            key = (code, cn, gc, gkey)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append([site_type, code, title, cn, grp, tgt, gc])
     return rows
 
 
@@ -339,17 +394,44 @@ def register_slepki_edit_routes(
         # group (=gk группы) → per-group файл {slepok}__{gk}.txt (фикс «одинаковые ключи по группам»:
         # без него читался ct-агрегат и все группы одного ct показывали одинаковые ключи). Пусто → легаси-агрегат.
         group = (request.args.get("group") or request.args.get("gk") or "").strip()
+        groups = [x.strip() for x in (request.args.get("groups") or "").split(",") if x.strip()]
         # position (опц.) — имя позиции/кампании строки (tp6/tp7). Нужно фолбэку реальных ключей:
         # создание матчит набор по ct И по позиции (create_set_context._tp67_keywords_from_real_library),
         # поэтому без него карточка могла бы взять не тот набор, что уедет в кабинет.
         position = (request.args.get("position") or "").strip()
+        # target_label — фактическая метка выбранной строки UI. Для synthetic pure AT tp6/tp7
+        # она важнее ct0000: иначе detail может подтянуть общие КС из соседней КС-кампании.
+        target_label = (request.args.get("target_label") or "").strip()
         if not (slepok and site_type and tp and ct):
             return jsonify({"error": "нужны slepok/site_type/tp/ct"}), 400
         bad = _bad_scope(slepok, site_type, tp)
         if bad:
             return bad
-        data = slepki_editor.read_group_keywords(site_type, tp, ct, slepok, group=group, position=position)
-        return jsonify({"slepok": slepok, "site_type": site_type, "tp": tp, "ct": ct, "group": group, **data})
+        data = slepki_editor.read_group_keywords(
+            site_type, tp, ct, slepok, group=group, position=position,
+            groups=groups or None, target_label=target_label
+        )
+        if tp in ("tp6", "tp7"):
+            try:
+                from . import automation_runtime as ar
+                cctx = ar._create_set_context_module()
+                exp = cctx.tp67_struct_expectations(slepok, site_type, tp, ct, "", position or None, None)
+                aud_ids = [
+                    str(x) for x in (exp.get("audiences") or [])
+                    if str(x).strip() and not str(x).strip().startswith("190")
+                ]
+                if aud_ids:
+                    data["audience_ids"] = aud_ids
+                    data["audiences"] = [
+                        a for a in ar._audience_objects(aud_ids)
+                        if str((a or {}).get("type") or "").upper() != "HOST"
+                    ]
+                data["target_label"] = target_label or cctx.tp67_targeting_label_from_modes(exp.get("modes") or [], tp)
+                data["struct_matched"] = bool(exp.get("matched"))
+            except Exception:  # noqa: BLE001 — ключи важнее; аудитории в карточке best-effort
+                pass
+        return jsonify({"slepok": slepok, "site_type": site_type, "tp": tp, "ct": ct,
+                        "group": group, "groups": groups, **data})
 
     # ── ассеты слепка: агрегат уточнений + библиотечных минусов (read-only) ────
     @bp.route("/api/slepki/assets", methods=["GET"])
