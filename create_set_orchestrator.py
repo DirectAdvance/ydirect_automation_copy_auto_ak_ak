@@ -1347,13 +1347,20 @@ def create_set_response(deps: dict):
             # append/extend попадают прямо в него; порядок и семантика (152→via_cookie флип, cancel,
             # skip, fan-out, deferred) идентичны прежнему циклу for _ci, it in enumerate(items).
             _chan = _Chan(results, via_cookie)
-            for _ci in sorted(range(len(items)), key=_item_priority):
-                it = items[_ci]
-                with _timing.stage("item_total"):
-                    _run_item(_ci, it, _chan)
-                if _chan.stop:                           # прежний break (cancel / M3-гейт-отмена)
-                    break
-            _timing.clear_item()                         # postprocess не приписывается последнему item'у
+            # finally обязателен: этот путь исполняется в ДОЛГОЖИВУЩЕМ потоке _create_worker_loop
+            # (queue_server.py). Пробрось _run_item исключение мимо clear_item — item-контекст
+            # (job/item/tp) остался бы в thread-local и приписался бы к чужим строкам postprocess /
+            # deferred repair до следующего set_item. В параллельных ветках это же ловится
+            # try/except внутри цикла.
+            try:
+                for _ci in sorted(range(len(items)), key=_item_priority):
+                    it = items[_ci]
+                    with _timing.stage("item_total"):
+                        _run_item(_ci, it, _chan)
+                    if _chan.stop:                       # прежний break (cancel / M3-гейт-отмена)
+                        break
+            finally:
+                _timing.clear_item()                     # postprocess не приписывается последнему item'у
             _units_switched = _chan.units_switched
         else:
             # ON: канал A (токен/v501) и канал B (cookie/Grid/UAC) в отдельных потоках.

@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import threading
@@ -393,7 +394,15 @@ class GridClient:
         url = f"{GRID_URL}?operationName={op}&ulogin={self.login}"
         # STAGE_TIMING: замер одной Grid-операции (только внутри item-контекста создания набора —
         # тот же транспорт в content/copy сервисах строк не пишет). Поведение не меняется.
-        with _timing.stage(f"grid:{op}", only_in_item=True):
+        # ⚠️ Вложенный вызов НЕ мерим: при stale-cookie 403 внешний _post зовёт _reauth →
+        # _bootstrap_csrf → _post("Callouts"). Строка grid:Callouts легла бы ВНУТРЬ внешней
+        # grid:<op>, и агрегация group_by(.stage)|map(ms|add) посчитала бы это время дважды
+        # (сумма стадий > item_total) — ровно там, где мы ищем аномалию. Признак вложенности —
+        # уже существующий self._reauth_depth (>0 только внутри _reauth). Верхнеуровневый
+        # _bootstrap_csrf (вне _post) при этом мерится как раньше: это реальное время item'а.
+        _tm = (contextlib.nullcontext() if getattr(self, "_reauth_depth", 0)
+               else _timing.stage(f"grid:{op}", only_in_item=True))
+        with _tm:
             # БЕЗ транспортного ретрая: add_shopping_ads/add_listing_ads/add_callouts/add_keywords —
             # НЕ идемпотентны (обрыв ответа после commit + ретрай = ДУБЛЬ). Идемпотентные RMW-сеттеры
             # (disabledPlaces/age/callouts full-RMW) переживают единичный обрыв через ре-ран джобы.

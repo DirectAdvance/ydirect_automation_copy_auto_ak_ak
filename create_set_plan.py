@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 
 from flask import jsonify, request
@@ -409,6 +410,11 @@ def _metrika_alert_for(login: str, body: dict) -> dict:
             counter_foreign_owner=foreign_owner,
         )
     except Exception:  # noqa: BLE001 — план обязан посчитаться даже при сбое Метрики/БД
+        # Fail-open молча = «плашки нет» неотличимо от «метрика в порядке»: разовый сбой Victory
+        # и постоянный выглядят одинаково. Логируем с трейсом и логином, поведение не меняем.
+        logging.getLogger("direct.plan").warning(
+            "metrika_alert: prepare_metrika упал для login=%s — план отдаём без алерта",
+            login, exc_info=True)
         return empty
     return {"needed": not bool(res.get("ok")), "error": res.get("error"),
             "counter_id": _int(res.get("counter_id")), "goal_id": _int(res.get("goal_id")),
