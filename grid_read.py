@@ -10,6 +10,7 @@ import re
 import time
 from collections import defaultdict
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 import urllib3
@@ -625,12 +626,18 @@ class GridReadClient:
         return counts
 
     def _enrich_adaptive_images(self, id_strings: list[str], counts: dict[int, dict[str, Any]]) -> None:
-        """Fill no_images_ads / adaptive_total for tp1 adaptive text ads (NO_IMAGES_LIVE detect).
+        """Fill no_images_ads / adaptive_total / root_href_ads_count for tp1 adaptive text ads.
+
+        NO_IMAGES_LIVE detect: counts ads without imageHashes.
+        AD_HREF_ROOT_INSTEAD_OF_MODEL detect: counts ads whose href leads to domain root
+        (urlparse(href).path in ("", "/")) — indicates per-model group href build failure.
+
         NOTE: creativeIds FieldUndefined в Grid ads-query (2026-07-03) — поле не читаем, NO_VIDEO_LIVE
-        не детектируется через Grid-read; creativeIds сохраняется только через _VIDEO_CREATIVE_CACHE."""
+        не детектируется через Grid-read; creativeIds сохраняется только через _VIDEO_CREATIVE_CACHE.
+        """
         q = ("query AdaptiveImages($login:String!,$inp:GdAdsContainerInput!){"
              "client(searchBy:{login:$login}){ads(input:$inp){rowset{id campaignId __typename "
-             "...on GdAdaptiveTextAd{images{imageHash}}}}}}")
+             "...on GdAdaptiveTextAd{href images{imageHash}}}}}}")
         inp = {
             "filter": {"campaignIdIn": id_strings},
             "statRequirements": {"preset": "LAST_30DAYS", "goalIds": [], "useCampaignGoalIds": True},
@@ -642,6 +649,7 @@ class GridReadClient:
                  .get("ads") or {}).get("rowset") or [])
         no_images: dict[int, int] = defaultdict(int)
         total_adaptive: dict[int, int] = defaultdict(int)
+        root_href: dict[int, int] = defaultdict(int)
         for row in rows:
             try:
                 cid = int(row.get("campaignId"))
@@ -657,11 +665,21 @@ class GridReadClient:
             hashes = [img.get("imageHash") for img in (row.get("images") or []) if img.get("imageHash")]
             if not hashes:
                 no_images[cid] += 1
+            # Детект корневого href: path пуст или только "/" — объявление ведёт на домен без страницы.
+            href = str(row.get("href") or "")
+            if href:
+                try:
+                    if urlparse(href).path in ("", "/"):
+                        root_href[cid] += 1
+                except Exception:  # noqa: BLE001
+                    pass
         for cid in counts:
             if str(cid) in id_strings:
                 counts[cid]["adaptive_total"] = int(total_adaptive.get(cid, 0))
                 counts[cid]["no_images_ads"] = int(no_images.get(cid, 0))
                 counts[cid]["adaptive_images_read"] = True
+                counts[cid]["root_href_ads_count"] = int(root_href.get(cid, 0))
+                counts[cid]["root_href_ads_read"] = True
 
     def _enrich_shopping_bodies(self, id_strings: list[str], counts: dict[int, dict[str, Any]]) -> None:
         """Fill shopping_no_bodies_ads for ShoppingAd without bodies (EMPTY_DEFAULT_TEXT_LIVE detect).

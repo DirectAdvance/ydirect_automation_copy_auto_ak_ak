@@ -97,12 +97,28 @@ def _filter_summary(row: dict[str, Any]) -> dict[str, Any]:
     norm_fields = {f.lower() for f in fields}
     model_fields = {"model", "modelname", "model_name", "folder_id", "modification"}
     vendor_fields = {"vendor", "vendorname", "manufacturer", "mark_id", "brand", "make"}
+    has_collection = any(f in {"collectionid", "collection_id"} for f in norm_fields)
+    # catalog_filter_has_values: tri-state (None if no collection filter; bool if present).
+    # True  = collection filter exists AND has non-empty values → ≥1 catalog page matched.
+    # False = collection filter exists but values empty/missing → 0 catalog pages (TP7_CATALOG_FILTER_EMPTY).
+    if has_collection:
+        coll_conditions = [c for c in conditions
+                           if str(c.get("field") or c.get("operand") or c.get("name") or "")
+                           .strip().lower() in {"collectionid", "collection_id"}]
+        catalog_filter_has_values: bool | None = any(
+            (isinstance(c.get("values"), list) and len(c["values"]) > 0)
+            or (isinstance(c.get("value"), str) and c["value"].strip())
+            for c in coll_conditions
+        )
+    else:
+        catalog_filter_has_values = None
     return {
         "feed_filter_conditions": len(conditions),
         "feed_filter_fields": sorted(set(fields)),
         "has_model_filter": any(f in model_fields for f in norm_fields),
         "has_vendor_filter": any(f in vendor_fields for f in norm_fields),
-        "has_collection_filter": any(f in {"collectionid", "collection_id"} for f in norm_fields),
+        "has_collection_filter": has_collection,
+        "catalog_filter_has_values": catalog_filter_has_values,
     }
 
 

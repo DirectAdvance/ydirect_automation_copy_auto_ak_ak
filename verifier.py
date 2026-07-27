@@ -422,6 +422,25 @@ def verify_create_set(*, login: str, items: list[dict[str, Any]], results: list[
             issues.append({"severity": "warn", "code": "GRID_FINALIZE_WARN", "name": rn, "id": cid,
                            "message": str(r.get("grid_warn"))[:240]})
 
+    # ── CPA_COUNT_PLAN_MISMATCH: CPA-позиции в плане, но ни одной в результатах ─────────
+    # Кейс: create_set_plan.py читает только `n` при сборке плана; create_set_input.py
+    # читает `no_cpa OR n`. Если body содержит only no_cpa (без n), план включает CPA-кампании,
+    # но orchestrator их пропускает → позиции пропадают тихо (ITEM_NOT_PROCESSED на каждую,
+    # но без агрегированного диагноза). CPA-позиция = `_cpa_` в имени.
+    _CPA_NAME_RE = re.compile(r'\btp\d+_cpa_')
+    _planned_cpa = [_name(it) for it in items if _CPA_NAME_RE.search(_name(it))]
+    _result_cpa = [_name(r) for r in results if _CPA_NAME_RE.search(_name(r))]
+    if _planned_cpa and not _result_cpa:
+        issues.append({
+            "severity": "error",
+            "code": "CPA_COUNT_PLAN_MISMATCH",
+            "planned": len(_planned_cpa),
+            "processed": 0,
+            "note": (f"{len(_planned_cpa)} CPA-позиц. в плане, но ни одной в результатах "
+                     f"(ни created, ни skipped, ни failed). "
+                     f"Вероятная причина: no_cpa=True в теле запроса без флага n."),
+        })
+
     promo_ok, promo_message = _promo_ok(promo_note, len(created))
     if not promo_ok and _promo_relevant(items, results):
         issues.append({"severity": "warn", "code": "PROMO_NOT_ATTACHED", "message": promo_message})

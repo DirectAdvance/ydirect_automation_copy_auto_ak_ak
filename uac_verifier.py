@@ -9,6 +9,10 @@ _TP_PREFIX_RE = re.compile(r"^tp(?P<tp>\d+)_(?P<pay>cpc|cpa)_(?P<surface>site|kv
 _CPC_PRICING = {"PER_CLICK"}
 _CPA_PRICING = {"PER_CONVERSION", "PER_ACTION"}
 
+# Минимальное число картинок UAC (используется в verifier и preflight create_set_master_product).
+# Один источник правды — не дублируем хардкод в разных файлах.
+UAC_IMAGES_MIN = 5
+
 # callable(ct_code:str) -> 'Общее'|'Марки'|'Модели'|None — инъекция из blueprint (see configure).
 _SEGMENT_OF = None
 
@@ -172,9 +176,9 @@ def verify_uac_detail(name: str, campaign_id: int | None,
     if media_n <= 0:
         issues.append({"severity": "warn", "code": "UAC_MEDIA_MISSING", "name": nm, "id": cid, "actual": media_n})
         repair.append(_repair(nm, cid))
-    if image_n < 5:
+    if image_n < UAC_IMAGES_MIN:
         issues.append({"severity": "error", "code": "UAC_IMAGES_LOW",
-                       "name": nm, "id": cid, "actual": image_n, "expected": 5,
+                       "name": nm, "id": cid, "actual": image_n, "expected": UAC_IMAGES_MIN,
                        "note": "нужно 5 изображений именно своего ct; видео не засчитывается как картинка"})
         repair.append(_repair(nm, cid))
     if tp == 7 and not detail.get("has_feed"):
@@ -183,6 +187,16 @@ def verify_uac_detail(name: str, campaign_id: int | None,
     if tp == 7 and _tp7_requires_model_filter(nm) and not detail.get("has_model_filter"):
         issues.append({"severity": "error", "code": "UAC_PRODUCT_MODEL_FILTER_MISSING",
                        "name": nm, "id": cid, "fields": detail.get("feed_filter_fields") or []})
+        repair.append(_repair(nm, cid))
+    # TP7_CATALOG_FILTER_EMPTY: collectionId-фильтр задан, но values пусты → 0 страниц каталога.
+    # Отличается от UAC_PRODUCT_MODEL_FILTER_MISSING (тот проверяет НАЛИЧИЕ model-фильтра).
+    # Tri-state: catalog_filter_has_values=None (нет collection-фильтра) → молчим; False → error.
+    if (tp == 7 and detail.get("has_collection_filter")
+            and detail.get("catalog_filter_has_values") is False):
+        issues.append({"severity": "error", "code": "TP7_CATALOG_FILTER_EMPTY",
+                       "name": nm, "id": cid,
+                       "fields": detail.get("feed_filter_fields") or [],
+                       "note": "коллекционный фильтр фида задан, но values пусты — 0 страниц каталога"})
         repair.append(_repair(nm, cid))
     _struct = (expected or {}).get("struct")
     if isinstance(_struct, dict) and _struct:

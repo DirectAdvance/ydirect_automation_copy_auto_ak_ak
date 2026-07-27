@@ -103,10 +103,11 @@ def verify_grid_content(name: str, campaign_id: int | None,
             repair.append(_keywords_repair(nm, cid))
         # WRONG_AUTOTARGET — только поисковые: профиль EXACT_V2_MARK/WITHOUT_BRAND обязателен
         # на tp2/4/5; у tp1 РСЯ автотаргет намеренно широкий (create_set_tp1_builders.py:302).
-        # Severity: в in-job фазе — warn (лаг чтения реплики; живьём всегда 0 после отстоя);
-        # в delayed — error (реальный дефект). Аналог BUILD_LIVE_UNDERCOUNT (строки 499-506).
+        # Severity: всегда error — ремонт in-place (keywords_repair → Grid UpdateUnifiedAdGroups,
+        # repair_planner.py:162); job-status gate (bacd444e) учитывает только error-коды.
+        # Прежний лаг-исключение «warn в in-job» убран: Grid-лаг устранён Phase 1.5 (2026-07-27).
         if tp in (2, 4, 5) and isinstance(wrong_at, int) and wrong_at > 0:
-            _at_sev = "error" if str(exp.get("phase") or "in_job") == "delayed" else "warn"
+            _at_sev = "error"
             issues.append({"severity": _at_sev, "code": "WRONG_AUTOTARGET",
                            "name": nm, "id": cid, "groups": wrong_at,
                            "note": "неверный профиль автотаргета (нужен EXACT_V2_MARK/WITHOUT_BRAND)"})
@@ -117,7 +118,7 @@ def verify_grid_content(name: str, campaign_id: int | None,
         # поэтому isinstance(..., int) является fail-safe гейтом от ложного детекта.
         _wrong_rsya = counts.get("wrong_autotarget_rsya_groups")
         if tp == 1 and isinstance(_wrong_rsya, int) and _wrong_rsya > 0:
-            _at_rsya_sev = "error" if str(exp.get("phase") or "in_job") == "delayed" else "warn"
+            _at_rsya_sev = "error"
             issues.append({"severity": _at_rsya_sev, "code": "WRONG_AUTOTARGET",
                            "name": nm, "id": cid, "groups": _wrong_rsya,
                            "note": "неверный isActive автотаргета tp1 РСЯ: aon→ВЫКЛ или aoff→ВКЛ"})
@@ -224,6 +225,26 @@ def verify_grid_content(name: str, campaign_id: int | None,
                        "actual": no_img, "total_adaptive": counts.get("adaptive_total"),
                        "note": f"tp1: {no_img} объявлений без imageHashes (in-place: images_repair)"})
         repair.append(_images_repair(nm, cid))
+
+    # ── AD_HREF_ROOT_INSTEAD_OF_MODEL (error): модельные кампании с href на корень ───────
+    # Для кампаний с сегментом «Модели» или «Марки» href объявлений должен вести на страницу
+    # модели/марки, а НЕ на корень домена. Детект: root_href_ads_count (число объявлений
+    # у которых urlparse(href).path in ("", "/")) из того же запроса AdaptiveImages, что
+    # и NO_IMAGES_LIVE (_enrich_adaptive_images) — НОЛЬ новых запросов.
+    # Tri-state: молчим, если root_href_ads_read=False (данные не прочитаны → fail-safe).
+    if (re.search(r'\bМодели\b|\bМарки\b', nm or "")
+            and counts.get("root_href_ads_read")
+            and isinstance(counts.get("root_href_ads_count"), int)
+            and counts.get("root_href_ads_count", 0) > 0):
+        _root_cnt = counts["root_href_ads_count"]
+        issues.append({
+            "severity": "error",
+            "code": "AD_HREF_ROOT_INSTEAD_OF_MODEL",
+            "name": nm, "id": cid, "ads": _root_cnt,
+            "note": (f"{_root_cnt} объявлений с href на корень домена "
+                     f"(ожидается страница модели/марки); repair: rebuild_missing_content"),
+        })
+        repair.append(_repair(nm, cid))
 
     # ── NO_ADPRICE_LIVE (warn): tp1 комбинаторные объявления без bannerPrice ─────
     # Более actionable версия PRICE_MISSING: несёт repair-candidate adprice_repair.
