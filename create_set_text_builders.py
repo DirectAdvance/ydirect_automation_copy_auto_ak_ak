@@ -64,7 +64,8 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
                         apply_group_minus: bool = True,
                         autotarget: bool = False,
                         keep_keywords: bool = False,
-                        site_type: str = "") -> dict:
+                        site_type: str = "",
+                        campaign_is_new: bool = False) -> dict:
     """Наполнить Поисковую (tp2) / tp5 группами БАТЧЕМ: adgroups.add → keywords.add → ads.add(TextAd).
 
     groups: [{name, keywords:[], minus:[], title, text, href, title2?, callout_ext_ids?}].
@@ -76,6 +77,10 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
     Анти-блок: операции идут пачками (см. _AC_CHUNK_*) с паузами, групп ≤ _AC_GROUP_CAP за проход.
     Кампания остаётся черновиком (State=OFF из оболочки). Лимиты Директа: ключей ≤200/группу,
     минус ≤4096 симв. без пробелов/группу (terehov), Title ≤56, Title2 ≤30, Text ≤81, уточнений ≤4/объявление.
+    campaign_is_new: кампания создана вызывающим ШАГОМ ВЫШЕ и пуста → Фаза 1 не читает
+    предмутационный снимок имён групп (лишний Grid-запрос, а при сбое чтения сверка потерянного
+    ответа AddUnifiedAdGroups отключилась бы совсем). Дефолт False: для непустой кампании снимок
+    обязателен (коллизии имён групп).
     → {adgroups, keywords, ads, errors, deferred}."""
     rep = {"adgroups": 0, "keywords": 0, "ads": 0, "images_uploaded": 0, "errors": [], "deferred": 0}
     rids = [int(r) for r in (region_ids or []) if str(r).lstrip("-").isdigit()] or [225]
@@ -137,7 +142,9 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
             autotargeting_profile=("search_tp2" if autotarget else ""),   # EXACT_V2_MARK + WITHOUT_BRAND атомарно
         ))
     try:
-        ag_ids = _gcl2.add_adgroups(_g2_items)
+        # campaign_is_new=True (shell TEXT_CAMPAIGN создан шагом выше и пуст) → снимок имён групп
+        # не читаем: лишний Grid-запрос в горячем пути tp2/tp4, а его сбой отключил бы сверку.
+        ag_ids = _gcl2.add_adgroups(_g2_items, campaign_is_new=bool(campaign_is_new))
         # Позиционный сдвиг: Grid пропускает упавшие группы (без null-заглушки) → список короче
         # входного → выравниваем строго по имени (аналог create_full:615 / _build_tp1_adgroups:238).
         if len(ag_ids) != len(groups):
@@ -441,7 +448,8 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
                           city: str = "", autotarget: bool = False,
                           keep_keywords: bool = False,
                           only_cts: list[str] | None = None,
-                          only_gks: set | None = None) -> dict:
+                          only_gks: set | None = None,
+                          campaign_is_new: bool = False) -> dict:
     """Наполнить текстовую кампанию (tp1/tp2/tp5): структура→модель-ct→ключи/минус/уточнения
     из пака M3 (по tp_code)→группы+объявления+callouts. Тексты — из titles/texts. Всё черновиком.
 
@@ -619,7 +627,8 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
                               feed_id=feed_id, with_shopping=with_shopping,
                               apply_group_minus=apply_group_minus, autotarget=autotarget,
                               keep_keywords=keep_keywords,
-                              site_type=site_type)
+                              site_type=site_type,
+                              campaign_is_new=bool(campaign_is_new))
     rep["cts"] = len(cts)
     rep["groups_built"] = len(groups)
     rep["callouts_pool"] = len(co_pool)

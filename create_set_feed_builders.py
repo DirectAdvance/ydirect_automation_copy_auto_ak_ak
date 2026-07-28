@@ -443,7 +443,9 @@ def _create_text_via_token(
                                       segment=segment, city=city, autotarget=bool(autotarget),
                                       keep_keywords=bool(keep_keywords),
                                       apply_group_minus=_apply_group_minus, only_cts=only_cts,
-                                      only_gks=only_gks)
+                                      only_gks=only_gks,
+                                      # shell TEXT_CAMPAIGN создан шагом 1 выше → групп в нём 0
+                                      campaign_is_new=True)
     except Exception as e:  # noqa: BLE001
         build = {"error": str(e)[:240]}
     _errs = build.get("errors") or []
@@ -703,6 +705,12 @@ def _create_shopping_via_cookie(
                "shopping_finalized": _fin,
                "build": {"groups": rep.get("groups"), "ads": rep.get("ads"),
                          "shopping_ads": rep.get("ads"), "feed_id": fid,
+                         # groups_expected/warnings — расхождение «создано ≠ отправлено»
+                         # (grid_create._gate_groups_created в create_shopping_full). Без этих
+                         # полей товарка tp3/tp5 теряла гейт: «создано 13 из 14» проходило молча.
+                         # НЕ в errors: там оно = приговор кампании (см. текстовый куки-путь).
+                         "groups_expected": rep.get("groups_expected"),
+                         "warnings": (rep.get("warnings") or [])[:5],
                          "errors": rep.get("errors", [])[:5]},
                "url": (f"https://direct.yandex.ru/dna/campaign/{cid}?ulogin={login}" if cid else ""),
                "error": err_text}
@@ -845,7 +853,9 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
             segment=segment, autotarget=autotarget, keep_keywords=keep_keywords,
             products_only=products_only,
             tp_code="tp5", only_gks=only_gks, only_cts=only_cts,
-            all_feeds_list=all_feeds_list)
+            all_feeds_list=all_feeds_list,
+            # кампания создана шагом 1 выше (_create_search_test_campaign) → групп в ней 0
+            campaign_is_new=True)
     except Exception as e:  # noqa: BLE001
         tp5_build = {"error": str(e)[:240]}
 

@@ -776,7 +776,7 @@ def _make_tp1_test_deps(responsive: bool = False):
         def __init__(self, login, cookie=None, **_kw):
             self.login = login
 
-        def add_adgroups(self, items):
+        def add_adgroups(self, items, **_kw):   # **_kw: реальный клиент принимает campaign_is_new
             grid_calls.append(items)
             return [1001 + i for i in range(len(items))]
 
@@ -937,7 +937,7 @@ def test_tp1_grid_adgroups_failure_leaves_zero_adgroups():
         def __init__(self, login, cookie=None, **_kw):
             self.login = login
 
-        def add_adgroups(self, items):  # noqa: ARG002
+        def add_adgroups(self, items, **_kw):  # noqa: ARG002
             raise _real_gc.GridCreateError("AddUnifiedAdGroups validation: сбой")
 
     deps["gc"] = types.SimpleNamespace(
@@ -1060,7 +1060,7 @@ def _run_tp1_with_silent_zero_keywords(tp_code: str):
         def __init__(self, login, cookie=None, **_kw):
             self.login = login
 
-        def add_adgroups(self, items):
+        def add_adgroups(self, items, **_kw):   # **_kw: реальный клиент принимает campaign_is_new
             return [1001 + i for i in range(len(items))]
 
         def add_keywords(self, items):

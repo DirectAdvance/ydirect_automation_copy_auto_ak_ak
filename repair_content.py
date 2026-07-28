@@ -197,6 +197,39 @@ def execute_rename_repair(login: str, ctx: dict, campaign_names: dict[int, str],
     }, 200 if not failed else 207
 
 
+def _attach_group_shortfall(row: dict[str, Any], rep: dict[str, Any]) -> list[dict[str, Any]]:
+    """Прокинуть гейт «создано групп ≠ отправлено» из grid_create в строку репейра.
+
+    `_gate_groups_created` кладёт факт в ``rep["groups_expected"]``/``["groups_shortfall"]``/
+    ``["warnings"]``, но строка репейра эти поля ВЫБРАСЫВАЛА → «добито 13 групп из 14» проходило
+    молча, ровно то состояние, ради которого гейт заводили. Гоняем ТОТ ЖЕ верификатор, что и
+    create_full-путь, чтобы код `GROUPS_CREATED_LESS_THAN_SENT` доезжал и здесь.
+
+    ⛔ Report-only: `row["ok"]` НЕ трогаем. 13 рабочих групп из 14 подлежат ДОБИВКЕ; перевод строки
+    в failed увёл бы кампанию в пересоздание — та же ошибка, что «расхождение в rep['errors']»
+    (ERRORS_JOURNAL: GRID_CREATE_RETRY_DUPLICATES_ADGROUPS, «НЕ помогло ранее»).
+    """
+    from .local_result_verifier import verify_local_result
+
+    row["groups_expected"] = rep.get("groups_expected")
+    if rep.get("groups_shortfall"):
+        row["groups_shortfall"] = rep.get("groups_shortfall")
+    warnings = [str(w) for w in (rep.get("warnings") or [])][:5]
+    if warnings:
+        row["warnings"] = warnings
+    build = {"groups": row.get("groups") or 0, "groups_expected": rep.get("groups_expected")}
+    if "ads" in row:
+        build["ads"] = row.get("ads") or 0
+    if "shopping_ads" in row:
+        build["shopping_ads"] = row.get("shopping_ads") or 0
+        build["listing_ads"] = row.get("listing_ads") or 0
+    issues = verify_local_result({"name": row.get("name") or "", "id": row.get("campaign_id"),
+                                  "result": {"campaign_id": row.get("campaign_id"), "build": build}})
+    if issues:
+        row["issues"] = issues
+    return issues
+
+
 def execute_content_repair(login: str, ctx: dict, repairs: list[dict[str, Any]],
                            deps: RepairDeps) -> tuple[dict, int]:
     """Add missing text groups/ads to existing tp2/tp4 campaigns through Grid."""
@@ -204,6 +237,7 @@ def execute_content_repair(login: str, ctx: dict, repairs: list[dict[str, Any]],
         return {"error": "нет rebuild_missing_content действий", "uses_direct_units": False}, 422
     results: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
+    verification_issues: list[dict[str, Any]] = []
     for action in repairs:
         try:
             cid = int(action.get("campaign_id") or 0)
@@ -265,6 +299,7 @@ def execute_content_repair(login: str, ctx: dict, repairs: list[dict[str, Any]],
                     "ad_ids": [x for x in (rep.get("ad_ids") or []) if x],
                     "errors": (rep.get("errors") or [])[:5],
                 }
+            verification_issues.extend(_attach_group_shortfall(row, rep))
             results.append(row)
             if not ok:
                 failed.append({"campaign_id": cid, "name": name, "errors": row["errors"]})
@@ -276,6 +311,8 @@ def execute_content_repair(login: str, ctx: dict, repairs: list[dict[str, Any]],
             "error": "не удалось добить content ни в одной кампании",
             "results": results,
             "failed_campaigns": failed[:40],
+            # расхождение «создано ≠ отправлено» — видимое, но НЕ разрушительное (report-only)
+            "verification_issues": verification_issues[:40],
             "transport": "grid",
             "uses_direct_units": False,
         }, 502
@@ -287,6 +324,7 @@ def execute_content_repair(login: str, ctx: dict, repairs: list[dict[str, Any]],
         "repaired": len(repaired_ids),
         "results": results,
         "failed_campaigns": failed[:40],
+        "verification_issues": verification_issues[:40],
         "transport": "grid",
         "uses_direct_units": False,
     }, 200 if not failed else 207

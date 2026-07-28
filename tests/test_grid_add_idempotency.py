@@ -496,3 +496,238 @@ def test_add_shopping_ads_reconciles_like_text_ads(monkeypatch):
 
     assert cl.add_shopping_ads(_ad_items(1), campaign_id=713102313) == [77]
     assert len(calls) == 1
+
+
+# ── 12. гейт числа групп ВИДЕН во ВСЕХ путях, а не только в create_full ────────────────
+def _shortfall_codes(row: dict) -> set:
+    return {i["code"] for i in verify_local_result(row)}
+
+
+def test_create_shopping_full_marks_group_count_mismatch(monkeypatch):
+    """Путь 3 — товарка (grid_create.create_shopping_full): гейт кладёт факт в rep."""
+    class _FakeCl:
+        def __init__(self, login, cookie=None, **_kw):  # noqa: ARG002
+            self.login = login
+
+        def _bootstrap_csrf(self):
+            return None
+
+        def add_campaign(self, spec):  # noqa: ARG002
+            return 713102313
+
+        def add_adgroups(self, items, **_kw):  # noqa: ARG002
+            return [111, None]                      # вторая группа не создана
+
+        def add_shopping_ads(self, items, **_kw):  # noqa: ARG002
+            return [777]
+
+    monkeypatch.setattr(gc, "GridCreateClient", _FakeCl)
+    rep = gc.create_shopping_full(
+        "porg-test", campaign_spec={"name": "Товарка", "counter_id": 1, "goal_id": 2,
+                                    "cpa": 100, "weekly_budget": 3000, "start_date": "2026-07-28",
+                                    "search": True, "network": False},
+        group_names=["Товарная галерея · A", "Товарная галерея · B"],
+        feed_id=555, region_ids=[213], href="https://example.com")
+
+    assert rep["groups"] == 1
+    assert rep["groups_expected"] == 2
+    assert any("создано 1 из 2 отправленных" in w for w in rep.get("warnings") or [])
+    assert not any("отправленных" in e for e in rep["errors"])
+
+
+def test_cookie_shopping_build_carries_group_shortfall(monkeypatch):
+    """Путь 1 — товарка tp3/tp5 в create_set_feed_builders: build обязан донести расхождение
+    до верификатора (раньше build собирал только groups/ads/shopping_ads/feed_id/errors)."""
+    from direct import create_set_tp1_builders as cstp1
+
+    rep = {"campaign_id": 713102313, "groups": 13, "ads": 13,
+           "shopping_ad_ids": [777], "errors": []}
+    gc._gate_groups_created(rep, 14)                 # тот же гейт, что в create_shopping_full
+
+    fake_gc = type("_GcNs", (), {"create_shopping_full": staticmethod(lambda *a, **k: rep)})
+    monkeypatch.setattr(csfb, "gc", fake_gc, raising=False)
+    monkeypatch.setattr(csfb, "gf", type("_GfNs", (), {
+        "get_grid_client": staticmethod(lambda *a, **k: object())})(), raising=False)
+    monkeypatch.setattr(cstp1, "_grid_add_listings_with_name_filters",
+                        lambda *a, **k: None, raising=False)
+    for nm, val in {
+        "_grid_bid_modifiers": lambda *a, **k: {},
+        "_text_group_name": lambda ct, r_code, base: base,
+        "_common_sitelinks_fast": lambda *a, **k: [],
+        "_norm_sitelinks_for_v501": lambda *a, **k: [],
+        "_finalize_search_via_grid": lambda *a, **k: None,
+    }.items():
+        monkeypatch.setattr(csfb, nm, val, raising=False)
+
+    res = csfb._create_shopping_via_cookie(
+        "porg-test", "Товарка тест", "tp5", 1, 2, 500, 5000, [213], "https://example.com",
+        feed_id=555, feed_name="", body_text="текст")
+
+    assert res["ok"] is True, "кампания с 13 рабочими группами не должна падать"
+    assert res["build"]["groups"] == 13
+    assert res["build"]["groups_expected"] == 14
+    assert any("13 из 14" in w for w in res["build"]["warnings"])
+    assert "GROUPS_CREATED_LESS_THAN_SENT" in _shortfall_codes(
+        {"name": res["name"], "result": res})
+
+
+def _repair_deps(text_ctx=None, shop_ctx=None):
+    from direct.repair_common import RepairDeps
+
+    return RepairDeps(
+        account_ctx=lambda login: {},
+        promo_content_lines=lambda items: [],
+        create_account_promo_from_slepok=lambda *a, **k: (None, ""),
+        dedup_callouts=lambda *a, **k: [],
+        text_content_context=lambda *a, **k: dict(text_ctx or {}),
+        shopping_content_context=lambda *a, **k: dict(shop_ctx or {}),
+        callout_cap=4,
+    )
+
+
+def test_repair_text_path_reports_group_shortfall(monkeypatch):
+    """Путь 2 — repair-добивка текстовых групп: «добито 13 из 14» больше не проходит молча,
+    но кампанию НЕ роняет (ok остаётся True — 13 рабочих групп подлежат добивке)."""
+    from direct import repair_content as rc
+
+    rep = {"campaign_id": 713102313, "groups": 13, "ads": 13, "keywords": 500,
+           "ad_ids": [11], "adgroup_ids": [11], "errors": []}
+    gc._gate_groups_created(rep, 14)
+    monkeypatch.setattr(rc.gc, "add_text_content_to_existing", lambda *a, **k: rep)
+
+    out, status = rc.execute_content_repair(
+        "porg-test", {"body": {}},
+        [{"campaign_id": 713102313, "name": "РК тест"}],
+        _repair_deps(text_ctx={"groups": [{"name": "Группа"}], "region_ids": [213],
+                               "href": "https://example.com"}))
+
+    row = out["results"][0]
+    assert status == 200 and row["ok"] is True, "13 рабочих групп ушли в failed"
+    assert row["groups_expected"] == 14
+    assert row["groups_shortfall"] == 1
+    assert any("13 из 14" in w for w in row["warnings"])
+    assert {i["code"] for i in out["verification_issues"]} == {"GROUPS_CREATED_LESS_THAN_SENT"}
+
+
+def test_repair_shopping_path_reports_group_shortfall(monkeypatch):
+    """Тот же путь для товарного репейра (add_shopping_content_to_existing)."""
+    from direct import repair_content as rc
+
+    rep = {"campaign_id": 713102313, "groups": 3, "shopping_ads": 3, "listing_ads": 3,
+           "adgroup_ids": [1, 2, 3], "shopping_ad_ids": [7], "errors": []}
+    gc._gate_groups_created(rep, 4)
+    monkeypatch.setattr(rc.gc, "add_shopping_content_to_existing", lambda *a, **k: rep)
+
+    out, status = rc.execute_content_repair(
+        "porg-test", {"body": {}},
+        [{"campaign_id": 713102313, "name": "Товарка тест", "content_kind": "shopping"}],
+        _repair_deps(shop_ctx={"groups": [{"name": "Товарная галерея"}], "feed_id": 555,
+                               "region_ids": [213]}))
+
+    row = out["results"][0]
+    assert status == 200 and row["ok"] is True
+    assert row["groups_expected"] == 4 and row["groups_shortfall"] == 1
+    assert {i["code"] for i in out["verification_issues"]} == {"GROUPS_CREATED_LESS_THAN_SENT"}
+
+
+def test_repair_silent_when_all_groups_created(monkeypatch):
+    """Обратная сторона: расхождения нет → верификатор молчит (гейт не шумит на норме)."""
+    from direct import repair_content as rc
+
+    rep = {"campaign_id": 713102313, "groups": 14, "ads": 14, "keywords": 500,
+           "ad_ids": [], "adgroup_ids": [], "errors": []}
+    gc._gate_groups_created(rep, 14)
+    monkeypatch.setattr(rc.gc, "add_text_content_to_existing", lambda *a, **k: rep)
+
+    out, _status = rc.execute_content_repair(
+        "porg-test", {"body": {}}, [{"campaign_id": 713102313, "name": "РК тест"}],
+        _repair_deps(text_ctx={"groups": [{"name": "Группа"}]}))
+
+    assert out["verification_issues"] == []
+    assert out["results"][0].get("issues") is None
+
+
+# ── 13. read-back кампаний по имени: обрыв скана ≠ «не найдено», архив ≠ наша кампания ──
+def _campaign_page(rows: list[dict]) -> dict:
+    return {"data": {"client": {"campaigns": {"rowset": rows}}}}
+
+
+def _named_rows(n: int, name: str = "чужая", start: int = 1):
+    return [{"id": str(start + i), "name": f"{name} {i}",
+             "status": {"primaryStatus": "DRAFT", "archived": False}} for i in range(n)]
+
+
+def test_campaign_scan_truncation_raises_instead_of_reporting_not_found(monkeypatch):
+    """Скан оборван предохранителем → состояние НЕИЗВЕСТНО. Вернуть [] нельзя: для
+    _add_campaign_reconcile это «коммита не было» → повторный AddCampaigns → дубль кампании."""
+    cl = _client(monkeypatch)
+    pages = {"n": 0}
+
+    def fake_mutate(op, query, variables):  # noqa: ARG001
+        pages["n"] += 1
+        return _campaign_page(_named_rows(200))     # страница всегда полная → скан не кончается
+
+    monkeypatch.setattr(cl, "_mutate", fake_mutate)
+
+    with pytest.raises(gc.GridCreateError) as err:
+        cl._read_campaign_ids_by_name_strict("РК тест")
+    assert "неизвестно" in str(err.value)
+    # страницы 0…4000 включительно = 21 запрос — ровно столько же, сколько листал прежний цикл
+    assert pages["n"] == gc._CAMPAIGN_SCAN_MAX // 200 + 1
+
+
+def test_lost_campaign_response_does_not_recreate_when_scan_truncated(monkeypatch):
+    """Тот же обрыв на живом пути: кампания НЕ создаётся повторно, наружу — исходная ошибка."""
+    cl = _client(monkeypatch)
+    calls = []
+
+    def fake_once(spec):
+        calls.append(spec)
+        raise _transient("AddCampaigns")
+
+    def fake_read(name):  # noqa: ARG001
+        raise gc.GridCreateError("CampaignNames: скан оборван — состояние неизвестно")
+
+    monkeypatch.setattr(cl, "_add_campaign_once", fake_once)
+    monkeypatch.setattr(cl, "_read_campaign_ids_by_name_strict", fake_read)
+
+    with pytest.raises(gc.GridCreateError):
+        cl.add_campaign({"name": "РК тест"})
+    assert len(calls) == 1, "кампания создана вслепую при неизвестном состоянии → дубль"
+
+
+def test_archived_namesake_campaign_is_not_adopted(monkeypatch):
+    """Архивная одноимённая пустая кампания прошла бы обе проверки сверки и «усыновила» бы
+    группы набора (они уехали бы в архив) → в выдачу read-back она не попадает."""
+    cl = _client(monkeypatch)
+    rows = [
+        {"id": "700000001", "name": "РК тест", "status": {"primaryStatus": "ARCHIVED", "archived": True}},
+        {"id": "700000002", "name": "другая", "status": {"primaryStatus": "DRAFT", "archived": False}},
+    ]
+    monkeypatch.setattr(cl, "_mutate", lambda *a, **k: _campaign_page(rows))
+
+    assert cl._read_campaign_ids_by_name_strict("РК тест") == []
+
+
+def test_live_namesake_campaign_is_returned(monkeypatch):
+    cl = _client(monkeypatch)
+    rows = [{"id": "700000003", "name": "РК тест",
+             "status": {"primaryStatus": "DRAFT", "archived": False}}]
+    monkeypatch.setattr(cl, "_mutate", lambda *a, **k: _campaign_page(rows))
+
+    assert cl._read_campaign_ids_by_name_strict("РК тест") == [700000003]
+
+
+# ── 14. campaign_is_new в горячих путях: лишнего чтения имён групп нет ─────────────────
+def test_campaign_is_new_skips_pre_mutation_snapshot(monkeypatch):
+    cl = _client(monkeypatch)
+    reads = []
+    monkeypatch.setattr(cl, "_read_adgroup_name_to_id_strict",
+                        lambda cid: reads.append(cid) or {})
+    monkeypatch.setattr(cl, "_add_adgroups_once", lambda items: [1] * len(items))
+
+    cl.add_adgroups(_items(2), campaign_is_new=True)
+    assert reads == [], "для заведомо пустой кампании снимок имён читать не надо"
+
+    cl.add_adgroups(_items(2))
+    assert reads == [713102313], "для существующей кампании снимок обязателен"

@@ -63,9 +63,13 @@ _ADGROUP_NAMES_Q = (      # read-back name→id (фикс позиционног
     "client(searchBy:{login:$login}){"
     "adGroups(input:$inp){rowset{id name}}}}")
 _CAMPAIGN_NAMES_Q = (     # read-back name→id кампаний аккаунта (сверка факта после потери ответа)
+    # status{primaryStatus archived} — форма, проверенная живым yandex_gateway.grid_list_campaigns:321.
+    # archived нужен, чтобы одноимённая ПУСТАЯ АРХИВНАЯ кампания прошлого прогона не была
+    # «усыновлена» сверкой (она проходит обе проверки — ровно одна и без групп — и группы
+    # текущего набора уехали бы в архив).
     "query CampaignNames($login:String!,$inp:GdCampaignsContainerInput!){"
     "client(searchBy:{login:$login}){"
-    "campaigns(input:$inp){rowset{id name}}}}")
+    "campaigns(input:$inp){rowset{id name status{primaryStatus archived}}}}}")
 
 
 class GridCreateError(RuntimeError):
@@ -197,11 +201,13 @@ class GridCreateClient:
     # считается СОЗДАЮЩИМ, «дубль дороже отказа»). Иначе будущая создающая мутация не на `Add*`
     # (`CopyCampaigns`, `CreateSitelinkSet`, `ImportFeed`…) молча получила бы слепой ретрай.
     # В списке только операции, повтор которых заведомо не плодит объектов:
-    #   • чтения (`AdGroupNames`, `AdsAgid`, `CampaignNames`, `Callouts`);
+    #   • чтения этого модуля (`AdGroupNames`, `AdsAgid`, `CampaignNames`);
     #   • `Delete*` (повторное удаление идемпотентно);
     #   • `AddKeywords` (схлопывание фраз Директом — см. _RETRY_SAFE_ADD_OPS выше).
+    # Только реально существующие в grid_create операции: чужие имена в списке (был скопированный
+    # из yandex_gateway `Callouts`, которого здесь нет) вводят в заблуждение при чтении правила.
     _IDEMPOTENT_OPS = frozenset(_RETRY_SAFE_ADD_OPS) | frozenset({
-        "AdGroupNames", "AdsAgid", "CampaignNames", "Callouts",
+        "AdGroupNames", "AdsAgid", "CampaignNames",
     })
 
     @classmethod
@@ -325,16 +331,25 @@ class GridCreateClient:
         return cid
 
     def _read_campaign_ids_by_name_strict(self, name: str) -> list[int]:
-        """id ВСЕХ кампаний аккаунта с точно таким именем. БЕЗ проглатывания ошибки чтения.
+        """id ЖИВЫХ (не архивных) кампаний аккаунта с точно таким именем. БЕЗ проглатывания ошибок.
 
         Форма input — как в живом `yandex_gateway.grid_list_campaigns` (фильтра по имени в
         GdCampaignsContainerInput нет, поэтому листаем страницами по 200 и матчим локально).
         Зовётся ТОЛЬКО в редком пути потери ответа AddCampaigns, не в штатном.
+
+        ⛔ Скан оборвался о предохранитель ``_CAMPAIGN_SCAN_MAX`` (аккаунт больше 4000 кампаний) →
+        состояние НЕИЗВЕСТНО, и «ничего не нашли» здесь означает «не досмотрели». Возвращать
+        пустой список нельзя: для `_add_campaign_reconcile` это «коммита не было» → повторный
+        AddCampaigns → ДУБЛЬ кампании. Поднимаем ошибку — сверка не удалась, наружу уходит
+        исходный транзиент, вслепую не создаём (тот же принцип, что «read упал» vs «read вернул {}»).
+
+        Архивные одноимённые отбрасываем: пустая архивная кампания прошлого прогона прошла бы обе
+        проверки сверки (ровно одна + без групп) и была бы «усыновлена» — группы уехали бы в архив.
         """
         want = str(name or "")
         out: list[int] = []
         offset = 0
-        while offset <= _CAMPAIGN_SCAN_MAX:
+        while True:
             j = self._mutate("CampaignNames", _CAMPAIGN_NAMES_Q, {
                 "login": self.login,
                 "inp": {"filter": {},
@@ -347,6 +362,8 @@ class GridCreateClient:
             for row in rows:
                 if str(row.get("name") or "") != want:
                     continue
+                if bool((row.get("status") or {}).get("archived")):
+                    continue                     # архивная одноимённая — не наша свежая
                 try:
                     cid = int(row.get("id") or 0)
                 except (TypeError, ValueError):
@@ -354,9 +371,13 @@ class GridCreateClient:
                 if cid:
                     out.append(cid)
             if len(rows) < 200:
-                break
+                return out                       # страница неполная = аккаунт досмотрен до конца
             offset += 200
-        return out
+            if offset > _CAMPAIGN_SCAN_MAX:      # не досмотрели → «не найдено» было бы ложью
+                raise GridCreateError(
+                    f"CampaignNames: скан кампаний оборван на offset={offset} "
+                    f"(предохранитель _CAMPAIGN_SCAN_MAX={_CAMPAIGN_SCAN_MAX}) — "
+                    f"состояние аккаунта неизвестно, сверка по имени невозможна")
 
     def add_adgroups(self, items: list[dict], *, campaign_is_new: bool = False) -> list[int | None]:
         """AddUnifiedAdGroups → список adGroupId (в порядке items; None для упавших).

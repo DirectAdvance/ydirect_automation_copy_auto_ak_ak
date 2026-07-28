@@ -296,6 +296,7 @@ def _build_tp1_adgroups(
     tp_code: str = "tp1",
     all_feeds_list: list | None = None,
     site_type: str = "",
+    campaign_is_new: bool = False,
 ) -> dict:
     """Наполнить РСЯ (tp1 ЕПК) группами БАТЧЕМ через v501:
     adgroups.add (с TrackingParams и minus) → keywords.add → adimages.add → ads.add(TextAd+Image).
@@ -307,6 +308,11 @@ def _build_tp1_adgroups(
     groups: [{name, ct, brand, keywords:[], minus:[], title, text, image_path?, callout_ext_ids?}].
     Анти-блок: операции батчами с паузами, групп ≤ _AC_GROUP_CAP за проход.
     Лимиты: ключей ≤200/группу, минус ≤100/группу, Title ≤35, Text ≤81.
+
+    campaign_is_new: кампания создана вызывающим ШАГОМ ВЫШЕ и ещё пуста → Фаза 1 не читает
+    предмутационный снимок имён групп (лишний Grid-запрос в горячем пути; при сбое чтения снимок
+    равен None и сверка потерянного ответа AddUnifiedAdGroups отключилась бы совсем). Дефолт False
+    оставлен намеренно: для непустой кампании снимок обязателен (коллизии имён групп).
     → {adgroups, keywords, ads, images_uploaded, sitelinks_set, errors, deferred}."""
     rep = {"adgroups": 0, "keywords": 0, "ads": 0, "images_uploaded": 0,
            "sitelinks_set": sitelink_set_id or 0, "errors": [], "deferred": 0}
@@ -344,7 +350,10 @@ def _build_tp1_adgroups(
         autotargeting_profile=("search_tp2" if _is_tp5 else ""),
     ) for g in groups]
     try:
-        ag_ids = _gcl.add_adgroups(_g_items)
+        # campaign_is_new=True (кампания создана шагом выше и пуста) → снимок имён не читаем.
+        # Фазе 4a ниже этот флаг НЕ передаём: там в кампании уже есть группы Фазы 1, и снимок —
+        # единственная защита от совпадения имени «Товарная галерея · <фид>» с существующей группой.
+        ag_ids = _gcl.add_adgroups(_g_items, campaign_is_new=bool(campaign_is_new))
         # Позиционный сдвиг: Grid пропускает упавшие группы (не возвращает null-заглушку)
         # → список может быть короче входного → выравниваем по имени (аналог create_full:615).
         if len(ag_ids) != len(groups):
@@ -877,6 +886,7 @@ def _build_tp1_from_pack(
     only_gks: set | None = None,
     only_cts: set | None = None,
     all_feeds_list: list | None = None,
+    campaign_is_new: bool = False,
 ) -> dict:
     """Наполнить РСЯ (tp1/tp5 ЕПК) бренд-группами из пака M3.
 
@@ -1228,7 +1238,8 @@ def _build_tp1_from_pack(
                                autotarget=autotarget, keep_keywords=keep_keywords,
                                products_only=_skip_text_ads,
                                grid_cookie=grid_cookie, tp_code=tp_code,
-                               all_feeds_list=all_feeds_list, site_type=site_type)
+                               all_feeds_list=all_feeds_list, site_type=site_type,
+                               campaign_is_new=bool(campaign_is_new))
     rep["cts"] = len(pack)
     rep["groups_built"] = len(groups)
     rep["callouts_pool"] = len(co_pool)
@@ -1452,7 +1463,9 @@ def _create_tp1_single(
             keep_keywords=keep_keywords,
             products_only=products_only, sitelinks=sitelinks, grid_cookie=grid_cookie,
             only_gks=only_gks, only_cts=only_cts,
-            all_feeds_list=all_feeds_list)
+            all_feeds_list=all_feeds_list,
+            # кампания создана строкой выше (v501.create_unified_campaign) → групп в ней 0
+            campaign_is_new=True)
         if tp1_build.get("skipped") and tp1_build.get("image_no_pool"):
             _fail = _cleanup_partial(str(tp1_build.get("skipped")))
             _deleted_cid = _fail.get("campaign_id")
