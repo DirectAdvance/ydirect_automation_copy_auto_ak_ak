@@ -518,8 +518,9 @@ def _prepare_uac_assets(login: str, body: dict, site_type: str, ctx: dict,
             videos = []
             try:
                 from . import kontent_pack as kp  # noqa: PLC0415
-                videos = (kp.videos_for_ct(login, c_ct, brand_hint=(c_brand or "")) if c_ct else []) \
-                    or kp.videos_for_login(login)
+                # slepok=skey: свой слепок → общий пул → чужой слепок (правило Семёна 2026-07-28).
+                videos = (kp.videos_for_ct(login, c_ct, brand_hint=(c_brand or ""), slepok=skey)
+                          if c_ct else []) or kp.videos_for_login(login)
             except Exception:  # noqa: BLE001
                 videos = []
             for vp in (videos or [])[:2]:

@@ -945,8 +945,11 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
         # brand_hint=c_brand: для «Марки»-ct feeds_ct_model()[ct]=None → brand_word="" → пул пуст
         # (D3-create 2026-07-09, зеркало tp1-аудита MEMORY 2026-07-07). Прокидываем марку кодера,
         # чтобы videos_for_ct нашёл ролики через brand-fallback (BAIC/Belgee/Haval/Москвич).
-        it_videos = (kp.videos_for_ct(login, c_ct, brand_hint=(c_brand or "")) if c_ct else []) \
-            or kp.videos_for_login(login)
+        # slepok=_sk: ступень 1 «свой слепок» (kontent_pack.videos_for_ct) — ролики, залитые под
+        # конкретного директолога, лежат в его папке _slepki_data/<слепок>/videos и берутся ПЕРВЫМИ;
+        # общий пул — вторая ступень, чужой слепок — последняя (правило Семёна 2026-07-28).
+        it_videos = (kp.videos_for_ct(login, c_ct, brand_hint=(c_brand or ""), slepok=_sk)
+                     if c_ct else []) or kp.videos_for_login(login)
     except Exception:  # noqa: BLE001
         it_videos = []
     # ── Мягкий порог картинок (решение Семёна 2026-07-27) ────────────────────────────────────────

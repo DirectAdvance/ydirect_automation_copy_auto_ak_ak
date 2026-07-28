@@ -116,12 +116,14 @@ _VIDEO_AT_CREATE = False
 
 
 def _tp1_video_ads(login: str, created_ad_meta: list, grid_cookie: str | None = None,
-                   limit_per_group: int = 2, campaign_id: int = 0) -> dict:
+                   limit_per_group: int = 2, campaign_id: int = 0, slepok: str = "") -> dict:
     """Видео РСЯ (tp1 ЕПК) → creativeIds на КОМБИНАТОРНЫЕ объявления (Grid UpdateAdaptiveTextAds).
 
     Механика (HAR53 — тот же upload, что картинки tp6/tp7):
-      1) видео ПО CT группы: ``kp.videos_for_ct(login, ct)`` (ролик слепка → фолбэк на общий
-         per-ct пул M3 ``/Users/Shared/agency/Video/<ct>/`` = ``videos_pool_for_ct``);
+      1) видео ПО CT группы: ``kp.videos_for_ct(login, ct, slepok=…)`` — три ступени:
+         СВОЙ слепок (``_slepki_data/<слепок>/videos``) → ОБЩИЙ per-ct пул M3
+         ``/Users/Shared/agency/Video/<ct>/`` (``videos_pool_for_ct``) → ЧУЖОЙ слепок
+         (последний фолбэк, правило Семёна 2026-07-28);
       2) ``UacClient.upload_video_creative`` (POST /web-api/uac/content?creative_type=tgo,
          multipart video/mp4) → ``result.meta.creative_id`` (НЕ content_id!);
       3) attach: Grid ``UpdateAdaptiveTextAds`` с ``creativeIds`` по реальному ad_id. Это
@@ -157,7 +159,7 @@ def _tp1_video_ads(login: str, created_ad_meta: list, grid_cookie: str | None = 
         ct = (ct or "").strip().lower()
         if not ct or ct == "ct0000":
             return []
-        _ck = (login, ct, brand_hint, site_type)  # hint/site_type в ключе: пустые не блокируют точные
+        _ck = (login, ct, brand_hint, site_type, slepok)  # hint/site_type/slepok в ключе: пустые не блокируют точные
         if _ck in _VIDEO_CREATIVE_CACHE:                  # уже качали/грузили в этом процессе
             return _VIDEO_CREATIVE_CACHE[_ck]
         if ct in _failed_cts:                             # этот ct уже таймаутил — не повторяем
@@ -167,7 +169,9 @@ def _tp1_video_ads(login: str, created_ad_meta: list, grid_cookie: str | None = 
         cids: list = []
         _pool_read_ok = True
         try:
-            paths = kp.videos_for_ct(login, ct, limit=limit_per_group, brand_hint=brand_hint) or []
+            # slepok: свой слепок → общий пул → чужой слепок (правило Семёна 2026-07-28).
+            paths = kp.videos_for_ct(login, ct, limit=limit_per_group, brand_hint=brand_hint,
+                                     slepok=slepok) or []
         except Exception as e:  # noqa: BLE001
             paths, _ = [], rep["warnings"].append(f"videos_for_ct {ct}: {str(e)[:80]}")
             _pool_read_ok = False   # транзиентный сбой чтения M3 ≠ «пул пуст» — не кэшировать

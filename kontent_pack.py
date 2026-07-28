@@ -1424,56 +1424,178 @@ def videos_for_login(login: str, limit: int = 2) -> list:
     return []
 
 
-def videos_for_ct(login: str, ct: str, limit: int = 2, brand_hint: str = "") -> list:
-    """Видео ПО КОНКРЕТНОЙ МОДЕЛИ/МАРКЕ (ct) из слепок-сборки аккаунта (per-кодер).
+_CANON_VIDEO_STEM = re.compile(r"ct\d{4}(?:_\d+)?", re.IGNORECASE)
 
-    Механика: находим папку _slepki_data/<бренд>_<город>_<суффикс> по суффиксу логина;
-    читаем _videos_map.json {<ключ_модели>: [<файл>.mp4, ...]}; имя модели из ct берём
-    через ``feeds_ct_model()`` (self-index фид-картинок: ctNNNN → 'Brand Model'), затем
-    берём последнее слово (модель без марки, lower) как ключ в карте.
 
-    Пример: ct0119 → 'Haval Jolion' → ключ 'jolion' → ['Jolion.mp4', 'Jolion_1.mp4'] →
-    /opt/neuro_kontent/kontent_oktyabr/_slepki_data/haval_ufa_si7rw3ua/videos/Jolion.mp4
+def _natural_key(text: str) -> list:
+    """Натуральная сортировка: 'ct0112_2' < 'ct0112_10'. Элементы — однотипные кортежи
+    (числа и строки не сравниваются между собой напрямую → TypeError исключён)."""
+    return [(0, int(p), "") if p.isdigit() else (1, 0, p)
+            for p in re.split(r"(\d+)", str(text or "").lower())]
 
-    Фолбэк (2026-07-02): если у слепка нет ролика для модели — берём видео из общего per-ct
-    пула M3 ``/Users/Shared/agency/Video/<ct>/`` через ``videos_pool_for_ct`` (так же, как
-    картинки из Manual). Лимит Директа — 2 видео на мастер."""
+
+def video_pool_sort_key(remote_abs: str) -> tuple:
+    """Детерминированный порядок общего видео-пула вместо алфавитного.
+
+    Был чистый алфавит имени файла, поэтому приоритет решала случайность: ``Haval_Dargo_16x9.mp4``
+    обгонял ``ct0112_01.mp4`` только потому, что 'H' < 'c' (инцидент 2026-07-27). Теперь:
+      1) КАНОНИЧЕСКИЕ ролики пула ``ctNNNN[_NN].mp4`` (нарезка нашего пайплайна по коду модели) —
+         первыми: это и есть «общий» контент, не привязанный к директологу;
+      2) остальные имена — после;
+      3) внутри групп — натуральная сортировка по каталогу (ct0112/ раньше ct0299/), затем по имени.
+    """
+    remote_abs = str(remote_abs or "")
+    stem = posixpath.splitext(posixpath.basename(remote_abs))[0]
+    canon = 0 if _CANON_VIDEO_STEM.fullmatch(stem) else 1
+    return (canon, _natural_key(posixpath.dirname(remote_abs)), _natural_key(stem))
+
+
+def _ct_model_key(ct: str) -> str:
+    """Ключ модели для ``_videos_map.json`` из имени модели: 'Haval Jolion Новый' → 'jolion'.
+    Производные модели не подменяем: F7X и Dargo X имеют отдельные видео-ключи."""
+    model_name = feeds_ct_model().get(_norm_ct(ct) or "", "")
+    if not model_name:
+        return ""
+    import unicodedata as _ud
+    tokens = [
+        _ud.normalize("NFKD", t).encode("ascii", "ignore").decode("ascii").lower()
+        if re.search(r"[A-Za-z]", t)
+        else "".join(ch for ch in _ud.normalize("NFKD", t).lower() if not _ud.combining(ch))
+        for t in model_name.strip().split()
+    ]
+    tail_noise = {"новый", "новыи", "новая", "новое", "novyi", "novy", "new"}
+    tokens = [t for t in tokens if t and t not in tail_noise]
+    return tokens[-1] if tokens else ""
+
+
+def _ct_brand_word(ct: str, ct_models: dict | None = None, brand_hint: str = "") -> str:
+    """Марка (lower) для ct: 1) feeds_ct_model (ct→'Brand Model'), 2) brand_hint вызывающего,
+    3) справочник ag_part1 (gsheet_naming). Третий источник снимает зависимость brand-fallback
+    от случайного покрытия фид-картинок (ct0019 BAIC, ct0111 Haval — записи в feeds нет)."""
+    ct = _norm_ct(ct) or ""
+    models = feeds_ct_model() if ct_models is None else ct_models
+    name = (models.get(ct) or "").strip()
+    if name:
+        return name.split()[0].lower()
+    if brand_hint:
+        return brand_hint.strip().split()[0].lower()
+    try:
+        from .campaign_naming import _ag_part1_map
+        ref_name = str(_ag_part1_map().get(ct) or "").strip()
+        if ref_name:
+            return ref_name.split()[0].lower()
+    except Exception:  # noqa: BLE001 — БД/DI недоступны → без 3го источника (как было)
+        pass
+    return ""
+
+
+def _fetch_valid_videos(rels: list, limit: int) -> list:
+    """Дедуп + точечный фетч + фильтр (размер/длительность) → до limit ЛОКАЛЬНЫХ путей.
+    Кандидатов берём БОЛЬШЕ чем limit (до _VIDEO_CANDIDATE_CAP): фильтр идёт ПОСЛЕ отбора,
+    иначе первые limit битых/коротких роликов навсегда закрывают валидные дальше."""
+    _lim = max(1, int(limit or 2))
+    rels = [r for r in dict.fromkeys(str(x or "").strip() for x in rels) if r]
+    rels = rels[:max(_lim, _VIDEO_CANDIDATE_CAP)]
+    if not rels:
+        return []
+    got = _fetch_many(rels)
+    return _filter_valid_videos([got[r] for r in rels if got.get(r)])[:_lim]
+
+
+def _slepok_video_folders(slepok: str, login: str) -> tuple[list, list]:
+    """Папки ``_slepki_data`` с видео → (СВОИ, ЧУЖИЕ).
+
+    Своя папка — это либо папка-слепок (имя == канон слепка, напр. ``pavlov``), либо
+    слепок-сборка аккаунта (имя заканчивается суффиксом логина: ``porg-si7rw3ua`` →
+    ``haval_ufa_si7rw3ua``). Всё остальное — чужие слепки (последняя ступень фолбэка)."""
+    sd = _load_index().get("slepki_data", {}) or {}
+    key = (slepok or "").strip().lower().partition(":")[0]     # многосайтовый ключ «слепок:сайт»
+    suffix = (login or "").rsplit("-", 1)[-1].strip().lower()
+    own, foreign = [], []
+    for folder in sorted(sd):
+        rec = sd.get(folder) or {}
+        if not (rec.get("videos") or rec.get("videos_map")):
+            continue
+        fl = folder.lower()
+        mine = bool(key and (fl == key or fl.startswith(key + "_")))
+        if not mine and len(suffix) >= 4 and fl.endswith(suffix):
+            mine = True
+        (own if mine else foreign).append(folder)
+    return own, foreign
+
+
+def _slepok_video_files(rec: dict, ct: str, model_key: str, brand_word: str,
+                        ct_models: dict, allow_brand: bool) -> list:
+    """Имена роликов слепка для ct: ключ-ct → ключ-модель → (для брендового ct) марка.
+
+    Ключ-ct в ``_videos_map.json`` (``{"ct0112": ["Haval_Dargo_16x9.mp4", ...]}``) точнее
+    модельного: у производных моделей последнее слово вырождается ('Haval Dargo X' → 'x')."""
+    vmap = rec.get("videos_map") or {}
+    files = [f for f in (vmap.get(ct) or []) if f]
+    if not files and model_key:
+        files = [f for f in (vmap.get(model_key) or []) if f]
+    if not files and allow_brand and brand_word:
+        # Брендовый ct (ct0111 Haval): точного ключа нет — берём модельные ct той же марки.
+        for k in sorted(vmap, key=_natural_key):
+            kl = str(k).strip().lower()
+            if not re.fullmatch(r"ct\d{4}", kl) or kl == ct:
+                continue
+            if _ct_brand_word(kl, ct_models) != brand_word:
+                continue
+            files.extend(f for f in (vmap.get(k) or []) if f)
+    return list(dict.fromkeys(files))
+
+
+def _videos_from_slepok_folders(folders: list, ct: str, model_key: str, brand_word: str,
+                                limit: int, ct_models: dict, allow_brand: bool) -> list:
+    sd = _load_index().get("slepki_data", {}) or {}
+    for folder in folders:
+        files = _slepok_video_files(sd.get(folder) or {}, ct, model_key, brand_word,
+                                    ct_models, allow_brand)
+        if not files:
+            continue
+        rels = [posixpath.join(M3_PACK_ROOT, "_slepki_data", folder, "videos", fn) for fn in files]
+        out = _fetch_valid_videos(rels, limit)
+        if out:
+            return out
+    return []
+
+
+def videos_for_ct(login: str, ct: str, limit: int = 2, brand_hint: str = "",
+                  slepok: str = "") -> list:
+    """Видео ПО КОНКРЕТНОЙ МОДЕЛИ/МАРКЕ (ct) — ТРИ ступени источников (правило Семёна 2026-07-28):
+
+      1) СВОЙ слепок — ``_slepki_data/<канон слепка>/videos`` (напр. ``pavlov``) и слепок-сборка
+         аккаунта ``_slepki_data/<бренд>_<город>_<суффикс логина>``; состав задаёт
+         ``_videos_map.json`` {ct или ключ-модели: [файл.mp4, ...]};
+      2) ОБЩИЙ пул ``/Users/Shared/agency/Video/<ct>/`` (``videos_pool_for_ct``);
+      3) ЧУЖОЙ слепок — ПОСЛЕДНИЙ фолбэк, только если своего и общего нет.
+
+    Ролики, залитые под конкретного директолога, кладутся в его папку слепка, а НЕ в общий пул:
+    иначе они выигрывали у общего пула по алфавиту и уезжали в чужие аккаунты (инцидент
+    2026-07-27: ``Haval_Dargo_*`` Павлова попали в три чужие tp7-кампании).
+
+    ``slepok`` — канон слепка кампании (``_SLEPOK_KEY``); пусто → ступень 1 работает только по
+    суффиксу логина (прежнее поведение). Лимит Директа — 2 видео на мастер."""
     ct = _norm_ct(ct)
     if not ct or ct == GENERAL_CT:
         return []
-    suffix = (login or "").rsplit("-", 1)[-1].strip()
-    model_name = feeds_ct_model().get(ct, "")           # ct0119 → 'Haval Jolion'
-    if suffix and model_name:
-        # Ключ в _videos_map: модель без марки и маркетингового хвоста
-        # ('Haval Jolion Новый' -> 'jolion'). Производные модели не подменяем:
-        # F7X и Dargo X должны иметь отдельные видео-ключи.
-        import unicodedata as _ud
-        tokens = [
-            _ud.normalize("NFKD", t).encode("ascii", "ignore").decode("ascii").lower()
-            if re.search(r"[A-Za-z]", t)
-            else "".join(ch for ch in _ud.normalize("NFKD", t).lower() if not _ud.combining(ch))
-            for t in model_name.strip().split()
-        ]
-        tail_noise = {"новый", "новыи", "новая", "новое", "novyi", "novy", "new"}
-        tokens = [t for t in tokens if t and t not in tail_noise]
-        model_key = tokens[-1] if tokens else ""
-        sd = _load_index().get("slepki_data", {})
-        for folder in sorted(sd):
-            if folder.endswith(suffix):
-                vmap = sd[folder].get("videos_map") or {}
-                filenames = vmap.get(model_key, [])
-                if filenames:
-                    # Кандидатов берём БОЛЬШЕ чем limit (до _VIDEO_CANDIDATE_CAP) — иначе первые
-                    # limit битых/коротких роликов навсегда закрывают доступ к валидным дальше.
-                    cap = max(limit, min(len(filenames), _VIDEO_CANDIDATE_CAP))
-                    rels = [posixpath.join(M3_PACK_ROOT, "_slepki_data", folder, "videos", fn)
-                            for fn in filenames[:cap]]
-                    got = _fetch_many(rels)
-                    slepki = _filter_valid_videos([got[r] for r in rels if got.get(r)])[:limit]
-                    if slepki:
-                        return slepki
-                break                                   # слепок найден, но ролика нет → пул по ct
-    return videos_pool_for_ct(ct, limit, brand_hint=brand_hint)
+    _lim = max(1, int(limit or 2))
+    ct_models = feeds_ct_model()
+    model_key = _ct_model_key(ct)
+    brand_word = _ct_brand_word(ct, ct_models, brand_hint)
+    # brand-fallback внутри слепка разрешаем ТОЛЬКО брендовому ct (у модельного ct есть своё
+    # имя модели) — иначе чужая модель своего слепка перебила бы точное совпадение общего пула.
+    allow_brand = not (ct_models.get(ct) or "").strip()
+    own, foreign = _slepok_video_folders(slepok, login)
+    mine = _videos_from_slepok_folders(own, ct, model_key, brand_word, _lim, ct_models, allow_brand)
+    if mine:
+        return mine
+    pool = videos_pool_for_ct(ct, _lim, brand_hint=brand_hint)
+    if pool:
+        return pool
+    return _videos_from_slepok_folders(foreign, ct, model_key, brand_word, _lim,
+                                       ct_models, allow_brand)
 
 
 _VIDEO_DURATION_CACHE: dict[tuple[str, float, int], float] = {}
@@ -1544,39 +1666,24 @@ def videos_pool_for_ct(ct: str, limit: int = 2, brand_hint: str = "") -> list:
     _lim = max(1, int(limit or 2))
     ext_assets = (_load_index().get("external_assets") or {})
     rows = ext_assets.get("Video|video|" + ct, []) or []
-    rels = [str(r.get("remote") or "").strip() for r in rows
-            if str(r.get("kind") or "") == "video_external"]
-    # Кандидатов больше чем _lim (до _VIDEO_CANDIDATE_CAP) — фильтр (размер+длительность) идёт
-    # ПОСЛЕ отбора, иначе первые _lim битых/коротких роликов навсегда закрывают валидные дальше.
-    rels = [r for r in rels if r][:max(_lim, _VIDEO_CANDIDATE_CAP)]
-    if rels:
-        got = _fetch_many(rels)
-        result = _filter_valid_videos([got[r] for r in rels if got.get(r)])[:_lim]
-        if result:
-            return result
+    rels = sorted((str(r.get("remote") or "").strip() for r in rows
+                   if str(r.get("kind") or "") == "video_external"),
+                  key=video_pool_sort_key)
+    result = _fetch_valid_videos(rels, _lim)
+    if result:
+        return result
     # Brand-fallback: точного ct нет в пуле Video/ (брендовый ct без своей папки, напр. ct0111
     # Haval). Берём ролики из модельных ct того же бренда.
     # brand_word: 1й приоритет — feeds_ct_model (ct→'Brand Model' из фид-картинок); 2й —
     # brand_hint от вызывающего кода (gsheet_naming.ag_part1), нужен для «Марки»-ct без
     # фид-картинки: feeds_ct_model()["ct0111"]=None, но ag_part1["ct0111"]="Haval".
+    # 3й приоритет внутри _ct_brand_word — справочник марок ag_part1 (ct→'Марка Модель' из
+    # gsheet_naming), когда И feeds_ct_model()[ct] пусто, И brand_hint пуст. Устраняет
+    # зависимость brand-fallback от случайного покрытия фид-картинок: brand-level ct без своей
+    # фид-картинки (ct0019 BAIC, ct0111 Haval) резолвит марку из справочника, а не остаётся
+    # с пустым brand_word → ложный VIDEO_NO_POOL при пустом brand_hint.
     ct_models = feeds_ct_model()
-    my_model = ct_models.get(ct, "")
-    brand_word = (my_model.strip().split()[0] if my_model else "").lower()
-    if not brand_word and brand_hint:
-        brand_word = brand_hint.strip().split()[0].lower()
-    if not brand_word:
-        # 3й приоритет — справочник марок ag_part1 (ct→'Марка Модель' из gsheet_naming),
-        # когда И feeds_ct_model()[ct] пусто, И brand_hint пуст. Устраняет зависимость
-        # brand-fallback от случайного покрытия фид-картинок: brand-level ct без своей
-        # фид-картинки (ct0019 BAIC, ct0111 Haval) резолвит марку из справочника,
-        # а не остаётся с пустым brand_word → ложный VIDEO_NO_POOL при пустом brand_hint.
-        try:
-            from .campaign_naming import _ag_part1_map
-            ref_name = str(_ag_part1_map().get(ct) or "").strip()
-            if ref_name:
-                brand_word = ref_name.split()[0].lower()
-        except Exception:  # noqa: BLE001 — БД/DI недоступны → без 3го источника (как было)
-            pass
+    brand_word = _ct_brand_word(ct, ct_models, brand_hint)
     if brand_word:
         brand_rels: list = []
         for key, rows2 in ext_assets.items():
@@ -1593,10 +1700,8 @@ def videos_pool_for_ct(ct: str, limit: int = 2, brand_hint: str = "") -> list:
                 for r in rows2
                 if str(r.get("kind") or "") == "video_external"
             )
-        brand_rels = [r for r in brand_rels if r][:max(_lim, _VIDEO_CANDIDATE_CAP)]
-        if brand_rels:
-            got2 = _fetch_many(brand_rels)
-            return _filter_valid_videos([got2[r] for r in brand_rels if got2.get(r)])[:_lim]
+        brand_rels = sorted((r for r in brand_rels if r), key=video_pool_sort_key)
+        return _fetch_valid_videos(brand_rels, _lim)
     return []
 
 

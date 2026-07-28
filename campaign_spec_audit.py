@@ -813,7 +813,22 @@ def _audit_group_count_vs_slepok(grid: gf.GridClient, tool: list[dict], slepok: 
 
 
 # ── tp1 combo-ads audit (BUTTON_MISSING + SHORT_TITLES grid) ─────────────────────
-def _ct_has_pool_video(login: str, ct: str) -> bool:
+def _slepok_from_ctx(ctx: dict) -> str:
+    """Канон слепка из ctx фиксера/аудита: ``ctx['body']['agent']`` (или ``ctx['agent']``).
+    Нужен видео-цепочке kontent_pack: ступень 1 = СВОЙ слепок (`_slepki_data/<слепок>/videos`)."""
+    ctx = ctx or {}
+    body = ctx.get("body") if isinstance(ctx.get("body"), dict) else {}
+    raw = str((body or {}).get("agent") or ctx.get("agent") or "").strip().lower()
+    if not raw:
+        return ""
+    canon = _DEPS.get("_SLEPOK_KEY") or {}
+    try:
+        return canon.get(raw, raw)
+    except Exception:  # noqa: BLE001 — deps не прокинуты → сырой ключ
+        return raw
+
+
+def _ct_has_pool_video(login: str, ct: str, slepok: str = "") -> bool:
     """Есть ли РЕАЛЬНО СУЩЕСТВУЮЩЕЕ валидное видео для ct (СЛЕПОК-aware).
 
     Проверяем через ``videos_for_ct(login, ct, ...)`` — ТУ ЖЕ цепочку, что и создание РК
@@ -851,7 +866,8 @@ def _ct_has_pool_video(login: str, ct: str) -> bool:
                 pass
         # СЛЕПОК-aware: videos_for_ct(login, ...) сам делает слепок→общий пул + чек exists/size,
         # зеркально create-пути. Пустой login → videos_for_ct деградирует до общего пула.
-        paths = kp_mod.videos_for_ct(login, ct_norm, limit=1, brand_hint=brand_hint)
+        paths = kp_mod.videos_for_ct(login, ct_norm, limit=1, brand_hint=brand_hint,
+                                     slepok=slepok)
         return bool(paths)
     except Exception:  # noqa: BLE001
         return False
@@ -2465,12 +2481,14 @@ def fix_video_missing(login: str, ctx: dict, issues: list[dict]) -> dict:
             continue
         try:
             total_attached, total_uploaded, passes = 0, 0, 0
+            _slepok = _slepok_from_ctx(ctx)   # ступень «свой слепок» в kp.videos_for_ct
             remaining = list(ads)
             warns: list = []
             while remaining and passes < 3:
                 passes += 1
                 meta = [{"id": a["ad_id"], "meta": {"ct": a["ct"], "brand": a.get("brand") or ""}} for a in remaining]
-                vr = _video_ads(login, meta, grid_cookie=None, campaign_id=cid) or {}
+                vr = _video_ads(login, meta, grid_cookie=None, campaign_id=cid,
+                                slepok=_slepok) or {}
                 total_attached += int(vr.get("videos_attached") or 0)
                 total_uploaded += int(vr.get("videos_uploaded") or 0)
                 warns.extend(vr.get("warnings") or [])
