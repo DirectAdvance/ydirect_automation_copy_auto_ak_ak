@@ -214,6 +214,11 @@ def _create_text_via_cookie(
                     "defer": True,
                     "build": {"groups": rep.get("groups"), "ads": rep.get("ads"),
                               "keywords": rep.get("keywords", 0),
+                              # groups_expected/warnings — расхождение «создано ≠ отправлено»
+                              # (grid_create._gate_groups_created). НЕ в errors: там оно = приговор
+                              # (удаление кампании ниже), а верификатор ловит его по этим полям.
+                              "groups_expected": rep.get("groups_expected"),
+                              "warnings": (rep.get("warnings") or [])[:5],
                               "errors": _errs[:5]},
                     "error": f"{tp_code}(куки) не дозаполнена: {_reason}"}
         # БАГ-11 фикс: Grid-финализация инвариантов + ассеты для tp2/tp4 куки-пути.
@@ -318,6 +323,10 @@ def _create_text_via_cookie(
                 "search_finalized": _fin,
                 "build": {"groups": rep.get("groups"), "ads": rep.get("ads"),
                           "keywords": rep.get("keywords", 0),
+                          # см. комментарий выше: расхождение «создано ≠ отправлено» видно
+                          # верификатору (GROUPS_CREATED_LESS_THAN_SENT), но кампанию не сносит.
+                          "groups_expected": rep.get("groups_expected"),
+                          "warnings": (rep.get("warnings") or [])[:5],
                           "errors": rep.get("errors", [])[:5]},
                 "url": (f"https://direct.yandex.ru/dna/campaign/{cid}?ulogin={login}" if cid else ""),
                 "error": ("; ".join(rep.get("errors") or [])[:240] if not ok else None)}

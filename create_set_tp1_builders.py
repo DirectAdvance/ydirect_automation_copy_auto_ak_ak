@@ -2729,6 +2729,9 @@ def _create_tp1_via_cookie(
                 "via": "cookie", "rsya_finalized": _fin,
                 "tp1_build": {"groups": rep.get("groups"), "ads": rep.get("ads"),
                               "shopping_ads": len(_shop_ids), "listing_ads": len(_listing_ids),
+                              # groups_expected — сколько групп ушло в AddUnifiedAdGroups;
+                              # расхождение ловит верификатор (GROUPS_CREATED_LESS_THAN_SENT).
+                              "groups_expected": rep.get("groups_expected"),
                               "errors": rep.get("errors", [])[:5],
                               "warnings": rep.get("warnings", [])[:5]},
                 "url": (f"https://direct.yandex.ru/dna/campaign/{cid}?ulogin={login}" if cid else ""),

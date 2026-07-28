@@ -20,6 +20,21 @@ def verify_local_result(row: dict[str, Any]) -> list[dict[str, Any]]:
                            "message": str(build.get("error") or build.get("skipped"))[:240]})
         if "groups" in build and int(build.get("groups") or 0) <= 0:
             issues.append({"severity": "error", "code": "NO_ADGROUPS_REPORTED", "name": nm})
+        # GROUPS_CREATED_LESS_THAN_SENT — «создано групп ≠ отправлено» (grid_create._gate_groups_created).
+        # Severity error, но REPORT-ONLY (как RSYA_NOT_FINALIZED): кампания с 13 рабочими группами из
+        # 14 подлежит ДОБИВКЕ, а не удалению. Именно поэтому расхождение живёт в build.groups_expected
+        # и build.warnings, а не в build.errors: в куки-пути tp2/tp4 непустой errors = снос кампании
+        # (create_set_feed_builders._create_text_via_cookie → _delete_partial_campaign + defer).
+        try:
+            _expected_groups = int(build.get("groups_expected") or 0)
+        except (TypeError, ValueError):
+            _expected_groups = 0
+        _made_groups = int(build.get("groups") or 0)
+        if _expected_groups and _made_groups and _made_groups != _expected_groups:
+            issues.append({"severity": "error", "code": "GROUPS_CREATED_LESS_THAN_SENT", "name": nm,
+                           "id": (row or {}).get("id") or result.get("campaign_id"),
+                           "message": (f"группы(AddUnifiedAdGroups): создано {_made_groups} "
+                                       f"из {_expected_groups} отправленных")})
         _shop_only = (int(build.get("shopping_ads") or 0) > 0
                       or int(build.get("listing_ads") or 0) > 0)
         if "ads" in build and int(build.get("ads") or 0) <= 0 and not _shop_only:
