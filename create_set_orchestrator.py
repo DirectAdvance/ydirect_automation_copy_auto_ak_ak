@@ -461,6 +461,11 @@ def create_set_response(deps: dict):
         # Применяются ТОЛЬКО к tp1–tp5 (поисковые семейства). МК(tp6)/Товарка(tp7) — без корректировок.
         corr = _load_corrections(ctx.get("city") or "*")
         ret_map = _account_retargeting(_st_token, login) if _st_token else {}
+        # Та же карта {имя условия → id} — единственный источник резолва аудиторий структуры
+        # (tp1/tp2/tp4/tp5) под ЦЕЛЕВОЙ кабинет: id из слепка принадлежат аккаунту-донору.
+        # Карта пуста (нет токена) → аудитории НЕ отправляются, позиция получает warning.
+        from . import create_set_audiences as _cs_aud
+        _cs_aud.remember_account_conditions(login, ret_map)
 
         # CPA/бюджет из «Глобальных правил» (для tp1 — cpc_cpa целевой CPA):
         rs = _rule_sets(eff_site, ctx.get("city") or "*")

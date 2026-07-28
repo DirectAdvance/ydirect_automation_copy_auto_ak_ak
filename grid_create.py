@@ -21,6 +21,7 @@ import requests
 from . import campaign as cmc
 from . import stage_timing as _timing   # STAGE_TIMING: пер-стадийный замер (только замер + лог)
 from .text_norm import _trim_clean  # используется в add_shopping_content_to_existing (line ~878)
+from .create_set_audiences import group_notes as _audience_notes
 from .grid_create_payloads import (   # ре-экспорт: gc.build_ad и др. остаются доступны для внешних импортёров
     _PLATFORMS_OFF, build_unified_campaign, build_adgroup,
     _campaign_minus_kw, _safe_old_price,
@@ -951,11 +952,18 @@ def create_full(login: str, *, campaign_spec: dict, groups: list, region_ids: li
     # отдельный AddKeywords ниже — Grid СОЗДАВАЛ их ДВАЖДЫ для групп <~140 ключей (точные
     # дубли фраз, каждая со своим keywordId). Единственный источник ключей — AddKeywords ниже
     # (проверен на всех объёмах, вкл. крупные группы, где AddUnifiedAdGroups keywords игнорирует).
+    # Аудитории структуры (g["audiences"] — id условий, уже резолвнутые под целевой кабинет
+    # в _tp1_pack_groups). search_only → поиск tp2/tp4 → searchRetargetings; иначе сеть tp1.
     g_items = [build_adgroup(campaign_id=cid, name=g.get("name") or "группа",
                              region_ids=region_ids, keywords=[],
                              minus_keywords=g.get("minus") or [], goal_id=goal_id,
                              autotargeting=autotargeting,
-                             autotargeting_profile=at_profile) for g in use_groups]
+                             autotargeting_profile=at_profile,
+                             retargeting_ids=g.get("audiences"),
+                             retargeting_on_search=search_only) for g in use_groups]
+    _aud_notes = _audience_notes(use_groups)
+    if _aud_notes:
+        rep.setdefault("warnings", []).extend(_aud_notes)
     try:
         # campaign_is_new: кампания создана строкой выше → групп в ней 0, снимок читать не надо.
         ag_ids = cl.add_adgroups(g_items, campaign_is_new=True)

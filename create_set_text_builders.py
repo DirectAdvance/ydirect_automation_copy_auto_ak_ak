@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from . import create_set_audiences as _cs_aud
 from .text_norm import _trim_clean
 from .text_gen import _fill_title
 from .grid_create import unique_keyword_ids as _unique_keyword_ids
@@ -140,7 +141,14 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
             minus_keywords=_gm,
             autotargeting=bool(autotarget),
             autotargeting_profile=("search_tp2" if autotarget else ""),   # EXACT_V2_MARK + WITHOUT_BRAND атомарно
+            # Аудитории структуры (g["audiences"] — id условий, резолвнутые под ЦЕЛЕВОЙ кабинет
+            # в _tp1_pack_groups). Это ПОИСКОВЫЙ путь tp2/tp4 → поле searchRetargetings.
+            retargeting_ids=g.get("audiences"),
+            retargeting_on_search=True,
         ))
+    _aud_notes = _cs_aud.group_notes(groups)
+    if _aud_notes:
+        rep.setdefault("warnings", []).extend(_aud_notes)
     try:
         # campaign_is_new=True (shell TEXT_CAMPAIGN создан шагом выше и пуст) → снимок имён групп
         # не читаем: лишний Grid-запрос в горячем пути tp2/tp4, а его сбой отключил бы сверку.

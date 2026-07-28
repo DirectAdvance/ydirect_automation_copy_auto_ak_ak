@@ -3418,15 +3418,27 @@ class GridClient:
         return out
 
     def build_update_item(self, grp: dict, *, keywords: list[str],
-                               relevance_match: dict | None) -> dict:
+                               relevance_match: dict | None,
+                               retargeting_ids: list | None = None,
+                               retargeting_on_search: bool = False) -> dict:
         """Собрать GdUpdateUnifiedAdGroupItem: round-trip ВСЕХ полей группы (регионы/минус-слова/
         трекинг/аудитория сохраняются как прочитано) + подставить keywords и relevanceMatch.
-        Поля, которые не отдаёт GroupsForEdit-lite (caRetargetingCondition/retargetings/
-        searchRetargetings/generalPrice/bidModifiers), шлём в дефолте build_adgroup — это боевой
-        стейт групп, создаваемых этим сервисом; вызывающий обязан пропускать группы с
-        retargetings_present/bid_modifiers_present, чтобы не затереть непустые значения."""
+
+        retargeting_ids — id УСЛОВИЙ ретаргетинга (аудитории), резолвнутые под ЦЕЛЕВОЙ кабинет
+        (`create_set_audiences.resolve_for_account`). Формат элемента — билдер интерфейса
+        Директа: {retCondId, id:null}. retargeting_on_search=True → searchRetargetings
+        (поиск tp2/tp4), иначе retargetings (сеть tp1/tp5).
+
+        ⚠️ Дефолт остаётся ПУСТЫМ списком, и это перезапись поля целиком. `GroupsForEditLite`
+        отдаёт по ретаргетингам только `adGroupId` (флаг `retargetings_present`), без
+        `retargetingConditionId` и без признака поиск/сеть — значит СОХРАНИТЬ уже стоящие
+        аудитории этот RMW не может. Поэтому вызывающий ОБЯЗАН и дальше пропускать группы с
+        `retargetings_present`/`bid_modifiers_present` (repair_keywords.py:93,
+        grid_finalize.py:1730), либо передавать сюда явный список аудиторий."""
         kw = [{"phrase": p} for p in dict.fromkeys(
             s for s in (str(k).strip() for k in (keywords or [])) if s)][:200]
+        from .create_set_audiences import retargetings_payload as _rets_payload
+        _rets = _rets_payload(retargeting_ids)
         item = {
             "adGroupId": str(grp["adgroup_id"]),
             "adGroupName": grp.get("adgroup_name") or "",
@@ -3440,8 +3452,8 @@ class GridClient:
             "contentTypeShowSettings": grp.get("content_type_show_settings"),
             "keywords": kw,
             "caRetargetingCondition": None,
-            "retargetings": [],
-            "searchRetargetings": [],
+            "retargetings": ([] if retargeting_on_search else _rets),
+            "searchRetargetings": (_rets if retargeting_on_search else []),
             "offerRetargeting": ({"isActive": bool((grp.get("offer_retargeting") or {}).get("isActive")),
                                   "id": None} if grp.get("offer_retargeting") else None),
             "relevanceMatch": relevance_match,

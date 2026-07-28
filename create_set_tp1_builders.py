@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from . import create_set_audiences as _cs_aud
 from .text_norm import _trim_clean
 from .link_check import resolve_or_fallback_url as _resolve_url, resolve_urls_batch as _resolve_urls_batch
 from .model_urls import _is_degenerate_feed_url
@@ -348,7 +349,15 @@ def _build_tp1_adgroups(
         minus_keywords=[],     # групповой минус не ставим: РСЯ режет охват, поиск — на кампании
         autotargeting=(True if _is_tp5 else bool(autotarget)),
         autotargeting_profile=("search_tp2" if _is_tp5 else ""),
+        # Аудитории структуры (g["audiences"] — id условий, резолвнутые под ЦЕЛЕВОЙ кабинет
+        # в _build_tp1_from_pack). tp1/tp5 — сетевое поле retargetings; searchRetargetings
+        # только у поисковых tp2/tp4 (_build_tp2_adgroups).
+        retargeting_ids=g.get("audiences"),
+        retargeting_on_search=(tp_code in ("tp2", "tp4")),
     ) for g in groups]
+    _aud_notes = _cs_aud.group_notes(groups)
+    if _aud_notes:
+        rep.setdefault("warnings", []).extend(_aud_notes)
     try:
         # campaign_is_new=True (кампания создана шагом выше и пуста) → снимок имён не читаем.
         # Фазе 4a ниже этот флаг НЕ передаём: там в кампании уже есть группы Фазы 1, и снимок —
@@ -1050,6 +1059,9 @@ def _build_tp1_from_pack(
                             else _pack_group_href(_pct, _pbrand, _feed_urls_tp1, href, site_type))
     _resolve_urls_batch(_batch_hrefs)
 
+    # Аудитории структуры {gk → [(id условия, имя)]} — читается один раз на кампанию.
+    _aud_by_gk = _cs_aud.struct_audiences_by_gk(slepok, site_type, tp_code)
+
     for ct, _gk, _uname in _units:
         _grp_pack = (pack.get(ct, {}).get("_groups") or {}).get(_gk) if _gk else None
         data = _grp_pack or pack.get(ct) or {}
@@ -1108,7 +1120,7 @@ def _build_tp1_from_pack(
                                       else list(titles or []) + list(_GENERIC_AT_TITLES)),
                                 pool=_sc_titles, is_brand=is_brand_group)
         g_texts = _rsya_texts(list(texts or []) + ([text0] if text0 else []), site_type, city, brand)
-        groups.append({
+        _g_new = {
             "name": group_name,
             "ct": ct,
             "brand": brand,
@@ -1125,7 +1137,10 @@ def _build_tp1_from_pack(
             "image_path": image_path,         # первая картинка (round-robin); совместимость
             "image_paths": all_images[:5],    # все пути (пак + Manual) — для мульти-upload в Фазе 3
             "callouts": data.get("callouts", []),
-        })
+        }
+        # Аудитории структуры (tp1/tp5): только по gk группы, резолв под ЦЕЛЕВОЙ кабинет.
+        _cs_aud.attach_to_group(_g_new, login, _aud_by_gk.get(_gk) if _gk else None)
+        groups.append(_g_new)
 
     if not groups and segment and _pack_read_glitch(key, site_type, tp_code):
         # СЕГМЕНТНОЙ кампании (Марки/Модели/Общее) нужны группы из пака, а пак пуст из-за
@@ -2205,6 +2220,9 @@ def _tp1_pack_groups(login: str, slepok: str, site_type: str, r_code: str, href:
                             else _pack_group_href(_pct, _pbrand, feed_url_by_model, href, site_type))
     _resolve_urls_batch(_batch_hrefs)
 
+    # Аудитории структуры {gk → [(id условия, имя)]} — читается один раз на кампанию.
+    _aud_by_gk = _cs_aud.struct_audiences_by_gk(slepok, site_type, tp_code)
+
     for ct, _gk, _uname in _units:
         _grp_pack = (pack.get(ct, {}).get("_groups") or {}).get(_gk) if _gk else None
         data = _grp_pack or pack.get(ct) or {}
@@ -2290,6 +2308,8 @@ def _tp1_pack_groups(login: str, slepok: str, site_type: str, r_code: str, href:
             _hh = [h for h in _hh if h]
             if _hh:
                 g["image_hashes"] = _hh[:5]
+        # Аудитории структуры: только по gk группы, резолв под ЦЕЛЕВОЙ кабинет.
+        _cs_aud.attach_to_group(g, login, _aud_by_gk.get(_gk) if _gk else None)
         groups.append(g)
     return groups
 

@@ -101,8 +101,16 @@ def build_unified_campaign(*, name: str, counter_id: int, goal_id: int, cpa: int
 
 def build_adgroup(*, campaign_id: int, name: str, region_ids: list, keywords: list,
                   minus_keywords: list | None = None, goal_id: int = 0,
-                  autotargeting: bool = True, autotargeting_profile: str = "") -> dict:
-    """Собрать GdAddUnifiedAdGroupItem: группа + ключи (phrase) + минус-слова + интерес-таргетинг."""
+                  autotargeting: bool = True, autotargeting_profile: str = "",
+                  retargeting_ids: list | None = None,
+                  retargeting_on_search: bool = False) -> dict:
+    """Собрать GdAddUnifiedAdGroupItem: группа + ключи (phrase) + минус-слова + интерес-таргетинг.
+
+    retargeting_ids — id УСЛОВИЙ ретаргетинга (аудитории из структуры слепка), уже
+    резолвнутые под ЦЕЛЕВОЙ кабинет (`create_set_audiences.resolve_for_account`).
+    retargeting_on_search=True → поиск (tp2/tp4) → поле `searchRetargetings`;
+    False → сеть (tp1/tp5) → поле `retargetings`. Пусто → оба поля пустые, как раньше.
+    """
     kw = [{"phrase": str(k)} for k in (keywords or []) if str(k).strip()][:200]
     if autotargeting_profile == "search_tp2":
         # Поиск tp2/tp4 (HAR 38): группа ВСЕГДА имеет активный relevanceMatch профиля
@@ -128,18 +136,26 @@ def build_adgroup(*, campaign_id: int, name: str, region_ids: list, keywords: li
         relevance_match = {"isActive": False, "id": None, "relevanceMatchCategories": [],
                            "autotargetingBrandSettings": []}
 
+    # Аудитории группы (условия ретаргетинга). Формат — дословно билдер интерфейса Директа
+    # (HAR 73har, чанк b10fd987c1079081.chunk.js): {retCondId: <id условия>, id: <id связки|null>}.
+    # Связка новая → id=None. Поиск (tp2/tp4) → searchRetargetings, сеть (tp1/tp5) → retargetings.
+    from .create_set_audiences import retargetings_payload as _rets_payload
+    _rets = _rets_payload(retargeting_ids)
+
     item = {
         "campaignId": str(campaign_id), "name": (name or "группа")[:255],
         "regionIds": [int(r) for r in (region_ids or []) if str(r).lstrip("-").isdigit()] or [225],
         "hyperGeoId": None, "hyperlocalGeoSegments": None, "audienceTargeting": "ALL_AUDIENCE",
         "adGroupMinusKeywords": [str(m) for m in (minus_keywords or [])][:100],
         "keywords": kw, "libraryMinusKeywordsIds": [],
-        # Цель-ретаргетинг на группе НЕ ставим: для РСЯ/Поиска (tp1/tp2/tp4) и Товарной галереи
-        # (tp3/tp5) таргетинг = ключи + автотаргет (relevanceMatch). Цель живёт в СТРАТЕГИИ кампании.
-        # Гол в conditionRules требует поле time (RetargetingDefectIds.REQUIRED_TIME_FOR_GOAL_OR_SEGMENT) —
-        # как в HAR17/v501-пути, оставляем retargetingCondition=null.
+        # INLINE-условие (retargetingCondition) НЕ ставим: гол в conditionRules требует поле time
+        # (RetargetingDefectIds.REQUIRED_TIME_FOR_GOAL_OR_SEGMENT), а INTERESTS/HOST/APPLICATION
+        # идут другим путём (UAC tp6/tp7). Аудитории структуры — это ГОТОВЫЕ условия по id, они
+        # живут в retargetings/searchRetargetings ниже, а не здесь. Цель конверсии — в СТРАТЕГИИ.
         "retargetingCondition": None,
-        "caRetargetingCondition": None, "retargetings": [], "searchRetargetings": [],
+        "caRetargetingCondition": None,
+        "retargetings": ([] if retargeting_on_search else _rets),
+        "searchRetargetings": (_rets if retargeting_on_search else []),
         "offerRetargeting": {"isActive": True, "id": None},
         "relevanceMatch": relevance_match,
         "promoExtensionInheritancePolicy": "MERGE",
