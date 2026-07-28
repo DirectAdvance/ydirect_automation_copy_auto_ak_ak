@@ -2098,3 +2098,42 @@ def test_assign_callout_accountwide_skips_uac_campaigns_before_grid():
     assert out["updated_campaign_ids"] == [11]
     assert out["skipped_campaign_ids"] == [21]
     assert out["skipped_reasons"] == {"21": "Мастер кампаний / Товарный мастер не поддерживает уточнения"}
+
+
+def test_create_set_async_allows_single_feed_when_explicitly_confirmed():
+    """Одиночный фид разрешён при явном маркере намерения (Семён 2026-07-28).
+
+    Гейт `stale_client_single_feed` ловит УСТАРЕВШИЙ клиент: живой интерфейс в полном прогоне
+    шлёт single_feed=false принудительно, поэтому потоковый запрос с одиночным фидом приходит
+    либо из протухшей вкладки, либо от осознанного вызова. Протухшая вкладка не знает поля
+    `single_feed_confirmed` — по нему и различаем.
+
+    Проверяем, что запрос проходит ИМЕННО этот гейт: он спотыкается уже на следующем
+    (product-only), а не на single_feed.
+    """
+    app.testing = True
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["logged_in"] = True
+        session["is_admin"] = True
+        session["username"] = "route-smoke"
+
+    response = client.post("/direct/api/create_set_async", json={
+        "login": "gen-ses-test",
+        "agent": "scherbakova",
+        "site_type": "Мультибренд",
+        "stream_content": True,
+        "single_feed": True,
+        "single_feed_confirmed": True,
+        "items": [{
+            "name": "tp7_cpc_site — ТК - Haval - КС + Автотаргетинг",
+            "type": "product",
+            "_plan_agent": "scherbakova",
+            "_plan_site_type": "Мультибренд",
+        }],
+    })
+
+    data = response.get_json()
+    assert response.status_code == 409
+    assert "stale_client_single_feed" not in data          # этот гейт пройден
+    assert data["stale_client_product_only_stream"] is True  # споткнулись на следующем
