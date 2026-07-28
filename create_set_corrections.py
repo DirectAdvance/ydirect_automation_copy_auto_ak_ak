@@ -43,15 +43,34 @@ def _load_corrections(city: str) -> dict:
         conn.close()
     return out
 
-def _account_retargeting(token: str, login: str) -> dict:
-    """{имя_условия → retargeting_condition_id} аккаунта — для матчинга аудиторных корректировок."""
+def account_retargeting_probe(token: str, login: str) -> tuple[dict, str]:
+    """{имя_условия → id} + СТАТУС чтения: `ok` | `no_token` | `error:<текст>`.
+
+    Пустая карта сама по себе не говорит, что произошло, а случаи разные:
+      • кабинет прочитан, условий ретаргетинга в нём НЕТ — штатно (правило Семёна 2026-07-28:
+        «если нет в кабинете, то не добавляем в кампании»), кампании создаются без аудиторий;
+      • токена нет / запрос упал — карта неизвестна, аудитории теряются молча. Это ПОТЕРЯ.
+    Раньше обе ветки возвращали `{}`, и вызывающий не мог их различить: штатный аккаунт без
+    ретаргетинга поднимал тот же ⚠️, что реальный сбой. Различает `create_set_orchestrator`.
+    """
     if not token:
-        return {}
+        return {}, "no_token"
     try:
         j = _v5_get("retargetinglists", token, login, ["Id", "Name"])
-        return {a["Name"]: a["Id"] for a in (j.get("result") or {}).get("RetargetingLists", []) if a.get("Name")}
-    except Exception:  # noqa: BLE001
-        return {}
+        return ({a["Name"]: a["Id"]
+                 for a in (j.get("result") or {}).get("RetargetingLists", []) if a.get("Name")},
+                "ok")
+    except Exception as e:  # noqa: BLE001
+        return {}, f"error:{str(e)[:120]}"
+
+
+def _account_retargeting(token: str, login: str) -> dict:
+    """{имя_условия → retargeting_condition_id} аккаунта — для матчинга аудиторных корректировок.
+
+    Совместимая обёртка над `account_retargeting_probe` (статус отбрасывается) — для вызывающих,
+    которым нужна только карта.
+    """
+    return account_retargeting_probe(token, login)[0]
 
 def _seg_key(name: str) -> tuple:
     """Ключ матчинга сегмента: (класс, остаток). Первый токен имени — это ИСТОЧНИК:
