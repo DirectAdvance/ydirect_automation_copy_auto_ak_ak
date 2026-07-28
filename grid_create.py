@@ -65,7 +65,36 @@ _ADGROUP_NAMES_Q = (      # read-back name→id (фикс позиционног
 
 
 class GridCreateError(RuntimeError):
-    pass
+    """Ошибка Grid-создания.
+
+    ``transient=True`` — ответ Grid потерян или сервер сбоил (5xx / «Внутренняя ошибка сервера» /
+    не-JSON): объект МОГ быть уже создан. Такую ошибку нельзя лечить слепым повтором мутации —
+    только сверкой фактического состояния (см. ``_add_adgroups_reconcile``).
+    """
+
+    def __init__(self, *args, transient: bool = False):
+        super().__init__(*args)
+        self.transient = bool(transient)
+
+
+def _response_lost(exc: BaseException) -> bool:
+    """True, если ответ Grid не получен/не осмыслен → мутация МОГЛА закоммититься на сервере."""
+    if isinstance(exc, GridCreateError):
+        return bool(getattr(exc, "transient", False))
+    return isinstance(exc, (requests.RequestException, OSError))
+
+
+def _gate_groups_created(rep: dict, expected: int) -> None:
+    """Гейт «создано групп ≠ отправлено» (по образцу гейта «ключи(AddKeywords): 0 из N создано»).
+
+    Раньше расхождение проходило МОЛЧА: ``rep["groups"]`` просто оказывался меньше, кампания
+    считалась успешной. А это единственный внешний признак частичного коммита групп / потери
+    ответа AddUnifiedAdGroups.
+    """
+    made = int(rep.get("groups") or 0)
+    if expected and made != expected:
+        rep.setdefault("errors", []).append(
+            f"группы(AddUnifiedAdGroups): создано {made} из {expected} отправленных")
 
 
 class GridCreateClient:
@@ -138,6 +167,26 @@ class GridCreateClient:
     _TRANSIENT_ERR = ("внутренняя ошибка сервера", "internal server error", "internal error",
                       "timeout", "timed out", "temporarily", "try again", "503", "502", "504")
 
+    # ⛔ Слепой повтор Add*-мутации ЗАПРЕЩЁН: сервер мог УЖЕ закоммитить запрос и не успеть
+    # ответить → повтор даёт ДУБЛЬ (боевой porg-nqavjicg, camp 713102313: 14 пустых групп-сирот
+    # 5777472935..948 рядом с 14 полными 5777472963..976; журнал
+    # RETRY_ON_NETWORK_LOSS_DUPLICATES_ADD). Тот же принцип, что yandex_gateway._creates_objects
+    # (v5) и запрет ретрая в grid_finalize._post / post_idempotent (Grid-докрутка).
+    # Покрывает AddCampaigns / AddUnifiedAdGroups / AddAdaptiveTextAds / AddShoppingAds и любую
+    # НЕизвестную Add*-мутацию. Устойчивость к реальной потере ответа даёт не ретрай, а сверка
+    # фактического состояния (_add_adgroups_reconcile).
+    # Исключение — AddKeywords: Директ схлопывает одинаковые фразы и на повтор возвращает
+    # keywordId УЖЕ существующей (живой зонд, см. unique_keyword_ids) → дубля в кабинете нет.
+    _RETRY_SAFE_ADD_OPS = ("AddKeywords",)
+
+    @classmethod
+    def _creates_objects(cls, op: str) -> bool:
+        """Мутация создаёт объекты и потому неидемпотентна → повторять её нельзя."""
+        name = str(op or "")
+        if name in cls._RETRY_SAFE_ADD_OPS:
+            return False
+        return name.startswith("Add")
+
     def _mutate(self, op: str, query: str, variables: dict) -> dict:
         """POST мутации с ретраем на 403 (свежий CSRF) И на транзиентную серверную ошибку Яндекса
         ('Внутренняя ошибка сервера' в top-level errors) — tries+backoff. → JSON. GridCreateError на сбое."""
@@ -159,17 +208,23 @@ class GridCreateClient:
                 try:
                     j = r.json()
                 except Exception as e:  # noqa: BLE001
-                    raise GridCreateError(f"{op}: не-JSON HTTP {r.status_code}: {r.text[:160]}") from e
+                    # Ответ не разобран (HTML 502/обрыв) — состояние на сервере НЕИЗВЕСТНО.
+                    raise GridCreateError(f"{op}: не-JSON HTTP {r.status_code}: {r.text[:160]}",
+                                          transient=True) from e
                 errs = j.get("errors")
                 if errs:
                     _msg = str(errs).lower()
-                    if any(t in _msg for t in self._TRANSIENT_ERR) and srv_try < 2:
+                    _is_transient = any(t in _msg for t in self._TRANSIENT_ERR)
+                    if _is_transient and not self._creates_objects(op) and srv_try < 2:
                         _last_transient = str(errs)[:240]
                         time.sleep(0.6 * (srv_try + 1))  # backoff 0.6s → 1.2s перед повтором
                         continue                         # транзиент Яндекса → повторяем мутацию
-                    raise GridCreateError(f"{op}: {str(errs)[:240]}")
+                    # Add*: повтор запрещён (дубли) → отдаём ошибку с пометкой transient,
+                    # вызывающий решает по ФАКТИЧЕСКОМУ состоянию, а не вслепую.
+                    raise GridCreateError(f"{op}: {str(errs)[:240]}", transient=_is_transient)
                 return j
-            raise GridCreateError(f"{op}: транзиент Яндекса не ушёл за 3 попытки: {_last_transient}")
+            raise GridCreateError(f"{op}: транзиент Яндекса не ушёл за 3 попытки: {_last_transient}",
+                                  transient=True)
 
     # ── шаги создания ────────────────────────────────────────────────────────
     def add_campaign(self, unified_campaign: dict) -> int:
@@ -186,7 +241,12 @@ class GridCreateClient:
         return int(added[0]["id"])
 
     def add_adgroups(self, items: list[dict]) -> list[int | None]:
-        """AddUnifiedAdGroups → список adGroupId (в порядке items; None для упавших)."""
+        """AddUnifiedAdGroups → список adGroupId (в порядке items; None для упавших).
+
+        Ответ потерян (транзиент 5xx / не-JSON / обрыв соединения) → мутация МОГЛА закоммититься.
+        Слепого повтора здесь нет (он давал 14 групп-сирот на porg-nqavjicg, camp 713102313):
+        сверяем фактическое состояние кампании и досоздаём только реально отсутствующие группы.
+        """
         if not items:
             return []
         if len(items) > _GRID_MUTATION_CHUNK:
@@ -195,6 +255,70 @@ class GridCreateClient:
                 out.extend(self.add_adgroups(items[i:i + _GRID_MUTATION_CHUNK]))
                 time.sleep(0.15)
             return out
+        try:
+            return self._add_adgroups_once(items)
+        except Exception as exc:  # noqa: BLE001 — разбор ниже: не-потерянный ответ пробрасываем как раньше
+            if not _response_lost(exc):
+                raise
+            return self._add_adgroups_reconcile(items, exc)
+
+    def _add_adgroups_reconcile(self, items: list[dict], exc: BaseException) -> list[int | None]:
+        """Ответ AddUnifiedAdGroups потерян: решаем по ФАКТУ, а не повтором вслепую.
+
+        Читаем name→id кампании (``_read_adgroup_name_to_id``) и сравниваем с отправленными именами:
+          * все имена уже в кабинете → коммит прошёл, НИЧЕГО не создаём (иначе дубль-сироты);
+          * ни одного → коммита не было (реальная сетевая потеря до записи) → безопасный повтор;
+          * часть → досоздаём ТОЛЬКО отсутствующие.
+        Сверить нельзя (несколько кампаний в чанке / пустые или неуникальные имена / read-back не
+        ответил) → пробрасываем исходную ошибку: пересоздавать вслепую нельзя.
+        ⚠️ Сверка по имени — та же посылка, на которой уже держится анти-сдвиг ag_ids в create_full.
+        """
+        cids = {str((it or {}).get("campaignId") or "").strip() for it in items}
+        cids.discard("")
+        cid_raw = next(iter(cids)) if len(cids) == 1 else ""
+        names = [str((it or {}).get("name") or "") for it in items]
+        if not cid_raw.isdigit() or not all(names) or len(set(names)) != len(names):
+            raise exc
+        cid = int(cid_raw)
+        live: dict[str, int] = {}
+        read_ok = False
+        for _ in range(2):                       # реплика Grid отстаёт от коммита (~2 с)
+            time.sleep(_RECONCILE_SETTLE_SEC)
+            try:
+                live.update(self._read_adgroup_name_to_id_strict(cid))
+            except Exception as read_exc:  # noqa: BLE001 — сверка не удалась, решаем ниже
+                print(f"[grid] AddUnifiedAdGroups: сверка состояния кампании {cid} не удалась: "
+                      f"{str(read_exc)[:120]}", flush=True)
+                continue
+            read_ok = True
+            if all(n in live for n in names):
+                break
+        if not read_ok:                          # состояние неизвестно → вслепую не создаём
+            raise exc
+        missing = [i for i, n in enumerate(names) if n not in live]
+        if not missing:
+            print(f"[grid] AddUnifiedAdGroups: ответ потерян, но все {len(names)} групп уже в "
+                  f"кампании {cid} → повтор НЕ выполняем ({str(exc)[:120]})", flush=True)
+            return [live.get(n) for n in names]
+        if len(missing) == len(names):
+            print(f"[grid] AddUnifiedAdGroups: коммита не было (0 из {len(names)} групп в кампании "
+                  f"{cid}) → безопасный повтор ({str(exc)[:120]})", flush=True)
+            return self._add_adgroups_once(items)
+        print(f"[grid] AddUnifiedAdGroups: частичный коммит в кампании {cid} "
+              f"({len(names) - len(missing)} из {len(names)}) → досоздаём {len(missing)}", flush=True)
+        made = self._add_adgroups_once([items[i] for i in missing])
+        out: list[int | None] = [live.get(n) for n in names]
+        for pos, idx in enumerate(missing):
+            out[idx] = made[pos] if pos < len(made) else None
+        if any(out[i] is None for i in missing):   # ответ Grid короче входа → добираем по имени
+            live2 = self._read_adgroup_name_to_id(cid) or {}
+            for i in missing:
+                if out[i] is None:
+                    out[i] = live2.get(names[i])
+        return out
+
+    def _add_adgroups_once(self, items: list[dict]) -> list[int | None]:
+        """Один AddUnifiedAdGroups (+ ретрай CAMPAIGN_NOT_FOUND) → adGroupId в порядке items."""
         # Grid eventual-consistency: только что созданная (addCampaigns / token v501) кампания ещё
         # не видна валидатору AddUnifiedAdGroups (читает отставшую реплику) → CAMPAIGN_NOT_FOUND.
         # Реплика догоняет за <~2с — ретраим с бэкоффом (2026-07-06 группа D: porg-7bqj56f4 ×3,
@@ -294,24 +418,32 @@ class GridCreateClient:
         маппинг — ключи группы N попадают в adGroupId группы N+1. Читаем актуальный name→id и
         перестраиваем список строго по именам. → dict{name: id} или {} при ошибке (best-effort)."""
         try:
-            j = self._mutate("AdGroupNames", _ADGROUP_NAMES_Q, {
-                "login": self.login,
-                "inp": {"filter": {"campaignIdIn": [str(campaign_id)]},
-                        "limitOffset": {"limit": 10000, "offset": 0}},
-            })
-            rows = (((j.get("data") or {}).get("client") or {}).get("adGroups") or {}).get("rowset") or []
-            out: dict[str, int] = {}
-            for row in rows:
-                name = str(row.get("name") or "")
-                try:
-                    gid = int(row.get("id") or 0)
-                except (TypeError, ValueError):
-                    gid = 0
-                if name and gid:
-                    out[name] = gid
-            return out
+            return self._read_adgroup_name_to_id_strict(campaign_id)
         except Exception:  # noqa: BLE001
             return {}
+
+    def _read_adgroup_name_to_id_strict(self, campaign_id: int) -> dict[str, int]:
+        """То же чтение, но БЕЗ проглатывания ошибки.
+
+        Нужен сверке после потери ответа (`_add_adgroups_reconcile`): там «{} при сбое чтения» и
+        «в кампании реально 0 групп» — противоположные решения (не трогать vs безопасно повторить),
+        а best-effort-версия их не различает."""
+        j = self._mutate("AdGroupNames", _ADGROUP_NAMES_Q, {
+            "login": self.login,
+            "inp": {"filter": {"campaignIdIn": [str(campaign_id)]},
+                    "limitOffset": {"limit": 10000, "offset": 0}},
+        })
+        rows = (((j.get("data") or {}).get("client") or {}).get("adGroups") or {}).get("rowset") or []
+        out: dict[str, int] = {}
+        for row in rows:
+            name = str(row.get("name") or "")
+            try:
+                gid = int(row.get("id") or 0)
+            except (TypeError, ValueError):
+                gid = 0
+            if name and gid:
+                out[name] = gid
+        return out
 
     def add_ads(self, items: list[dict], *, save_draft: bool = True) -> list[int | None]:
         """AddAdaptiveTextAds → список id объявлений (в порядке items; None для упавших)."""
@@ -396,6 +528,7 @@ class GridCreateClient:
 # ── Операционные константы (используются GridCreateClient и оркестраторами) ──
 _AC_GROUP_CAP = 150        # макс. групп на кампанию за проход (как в v501-пути)
 _GRID_MUTATION_CHUNK = 50  # приватный Grid нестабилен на пачках ~150: режем bulk-мутации
+_RECONCILE_SETTLE_SEC = 2.0  # пауза перед сверкой факта: реплика Grid отстаёт от коммита (~2с)
 _KW_BUDGET = 9800          # консервативный лимит ключей/кампанию (Яндекс: 10 000)
 _KW_MAX_PER_GROUP = 200    # верхний предохранитель на группу (Яндекс лимит API)
 
@@ -565,6 +698,7 @@ def create_full(login: str, *, campaign_spec: dict, groups: list, region_ids: li
             ag_ids = [_name_to_id.get(g.get("name") or "") for g in use_groups]
             rep["groups"] = sum(1 for x in ag_ids if x)
             rep["adgroup_ids"] = [int(x) if x else None for x in ag_ids]
+    _gate_groups_created(rep, len(g_items))
 
     # Ключи ЕДИНСТВЕННЫМ путём — отдельным AddKeywords (в build_adgroup keywords=[], иначе дубли).
     _kw_items = []
@@ -724,6 +858,7 @@ def add_text_content_to_existing(login: str, *, campaign_id: int, groups: list,
             ag_ids = [_name_to_id.get(g.get("name") or "") for g in use_groups]
             rep["groups"] = sum(1 for x in ag_ids if x)
             rep["adgroup_ids"] = [int(x) if x else None for x in ag_ids]
+    _gate_groups_created(rep, len(g_items))
 
     # Ключи ЕДИНСТВЕННЫМ путём — отдельным AddKeywords (в build_adgroup keywords=[], иначе дубли).
     _kw_items_tc = []
@@ -828,6 +963,7 @@ def add_shopping_content_to_existing(login: str, *, campaign_id: int, groups: li
         return rep
     rep["groups"] = sum(1 for x in ag_ids if x)
     rep["adgroup_ids"] = [int(x) if x else None for x in ag_ids]
+    _gate_groups_created(rep, len(g_items))
 
     shop_items = []
     listing_names = []
@@ -954,6 +1090,7 @@ def create_shopping_full(login: str, *, campaign_spec: dict, group_names: list, 
         rep["errors"].append(f"группы(куки): {str(e)[:200]}")
         return rep
     rep["groups"] = sum(1 for x in ag_ids if x)
+    _gate_groups_created(rep, len(g_items))
     ad_items = [build_shopping_ad(adgroup_id=agid, feed_id=feed_id, body=body_text, login=login)
                 for agid in ag_ids if agid]
     try:
