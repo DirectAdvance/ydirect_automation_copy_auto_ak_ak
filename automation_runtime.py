@@ -2987,6 +2987,93 @@ def _image_ct_for_content(ct: str) -> str:
     return c
 
 
+# ── Визуальный дедуп пула картинок (добор до 5 «разными», а не повтором) ─────────────────────
+# Один и тот же креатив может лежать в РАЗНЫХ источниках каскада (Manual/<ct> и харвест ЧУЖОГО
+# слепка в `_image_store/slepki/`) как ПЕРЕСОХРАНЁННАЯ копия: другой путь, другое имя, другой md5,
+# картинка та же. Живой факт 2026-07-28 (кампания 713096702, порг porg-pl6iavd5, ct0300 Tenet):
+# Manual/ct0300 дал 4 креатива, 5-м добором приехал
+# `_image_store/slepki/karavaev/porg-psm5h7q6/8ZN6fuwhY3sKUKPOJJHFzQ.png` — ТОТ ЖЕ баннер
+# «КАСКО в подарок / Tenet T7» (md5 549664ef… ≠ f1937a7e… у Manual/ct0300_КАСКО.png, размеры
+# 2021990 ≠ 2126596 байт, pHash совпадает бит-в-бит) → в объявлении 5 картинок, из них 2 одинаковые.
+# Признак тождества — pHash содержимого (`uac_client._image_phash`), а НЕ путь/имя (их дедупил
+# прежний `dict.fromkeys` — не помогло) и НЕ md5 (пересохранение его меняет).
+# Сравнение — ТОЧНОЕ равенство pHash (hamming 0), НЕ порог: замер по всем 199 папкам
+# `_manual/ct*` (2026-07-28) дал минимальную дистанцию между РАЗНЫМИ легитимными креативами
+# одного шаблона = 6 (гистограмма минимумов: 6→3 папки, 8→18, 10→45, 12→69, 14→51, 16→13),
+# т.е. любой порог ≥6 схлопнул бы «Зимние шины» и «Топливную карту» в одну картинку.
+# Нет Pillow / битый файл → pHash=None → фолбэк на md5 байтов; не прочитали и его → путь
+# считаем уникальным (решит upload). Правило Семёна: лучше 4 РАЗНЫХ, чем 5 с повтором.
+def _image_identity_key(path: str) -> str:
+    """Идентификатор КАРТИНКИ (не файла): «p:<pHash>» → «m:<md5>» → «x:<путь>»."""
+    try:
+        from .uac_client import _image_phash as _ph   # локальный импорт: без цикла и без старт-цены
+        _v = _ph(path)                                # кэш по пути внутри uac_client
+    except Exception:  # noqa: BLE001 — нет Pillow/numpy → визуальный уровень пропускаем
+        _v = None
+    if _v is not None:
+        return f"p:{_v}"
+    try:
+        return "m:" + hashlib.md5(Path(path).read_bytes()).hexdigest()  # noqa: S324 — дедуп, не крипта
+    except Exception:  # noqa: BLE001 — нечитаемый файл: считаем уникальным
+        return f"x:{path}"
+
+
+class _UniqueImagePool:
+    """Накопитель пула: принимает только ВИЗУАЛЬНО уникальные картинки, не больше `limit`.
+    Каскад источников не меняется — меняется только то, что дубль НЕ занимает слот и НЕ
+    останавливает добор: за повтором каскад идёт дальше к следующему источнику."""
+
+    def __init__(self, limit: int):
+        self.limit = max(1, int(limit or 5))
+        self.paths: list[str] = []
+        self.dropped = 0
+        self._seen: set[str] = set()
+
+    @property
+    def full(self) -> bool:
+        return len(self.paths) >= self.limit
+
+    def add(self, paths) -> None:
+        for p in paths or []:
+            if self.full:
+                return
+            if not p:
+                continue
+            k = _image_identity_key(str(p))
+            if k in self._seen:
+                self.dropped += 1                     # тот же креатив из другого источника
+                continue
+            self._seen.add(k)
+            self.paths.append(p)
+
+
+_IMG_POOL_WARNED: set = set()                          # (slepok, tp, img_ct, n) — 1 строка на процесс
+
+
+def _finish_image_pool(pool: "_UniqueImagePool", *, tp: str, ct: str, img_ct: str,
+                       slepok: str) -> list:
+    """Логи дефицита/дублей — по образцу `UAC_IMAGES_POOL_SHORT` (warn, НЕ блокировка).
+    Для tp6/tp7 короткий пул и так уезжает warning'ом в результат позиции
+    (`create_set_master_product`: IMAGES_POOL_SHORT → live-верификатор `UAC_IMAGES_POOL_SHORT`);
+    здесь дефицит становится видимым и для tp1/tp5, у которых своего warn-канала нет.
+    Ключ дедупа строк — (слепок, tp, ct-папка, число), иначе на 300 групп × 14 кампаний
+    журнал воркера залило бы тысячами одинаковых строк."""
+    _n = len(pool.paths)
+    _key = (slepok, tp, img_ct, _n, pool.dropped)
+    if _key not in _IMG_POOL_WARNED:
+        _IMG_POOL_WARNED.add(_key)
+        if pool.dropped:
+            print(f"[images-dedup] tp={tp} ct={ct} img_ct={img_ct} slepok={slepok}: "
+                  f"отброшено визуальных дублей {pool.dropped}, уникальных {_n}", flush=True)
+        if _n < pool.limit:
+            print(f"[images-pool-short] IMAGES_POOL_SHORT: tp={tp} ct={ct} img_ct={img_ct} "
+                  f"slepok={slepok} — уникальных картинок {_n} при цели {pool.limit}. "
+                  f"Повтором НЕ добиваем (лучше {_n} разных, чем {pool.limit} с дублем); "
+                  f"это предупреждение, не ошибка — кампания создаётся. "
+                  f"Чтобы стало {pool.limit}, добавить PNG в Manual/{img_ct}/", flush=True)
+    return pool.paths[:pool.limit]
+
+
 def _creative_images_for_ct(site_type: str, tp: str, ct: str, slepok: str,
                             *, allow_manual: bool = True, limit: int = 5,
                             domain: str = "") -> list:
@@ -3043,16 +3130,17 @@ def _creative_images_for_ct(site_type: str, tp: str, ct: str, slepok: str,
             source_segment="Общее", source_tp="manual", source_ct="ct0000",
             target_slepok=slepok, source_slepok="",
         )
-        imgs = list(dict.fromkeys(own))[:limit]
-        if len(imgs) < limit:
+        pool = _UniqueImagePool(limit)
+        pool.add(own)
+        if not pool.full:
             slepok_imgs = kp.read_slepok_images(site_type, tp, "ct0000", slepok) or []
             slepok_imgs = _prioritized_content_assets(
                 slepok_imgs or [], ct,
                 source_segment=site_type, source_tp=tp, source_ct="ct0000",
                 target_slepok=slepok, source_slepok=slepok, limit=limit,
             )
-            imgs += [p for p in slepok_imgs if p not in imgs]
-        if len(imgs) < limit:
+            pool.add(slepok_imgs)
+        if not pool.full:
             any_slepok_imgs = kp.read_any_slepok_images(
                 site_type, tp, "ct0000", prefer=slepok,
                 exclude_bu_slepoks=not _is_bu_site(site_type)) or []
@@ -3061,40 +3149,39 @@ def _creative_images_for_ct(site_type: str, tp: str, ct: str, slepok: str,
                 source_segment=site_type, source_tp=tp, source_ct="ct0000",
                 target_slepok=slepok, source_slepok="", limit=limit,
             )
-            imgs += [p for p in any_slepok_imgs if p not in imgs][:limit - len(imgs)]
-        if len(imgs) < limit:
+            pool.add(any_slepok_imgs)
+        if not pool.full:
             extra = _explicit_content_assets_for(ct, target_slepok=slepok,
                                                  asset_types={"image", "image_slepki"}, limit=limit)
-            imgs += [p for p in extra if p not in imgs]
-        return list(dict.fromkeys(imgs))[:limit]
+            pool.add(extra)
+        return _finish_image_pool(pool, tp=tp, ct=ct, img_ct="ct0000", slepok=slepok)
     # Марки, модели и кузова: Manual/{ct} → выбранный слепок/{ct} → явно
     # разрешённые ассеты. Другие слепки и общий M3/feed-пул не подмешиваем.
-    imgs = []
+    pool = _UniqueImagePool(limit)
     if manual_imgs:
         # Manual-креативы для модельного/брендового ct могут быть размечены во вкладке «Контент»
         # как ct0000/common, хотя физически лежат в папке модели. В таком случае сначала берём
         # строгий матч по ct папки, затем мягко добираем те же файлы как common-пул.
-        imgs += _filter_content_assets(
+        pool.add(_filter_content_assets(
             manual_imgs, ct,
             source_segment="Общее", source_tp="manual", source_ct=img_ct,
             target_slepok=slepok, source_slepok="",
-        )
-        if len(imgs) < limit:
+        ))
+        if not pool.full:
             common_manual = _filter_content_assets(
                 manual_imgs, ct,
                 source_segment="Общее", source_tp="manual", source_ct="ct0000",
                 target_slepok=slepok, source_slepok="",
             )
-            imgs += [p for p in common_manual if p not in imgs]
-    imgs = list(dict.fromkeys(imgs))[:limit]
-    if len(imgs) < limit:
+            pool.add(common_manual)
+    if not pool.full:
         slepok_imgs = kp.read_slepok_images(site_type, tp, img_ct, slepok) or []
         slepok_imgs = _prioritized_content_assets(
             slepok_imgs or [], ct, source_segment=site_type, source_tp=tp, source_ct=img_ct,
             target_slepok=slepok, source_slepok=slepok, limit=limit,
         )
-        imgs += [p for p in slepok_imgs if p not in imgs][:limit - len(imgs)]
-    if len(imgs) < limit:
+        pool.add(slepok_imgs)
+    if not pool.full:
         any_slepok_imgs = kp.read_any_slepok_images(
             site_type, tp, img_ct, prefer=slepok,
             exclude_bu_slepoks=not _is_bu_site(site_type)) or []
@@ -3102,12 +3189,12 @@ def _creative_images_for_ct(site_type: str, tp: str, ct: str, slepok: str,
             any_slepok_imgs or [], ct, source_segment=site_type, source_tp=tp, source_ct=img_ct,
             target_slepok=slepok, source_slepok="", limit=limit,
         )
-        imgs += [p for p in any_slepok_imgs if p not in imgs][:limit - len(imgs)]
-    if len(imgs) < limit:
+        pool.add(any_slepok_imgs)
+    if not pool.full:
         explicit = _explicit_content_assets_for(ct, target_slepok=slepok,
                                                 asset_types={"image", "image_slepki"}, limit=limit)
-        imgs += [p for p in explicit if p not in imgs][:limit - len(imgs)]
-    return list(dict.fromkeys(imgs))[:limit]
+        pool.add(explicit)
+    return _finish_image_pool(pool, tp=tp, ct=ct, img_ct=img_ct, slepok=slepok)
 
 
 def _is_common_ct(ct: str) -> bool:
