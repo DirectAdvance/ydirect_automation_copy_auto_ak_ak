@@ -8745,6 +8745,152 @@
                 }
               ],
               "groups": []
+            },
+            {
+              "name": "МК - Общие запросы - КС + аудитории",
+              "items": [
+                {
+                  "c": "tp6_cpc_site_ct0014_aon_n000_r0000_ct001_ag008_g00",
+                  "t": "МК - Общие запросы - КС + аудитории",
+                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+                  "gk": "mk",
+                  "camps": [
+                    "tp6_cpa_kviz — МК - Общие запросы - Автотаргетинг - Волгоградская область",
+                    "tp6_cpa_kviz — МК - Общие запросы - Автотаргетинг - Краснодарский край",
+                    "tp6_cpa_kviz — МК - Общие запросы - Автотаргетинг - Новосибирская область",
+                    "tp6_cpa_kviz — МК - Общие запросы - Автотаргетинг - Омская область",
+                    "tp6_cpa_kviz — МК - Общие запросы - Автотаргетинг - Самарская область"
+                  ],
+                  "camp_names": [
+                    "МК - Общие запросы - КС + аудитории"
+                  ],
+                  "autotarget_cats": [
+                    "ACCESSORY_MARK",
+                    "ALTERNATIVE_MARK",
+                    "BROADER_MARK",
+                    "EXACT_V2_MARK",
+                    "NARROW_MARK"
+                  ],
+                  "audiences": [
+                    {
+                      "id": "2499680041",
+                      "name": "Кроссоверы",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680089",
+                      "name": "Авто",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680141",
+                      "name": "Автомобили",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680142",
+                      "name": "Автомобили бизнес-класса",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680143",
+                      "name": "Городские автомобили",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680145",
+                      "name": "Автомобили представительского класса",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680146",
+                      "name": "Семейные автомобили",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680147",
+                      "name": "Автомобили среднего класса",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680148",
+                      "name": "Автомобили малого класса",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680510",
+                      "name": "Автокредит",
+                      "type": "INTERESTS"
+                    }
+                  ]
+                }
+              ],
+              "groups": []
+            },
+            {
+              "name": "МК - Общие запросы - аудитории + Автотаргетинг - Автотаргетинг",
+              "items": [
+                {
+                  "c": "tp6_cpc_site",
+                  "t": "МК - Общие запросы - аудитории + Автотаргетинг - Автотаргетинг",
+                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+                  "gk": "мк_общие_запросы_интересы_новокузнецк",
+                  "camps": [
+                    "tp6_cpa_site — МК - Общие запросы - Интересы - Новокузнецк"
+                  ],
+                  "camp_names": [
+                    "МК - Общие запросы - Интересы"
+                  ],
+                  "audiences": [
+                    {
+                      "id": "2499680041",
+                      "name": "Кроссоверы",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680089",
+                      "name": "Авто",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680142",
+                      "name": "Автомобили бизнес-класса",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680143",
+                      "name": "Городские автомобили",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680145",
+                      "name": "Автомобили представительского класса",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680146",
+                      "name": "Семейные автомобили",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680147",
+                      "name": "Автомобили среднего класса",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680148",
+                      "name": "Автомобили малого класса",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680510",
+                      "name": "Автокредит",
+                      "type": "INTERESTS"
+                    }
+                  ]
+                }
+              ],
+              "groups": []
             }
           ]
         },
@@ -8789,6 +8935,84 @@
                   ],
                   "camp_names": [
                     "ТК - Общие запросы - Автотаргетинг"
+                  ]
+                }
+              ],
+              "groups": []
+            },
+            {
+              "name": "ТК - Общие запросы - аудитории + Автотаргетинг - Автотаргетинг",
+              "items": [
+                {
+                  "c": "tp7_cpc_site",
+                  "t": "ТК - Общие запросы - аудитории + Автотаргетинг - Автотаргетинг",
+                  "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
+                  "gk": "тк_общие_запросы_интересы",
+                  "camps": [
+                    "tp7_cpa_site — ТК - Общие запросы - Интересы - Краснодарский край",
+                    "tp7_cpa_site — ТК - Общие запросы - Интересы - Новокузнецк",
+                    "tp7_cpa_site — ТК - Общие запросы - Интересы - Свердловская область"
+                  ],
+                  "camp_names": [
+                    "ТК - Общие запросы - Интересы"
+                  ],
+                  "rl_audiences": [
+                    {
+                      "rl_id": "2499680089",
+                      "name": "Auto",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "rl_id": "2499680147",
+                      "name": "Middle class cars",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "rl_id": "2499680148",
+                      "name": "Compact cars",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "rl_id": "2499680510",
+                      "name": "Car loans",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "rl_id": "2499680142",
+                      "name": "Business class cars",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "rl_id": "2499680145",
+                      "name": "Executive class cars",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "rl_id": "2499680146",
+                      "name": "Family cars",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "rl_id": "2499680143",
+                      "name": "Town cars",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "rl_id": "2499680041",
+                      "name": "Crossovers",
+                      "type": "INTERESTS"
+                    }
+                  ],
+                  "audiences": [
+                    "INTERESTS:2499680041",
+                    "INTERESTS:2499680089",
+                    "INTERESTS:2499680142",
+                    "INTERESTS:2499680143",
+                    "INTERESTS:2499680145",
+                    "INTERESTS:2499680146",
+                    "INTERESTS:2499680147",
+                    "INTERESTS:2499680148",
+                    "INTERESTS:2499680510"
                   ]
                 }
               ],
@@ -10342,6 +10566,92 @@
                 }
               ],
               "groups": []
+            },
+            {
+              "name": "МК - Общие запросы - КС + аудитории",
+              "items": [
+                {
+                  "c": "tp6_cpc_site_ct0044_aon_n000_r0000_ct001_ag008_g00",
+                  "t": "МК - Общие запросы - КС + аудитории",
+                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+                  "gk": "mk",
+                  "camps": [
+                    "tp6_cpa_kviz — МК - Chery - КС - Свердловская область",
+                    "tp6_cpa_site — МК - Changan - Автотаргетинг - Республика Татарстан",
+                    "tp6_cpa_site — МК - Changan - Интересы - Республика Татарстан",
+                    "tp6_cpa_site — МК - Changan - КС - Республика Татарстан",
+                    "tp6_cpa_site — МК - Changan Alsvin - КС - Республика Татарстан"
+                  ],
+                  "camp_names": [
+                    "МК - Общие запросы - КС + аудитории"
+                  ],
+                  "autotarget_cats": [
+                    "ACCESSORY_MARK",
+                    "ALTERNATIVE_MARK",
+                    "BROADER_MARK",
+                    "EXACT_V2_MARK",
+                    "NARROW_MARK"
+                  ],
+                  "audiences": [
+                    {
+                      "id": "2499680041",
+                      "name": "Кроссоверы",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680089",
+                      "name": "Авто",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680141",
+                      "name": "Автомобили",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680142",
+                      "name": "Автомобили бизнес-класса",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680143",
+                      "name": "Городские автомобили",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680145",
+                      "name": "Автомобили представительского класса",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680146",
+                      "name": "Семейные автомобили",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680147",
+                      "name": "Автомобили среднего класса",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680148",
+                      "name": "Автомобили малого класса",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680510",
+                      "name": "Автокредит",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680636",
+                      "name": "Chery",
+                      "type": "INTERESTS"
+                    }
+                  ]
+                }
+              ],
+              "groups": []
             }
           ]
         },
@@ -10598,6 +10908,88 @@
                   ],
                   "camp_names": [
                     "ТК - Belgee - КС"
+                  ]
+                }
+              ],
+              "groups": []
+            },
+            {
+              "name": "ТК - Общие запросы - аудитории + Автотаргетинг - Автотаргетинг",
+              "items": [
+                {
+                  "c": "tp7_cpc_site_ct0000_aon_n068_r0000_ct001_ag001_g00",
+                  "t": "ТК - Общие запросы - аудитории + Автотаргетинг - Автотаргетинг",
+                  "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
+                  "gk": "тк_общие_запросы_интересы_color",
+                  "camps": [
+                    "tp7_cpa_site_ct0000_aon_n068_r0000_ct001_ag001_g00 — ТК - Общие запросы - Интересы - Тюменская область — color"
+                  ],
+                  "camp_names": [
+                    "ТК - Общие запросы - Интересы"
+                  ],
+                  "rl_audiences": [
+                    {
+                      "rl_id": "2499680089",
+                      "name": "Auto",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "rl_id": "2499680147",
+                      "name": "Middle class cars",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "rl_id": "2499680148",
+                      "name": "Compact cars",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "rl_id": "2499680510",
+                      "name": "Car loans",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "rl_id": "2499680142",
+                      "name": "Business class cars",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "rl_id": "2499680145",
+                      "name": "Executive class cars",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "rl_id": "2499680146",
+                      "name": "Family cars",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "rl_id": "2499680143",
+                      "name": "Town cars",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "rl_id": "2499680041",
+                      "name": "Crossovers",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "rl_id": "2499680141",
+                      "name": "Cars",
+                      "type": "INTERESTS"
+                    }
+                  ],
+                  "audiences": [
+                    "INTERESTS:2499680041",
+                    "INTERESTS:2499680089",
+                    "INTERESTS:2499680141",
+                    "INTERESTS:2499680142",
+                    "INTERESTS:2499680143",
+                    "INTERESTS:2499680145",
+                    "INTERESTS:2499680146",
+                    "INTERESTS:2499680147",
+                    "INTERESTS:2499680148",
+                    "INTERESTS:2499680510"
                   ]
                 }
               ],

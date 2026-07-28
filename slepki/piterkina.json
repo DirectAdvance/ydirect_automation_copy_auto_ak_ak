@@ -11532,6 +11532,52 @@
                 }
               ],
               "groups": []
+            },
+            {
+              "name": "МК - Общие запросы - КС + аудитории",
+              "items": [
+                {
+                  "c": "tp6_cpc_site",
+                  "t": "МК - Общие запросы - КС + аудитории",
+                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+                  "gk": "mk",
+                  "camps": [
+                    "tp6_cpa_site — МК - Tenet T8 - Ключевики - Краснодарский край",
+                    "tp6_cpa_site — МК - Автотаргетинг - Новосибирская область",
+                    "tp6_cpc_kviz — МК - Chery - Ключевики - Саратовская область",
+                    "tp6_cpc_kviz— МК - Автотаргетинг - Саратовская область",
+                    "tp6_cpc_site — МК -  Chery - Ключевики - Кемеровская область"
+                  ],
+                  "camp_names": [
+                    "МК - Общие запросы - КС + аудитории"
+                  ],
+                  "autotarget_cats": [
+                    "ACCESSORY_MARK",
+                    "ALTERNATIVE_MARK",
+                    "BROADER_MARK",
+                    "EXACT_V2_MARK",
+                    "NARROW_MARK"
+                  ],
+                  "audiences": [
+                    {
+                      "id": "2499680498",
+                      "name": "Lada",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680611",
+                      "name": "Geely",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680636",
+                      "name": "Chery",
+                      "type": "INTERESTS"
+                    }
+                  ]
+                }
+              ],
+              "groups": []
             }
           ]
         },

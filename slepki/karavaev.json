@@ -28260,6 +28260,63 @@
               ]
             }
           ]
+        },
+        {
+          "code": "tp6",
+          "title": "МК",
+          "groups": [
+            {
+              "name": "МК - Общая - КС + Аудитории + Автотаргетинг - Автотаргетинг",
+              "items": [
+                {
+                  "c": "tp6_cpc_site_ct0014_aon_n000_r0000_ct001_ag011_g00",
+                  "t": "МК - Общая - КС + Аудитории + Автотаргетинг - Автотаргетинг",
+                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+                  "gk": "mk",
+                  "camps": [
+                    "tp6_cpc_kviz_ct0014_aon_n010_r0000_ct001_ag011_g00 - master_kviz_at",
+                    "tp6_cpc_kviz_ct0014_aon_n010_r0000_ct001_ag011_g00 - master_kviz_slova",
+                    "tp6_cpc_site_ct0006_aon_n000_r0000_ct001_ag011_g00 - master_at_credit",
+                    "tp6_cpc_site_ct0006_aon_n000_r0000_ct001_ag011_g00 - master_slova_credit",
+                    "tp6_cpc_site_ct0014_aon_n000_r0000_ct001_ag011_g00 - master_at"
+                  ],
+                  "autotarget_cats": [
+                    "ACCESSORY_MARK",
+                    "ALTERNATIVE_MARK",
+                    "BROADER_MARK",
+                    "EXACT_V2_MARK",
+                    "NARROW_MARK"
+                  ],
+                  "audiences": [
+                    {
+                      "id": "19000000070",
+                      "name": "drive2.ru",
+                      "type": "HOST"
+                    },
+                    {
+                      "id": "19001798800",
+                      "name": "avto.ru",
+                      "type": "HOST"
+                    },
+                    {
+                      "id": "2499680089",
+                      "name": "Авто",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680398",
+                      "name": "Подержанные автомобили",
+                      "type": "INTERESTS"
+                    }
+                  ],
+                  "camp_names": [
+                    "МК - Общая - КС + Аудитории + Автотаргетинг"
+                  ]
+                }
+              ],
+              "groups": []
+            }
+          ]
         }
       ]
     }
