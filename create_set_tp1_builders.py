@@ -374,13 +374,26 @@ def _build_tp1_adgroups(
     # Псевдоключ "---autotargeting" не шлём: автотаргет живёт в relevanceMatch, а
     # gc.GridCreateClient.add_keywords сам режет фразы, начинающиеся с "---".
     kw_items: list = []
+    _kw_raw_total = 0     # фраз пришло на вход очистки (только по группам, ЗАДУМАННЫМ с ключами)
+    _kw_raw_groups = 0    # групп, задуманных с реальными ключами
     for i, g in enumerate(groups):
         if not ag_ids[i]:
             continue
         if autotarget and not keep_keywords:
-            continue
-        for k in _kw_clean(g.get("keywords") or [], 200):
+            continue      # чистый автотаргет: пустой список ключей — норма by design, не дефект
+        _raw = g.get("keywords") or []
+        _kw_raw_groups += 1
+        _kw_raw_total += len(_raw)
+        for k in _kw_clean(_raw, 200):
             kw_items.append({"adGroupId": str(ag_ids[i]), "keyword": k})
+    if not kw_items and _kw_raw_total:
+        # #ФИКС-7b (2026-07-28): фразы на входе БЫЛИ, но очистка съела все до одной →
+        # kw_items пуст → блок ниже (и его гейт «0 из N создано») недостижим, позиция уходила
+        # ok=True с пустыми группами и полным молчанием (боевой случай: `_kw_clean` считал
+        # минус-слова в лимит 7 слов). Автотаргет-групп это не касается — они отсеяны `continue`.
+        rep["errors"].append(
+            f"ключи({tp_code}): все {_kw_raw_total} фраз отсеяны очисткой на "
+            f"{_kw_raw_groups} группах — группы созданы без ключей")
     if kw_items:
         try:
             # unique_keyword_ids считает РАЗНЫХ keywordId (Директ схлопывает дубли,
