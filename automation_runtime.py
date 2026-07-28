@@ -1553,9 +1553,9 @@ _GENERIC_SITELINK_FILLERS = [  # все заголовки 22–30 симв (fix
 
 def _build_name(is_master: bool, is_auto: bool, pay: str, r_code: str, oblast: str,
                 sq: str = "site", cat: str | None = None, ct: str = "ct0000",
-                targeting_label: str | None = None) -> str:
+                targeting_label: str | None = None, struct_name: str | None = None) -> str:
     return _create_set_plan_module()._build_name(
-        is_master, is_auto, pay, r_code, oblast, sq, cat, ct, targeting_label
+        is_master, is_auto, pay, r_code, oblast, sq, cat, ct, targeting_label, struct_name
     )
 
 

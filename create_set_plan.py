@@ -129,8 +129,13 @@ def _match_camp_label(sel: set | None, tp_num: int, *names: str) -> bool:
 
 def _build_name(is_master: bool, is_autotarget: bool, pay: str, r_code: str, oblast: str,
                 sq: str = "site", cat: str | None = None, ct: str = "ct0000",
-                targeting_label: str | None = None) -> str:
+                targeting_label: str | None = None, struct_name: str | None = None) -> str:
     """Имя кампании по спеке: {коды} — {МК|ТК}_{AT|RA}_{pay}[_kviz][ - {категория}] - {область}.
+
+    struct_name — имя позиции ИЗ СЛЕПКА (`_slepok_struct_groups` → `g["name"]`, т.е. camp_names[0]).
+    Задано → человекочитаемая часть берётся из него как есть, вместе с хвостом таргетинга
+    (решение Семёна 2026-07-28: «имена tp6/tp7 движок должен брать из слепка»). Пусто → прежняя
+    сборка из категории и вычисленного хвоста — фолбэк для позиций без имени в структуре.
     sq: 'site' (посадка = домен) | 'kviz' (посадка = домен/quiz).
     cat: категория/модель группы (Haval Jolion/Интересы/…) — отдельная кампания на неё.
     ct: 1-й код кодера. Для tp6 ПО МОДЕЛИ — ct модели (ct0119 для Haval Jolion), иначе ct0000.
@@ -152,13 +157,21 @@ def _build_name(is_master: bool, is_autotarget: bool, pay: str, r_code: str, obl
     age = "ag001" if (not is_master or is_autotarget) else "ag011"
     codes = f"{tp}_{paycode}_{sqcode}_{ct or 'ct0000'}_aon_n000_{r_code}_{fmt}_{age}_g00"
     tp_label = "МК" if is_master else "ТК"  # #6: канон CODER.md (было «Мастер кампаний»/«Товарка», 2026-07-19)
-    cat_part = f" - {cat}" if cat else ""                 # категория аудитории в человекочитаемое имя (как в слепках)
-    tgt_part = f" - {targeting_label}" if targeting_label else ""
+    _struct = (struct_name or "").strip()
+    if _struct:
+        # 1:1 со слепком. Хвост таргетинга НЕ пересчитываем: в tp6/tp7 автотаргет включён всегда,
+        # поэтому метка в имени описательная — какой её завёл директолог, такой и создаём.
+        # Метку МК/ТК дописываем, только если слепок её не несёт: её парсит UI-бейдж (DOD §tp6/7).
+        human = _struct if re.match(r"^\s*(МК|ТК)\b", _struct, re.IGNORECASE) else f"{tp_label} - {_struct}"
+    else:
+        cat_part = f" - {cat}" if cat else ""             # категория аудитории в человекочитаемое имя (как в слепках)
+        tgt_part = f" - {targeting_label}" if targeting_label else ""
+        human = f"{tp_label}{cat_part}{tgt_part}"
     # Дедуп сегментов — ОБЩИЙ механизм (_csctx.dedup_name_segments), не частное условие на
     # литерал. cat = item.t после tp67_clean (структурная метка, targeting-хвост срезан).
     # Сегменты всё равно могут пересекаться с tp_label/targeting_label («ТК», «Автотаргетинг»),
     # поэтому дедуп обязателен для всех cat-значений.
-    return _csctx.dedup_name_segments(f"{codes} — {tp_label}{cat_part}{tgt_part} - {oblast}")
+    return _csctx.dedup_name_segments(f"{codes} — {human} - {oblast}")
 
 def _rule_sets(site_type: str, city: str) -> dict:
     """Наборы бюджет/CPA из direct_automation_rules по (site_type, city)→'*':
@@ -1529,7 +1542,8 @@ def _set_plan_response():
                 for pay in _pays_here:
                     base_nm = _build_name(is_master, is_autotarget_name, pay, r_code, oblast,
                                           g["sq"], _name_cat, ct=cat_ct,
-                                          targeting_label=targeting_label)
+                                          targeting_label=targeting_label,
+                                          struct_name=_raw_name_cat)
                     # Bug D fix: используем URL фида (без https://) вместо короткого имени из кабинета.
                     # Гард — по реально подставляемой метке (label), с срезкой домен-префикса.
                     # 2026-07-19, круг доработки: строку случайно откатила параллельная сессия

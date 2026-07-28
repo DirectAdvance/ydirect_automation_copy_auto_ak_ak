@@ -1086,6 +1086,9 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             cat=_cat_fix,
             ct=(c_ct or it.get("ct") or "ct0000"),
             targeting_label=_targeting_label_fix,
+            # Имя позиции из слепка — тот же источник, что у плана (`_emit_struct`), иначе
+            # фолбэк-путь снова пересобрал бы имя по-своему и разошёлся бы со структурой.
+            struct_name=it.get("position_name") or None,
         )
     # Ручная аудитория («Настроить вручную») → отражаем в кодер-имени (aoff→aon).
     disp_name = name.replace("_aoff_", "_aon_", 1) if (is_manual and "_aon_" not in name) else name
