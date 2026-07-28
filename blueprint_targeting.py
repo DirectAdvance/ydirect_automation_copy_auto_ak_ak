@@ -392,6 +392,32 @@ def _pack_group_fact(slepok: str, site_type: str, tp: str, ct: str, gk: str) -> 
         else:
             real += 1
             reals.append(s)
+    # Donor-fallback tp4→tp2→tp1, tp2→tp1 — зеркало slepki_editor.read_group_keywords:580-588.
+    # Если в родном паке real==0, но donor-tp содержит реальные ключи — берём их.
+    # auto сохраняем из родного пака (маркер ---autotargeting остаётся без изменений).
+    if real == 0 and tp in ("tp2", "tp4"):
+        donors: tuple = ("tp2", "tp1") if tp == "tp4" else ("tp1",)
+        for donor_tp in donors:
+            d_kd = os.path.join(kp._ct_dir(site_type, donor_tp, ct), "keywords")
+            if slug:
+                d_pos, d_found = _pack_read_local(os.path.join(d_kd, f"{slepok}__{slug}.txt"))
+                if not d_found:
+                    d_pos, _ = _pack_read_local(os.path.join(d_kd, f"{slepok}.txt"))
+            else:
+                d_pos, _ = _pack_read_local(os.path.join(d_kd, f"{slepok}.txt"))
+            d_real = 0
+            d_reals: list = []
+            for line in d_pos:
+                s = (line or "").strip()
+                if not s:
+                    continue
+                if not _PACK_AUTO_RE.search(s):
+                    d_real += 1
+                    d_reals.append(s)
+            if d_real > 0:
+                real = d_real
+                reals = d_reals
+                break
     # sig — подпись СОДЕРЖИМОГО пака (кол-во + первый/последний реальный ключ), 1:1 с клиентским
     # `_sig` в _slCountKeywords. Нужна для дедупа счётчика: группы без своего per-group файла
     # падают на ОДИН ct-агрегат и должны быть посчитаны один раз. Наружу (в pack_facts) НЕ уходит.
