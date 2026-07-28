@@ -17784,38 +17784,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Все Формы E",
+                  "t": "Все Формы",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "bce_формы_e",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36976986,
-                      "name": "все формы_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36976986"
-                  ],
-                  "merged_gks": [
-                    "bce_формы_e",
-                    "bce_формы_e_моб"
-                  ]
-                }
-              ]
-            },
-            {
-              "name": "Все Формы A Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Все Формы A",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "bce_формы_a",
+                  "gk": "bce_формы",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -17832,10 +17803,16 @@
                   ],
                   "merged_gks": [
                     "bce_формы_a",
-                    "bce_формы_a_моб"
+                    "bce_формы_e",
+                    "bce_формы_e_моб",
+                    "bce_формы_f"
                   ]
                 }
               ]
+            },
+            {
+              "name": "Все Формы A Пк",
+              "items": []
             },
             {
               "name": "Все Формы E Моб",
@@ -17843,32 +17820,7 @@
             },
             {
               "name": "Все Формы F Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Все Формы F",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "bce_формы_f",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36976986,
-                      "name": "все формы_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36976986"
-                  ],
-                  "merged_gks": [
-                    "bce_формы_f",
-                    "bce_формы_f_пк"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Все Формы A Моб",
@@ -21051,79 +21003,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Lal C",
+                  "t": "Lal",
                   "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_c",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36639336,
-                      "name": "Все формы_LAL",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36639336",
-                    "RETARGETING:36953828"
-                  ],
-                  "merged_gks": [
-                    "lal_c",
-                    "lal_c_пк"
-                  ]
-                }
-              ]
-            },
-            {
-              "name": "Lal B Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal B",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_b",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36639336,
-                      "name": "Все формы_LAL",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36639336",
-                    "RETARGETING:36953828"
-                  ],
-                  "merged_gks": [
-                    "lal_b",
-                    "lal_b_пк"
-                  ]
-                }
-              ]
-            },
-            {
-              "name": "Lal A Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal A",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_a",
+                  "gk": "lal",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -21146,115 +21028,35 @@
                   ],
                   "merged_gks": [
                     "lal_a",
-                    "lal_a_пк"
+                    "lal_b",
+                    "lal_c",
+                    "lal_c_пк",
+                    "lal_d",
+                    "lal_e",
+                    "lal_f"
                   ]
                 }
               ]
+            },
+            {
+              "name": "Lal B Моб",
+              "items": []
+            },
+            {
+              "name": "Lal A Моб",
+              "items": []
             },
             {
               "name": "Lal E Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal E",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_e",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36639336,
-                      "name": "Все формы_LAL",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36639336",
-                    "RETARGETING:36953828"
-                  ],
-                  "merged_gks": [
-                    "lal_e",
-                    "lal_e_пк"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Lal D Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal D",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_d",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36639336,
-                      "name": "Все формы_LAL",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36639336",
-                    "RETARGETING:36953828"
-                  ],
-                  "merged_gks": [
-                    "lal_d",
-                    "lal_d_пк"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Lal F Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal F",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_f",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36639336,
-                      "name": "Все формы_LAL",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36639336",
-                    "RETARGETING:36953828"
-                  ],
-                  "merged_gks": [
-                    "lal_f",
-                    "lal_f_пк"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Lal B Пк",
@@ -21340,100 +21142,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Lal Все Формы Lal F",
+                  "t": "Lal Все Формы Lal",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_bce_формы_lal_f",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36558689,
-                      "name": "все формы_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36558689"
-                  ],
-                  "merged_gks": [
-                    "lal_bce_формы_lal_f",
-                    "lal_bce_формы_lal_f_моб"
-                  ]
-                }
-              ]
-            },
-            {
-              "name": "Lal Минус Динамик Lal D Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal Минус Динамик Lal D",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_минус_динамик_lal_d",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36558724,
-                      "name": "минус динамик_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36558724"
-                  ],
-                  "merged_gks": [
-                    "lal_минус_динамик_lal_d",
-                    "lal_минус_динамик_lal_d_пк"
-                  ]
-                }
-              ]
-            },
-            {
-              "name": "Lal Минус Динамик Lal E Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal Минус Динамик Lal E",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_минус_динамик_lal_e",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36558724,
-                      "name": "минус динамик_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36558724"
-                  ],
-                  "merged_gks": [
-                    "lal_минус_динамик_lal_e",
-                    "lal_минус_динамик_lal_e_пк"
-                  ]
-                }
-              ]
-            },
-            {
-              "name": "Lal Все Формы Lal F Моб",
-              "items": []
-            },
-            {
-              "name": "Lal Все Формы Lal D Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal Все Формы Lal D",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_bce_формы_lal_d",
+                  "gk": "lal_bce_формы_lal",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -21450,19 +21161,21 @@
                   ],
                   "merged_gks": [
                     "lal_bce_формы_lal_d",
-                    "lal_bce_формы_lal_d_пк"
+                    "lal_bce_формы_lal_e",
+                    "lal_bce_формы_lal_f",
+                    "lal_bce_формы_lal_f_моб"
                   ]
                 }
               ]
             },
             {
-              "name": "Lal Минус Динамик Lal F Пк",
+              "name": "Lal Минус Динамик Lal D Моб",
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Lal Минус Динамик Lal F",
+                  "t": "Lal Минус Динамик Lal",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_минус_динамик_lal_f",
+                  "gk": "lal_минус_динамик_lal",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -21478,11 +21191,29 @@
                     "RETARGETING:36558724"
                   ],
                   "merged_gks": [
-                    "lal_минус_динамик_lal_f",
-                    "lal_минус_динамик_lal_f_моб"
+                    "lal_минус_динамик_lal_d",
+                    "lal_минус_динамик_lal_d_пк",
+                    "lal_минус_динамик_lal_e",
+                    "lal_минус_динамик_lal_f"
                   ]
                 }
               ]
+            },
+            {
+              "name": "Lal Минус Динамик Lal E Моб",
+              "items": []
+            },
+            {
+              "name": "Lal Все Формы Lal F Моб",
+              "items": []
+            },
+            {
+              "name": "Lal Все Формы Lal D Моб",
+              "items": []
+            },
+            {
+              "name": "Lal Минус Динамик Lal F Пк",
+              "items": []
             },
             {
               "name": "Lal Минус Динамик Lal F Моб",
@@ -21490,32 +21221,7 @@
             },
             {
               "name": "Lal Все Формы Lal E Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal Все Формы Lal E",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_bce_формы_lal_e",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36558689,
-                      "name": "все формы_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36558689"
-                  ],
-                  "merged_gks": [
-                    "lal_bce_формы_lal_e",
-                    "lal_bce_формы_lal_e_пк"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Lal Все Формы Lal E Пк",

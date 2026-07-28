@@ -26314,9 +26314,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "D Бу Lal",
+                  "t": "Бу Lal",
                   "gc": "ct0000_aoff_n000_r0000_ct001_ag010_g00",
-                  "gk": "d_бу_lal",
+                  "gk": "бу_lal",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общая - Автотаргетинг",
@@ -26343,123 +26343,28 @@
                     "RETARGETING:36068901",
                     "RETARGETING:36121606",
                     "RETARGETING:36157721"
+                  ],
+                  "merged_gks": [
+                    "a_бу_lal",
+                    "d_бу_lal",
+                    "e_бу_lal",
+                    "f_бу_lal",
+                    "бу_lal"
                   ]
                 }
               ]
             },
             {
               "name": "F Бу Lal",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "F Бу Lal",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag010_g00",
-                  "gk": "f_бу_lal",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общая - Автотаргетинг",
-                    "РСЯ - Комби - Общая - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36157721,
-                      "name": "Все формы_бу_екб_Lal",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36121606,
-                      "name": "Корректные заявки_CRM_LAL",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36068901,
-                      "name": "минус динамик_Lal",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36068901",
-                    "RETARGETING:36121606",
-                    "RETARGETING:36157721"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "E Бу Lal",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "E Бу Lal",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag010_g00",
-                  "gk": "e_бу_lal",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общая - Автотаргетинг",
-                    "РСЯ - Комби - Общая - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36157721,
-                      "name": "Все формы_бу_екб_Lal",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36121606,
-                      "name": "Корректные заявки_CRM_LAL",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36068901,
-                      "name": "минус динамик_Lal",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36068901",
-                    "RETARGETING:36121606",
-                    "RETARGETING:36157721"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "A Бу Lal",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "A Бу Lal",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag010_g00",
-                  "gk": "a_бу_lal",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общая - Автотаргетинг",
-                    "РСЯ - Комби+Фид - Общая - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36157721,
-                      "name": "Все формы_бу_екб_Lal",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36121606,
-                      "name": "Корректные заявки_CRM_LAL",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36068901,
-                      "name": "минус динамик_Lal",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36068901",
-                    "RETARGETING:36121606",
-                    "RETARGETING:36157721"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Каталог Lexus",
@@ -26594,9 +26499,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "E Crm Lal",
+                  "t": "Crm Lal",
                   "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "e_crm_lal",
+                  "gk": "crm_lal",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общая - Автотаргетинг",
@@ -26611,148 +26516,47 @@
                   ],
                   "audiences": [
                     "RETARGETING:36121606"
+                  ],
+                  "merged_gks": [
+                    "a_crm_lal",
+                    "b_crm_lal",
+                    "c_crm_lal",
+                    "crm_lal",
+                    "d_crm_lal",
+                    "e_crm_lal",
+                    "i_crm_lal"
                   ]
                 }
               ]
             },
             {
               "name": "D Crm Lal",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "D Crm Lal",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "d_crm_lal",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общая - Автотаргетинг",
-                    "РСЯ - Комби - Общая - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36121606,
-                      "name": "Корректные заявки_CRM_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36121606"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "I Crm Lal",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "I Crm Lal",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "i_crm_lal",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общая - Автотаргетинг",
-                    "РСЯ - Комби - Общая - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36121606,
-                      "name": "Корректные заявки_CRM_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36121606"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "А Crm Lal",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "А Crm Lal",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "a_crm_lal",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общая - Автотаргетинг",
-                    "РСЯ - Комби - Общая - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36121606,
-                      "name": "Корректные заявки_CRM_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36121606"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "B Crm Lal",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "B Crm Lal",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "b_crm_lal",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общая - Автотаргетинг",
-                    "РСЯ - Комби - Общая - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36121606,
-                      "name": "Корректные заявки_CRM_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36121606"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "C Crm Lal",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "C Crm Lal",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "c_crm_lal",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общая - Автотаргетинг",
-                    "РСЯ - Комби - Общая - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36121606,
-                      "name": "Корректные заявки_CRM_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36121606"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "B Бу Lal",
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "B Бу Lal",
+                  "t": "Бу Lal",
                   "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "b_бу_lal",
+                  "gk": "бу_lal",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общая - Автотаргетинг",
@@ -26779,94 +26583,32 @@
                     "RETARGETING:36068901",
                     "RETARGETING:36121606",
                     "RETARGETING:36157721"
+                  ],
+                  "merged_gks": [
+                    "b_бу_lal",
+                    "c_бу_lal",
+                    "i_бу_lal",
+                    "бу_lal"
                   ]
                 }
               ]
             },
             {
               "name": "C Бу Lal",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "C Бу Lal",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "c_бу_lal",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общая - Автотаргетинг",
-                    "РСЯ - Комби - Общая - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36157721,
-                      "name": "Все формы_бу_екб_Lal",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36121606,
-                      "name": "Корректные заявки_CRM_LAL",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36068901,
-                      "name": "минус динамик_Lal",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36068901",
-                    "RETARGETING:36121606",
-                    "RETARGETING:36157721"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "I Бу Lal",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "I Бу Lal",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "i_бу_lal",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общая - Автотаргетинг",
-                    "РСЯ - Комби - Общая - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36157721,
-                      "name": "Все формы_бу_екб_Lal",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36121606,
-                      "name": "Корректные заявки_CRM_LAL",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36068901,
-                      "name": "минус динамик_Lal",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36068901",
-                    "RETARGETING:36121606",
-                    "RETARGETING:36157721"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "F Минус Динамик Lal",
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "F Минус Динамик Lal",
+                  "t": "Минус Динамик Lal",
                   "gc": "ct0000_aoff_n000_r0000_ct001_ag010_g00",
-                  "gk": "f_минус_динамик_lal",
+                  "gk": "минус_динамик_lal",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общая - Автотаргетинг",
@@ -26881,87 +26623,28 @@
                   ],
                   "audiences": [
                     "RETARGETING:36068901"
+                  ],
+                  "merged_gks": [
+                    "a_минус_динамик_lal",
+                    "d_минус_динамик_lal",
+                    "e_минус_динамик_lal",
+                    "f_минус_динамик_lal",
+                    "минус_динамик_lal"
                   ]
                 }
               ]
             },
             {
               "name": "A Минус Динамик Lal",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "A Минус Динамик Lal",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag010_g00",
-                  "gk": "a_минус_динамик_lal",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общая - Автотаргетинг",
-                    "РСЯ - Комби - Общая - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36068901,
-                      "name": "минус динамик_Lal",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36068901"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "D Минус Динамик Lal",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "D Минус Динамик Lal",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag010_g00",
-                  "gk": "d_минус_динамик_lal",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общая - Автотаргетинг",
-                    "РСЯ - Комби - Общая - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36068901,
-                      "name": "минус динамик_Lal",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36068901"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "E Минус Динамик Lal",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "E Минус Динамик Lal",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag010_g00",
-                  "gk": "e_минус_динамик_lal",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общая - Автотаргетинг",
-                    "РСЯ - Комби - Общая - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36068901,
-                      "name": "минус динамик_Lal",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36068901"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Авто/Автомобили/Машины",
