@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 
 _HERE_TG = Path(__file__).resolve().parent
@@ -22,6 +23,7 @@ from .text_norm import (
     _strip_credit_rate, _cap_first, _sentence_case, _RSYA_TEXT_MAX, _split_utp,
     _has_stamp, _alternate_rhythm, _dedup_by_first_word, _has_number,
     _bad_ad_title, _bad_ad_text,
+    mentions_banned_content, strip_banned_content,
 )
 from .city_morph import (
     _city_locative, _content_city, _replace_foreign_city, _drop_foreign_city_keywords,
@@ -56,7 +58,6 @@ _GENERIC_AT_TITLES: list = []       # DI из blueprint
 _RA_TITLES_CAP: int = 7             # DI из blueprint
 _RA_TEXTS_CAP: int = 3              # DI из blueprint
 _NON_AUTO_SITE_TYPES: set = set()   # DI из blueprint: site_type не-авто слепков (B2B) — без авто-фильтра ключей
-_INSTALLMENT_RE = re.compile(r"(?i)\bрассрочк\w*\b(?:\s+без\s+переплат)?")
 
 
 def configure(deps: dict) -> None:
@@ -65,10 +66,11 @@ def configure(deps: dict) -> None:
 
 
 def _strip_installment_text(s: str) -> str:
-    s = _INSTALLMENT_RE.sub(" ", s or "")
-    s = re.sub(r"\s+([.,;:!?])", r"\1", s)
-    s = re.sub(r"\s{2,}", " ", s).strip(" .,;:!?")
-    return s
+    """Снять ЗАПРЕЩЁННЫЕ формулировки (рассрочка, «кредитное решение»).
+
+    Имя историческое (был только запрет рассрочки); список запретов теперь ОДИН —
+    `text_norm.BANNED_CONTENT_PATTERNS`, чтобы новая формулировка не заводила третью копию."""
+    return strip_banned_content(s)
 
 
 # Акционные фразы для шаблона Title (ротация round-robin при формировании групп).
@@ -454,6 +456,106 @@ def _real_kw_count(keywords: list) -> int:
                if not str(k or "").strip().startswith("---"))
 
 
+_BRAND_CANON_UNIVERSE_CACHE: frozenset | None = None
+
+
+def _brand_canon_universe() -> frozenset:
+    """Каноны РЕАЛЬНЫХ марок (латиница) для дискриминации ЧУЖОЙ марки в группе «Марки»/«Модели».
+
+    Источник — тот же классификатор ct, что и у `_brand_model_token_set` (`_ag_part1_map` +
+    `_ct_segment`): первое слово имени сегментов «Марки»/«Модели» — это МАРКА («Volkswagen»,
+    «Lada Granta» → lada). Каждое имя сводится к канону `_brand_canon` (кир↔лат, «ваз»→lada,
+    «фольксваген»→volkswagen), поэтому набор ловит оба алфавита.
+
+    ⚠️ Почему НЕ весь `_auto_brand_tokens()`: в нём кроме марок лежат ВСЕ токены моделей
+    (монжаро/атлас/кулрей/гранта). Для марочной группы это ещё терпимо, но для «Модели»
+    собственные модельные токены попали бы в «чужие» и выкосили группу в ноль — ровно регресс
+    `FOREIGN_MODEL_FILTER_EMPTIES_ADGROUP` (ERRORS_JOURNAL 2026-07-18). Чужую МОДЕЛЬ той же марки
+    ловит отдельный слой `_foreign_model_discriminators`; здесь — только марка.
+
+    Классификатор недоступен/пуст (нет БД) → пустой набор → фильтр выключен (пермиссивно).
+    Кэш на процесс: справочник ct в рантайме не меняется."""
+    global _BRAND_CANON_UNIVERSE_CACHE
+    if _BRAND_CANON_UNIVERSE_CACHE is not None:
+        return _BRAND_CANON_UNIVERSE_CACHE
+    brands: set = set()
+    try:
+        items = list(_ag_part1_map().items())
+    except Exception:  # noqa: BLE001 — нет справочника → фильтр просто не работает
+        items = []
+    for ct, nm in items:
+        try:
+            if _ct_segment(ct) not in ("Марки", "Модели"):
+                continue
+        except Exception:  # noqa: BLE001
+            continue
+        toks = re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", str(nm or "").lower())
+        if not toks:
+            continue
+        first = toks[0]
+        # тема, а не марка («Автокредит», «Авито», «Trade-in» под сегментом Марки) — не марка
+        if len(first) < 3 or first.isdigit() or any(s in first for s in _GENERAL_COMMON_STEMS):
+            continue
+        canon = (_brand_canon(first) or first)
+        if len(canon) >= 3:
+            brands.add(canon)
+    _BRAND_CANON_UNIVERSE_CACHE = frozenset(brands)
+    return _BRAND_CANON_UNIVERSE_CACHE
+
+
+def _own_brand_canons(*names: str) -> set:
+    """Каноны + сырые токены СВОИХ имён группы (марка ct и модель самой группы)."""
+    out: set = set()
+    for nm in names:
+        for t in re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", str(nm or "").lower()):
+            if len(t) >= 3 and not t.isdigit():
+                out.add(t)
+                out.add(_brand_canon(t) or t)
+    return out
+
+
+def _kw_has_foreign_brand(kw: str, foreign: frozenset | set) -> bool:
+    """Есть ли в ПОЗИТИВНОЙ части ключа токен чужой марки (по канону).
+
+    Минус-части фразы («авито вазы бу **-купить**», «... -лада») в дискриминации НЕ участвуют:
+    минус-слово наоборот ЗАПРЕЩАЕТ показ по нему — см. `_kw_positive_tokens` и запись
+    FOREIGN_MODEL_FILTER_EMPTIES_ADGROUP (ERRORS_JOURNAL 2026-07-18).
+    Кир-словоформа: помимо самого токена пробуем усечение на 1 букву («вазы»→«ваз»→lada,
+    «москвича»→«москвич»→moskvich); стем короче 3 букв не рассматриваем."""
+    for w in _kw_positive_tokens(kw):
+        if len(w) < 3 or w.isdigit():
+            continue
+        forms = [w] + ([w[:-1]] if len(w) >= 4 else [])
+        for f in forms:
+            if (_brand_canon(f) or f) in foreign:
+                return True
+    return False
+
+
+def _drop_foreign_brand_keywords(keywords: list, *names: str) -> list:
+    """Выбросить из набора группы ключи с токеном ЧУЖОЙ марки.
+
+    Боевой факт 2026-07-28: 63 группы / 13 кампаний / 3 аккаунта уехали с ключами чужой марки
+    (ct0238 Volkswagen нёс набор ct0181 Lada: «авито вазы бу -купить», «авто лада +с пробегом»)
+    — брак ДАННЫХ пака, который код пропускал: `_drop_brand_model_keys` при отсутствии СВОЕЙ
+    марки в фразе оставлял ключ («нет марки → оставляем»).
+
+    Что НЕ трогаем: общие фразы без марки («купить авто с пробегом», «автосалон») — они легальны
+    в марочной группе; дропаем ТОЛЬКО фразу с явным токеном чужой марки.
+    Fail-safe: своя марка не опознана в справочнике (тема/«Авто»/мультибренд) → не фильтруем
+    вовсе, иначе в «чужие» попал бы весь набор."""
+    universe = _brand_canon_universe()
+    if not universe:
+        return list(keywords or [])
+    own = _own_brand_canons(*names)
+    if not (own & universe):
+        return list(keywords or [])          # своя марка не опознана → фильтр выключен
+    foreign = frozenset(universe - own)
+    if not foreign:
+        return list(keywords or [])
+    return [kw for kw in (keywords or []) if not _kw_has_foreign_brand(str(kw), foreign)]
+
+
 def _filter_group_keywords(positive: list, seg: str, brand: str, city: str, site_type: str,
                            model: str = "") -> list:
     """Единый отбор ключей группы по сегменту ct: 'Марки' → убрать «марка+модель»; 'Общее' → убрать
@@ -469,6 +571,18 @@ def _filter_group_keywords(positive: list, seg: str, brand: str, city: str, site
     # уронит в авто-фолбэк). Для не-авто site_type — только базовые дропы (б/у + чужой город), ключи as-is.
     if site_type in _NON_AUTO_SITE_TYPES:
         return kws
+    if seg in ("Марки", "Модели"):
+        # ЧУЖАЯ МАРКА в марочной/модельной группе — брак пака (боевой факт 2026-07-28: ct0238
+        # Volkswagen с набором ct0181 Lada). Дроп БЕЗ анти-пустого фолбэка: вернуть чужие ключи
+        # «лишь бы не пусто» нельзя — 0 ключей ловят гейты создания (grid_create.py:591-599 и
+        # tp1-аналог), а чужая марка в кабинете не ловится ничем.
+        _own_brand_kws = _drop_foreign_brand_keywords(kws, brand, model)
+        if _real_kw_count(kws) and not _real_kw_count(_own_brand_kws):
+            print(f"[keywords] ЧУЖАЯ МАРКА: все {_real_kw_count(kws)} ключей группы "
+                  f"'{brand or model}' (seg={seg}) содержат чужую марку — набор пак-ключей "
+                  f"не принадлежит этой ct; группа уходит с 0 ключей (см. гейт нуля ключей)",
+                  file=sys.stderr, flush=True)
+        kws = _own_brand_kws
     if seg == "Модели":
         if model:
             disc = _foreign_model_discriminators(model)
@@ -881,7 +995,7 @@ def _rsya_texts(incoming: list, site_type: str, city: str,
         # Короткие хвосты ≤10 симв — закрывают «мёртвую зону» 10-14 свободных
         # (аналог фикса заголовков: минимальный длинный хвост 13+2 не влезал).
         "Тест-драйв",
-        "Рассрочка",
+        # ⛔ «Рассрочка» убрана (2026-07-28): запрещена в контенте (правило Семёна).
         "Трейд-ин",
         "Гарантия",
     ]
@@ -1077,7 +1191,10 @@ _TITLE_TAILS = ("одобрение за 5 минут", "трейд-ин выш�
                 "авто в наличии", "выгода до 45%", "господдержка",
                 # Короткие хвосты (≤10 симв, баг #1): добивают заголовки 43-47 симв, куда длинные
                 # УТП-хвосты не влезают (len+2+хвост>56) → раньше оставались с 9-13 пустыми символами.
-                "рассрочка", "тест-драйв", "гарантия", "трейд-ин",
+                # ⛔ «рассрочка» из хвостов УБРАНА (2026-07-28): правило Семёна «в контенте мы не
+                # пишем про рассрочку». Именно этот хвост давал живой заголовок
+                # «Tenet в кредит в Краснодаре. Первый взнос 0 ₽. Рассрочка» (porg-pl6iavd5, 713096702).
+                "тест-драйв", "гарантия", "трейд-ин",
                 # Сверхкороткие (≤7, 2026-07-07): остаток 9 симв (заголовок 47) с разделителем
                 # «. » вмещает только хвост ≤7 — минимальный «гарантия» (8) не влезал, 1136
                 # заголовков застревали на 47 симв (кейс psm: «…Первый взнос 0 ₽»=47).

@@ -8,6 +8,7 @@ from direct import create_set_feeds
 from direct import create_set_text_builders
 from direct import create_set_tp1_builders
 from direct import create_set_master_product
+from direct import create_set_assets
 from direct import create_set_context
 from direct import create_set_structure
 from direct import create_set_content_preflight
@@ -1254,3 +1255,138 @@ def test_tp7_listing_plus_filter_uses_equals_not_contains(monkeypatch):
     assert cond["field"] == "collectionId", (
         f"field должен быть 'collectionId', получили '{cond['field']}'"
     )
+
+
+# ── ЧУЖАЯ МАРКА в ключах марочной группы (боевой факт 2026-07-28: 63 группы / 13 кампаний) ──
+_FOREIGN_BRAND_CT_MAP = {
+    "ct0238": "Volkswagen",
+    "ct0181": "Lada",
+    "ct0111": "Haval",
+    "ct0300": "Автокредит",      # тема под марочным сегментом → маркой считаться не должна
+    "ct0000": "Авто",
+}
+
+
+def _brand_guard_env(monkeypatch):
+    """Оффлайн-окружение фильтра чужих марок: справочник ct + реальный _brand_canon (кир↔лат)."""
+    monkeypatch.setattr(text_gen, "_drop_used_car", lambda items, _site_type: list(items))
+    monkeypatch.setattr(text_gen, "_drop_foreign_city_keywords", lambda items, _city: list(items))
+    monkeypatch.setattr(text_gen, "_ag_part1_map", lambda: dict(_FOREIGN_BRAND_CT_MAP))
+    monkeypatch.setattr(text_gen, "_ct_segment",
+                        lambda ct: "Общее" if ct in ("ct0000", "ct0300") else "Марки")
+    monkeypatch.setattr(text_gen, "_brand_canon", create_set_feeds._brand_canon)
+    monkeypatch.setattr(text_gen, "_BRAND_CANON_UNIVERSE_CACHE", None)
+
+
+def _brand_group_keywords(kws):
+    return text_gen._filter_group_keywords(kws, "Марки", "Volkswagen", "Краснодар", "С пробегом",
+                                           model="Volkswagen")
+
+
+def test_foreign_brand_keywords_dropped_from_brand_group(monkeypatch):
+    _brand_guard_env(monkeypatch)
+    out = _brand_group_keywords([
+        "авто лада +с пробегом",          # чужая марка (кириллица) → дроп
+        "авито вазы бу",                  # чужая марка через алиас ваз→lada + словоформа → дроп
+        "lada granta купить",             # чужая марка латиницей → дроп
+        "купить авто с пробегом",         # общая фраза без марки → остаётся
+        "автосалон краснодар",            # общая фраза без марки → остаётся
+        "фольксваген поло бу",            # СВОЯ марка кириллицей → остаётся
+        "volkswagen купить",              # своя марка латиницей → остаётся
+    ])
+    assert "авто лада +с пробегом" not in out
+    assert "авито вазы бу" not in out
+    assert "lada granta купить" not in out
+    assert "купить авто с пробегом" in out
+    assert "автосалон краснодар" in out
+    assert "фольксваген поло бу" in out
+    assert "volkswagen купить" in out
+
+
+def test_foreign_brand_in_minus_word_is_not_foreign(monkeypatch):
+    _brand_guard_env(monkeypatch)
+    out = _brand_group_keywords(["купить авто с пробегом -лада", "авито бу -ваз"])
+    assert out == ["купить авто с пробегом -лада", "авито бу -ваз"]
+
+
+def test_foreign_brand_filter_not_applied_to_common_segment(monkeypatch):
+    _brand_guard_env(monkeypatch)
+    calls = []
+    monkeypatch.setattr(text_gen, "_drop_foreign_brand_keywords",
+                        lambda kws, *names: calls.append(names) or list(kws))
+    text_gen._filter_group_keywords(["автокредит краснодар"], "Общее", "Авто", "Краснодар",
+                                    "С пробегом")
+    assert calls == []
+
+
+def test_foreign_brand_filter_never_falls_back_to_foreign_keywords(monkeypatch, capsys):
+    _brand_guard_env(monkeypatch)
+    out = _brand_group_keywords(["авто лада +с пробегом", "авито вазы бу", "лада бу краснодар"])
+    assert out == []                                   # тихого фолбэка на чужие ключи нет
+    assert "ЧУЖАЯ МАРКА" in capsys.readouterr().err    # обнуление видно в логе
+
+
+def test_own_brand_unknown_disables_foreign_brand_filter(monkeypatch):
+    """Группа без опознаваемой марки («Авто»/тема) — фильтр выключен, набор не выкашивается."""
+    _brand_guard_env(monkeypatch)
+    out = text_gen._filter_group_keywords(["авто лада +с пробегом"], "Марки", "Автокредит",
+                                          "Краснодар", "С пробегом", model="")
+    assert out == ["авто лада +с пробегом"]
+
+
+# ── ⛔ РАССРОЧКА в контенте + заглавная первая буква (боевой факт 2026-07-28, porg-pl6iavd5) ──
+def test_title_tails_do_not_offer_installment():
+    """Хвост-добивка заголовка/текста больше не подставляет «рассрочку» (источник дефекта)."""
+    assert not [t for t in text_gen._TITLE_TAILS if "рассрочк" in t.lower()]
+    filled = text_gen._fill_title("Tenet в кредит в Краснодаре. Первый взнос 0 ₽", 45, 56)
+    assert "рассрочк" not in filled.lower()
+
+
+def test_ad_line_strips_installment_and_capitalizes_first_letter():
+    line = create_set_assets._trim_ad_line(
+        "Tenet в кредит в Краснодаре. Первый взнос 0 ₽. Рассрочка", 56)
+    assert "рассрочк" not in line.lower()
+    assert "в кредит" in line and "Первый взнос 0 ₽" in line   # легальные УТП сохранены
+    assert create_set_assets._trim_ad_line(
+        "новое авто в кредит. Первый взнос 0 ₽", 56).startswith("Новое авто в кредит")
+    # регистр внутри строки не трогаем: марки, аббревиатуры, «трейд-ин», «₽/мес»
+    keep = "KIA Rio в кредит. КАСКО в подарок. Трейд-ин. Платеж от 9 000 ₽/мес"
+    assert create_set_assets._trim_ad_line(keep, 81) == keep
+
+
+def test_upgrade_credit_titles_generic_anchor_is_not_used_as_brand(monkeypatch):
+    monkeypatch.setattr(create_set_assets, "_drop_new_car", lambda items, _st: list(items))
+    monkeypatch.setattr(create_set_assets, "_is_bu_site", lambda _st: False)
+    monkeypatch.setitem(create_set_assets.__dict__, "_fill_title", text_gen._fill_title)
+
+    out = create_set_assets._upgrade_credit_titles(
+        ["Купить новое авто в кредит. Первый взнос 0 ₽"], 7, "Новые")
+
+    assert out, "набор заголовков не должен обнуляться"
+    assert all(t[:1] == t[:1].upper() for t in out), out
+    assert not [t for t in out if "рассрочк" in t.lower()], out
+    assert not [t for t in out if t.lower().startswith("новый новое")], out
+
+
+def test_ai_agents_data_has_no_installment_content():
+    """Источник контента не должен ОТДАВАТЬ рассрочку — фильтр на выходе LLM его не поймает."""
+    from direct import ai_agents_data
+
+    bad: list = []
+
+    def _walk(node):
+        if isinstance(node, str):
+            if "рассрочк" in node.lower():
+                bad.append(node)
+        elif isinstance(node, dict):
+            for k, v in node.items():
+                _walk(k)
+                _walk(v)
+        elif isinstance(node, (list, tuple, set)):
+            for v in node:
+                _walk(v)
+
+    for name, value in vars(ai_agents_data).items():
+        if not name.startswith("__"):
+            _walk(value)
+    assert bad == [], bad
