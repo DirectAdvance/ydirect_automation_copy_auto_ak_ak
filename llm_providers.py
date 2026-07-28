@@ -1051,10 +1051,20 @@ def _llm_pair_for(provider: str) -> tuple:
             return []
         unique_urls = {str((t[0] if t else "") or "").rstrip("/") for t in tasks}
         max_workers = min(4, len(tasks))
-        if m3_is_primary and len(unique_urls) <= 1:
+        # Один M3-эндпоинт обслуживает запросы ПО ОДНОМУ (`_M3EndpointGuard` держит лок на URL).
+        # Веер потоков на него не ускоряет ничего: один работает, остальные ждут лок и через
+        # `_M3_ENDPOINT_LOCK_MAX_WAIT` падают с TimeoutError, теряя свою часть контента.
+        _m3_is_the_target = m3_is_primary or (m3_is_secondary and _OR_BREAKER.is_tripped())
+        if _m3_is_the_target and len(unique_urls) <= 1:
             # 4x14B fan-out is sometimes intentionally disabled, leaving only 72B on 8086.
             # Multiple concurrent prompts to that one mlx endpoint queue long enough to trip
             # the 30s idle/preflight guard, so keep true fan-out only for distinct M3 URLs.
+            #
+            # ⚠️ Ветка `m3_is_secondary and or_breaker` — живой инцидент 2026-07-28
+            # (porg-xjxpfxby, 6 кампаний из 28): OpenRouter был primary и умер (402 + сеть),
+            # breaker взвёлся, и весь веер из 4 потоков свалился фолбэком на ОДИН M3. Один
+            # проходил, три ждали 90с и умирали по таймауту → `titles=0 texts=0 sitelinks=0`.
+            # Пока OpenRouter жив, веер сохраняется: там параллель реально помогает.
             max_workers = 1
         results = [None] * len(tasks)
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
