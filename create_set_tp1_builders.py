@@ -987,10 +987,21 @@ def _build_tp1_from_pack(
         _units = [(it["ct"], it.get("gk") or "", it.get("name") or "")
                   for it in _items if it["ct"] in pack]
     else:
-        _pk = sorted(pack.keys())
-        if _oc is not None:                       # нон-мульти camp_names: только ct кампании
-            _pk = [ct for ct in _pk if ct in _oc]
-        _units = [(ct, "", "") for ct in _pk]
+        # Структурный узел ЦЕЛИКОМ на ct0000 («Агрегаторы», «… - Аудитории»): _struct_items ct0000
+        # пропускает (там только модель-ct) → gk-фильтр выше дал пусто, и модель-ct у кампании нет
+        # вовсе (_oc пуст). Пустой ct-фильтр тут НЕ значит «фильтра нет»: без этой ветки брался
+        # ВЕСЬ пак и узел из одной группы давал 27 групп кабинета. Маркер узла — ровно тройка
+        # «camp_names-маршрут задан (_og) + модель-ct нет (_oc) + структурных модель-items нет».
+        _ct0_units = (_struct_ct0000_units(slepok, site_type, tp_code, _og)
+                      if (_og is not None and _oc is None and not _items) else [])
+        if _ct0_units:
+            _units = _ct0_units
+            _multi = True                         # имя группы = структурный item.t, а не авто-ct
+        else:
+            _pk = sorted(pack.keys())
+            if _oc is not None:                   # нон-мульти camp_names: только ct кампании
+                _pk = [ct for ct in _pk if ct in _oc]
+            _units = [(ct, "", "") for ct in _pk]
     # Фолбэк для ЕПК/аудиторных групп (ct0000+явный семантичный gk, напр. avto_sk, avtolajt_bu):
     # _struct_items пропускает ct0000 → _items пуст → _units тоже пуст, но only_gks задаёт
     # конкретные структурные группы. Читаем их напрямую из структуры (кэш _load_struct).
@@ -2058,6 +2069,49 @@ def _struct_items(slepok: str, site_type: str, tp_code: str) -> list:
                 items.append({"ct": ct, "gk": gk,
                               "name": _norm_struct_name(it.get("t") or grp.get("name") or "")})
     return items
+
+
+def _struct_ct0000_units(slepok: str, site_type: str, tp_code: str, only_gks) -> list:
+    """Структурные группы кампании, лежащие ЦЕЛИКОМ на ct0000 → [(ct0000, gk, имя)].
+
+    Явный маркер «структурный узел на ct0000» для camp_names-маршрута: `_struct_items` ct0000
+    пропускает НАМЕРЕННО (там перечисляются модель-ct), поэтому у такого узла и `only_cts`
+    (`structure_to_campaigns.cts`) пуст. Без этого перечня билдер трактовал пустой ct-фильтр как
+    «фильтра нет» и брал ВЕСЬ пак: узел «Агрегаторы» (1 группа) давал 27 групп кабинета.
+
+    Строго по ``only_gks`` кампании и строго ct0000 (ct берётся из `gc` item'а). Пустой
+    ``only_gks`` / нечитаемая структура → [] (вызывающий остаётся на прежнем поведении).
+    """
+    _og = {str(g).strip() for g in (only_gks or ()) if str(g).strip()}
+    if not _og:
+        return []
+    try:
+        from .create_set_structure import _load_struct as _ls, _slepok_key as _sk
+        _d = _ls()
+        _key = _sk(slepok)
+        _dl = next((x for x in (_d.get("directologists") or []) if x.get("key") == _key), None)
+        _st = next((s for s in ((_dl.get("site_types") or []) if _dl else [])
+                    if s.get("name") == site_type), None)
+    except Exception:  # noqa: BLE001 — чтение структуры не должно ронять создание
+        return []
+    out: list = []
+    seen: set = set()
+    for _tp in ((_st.get("tp") or []) if _st else []):
+        if (_tp.get("code") or "") != tp_code:
+            continue
+        for _grp in (_tp.get("groups") or []):
+            for _it in (_grp.get("items") or []):
+                _gc = _it.get("gc") or ""
+                _m = re.search(r"ct\d{4}", _gc)
+                if not _m or _m.group(0) != "ct0000":
+                    continue
+                _gk = str(_it.get("gk") or kp._group_slug(_gc) or "").strip()
+                if not _gk or _gk not in _og or _gk in seen:
+                    continue
+                seen.add(_gk)
+                out.append(("ct0000", _gk,
+                            _norm_struct_name(_it.get("t") or _grp.get("name") or "")))
+    return out
 
 
 def _tp1_pack_groups(login: str, slepok: str, site_type: str, r_code: str, href: str,

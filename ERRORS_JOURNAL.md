@@ -4,6 +4,39 @@
 > метод решения → **помогло или нет** (проверено живым прогоном). Перед фиксом любой ошибки —
 > СНАЧАЛА искать её здесь: возможно, решение уже известно или уже пробовали и не помогло.
 
+### STRUCT_CT0000_NODE_EXPANDS_TO_WHOLE_PACK — узел на ct0000 давал ВЕСЬ пак вместо одной группы (2026-07-28)
+- Симптом: `porg-xjxpfxby` (слепок `kuderko`, «С пробегом»), кампании **713097597** и **713097619** («РСЯ - Комби / Комби+Фид - Агрегаторы - Аудитории») — в кабинете **27 групп**, тогда как в структуре у узла «Агрегаторы» ровно **1** группа. Ошибок в отчёте джобы нет.
+- Где: tp1/tp5, token-путь, `create_set_tp1_builders._build_tp1_from_pack` (выбор `_units`).
+- Root-cause (цепочка, проверена на реальной структуре): `create_set_structure.structure_to_campaigns:450,470` НАМЕРЕННО не кладёт `ct0000` в `cts` (там перечисляются модель-ct — та же конвенция, что у `create_set_text_builders._struct_cts:341-362` «Список модель-ct» и `_struct_items:404`) → у чисто-ct0000-узла `cts=[]` → `create_set_plan:930/948` `tp1_only_cts=[]` → в билдере `_oc=None`; `_struct_items` тоже пропускает ct0000 (`create_set_tp1_builders:2055`) → gk-фильтр даёт `_items=[]`, `_multi=False` → ветка else читала пустой ct-фильтр как «фильтра нет» и брала **весь пак** `sorted(pack.keys())` (27 ct). Существующий ct0000-фолбэк ниже (`if not _units`) не срабатывал, потому что `_units` уже был непустым.
+- Решение (2026-07-28): НЕ снимать исключение ct0000 из `cts` (оно защищает `_build_text_from_pack:459-463`, где при splits-формате `cts = list(only_cts)` — ct0000 там породил бы безбрендовую группу с `ct_name/ct_model`-lookup'ом и корневым href), а ввести ЯВНЫЙ маркер узла. `create_set_tp1_builders.py`: новый `_struct_ct0000_units(slepok, site_type, tp_code, only_gks)` (строго ct0000 по `gc` item'а и строго по gk кампании) + в `_build_tp1_from_pack` перед веткой «весь пак» условие `_og is not None and _oc is None and not _items`. Все остальные комбинации (есть модель-ct / нет camp_names-маршрута / есть структурные items) идут прежним путём.
+- Детект-запрос (офлайн, по структуре — считает кампании, у которых плановые группы ≠ структурным):
+  ```python
+  # .venv/bin/python, cwd=home/seoadvanced
+  from direct import create_set_tp1_builders as b, create_set_structure as s, slepki_store as ss
+  hit = 0
+  for dl in ss.assemble()["directologists"]:
+      for st in dl["site_types"]:
+          for tpc in ("tp1", "tp5"):
+              for c in s.structure_to_campaigns(dl["key"], st["name"], tpc):
+                  og, oc = set(c.get("gks") or ()), set(c.get("cts") or ())
+                  if og and not oc and b._struct_ct0000_units(dl["key"], st["name"], tpc, og):
+                      hit += 1
+  print(hit)   # 69 из 886 tp1/tp5-кампаний (замер 2026-07-28)
+  ```
+  Live-детект: Grid `groups_for_edit` по кампании → число групп должно совпасть с `n_groups` узла (713097597/713097619 → 1, было 27).
+- Статус: 🟡 фикс на Mac, ждёт живого прогона. Офлайн: `direct/tests/test_struct_ct0000_node.py` — 6 passed; `test_create_auto_regressions.py` + `test_grid_add_idempotency.py` + `test_architecture_boundaries.py` — 102 passed. По реальной структуре у всех **69** затронутых кампаний `len(units) == n_groups` (1:1 со слепком).
+- ⚠️ Не переизобретать: просто убрать `ct != "ct0000"` из `structure_to_campaigns` НЕЛЬЗЯ — `cts` едет как `only_cts` не только в tp1 (`create_set_plan:1056/1122/1218/1289`), и в `_build_text_from_pack` при пустом `_struct_cts` он становится СПИСКОМ ct напрямую.
+- НЕ помогло ранее: (первый фикс по этой сигнатуре).
+
+### TP1_TP5_STRUCT_AUDIENCES_NEVER_APPLIED — аудитории структуры tp1/2/4/5 не доезжают никуда (2026-07-28, ⛔ НЕ ПОЧИНЕНО)
+- Симптом: `porg-xjxpfxby`, кампании 713097597/713097619 — `retargetings_present = 0/27`, `audienceTargeting = ALL_AUDIENCE 27/27`, хотя в структуре у узла лежат 5 аудиторий (`AUDIENCE:36694733/36694732/36694731/36694734/36694681`).
+- Где: `item["audiences"]` для tp1/tp2/tp4/tp5 не читается НИГДЕ; `grid_create_payloads.build_adgroup:134,141-142` жёстко ставит `audienceTargeting="ALL_AUDIENCE"`, `retargetingCondition=None`, `retargetings=[]`.
+- Масштаб (замер по `slepki/*.json` 2026-07-28): **1118** items с непустым `audiences` (tp1=1035, tp2=1, tp4=1, tp5=81).
+- ⛔ Почему НЕ починено сейчас (а не «забыли»): подход tp6/tp7 к этим данным НЕПРИМЕНИМ. Типы id в tp1/2/4/5: `AUDIENCE`=1603, `RETARGETING`=933, голых=4, `INTERESTS`=**0**; а tp6/tp7 умеет ровно и только `INTERESTS`/`APPLICATION` (`create_set_context._STRUCT_AUD_SUPPORTED:383`, `:415-417` — `AUDIENCE:`/`RETARGETING:` там СЧИТАЮТСЯ ПОТЕРЯМИ и предупреждают) и шлёт их как `ca_retargeting_condition.goals` в **UAC** (`uac_client.py:649-668`) — другая ручка и другая сущность. Для обычных кампаний это групповые `retargetings`/`searchRetargetings` (Grid) либо v5 `audiencetargets.add`, а write-пути для них в репозитории НЕТ ВООБЩЕ: `retargetings: []` захардкожен и на создании (`grid_create_payloads.py:142`), и на апдейте (`grid_finalize.py:3443`), причём `repair_keywords.py:93` и `grid_finalize.py:1730` НАМЕРЕННО пропускают группы с `retargetings_present`, чтобы этот payload их не затёр. Ни HAR, ни примера payload'а с непустым `retargetings`, ни второго значения enum `audienceTargeting` в репозитории нет.
+- Что нужно для фикса (внешнее решение, не угадывать): (1) выбрать транспорт — Grid `retargetings`/`searchRetargetings` или v5 `audiencetargets.add`; (2) HAR/пример реального payload'а группы с аудиторией + допустимые значения `audienceTargeting`; (3) подтвердить, что харвестнутые `RetargetingListId` существуют в целевом кабинете (`retargetinglists.get`, ср. `account_service.py:592`); (4) решить поиск (tp2/tp4) vs сеть (tp1/tp5) — это разные поля.
+- Статус: ⛔ не чинилось — причина доказана, механика отправки НЕ доказана. Правка вслепую тронула бы payload создания ВСЕХ групп tp1-tp5.
+- НЕ помогло ранее: —
+
 ### KW_LIMIT_COUNTS_MINUS_WORDS — лимит «7 слов» считал минус-слова → ключи терялись целиком (2026-07-28)
 - Симптом: `porg-pl6iavd5`, кампании **713096741** и **713096753** (tp1 «Общие - КС») — **все 8 групп в каждой пусты**, при том что в структуре слепка у `ct0010` (Drom, слепок scherbakova) лежит 155 ключей, а по слепку ≈78 тыс. Ошибок в отчёте джобы НЕТ — полное молчание.
 - Где: `automation_runtime._kw_clean:2085-2090` — `len(w.split()) > 7` считал ВСЕ токены фразы, включая минус-части.
