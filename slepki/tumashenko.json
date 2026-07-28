@@ -351,7 +351,7 @@
                 {
                   "c": "tp1_cpc_kviz",
                   "t": "Марки Haval Автотаргетинг",
-                  "gc": "ct0111_aoff_n000_r0000_ct001_ag011_g00",
+                  "gc": "ct0111_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "марки_haval_автотаргетинг",
                   "camps": [
                     "tp1_cpa_kviz — РСЯ - Китайцы - Автотаргетинг - Самарская область",
@@ -2318,7 +2318,7 @@
                 {
                   "c": "tp1_cpc_site",
                   "t": "Модели Skoda Octavia Автотаргетинг",
-                  "gc": "ct0218_aoff_n000_r0000_ct001_ag011_g00",
+                  "gc": "ct0218_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "модели_skoda_octavia_автотаргетинг",
                   "camps": [
                     "tp1_cpa_site — РСЯ - Skoda Octavia - Автотаргетинг - Самарская область",
@@ -2631,7 +2631,7 @@
                 {
                   "c": "tp1_cpc_site",
                   "t": "Модели Jetour Dashing Автотаргетинг",
-                  "gc": "ct0144_aoff_n000_r0000_ct001_ag011_g00",
+                  "gc": "ct0144_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "модели_jetour_dashing_автотаргетинг",
                   "camps": [
                     "tp1_cpa_site — РСЯ - Jetour Dashing - Автотаргетинг - Самарская область",
@@ -3542,7 +3542,7 @@
                 {
                   "c": "tp1_cpc_site",
                   "t": "Модели Jetour X90 Автотаргетинг",
-                  "gc": "ct0149_aoff_n000_r0000_ct001_ag011_g00",
+                  "gc": "ct0149_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "модели_jetour_x90_автотаргетинг",
                   "camps": [
                     "tp1_cpa_site — РСЯ - Jetour X90 - Автотаргетинг - Самарская область",
@@ -3904,7 +3904,7 @@
                 {
                   "c": "tp1_cpc_site",
                   "t": "Модели Hyundai Solaris Автотаргетинг",
-                  "gc": "ct0126_aoff_n000_r0000_ct001_ag011_g00",
+                  "gc": "ct0126_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "модели_hyundai_solaris_автотаргетинг",
                   "camps": [
                     "tp1_cpa_site — РСЯ - Hyundai Solaris - Автотаргетинг - Самарская область",
@@ -3984,7 +3984,7 @@
                 {
                   "c": "tp1_cpc_site",
                   "t": "Модели Hyundai Sonata Автотаргетинг",
-                  "gc": "ct0127_aoff_n000_r0000_ct001_ag011_g00",
+                  "gc": "ct0127_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "модели_hyundai_sonata_автотаргетинг",
                   "camps": [
                     "tp1_cpa_site — РСЯ - Hyundai Sonata - Автотаргетинг - Самарская область",
@@ -4186,7 +4186,7 @@
                 {
                   "c": "tp1_cpc_site",
                   "t": "Модели Niva Travel Автотаргетинг",
-                  "gc": "ct0188_aoff_n000_r0000_ct001_ag011_g00",
+                  "gc": "ct0188_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "модели_niva_travel_автотаргетинг",
                   "camps": [
                     "tp1_cpa_site — РСЯ - Niva Travel - Автотаргетинг - Самарская область",
@@ -4266,7 +4266,7 @@
                 {
                   "c": "tp1_cpc_site",
                   "t": "Модели Renault Duster Автотаргетинг",
-                  "gc": "ct0211_aoff_n000_r0000_ct001_ag011_g00",
+                  "gc": "ct0211_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "модели_renault_duster_автотаргетинг",
                   "camps": [
                     "tp1_cpa_site — РСЯ - Renault Duster - Автотаргетинг - Самарская область",
@@ -8552,7 +8552,7 @@
                 {
                   "c": "tp1_cpc_kviz",
                   "t": "Марки Haval Автотаргетинг",
-                  "gc": "ct0111_aoff_n000_r0000_ct001_ag011_g00",
+                  "gc": "ct0111_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "марки_haval_автотаргетинг",
                   "camps": [
                     "tp1_cpa_kviz — РСЯ - Китайцы - Автотаргетинг - Краснодарский край",
@@ -8911,7 +8911,7 @@
                 {
                   "c": "tp1_cpc_site",
                   "t": "Модели Hyundai Sonata Автотаргетинг",
-                  "gc": "ct0127_aoff_n000_r0000_ct001_ag011_g00",
+                  "gc": "ct0127_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "модели_hyundai_sonata_автотаргетинг",
                   "camps": [
                     "tp1_cpa_site — РСЯ - Hyundai Sonata - Автотаргетинг - Краснодарский край",
@@ -11294,7 +11294,7 @@
                 {
                   "c": "tp1_cpc_site",
                   "t": "Модели Skoda Octavia Автотаргетинг",
-                  "gc": "ct0218_aoff_n000_r0000_ct001_ag011_g00",
+                  "gc": "ct0218_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "модели_skoda_octavia_автотаргетинг",
                   "camps": [
                     "tp1_cpa_site — РСЯ - Skoda Octavia - Автотаргетинг - Краснодарский край",
@@ -11832,7 +11832,7 @@
                 {
                   "c": "tp1_cpc_site",
                   "t": "Модели Niva Travel Автотаргетинг",
-                  "gc": "ct0188_aoff_n000_r0000_ct001_ag011_g00",
+                  "gc": "ct0188_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "модели_niva_travel_автотаргетинг",
                   "camps": [
                     "tp1_cpa_site — РСЯ - Niva Travel - Автотаргетинг - Краснодарский край",
@@ -12282,7 +12282,7 @@
                 {
                   "c": "tp1_cpc_site",
                   "t": "Модели Renault Duster Автотаргетинг",
-                  "gc": "ct0211_aoff_n000_r0000_ct001_ag011_g00",
+                  "gc": "ct0211_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "модели_renault_duster_автотаргетинг",
                   "camps": [
                     "tp1_cpa_site — РСЯ - Renault Duster - Автотаргетинг - Краснодарский край",
@@ -12720,7 +12720,7 @@
                 {
                   "c": "tp1_cpc_site",
                   "t": "Модели Hyundai Solaris Автотаргетинг",
-                  "gc": "ct0126_aoff_n000_r0000_ct001_ag011_g00",
+                  "gc": "ct0126_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "модели_hyundai_solaris_автотаргетинг",
                   "camps": [
                     "tp1_cpa_site — РСЯ - Hyundai Solaris - Автотаргетинг - Краснодарский край",
@@ -12764,7 +12764,7 @@
                 {
                   "c": "tp1_cpc_site",
                   "t": "Модели Jetour Dashing Автотаргетинг",
-                  "gc": "ct0144_aoff_n000_r0000_ct001_ag011_g00",
+                  "gc": "ct0144_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "модели_jetour_dashing_автотаргетинг",
                   "camps": [
                     "tp1_cpa_site — РСЯ - Jetour Dashing - Автотаргетинг - Краснодарский край",
@@ -12879,7 +12879,7 @@
                 {
                   "c": "tp1_cpc_site",
                   "t": "Модели Jetour X90 Автотаргетинг",
-                  "gc": "ct0149_aoff_n000_r0000_ct001_ag011_g00",
+                  "gc": "ct0149_aon_n000_r0000_ct001_ag011_g00",
                   "gk": "модели_jetour_x90_автотаргетинг",
                   "camps": [
                     "tp1_cpa_site — РСЯ - Jetour X90 - Автотаргетинг - Краснодарский край",
