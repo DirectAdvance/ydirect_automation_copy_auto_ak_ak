@@ -11081,9 +11081,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Chery Пк",
+                  "t": "Chery",
                   "gc": "ct0044_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_chery_пк",
+                  "gk": "товары_chery",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Марки - Фид - Автотаргетинг"
@@ -11097,34 +11097,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_chery",
+                    "товары_chery_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Chery Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Chery Моб",
-                  "gc": "ct0044_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_chery_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Марки - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Mitsubishi",
@@ -11256,9 +11239,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Mitsubishi Моб",
+                  "t": "Mitsubishi",
                   "gc": "ct0264_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_mitsubishi_моб",
+                  "gk": "товары_mitsubishi",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Марки - Фид - Автотаргетинг"
@@ -11272,34 +11255,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_mitsubishi",
+                    "товары_mitsubishi_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Mitsubishi Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Mitsubishi Пк",
-                  "gc": "ct0264_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_mitsubishi_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Марки - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг Honda",
@@ -11431,9 +11397,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Honda Пк",
+                  "t": "Honda",
                   "gc": "ct0285_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_honda_пк",
+                  "gk": "товары_honda",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
@@ -11447,34 +11413,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_honda",
+                    "товары_honda_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Honda Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Honda Моб",
-                  "gc": "ct0285_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_honda_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг Great Wall",
@@ -11606,9 +11555,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Great Wall Пк",
+                  "t": "Great Wall",
                   "gc": "ct0108_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_great_wall_пк",
+                  "gk": "товары_great_wall",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Модели - Фид - Автотаргетинг"
@@ -11622,34 +11571,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_great_wall",
+                    "товары_great_wall_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Great Wall Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Great Wall Моб",
-                  "gc": "ct0108_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_great_wall_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Модели - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Haval",
@@ -11781,9 +11713,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Haval Моб",
+                  "t": "Haval",
                   "gc": "ct0111_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_haval_моб",
+                  "gk": "товары_haval",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Марки - Фид - Автотаргетинг"
@@ -11797,34 +11729,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_haval",
+                    "товары_haval_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Haval Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Haval Пк",
-                  "gc": "ct0111_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_haval_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Марки - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг Ssangyong",
@@ -11956,9 +11871,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ssangyong Пк",
+                  "t": "Ssangyong",
                   "gc": "ct0279_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_ssangyong_пк",
+                  "gk": "товары_ssangyong",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
@@ -11972,34 +11887,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_ssangyong",
+                    "товары_ssangyong_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Ssangyong Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ssangyong Моб",
-                  "gc": "ct0279_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_ssangyong_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Lada Ваз",
@@ -12131,9 +12029,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Lada Ваз Моб",
+                  "t": "Lada Ваз",
                   "gc": "ct0181_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_lada_ваз_моб",
+                  "gk": "товары_lada_ваз",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Марки - Фид - Автотаргетинг"
@@ -12147,34 +12045,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_lada_ваз",
+                    "товары_lada_ваз_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Lada Ваз Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lada Ваз Пк",
-                  "gc": "ct0181_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_lada_ваз_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Марки - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Seat",
@@ -12306,9 +12187,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Seat Моб",
+                  "t": "Seat",
                   "gc": "ct0280_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_seat_моб",
+                  "gk": "товары_seat",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
@@ -12322,34 +12203,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_seat",
+                    "товары_seat_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Seat Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Seat Пк",
-                  "gc": "ct0280_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_seat_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг Toyota",
@@ -12481,9 +12345,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Toyota Моб",
+                  "t": "Toyota",
                   "gc": "ct0271_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_toyota_моб",
+                  "gk": "товары_toyota",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Марки - Фид - Автотаргетинг"
@@ -12497,34 +12361,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_toyota",
+                    "товары_toyota_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Toyota Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Toyota Пк",
-                  "gc": "ct0271_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_toyota_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Марки - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "FAW",
@@ -12656,9 +12503,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "FAW Моб",
+                  "t": "FAW",
                   "gc": "ct0081_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_faw_моб",
+                  "gk": "товары_faw",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
@@ -12672,34 +12519,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_faw",
+                    "товары_faw_пк"
                   ]
                 }
               ]
             },
             {
               "name": "FAW Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "FAW Пк",
-                  "gc": "ct0081_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_faw_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг Volvo",
@@ -12831,9 +12661,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Volvo Пк",
+                  "t": "Volvo",
                   "gc": "ct0276_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_volvo_пк",
+                  "gk": "товары_volvo",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
@@ -12847,34 +12677,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_volvo",
+                    "товары_volvo_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Volvo Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Volvo Моб",
-                  "gc": "ct0276_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_volvo_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг KIA",
@@ -13006,9 +12819,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "KIA Пк",
+                  "t": "KIA",
                   "gc": "ct0164_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_kia_пк",
+                  "gk": "товары_kia",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
@@ -13022,34 +12835,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_kia",
+                    "товары_kia_моб"
                   ]
                 }
               ]
             },
             {
               "name": "KIA Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "KIA Моб",
-                  "gc": "ct0164_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_kia_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Opel",
@@ -13181,9 +12977,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Opel Пк",
+                  "t": "Opel",
                   "gc": "ct0282_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_opel_пк",
+                  "gk": "товары_opel",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
@@ -13197,34 +12993,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_opel",
+                    "товары_opel_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Opel Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Opel Моб",
-                  "gc": "ct0282_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_opel_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг Lifan",
@@ -13455,9 +13234,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Subaru Пк",
+                  "t": "Subaru",
                   "gc": "ct0278_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_subaru_пк",
+                  "gk": "товары_subaru",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
@@ -13471,34 +13250,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_subaru",
+                    "товары_subaru_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Subaru Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Subaru Моб",
-                  "gc": "ct0278_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_subaru_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Skoda",
@@ -13630,9 +13392,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Skoda Моб",
+                  "t": "Skoda",
                   "gc": "ct0215_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_skoda_моб",
+                  "gk": "товары_skoda",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Марки - Фид - Автотаргетинг"
@@ -13646,34 +13408,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_skoda",
+                    "товары_skoda_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Skoda Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Skoda Пк",
-                  "gc": "ct0215_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_skoda_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Марки - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Mazda",
@@ -13805,9 +13550,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Mazda Пк",
+                  "t": "Mazda",
                   "gc": "ct0283_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_mazda_пк",
+                  "gk": "товары_mazda",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
@@ -13821,34 +13566,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_mazda",
+                    "товары_mazda_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Mazda Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Mazda Моб",
-                  "gc": "ct0283_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_mazda_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг Daewoo",
@@ -13980,9 +13708,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Daewoo Пк",
+                  "t": "Daewoo",
                   "gc": "ct0286_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_daewoo_пк",
+                  "gk": "товары_daewoo",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
@@ -13996,34 +13724,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_daewoo",
+                    "товары_daewoo_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Daewoo Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Daewoo Моб",
-                  "gc": "ct0286_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_daewoo_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг Renault",
@@ -14155,9 +13866,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Renault Моб",
+                  "t": "Renault",
                   "gc": "ct0209_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_renault_моб",
+                  "gk": "товары_renault",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Марки - Фид - Автотаргетинг"
@@ -14171,34 +13882,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_renault",
+                    "товары_renault_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Renault Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Renault Пк",
-                  "gc": "ct0209_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_renault_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Марки - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг UAZ",
@@ -14330,9 +14024,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "UAZ Пк",
+                  "t": "UAZ",
                   "gc": "ct0256_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_uaz_пк",
+                  "gk": "товары_uaz",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
@@ -14346,34 +14040,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_uaz",
+                    "товары_uaz_моб"
                   ]
                 }
               ]
             },
             {
               "name": "UAZ Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "UAZ Моб",
-                  "gc": "ct0256_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_uaz_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг Geely",
@@ -14505,9 +14182,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Geely Пк",
+                  "t": "Geely",
                   "gc": "ct0097_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_geely_пк",
+                  "gk": "товары_geely",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Марки - Фид - Автотаргетинг"
@@ -14521,34 +14198,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_geely",
+                    "товары_geely_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Geely Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Geely Моб",
-                  "gc": "ct0097_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_geely_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Марки - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг Hyundai",
@@ -14680,9 +14340,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Hyundai Пк",
+                  "t": "Hyundai",
                   "gc": "ct0121_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_hyundai_пк",
+                  "gk": "товары_hyundai",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Марки - Фид - Автотаргетинг"
@@ -14696,34 +14356,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_hyundai",
+                    "товары_hyundai_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Hyundai Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Hyundai Моб",
-                  "gc": "ct0121_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_hyundai_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Марки - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Changan",
@@ -14855,9 +14498,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Changan Пк",
+                  "t": "Changan",
                   "gc": "ct0029_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_changan_пк",
+                  "gk": "товары_changan",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Марки - Фид - Автотаргетинг"
@@ -14871,34 +14514,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_changan",
+                    "товары_changan_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Changan Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Changan Моб",
-                  "gc": "ct0029_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_changan_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Марки - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Suzuki",
@@ -15030,9 +14656,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Suzuki Моб",
+                  "t": "Suzuki",
                   "gc": "ct0277_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_suzuki_моб",
+                  "gk": "товары_suzuki",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
@@ -15046,34 +14672,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_suzuki",
+                    "товары_suzuki_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Suzuki Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Suzuki Пк",
-                  "gc": "ct0277_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_suzuki_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг Peugeot",
@@ -15205,9 +14814,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Peugeot Моб",
+                  "t": "Peugeot",
                   "gc": "ct0281_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_peugeot_моб",
+                  "gk": "товары_peugeot",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
@@ -15221,34 +14830,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_peugeot",
+                    "товары_peugeot_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Peugeot Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Peugeot Пк",
-                  "gc": "ct0281_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_peugeot_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг Datsun",
@@ -15380,9 +14972,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Datsun Пк",
+                  "t": "Datsun",
                   "gc": "ct0063_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_datsun_пк",
+                  "gk": "товары_datsun",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Марки - Фид - Автотаргетинг"
@@ -15396,34 +14988,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_datsun",
+                    "товары_datsun_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Datsun Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Datsun Моб",
-                  "gc": "ct0063_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_datsun_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Марки - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг Ford",
@@ -15555,9 +15130,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ford Моб",
+                  "t": "Ford",
                   "gc": "ct0259_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_ford_моб",
+                  "gk": "товары_ford",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Марки - Фид - Автотаргетинг"
@@ -15571,34 +15146,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_ford",
+                    "товары_ford_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Ford Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ford Пк",
-                  "gc": "ct0259_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_ford_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Марки - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Chevrolet",
@@ -15730,9 +15288,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Chevrolet Моб",
+                  "t": "Chevrolet",
                   "gc": "ct0059_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_chevrolet_моб",
+                  "gk": "товары_chevrolet",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Марки - Фид - Автотаргетинг"
@@ -15746,34 +15304,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_chevrolet",
+                    "товары_chevrolet_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Chevrolet Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Chevrolet Пк",
-                  "gc": "ct0059_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_chevrolet_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Марки - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг Volkswagen",
@@ -15905,9 +15446,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Volkswagen Пк",
+                  "t": "Volkswagen",
                   "gc": "ct0238_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_volkswagen_пк",
+                  "gk": "товары_volkswagen",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Марки - Фид - Автотаргетинг"
@@ -15921,34 +15462,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_volkswagen",
+                    "товары_volkswagen_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Volkswagen Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Volkswagen Моб",
-                  "gc": "ct0238_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_volkswagen_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Марки - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг Nissan",
@@ -16080,9 +15604,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Nissan Моб",
+                  "t": "Nissan",
                   "gc": "ct0199_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_nissan_моб",
+                  "gk": "товары_nissan",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Марки - Фид - Автотаргетинг"
@@ -16096,34 +15620,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_nissan",
+                    "товары_nissan_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Nissan Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Nissan Пк",
-                  "gc": "ct0199_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_nissan_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Марки - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг Креативы1",
@@ -18277,9 +17784,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Все Формы E Пк",
+                  "t": "Все Формы E",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "bce_формы_e_пк",
+                  "gk": "bce_формы_e",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -18293,6 +17800,10 @@
                   ],
                   "audiences": [
                     "RETARGETING:36976986"
+                  ],
+                  "merged_gks": [
+                    "bce_формы_e",
+                    "bce_формы_e_моб"
                   ]
                 }
               ]
@@ -18302,9 +17813,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Все Формы A Пк",
+                  "t": "Все Формы A",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "bce_формы_a_пк",
+                  "gk": "bce_формы_a",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -18318,43 +17829,26 @@
                   ],
                   "audiences": [
                     "RETARGETING:36976986"
+                  ],
+                  "merged_gks": [
+                    "bce_формы_a",
+                    "bce_формы_a_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Все Формы E Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Все Формы E Моб",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "bce_формы_e_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36976986,
-                      "name": "все формы_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36976986"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Все Формы F Моб",
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Все Формы F Моб",
+                  "t": "Все Формы F",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "bce_формы_f_моб",
+                  "gk": "bce_формы_f",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -18368,59 +17862,21 @@
                   ],
                   "audiences": [
                     "RETARGETING:36976986"
+                  ],
+                  "merged_gks": [
+                    "bce_формы_f",
+                    "bce_формы_f_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Все Формы A Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Все Формы A Моб",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "bce_формы_a_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36976986,
-                      "name": "все формы_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36976986"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Все Формы F Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Все Формы F Пк",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "bce_формы_f_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36976986,
-                      "name": "все формы_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36976986"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Аудитория Автомобили D Моб",
@@ -18453,13 +17909,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Автотаргетинг B Пк",
+                  "t": "Автотаргетинг B",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "автотаргетинг_b_пк",
+                  "gk": "автотаргетинг_b",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "автотаргетинг_b",
+                    "автотаргетинг_b_моб"
                   ]
                 }
               ]
@@ -18791,13 +18251,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Автотаргетинг F Пк",
+                  "t": "Автотаргетинг F",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "автотаргетинг_f_пк",
+                  "gk": "автотаргетинг_f",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "автотаргетинг_f",
+                    "автотаргетинг_f_моб"
                   ]
                 }
               ]
@@ -19059,13 +18523,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Автотаргетинг C Пк",
+                  "t": "Автотаргетинг C",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "автотаргетинг_c_пк",
+                  "gk": "автотаргетинг_c",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "автотаргетинг_c",
+                    "автотаргетинг_c_моб"
                   ]
                 }
               ]
@@ -21088,51 +20556,31 @@
             },
             {
               "name": "Автотаргетинг C Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Автотаргетинг C Моб",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "автотаргетинг_c_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Автотаргетинг D Пк",
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Автотаргетинг D Пк",
+                  "t": "Автотаргетинг D",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "автотаргетинг_d_пк",
+                  "gk": "автотаргетинг_d",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "автотаргетинг_d",
+                    "автотаргетинг_d_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Автотаргетинг B Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Автотаргетинг B Моб",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "автотаргетинг_b_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Аудитория Продажа Автомобилей A Моб",
@@ -21339,13 +20787,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Автотаргетинг A Моб",
+                  "t": "Автотаргетинг A",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "автотаргетинг_a_моб",
+                  "gk": "автотаргетинг_a",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "автотаргетинг_a",
+                    "автотаргетинг_a_пк"
                   ]
                 }
               ]
@@ -21407,32 +20859,24 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Автотаргетинг E Моб",
+                  "t": "Автотаргетинг E",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "автотаргетинг_e_моб",
+                  "gk": "автотаргетинг_e",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "автотаргетинг_e",
+                    "автотаргетинг_e_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Автотаргетинг A Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Автотаргетинг A Пк",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "автотаргетинг_a_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Аудитория Автомобили B Пк",
@@ -21488,19 +20932,7 @@
             },
             {
               "name": "Автотаргетинг D Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Автотаргетинг D Моб",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "автотаргетинг_d_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Аудитория Продажа Автомобилей E Моб",
@@ -21530,19 +20962,7 @@
             },
             {
               "name": "Автотаргетинг F Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Автотаргетинг F Моб",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "автотаргетинг_f_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Аудитория Подержанные Авто F Пк",
@@ -21598,19 +21018,7 @@
             },
             {
               "name": "Автотаргетинг E Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Автотаргетинг E Пк",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "автотаргетинг_e_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Аудитория Продажа Автомобилей D Моб",
@@ -21643,9 +21051,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Lal C Моб",
+                  "t": "Lal C",
                   "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_c_моб",
+                  "gk": "lal_c",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -21665,6 +21073,10 @@
                   "audiences": [
                     "RETARGETING:36639336",
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "lal_c",
+                    "lal_c_пк"
                   ]
                 }
               ]
@@ -21674,9 +21086,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Lal B Моб",
+                  "t": "Lal B",
                   "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_b_моб",
+                  "gk": "lal_b",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -21696,6 +21108,10 @@
                   "audiences": [
                     "RETARGETING:36639336",
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "lal_b",
+                    "lal_b_пк"
                   ]
                 }
               ]
@@ -21705,9 +21121,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Lal A Моб",
+                  "t": "Lal A",
                   "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_a_моб",
+                  "gk": "lal_a",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -21727,6 +21143,10 @@
                   "audiences": [
                     "RETARGETING:36639336",
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "lal_a",
+                    "lal_a_пк"
                   ]
                 }
               ]
@@ -21736,9 +21156,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Lal E Моб",
+                  "t": "Lal E",
                   "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_e_моб",
+                  "gk": "lal_e",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -21758,6 +21178,10 @@
                   "audiences": [
                     "RETARGETING:36639336",
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "lal_e",
+                    "lal_e_пк"
                   ]
                 }
               ]
@@ -21767,9 +21191,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Lal D Моб",
+                  "t": "Lal D",
                   "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_d_моб",
+                  "gk": "lal_d",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -21789,6 +21213,10 @@
                   "audiences": [
                     "RETARGETING:36639336",
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "lal_d",
+                    "lal_d_пк"
                   ]
                 }
               ]
@@ -21798,9 +21226,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Lal F Моб",
+                  "t": "Lal F",
                   "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_f_моб",
+                  "gk": "lal_f",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -21820,195 +21248,37 @@
                   "audiences": [
                     "RETARGETING:36639336",
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "lal_f",
+                    "lal_f_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Lal B Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal B Пк",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_b_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36639336,
-                      "name": "Все формы_LAL",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36639336",
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Lal F Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal F Пк",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_f_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36639336,
-                      "name": "Все формы_LAL",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36639336",
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Lal C Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal C Пк",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_c_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36639336,
-                      "name": "Все формы_LAL",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36639336",
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Lal D Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal D Пк",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_d_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36639336,
-                      "name": "Все формы_LAL",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36639336",
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Lal A Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal A Пк",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_a_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36639336,
-                      "name": "Все формы_LAL",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36639336",
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Lal E Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal E Пк",
-                  "gc": "ct0000_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_e_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36639336,
-                      "name": "Все формы_LAL",
-                      "type": "RETARGETING"
-                    },
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36639336",
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Агрегаторы",
@@ -22070,9 +21340,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Lal Все Формы Lal F Пк",
+                  "t": "Lal Все Формы Lal F",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_bce_формы_lal_f_пк",
+                  "gk": "lal_bce_формы_lal_f",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -22086,6 +21356,10 @@
                   ],
                   "audiences": [
                     "RETARGETING:36558689"
+                  ],
+                  "merged_gks": [
+                    "lal_bce_формы_lal_f",
+                    "lal_bce_формы_lal_f_моб"
                   ]
                 }
               ]
@@ -22095,9 +21369,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Lal Минус Динамик Lal D Моб",
+                  "t": "Lal Минус Динамик Lal D",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_минус_динамик_lal_d_моб",
+                  "gk": "lal_минус_динамик_lal_d",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -22111,6 +21385,10 @@
                   ],
                   "audiences": [
                     "RETARGETING:36558724"
+                  ],
+                  "merged_gks": [
+                    "lal_минус_динамик_lal_d",
+                    "lal_минус_динамик_lal_d_пк"
                   ]
                 }
               ]
@@ -22120,9 +21398,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Lal Минус Динамик Lal E Моб",
+                  "t": "Lal Минус Динамик Lal E",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_минус_динамик_lal_e_моб",
+                  "gk": "lal_минус_динамик_lal_e",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -22136,43 +21414,26 @@
                   ],
                   "audiences": [
                     "RETARGETING:36558724"
+                  ],
+                  "merged_gks": [
+                    "lal_минус_динамик_lal_e",
+                    "lal_минус_динамик_lal_e_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Lal Все Формы Lal F Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal Все Формы Lal F Моб",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_bce_формы_lal_f_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36558689,
-                      "name": "все формы_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36558689"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Lal Все Формы Lal D Моб",
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Lal Все Формы Lal D Моб",
+                  "t": "Lal Все Формы Lal D",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_bce_формы_lal_d_моб",
+                  "gk": "lal_bce_формы_lal_d",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -22186,6 +21447,10 @@
                   ],
                   "audiences": [
                     "RETARGETING:36558689"
+                  ],
+                  "merged_gks": [
+                    "lal_bce_формы_lal_d",
+                    "lal_bce_формы_lal_d_пк"
                   ]
                 }
               ]
@@ -22195,9 +21460,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Lal Минус Динамик Lal F Пк",
+                  "t": "Lal Минус Динамик Lal F",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_минус_динамик_lal_f_пк",
+                  "gk": "lal_минус_динамик_lal_f",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -22211,43 +21476,26 @@
                   ],
                   "audiences": [
                     "RETARGETING:36558724"
+                  ],
+                  "merged_gks": [
+                    "lal_минус_динамик_lal_f",
+                    "lal_минус_динамик_lal_f_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Lal Минус Динамик Lal F Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal Минус Динамик Lal F Моб",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_минус_динамик_lal_f_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36558724,
-                      "name": "минус динамик_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36558724"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Lal Все Формы Lal E Моб",
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Lal Все Формы Lal E Моб",
+                  "t": "Lal Все Формы Lal E",
                   "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_bce_формы_lal_e_моб",
+                  "gk": "lal_bce_формы_lal_e",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби - Общее - Автотаргетинг"
@@ -22261,109 +21509,29 @@
                   ],
                   "audiences": [
                     "RETARGETING:36558689"
+                  ],
+                  "merged_gks": [
+                    "lal_bce_формы_lal_e",
+                    "lal_bce_формы_lal_e_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Lal Все Формы Lal E Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal Все Формы Lal E Пк",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_bce_формы_lal_e_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36558689,
-                      "name": "все формы_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36558689"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Lal Минус Динамик Lal E Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal Минус Динамик Lal E Пк",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_минус_динамик_lal_e_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36558724,
-                      "name": "минус динамик_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36558724"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Lal Минус Динамик Lal D Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal Минус Динамик Lal D Пк",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_минус_динамик_lal_d_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36558724,
-                      "name": "минус динамик_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36558724"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Lal Все Формы Lal D Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lal Все Формы Lal D Пк",
-                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
-                  "gk": "lal_bce_формы_lal_d_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36558689,
-                      "name": "все формы_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36558689"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Авто С Пробегом",
@@ -22395,13 +21563,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Авто С Пробегом D Пк",
+                  "t": "Ключи Авто С Пробегом D",
                   "gc": "ct0014_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_abto_c_пробегом_d_пк",
+                  "gk": "ключи_abto_c_пробегом_d",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_abto_c_пробегом_d",
+                    "ключи_abto_c_пробегом_d_моб"
                   ]
                 }
               ]
@@ -22411,45 +21583,41 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Авто С Пробегом F Моб",
+                  "t": "Ключи Авто С Пробегом F",
                   "gc": "ct0014_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_abto_c_пробегом_f_моб",
+                  "gk": "ключи_abto_c_пробегом_f",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_abto_c_пробегом_f",
+                    "ключи_abto_c_пробегом_f_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Ключи Авто С Пробегом D Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Авто С Пробегом D Моб",
-                  "gc": "ct0014_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_abto_c_пробегом_d_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Авто С Пробегом E Моб",
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Авто С Пробегом E Моб",
+                  "t": "Ключи Авто С Пробегом E",
                   "gc": "ct0014_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_abto_c_пробегом_e_моб",
+                  "gk": "ключи_abto_c_пробегом_e",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_abto_c_пробегом_e",
+                    "ключи_abto_c_пробегом_e_пк"
                   ]
                 }
               ]
@@ -22459,128 +21627,80 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Авто С Пробегом A Моб",
+                  "t": "Ключи Авто С Пробегом A",
                   "gc": "ct0014_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_abto_c_пробегом_a_моб",
+                  "gk": "ключи_abto_c_пробегом_a",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_abto_c_пробегом_a",
+                    "ключи_abto_c_пробегом_a_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Ключи Авто С Пробегом A Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Авто С Пробегом A Пк",
-                  "gc": "ct0014_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_abto_c_пробегом_a_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Авто С Пробегом B Моб",
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Авто С Пробегом B Моб",
+                  "t": "Ключи Авто С Пробегом B",
                   "gc": "ct0014_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_abto_c_пробегом_b_моб",
+                  "gk": "ключи_abto_c_пробегом_b",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_abto_c_пробегом_b",
+                    "ключи_abto_c_пробегом_b_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Ключи Авто С Пробегом E Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Авто С Пробегом E Пк",
-                  "gc": "ct0014_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_abto_c_пробегом_e_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Авто С Пробегом C Моб",
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Авто С Пробегом C Моб",
+                  "t": "Ключи Авто С Пробегом C",
                   "gc": "ct0014_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_abto_c_пробегом_c_моб",
+                  "gk": "ключи_abto_c_пробегом_c",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_abto_c_пробегом_c",
+                    "ключи_abto_c_пробегом_c_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Ключи Авто С Пробегом B Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Авто С Пробегом B Пк",
-                  "gc": "ct0014_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_abto_c_пробегом_b_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Авто С Пробегом F Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Авто С Пробегом F Пк",
-                  "gc": "ct0014_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_abto_c_пробегом_f_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Авто С Пробегом C Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Авто С Пробегом C Пк",
-                  "gc": "ct0014_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_abto_c_пробегом_c_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Трейд Ин",
@@ -22611,13 +21731,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Трейд Ин D Пк",
+                  "t": "Ключи Трейд Ин D",
                   "gc": "ct0007_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_трейд_ин_d_пк",
+                  "gk": "ключи_трейд_ин_d",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_трейд_ин_d",
+                    "ключи_трейд_ин_d_моб"
                   ]
                 }
               ]
@@ -22627,13 +21751,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Трейд Ин E Пк",
+                  "t": "Ключи Трейд Ин E",
                   "gc": "ct0007_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_трейд_ин_e_пк",
+                  "gk": "ключи_трейд_ин_e",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_трейд_ин_e",
+                    "ключи_трейд_ин_e_моб"
                   ]
                 }
               ]
@@ -22643,13 +21771,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Трейд Ин A Пк",
+                  "t": "Ключи Трейд Ин A",
                   "gc": "ct0007_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_трейд_ин_a_пк",
+                  "gk": "ключи_трейд_ин_a",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_трейд_ин_a",
+                    "ключи_трейд_ин_a_моб"
                   ]
                 }
               ]
@@ -22659,13 +21791,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Трейд Ин B Моб",
+                  "t": "Ключи Трейд Ин B",
                   "gc": "ct0007_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_трейд_ин_b_моб",
+                  "gk": "ключи_трейд_ин_b",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_трейд_ин_b",
+                    "ключи_трейд_ин_b_пк"
                   ]
                 }
               ]
@@ -22675,128 +21811,64 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Трейд Ин C Моб",
+                  "t": "Ключи Трейд Ин C",
                   "gc": "ct0007_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_трейд_ин_c_моб",
+                  "gk": "ключи_трейд_ин_c",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_трейд_ин_c",
+                    "ключи_трейд_ин_c_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Ключи Трейд Ин A Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Трейд Ин A Моб",
-                  "gc": "ct0007_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_трейд_ин_a_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Трейд Ин D Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Трейд Ин D Моб",
-                  "gc": "ct0007_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_трейд_ин_d_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Трейд Ин E Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Трейд Ин E Моб",
-                  "gc": "ct0007_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_трейд_ин_e_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Трейд Ин F Моб",
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Трейд Ин F Моб",
+                  "t": "Ключи Трейд Ин F",
                   "gc": "ct0007_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_трейд_ин_f_моб",
+                  "gk": "ключи_трейд_ин_f",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_трейд_ин_f",
+                    "ключи_трейд_ин_f_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Ключи Трейд Ин F Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Трейд Ин F Пк",
-                  "gc": "ct0007_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_трейд_ин_f_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Трейд Ин B Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Трейд Ин B Пк",
-                  "gc": "ct0007_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_трейд_ин_b_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Трейд Ин C Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Трейд Ин C Пк",
-                  "gc": "ct0007_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_трейд_ин_c_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автосалон",
@@ -22827,13 +21899,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автосалон A Моб",
+                  "t": "Ключи Автосалон A",
                   "gc": "ct0013_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автосалон_a_моб",
+                  "gk": "ключи_автосалон_a",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автосалон_a",
+                    "ключи_автосалон_a_пк"
                   ]
                 }
               ]
@@ -22843,13 +21919,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автосалон C Моб",
+                  "t": "Ключи Автосалон C",
                   "gc": "ct0013_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автосалон_c_моб",
+                  "gk": "ключи_автосалон_c",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автосалон_c",
+                    "ключи_автосалон_c_пк"
                   ]
                 }
               ]
@@ -22859,13 +21939,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автосалон B Моб",
+                  "t": "Ключи Автосалон B",
                   "gc": "ct0013_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автосалон_b_моб",
+                  "gk": "ключи_автосалон_b",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автосалон_b",
+                    "ключи_автосалон_b_пк"
                   ]
                 }
               ]
@@ -22875,13 +21959,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автосалон F Моб",
+                  "t": "Ключи Автосалон F",
                   "gc": "ct0013_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автосалон_f_моб",
+                  "gk": "ключи_автосалон_f",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автосалон_f",
+                    "ключи_автосалон_f_пк"
                   ]
                 }
               ]
@@ -22891,13 +21979,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автосалон E Моб",
+                  "t": "Ключи Автосалон E",
                   "gc": "ct0013_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автосалон_e_моб",
+                  "gk": "ключи_автосалон_e",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автосалон_e",
+                    "ключи_автосалон_e_пк"
                   ]
                 }
               ]
@@ -22907,112 +21999,44 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автосалон D Моб",
+                  "t": "Ключи Автосалон D",
                   "gc": "ct0013_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автосалон_d_моб",
+                  "gk": "ключи_автосалон_d",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автосалон_d",
+                    "ключи_автосалон_d_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Ключи Автосалон E Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автосалон E Пк",
-                  "gc": "ct0013_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автосалон_e_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автосалон A Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автосалон A Пк",
-                  "gc": "ct0013_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автосалон_a_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автосалон D Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автосалон D Пк",
-                  "gc": "ct0013_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автосалон_d_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автосалон C Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автосалон C Пк",
-                  "gc": "ct0013_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автосалон_c_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автосалон F Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автосалон F Пк",
-                  "gc": "ct0013_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автосалон_f_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автосалон B Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автосалон B Пк",
-                  "gc": "ct0013_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автосалон_b_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автокредит Без Первоначального",
@@ -23067,13 +22091,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит D Пк",
+                  "t": "Ключи Автокредит D",
                   "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_d_пк",
+                  "gk": "ключи_автокредит_d",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автокредит_d",
+                    "ключи_автокредит_d_моб"
                   ]
                 }
               ]
@@ -23083,13 +22111,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит Без Первоначального D Пк",
+                  "t": "Ключи Автокредит Без Первоначального D",
                   "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_без_первоначального_d_пк",
+                  "gk": "ключи_автокредит_без_первоначального_d",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автокредит_без_первоначального_d",
+                    "ключи_автокредит_без_первоначального_d_моб"
                   ]
                 }
               ]
@@ -23099,13 +22131,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит Без Первоначального E Пк",
+                  "t": "Ключи Автокредит Без Первоначального E",
                   "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_без_первоначального_e_пк",
+                  "gk": "ключи_автокредит_без_первоначального_e",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автокредит_без_первоначального_e",
+                    "ключи_автокредит_без_первоначального_e_моб"
                   ]
                 }
               ]
@@ -23115,13 +22151,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит A Пк",
+                  "t": "Ключи Автокредит A",
                   "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_a_пк",
+                  "gk": "ключи_автокредит_a",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автокредит_a",
+                    "ключи_автокредит_a_моб"
                   ]
                 }
               ]
@@ -23131,13 +22171,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит E Пк",
+                  "t": "Ключи Автокредит E",
                   "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_e_пк",
+                  "gk": "ключи_автокредит_e",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автокредит_e",
+                    "ключи_автокредит_e_моб"
                   ]
                 }
               ]
@@ -23147,13 +22191,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит Без Первоначального A Пк",
+                  "t": "Ключи Автокредит Без Первоначального A",
                   "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_без_первоначального_a_пк",
+                  "gk": "ключи_автокредит_без_первоначального_a",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автокредит_без_первоначального_a",
+                    "ключи_автокредит_без_первоначального_a_моб"
                   ]
                 }
               ]
@@ -23163,13 +22211,17 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит B Моб",
+                  "t": "Ключи Автокредит B",
                   "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_b_моб",
+                  "gk": "ключи_автокредит_b",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автокредит_b",
+                    "ключи_автокредит_b_пк"
                   ]
                 }
               ]
@@ -23179,272 +22231,148 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит C Моб",
+                  "t": "Ключи Автокредит C",
                   "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_c_моб",
+                  "gk": "ключи_автокредит_c",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автокредит_c",
+                    "ключи_автокредит_c_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Ключи Автокредит A Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит A Моб",
-                  "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_a_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автокредит D Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит D Моб",
-                  "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_d_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автокредит E Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит E Моб",
-                  "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_e_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автокредит F Моб",
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит F Моб",
+                  "t": "Ключи Автокредит F",
                   "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_f_моб",
+                  "gk": "ключи_автокредит_f",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автокредит_f",
+                    "ключи_автокредит_f_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Ключи Автокредит Без Первоначального A Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит Без Первоначального A Моб",
-                  "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_без_первоначального_a_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автокредит Без Первоначального F Пк",
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит Без Первоначального F Пк",
+                  "t": "Ключи Автокредит Без Первоначального F",
                   "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_без_первоначального_f_пк",
+                  "gk": "ключи_автокредит_без_первоначального_f",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автокредит_без_первоначального_f",
+                    "ключи_автокредит_без_первоначального_f_моб"
                   ]
                 }
               ]
             },
             {
               "name": "Ключи Автокредит B Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит B Пк",
-                  "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_b_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автокредит Без Первоначального B Моб",
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит Без Первоначального B Моб",
+                  "t": "Ключи Автокредит Без Первоначального B",
                   "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_без_первоначального_b_моб",
+                  "gk": "ключи_автокредит_без_первоначального_b",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автокредит_без_первоначального_b",
+                    "ключи_автокредит_без_первоначального_b_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Ключи Автокредит F Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит F Пк",
-                  "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_f_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автокредит Без Первоначального B Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит Без Первоначального B Пк",
-                  "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_без_первоначального_b_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автокредит Без Первоначального C Моб",
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит Без Первоначального C Моб",
+                  "t": "Ключи Автокредит Без Первоначального C",
                   "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_без_первоначального_c_моб",
+                  "gk": "ключи_автокредит_без_первоначального_c",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Комби+Фид - Общее - Автотаргетинг",
                     "РСЯ - Комби - Общее - Автотаргетинг"
+                  ],
+                  "merged_gks": [
+                    "ключи_автокредит_без_первоначального_c",
+                    "ключи_автокредит_без_первоначального_c_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Ключи Автокредит Без Первоначального C Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит Без Первоначального C Пк",
-                  "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_без_первоначального_c_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автокредит Без Первоначального F Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит Без Первоначального F Моб",
-                  "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_без_первоначального_f_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автокредит Без Первоначального D Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит Без Первоначального D Моб",
-                  "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_без_первоначального_d_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автокредит C Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит C Пк",
-                  "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_c_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Ключи Автокредит Без Первоначального E Моб",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Ключи Автокредит Без Первоначального E Моб",
-                  "gc": "ct0006_aoff_n000_r0000_ct001_ag011_g00",
-                  "gk": "ключи_автокредит_без_первоначального_e_моб",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Комби+Фид - Общее - Автотаргетинг",
-                    "РСЯ - Комби - Общее - Автотаргетинг"
-                  ]
-                }
-              ]
+              "items": []
             },
             {
               "name": "Lifan",
@@ -23477,9 +22405,9 @@
               "items": [
                 {
                   "c": "tp1_cpc_site",
-                  "t": "Lifan Моб",
+                  "t": "Lifan",
                   "gc": "ct0191_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_lifan_моб",
+                  "gk": "товары_lifan",
                   "camps": [],
                   "camp_names": [
                     "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
@@ -23493,34 +22421,17 @@
                   ],
                   "audiences": [
                     "RETARGETING:36953828"
+                  ],
+                  "merged_gks": [
+                    "товары_lifan",
+                    "товары_lifan_пк"
                   ]
                 }
               ]
             },
             {
               "name": "Lifan Пк",
-              "items": [
-                {
-                  "c": "tp1_cpc_site",
-                  "t": "Lifan Пк",
-                  "gc": "ct0191_aon_n000_r0000_ct003_ag010_g00",
-                  "gk": "товары_lifan_пк",
-                  "camps": [],
-                  "camp_names": [
-                    "РСЯ - Фид - Смарт-баннеры - Фид - Автотаргетинг"
-                  ],
-                  "rl_audiences": [
-                    {
-                      "rl_id": 36953828,
-                      "name": "корректные сайты_LAL",
-                      "type": "RETARGETING"
-                    }
-                  ],
-                  "audiences": [
-                    "RETARGETING:36953828"
-                  ]
-                }
-              ]
+              "items": []
             }
           ]
         },
