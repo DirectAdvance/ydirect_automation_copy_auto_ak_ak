@@ -29826,6 +29826,100 @@
                 }
               ],
               "groups": []
+            },
+            {
+              "name": "МК - Общая - Аудитории + Автотаргетинг - Автотаргетинг",
+              "items": [
+                {
+                  "c": "tp6_cpc_site",
+                  "t": "МК - Общая - Аудитории + Автотаргетинг - Автотаргетинг",
+                  "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+                  "gk": "mk_ra_bu_old",
+                  "camps": [
+                    "tp6_cpc_site — MK_RA_bu_old  - Самарская область",
+                    "tp6_cpc_site — MK_RA_bu_old - Волгоградская область",
+                    "tp6_cpc_site — MK_RA_bu_old - Краснодарская край"
+                  ],
+                  "camp_names": [
+                    "МК - Общее - Аудитории + Автотаргетинг"
+                  ],
+                  "autotarget_cats": [
+                    "ACCESSORY_MARK",
+                    "ALTERNATIVE_MARK",
+                    "BROADER_MARK",
+                    "EXACT_V2_MARK",
+                    "NARROW_MARK"
+                  ],
+                  "audiences": [
+                    {
+                      "id": "19000000115",
+                      "name": "auto.ru",
+                      "type": "HOST"
+                    },
+                    {
+                      "id": "19000000530",
+                      "name": "drom.ru",
+                      "type": "HOST"
+                    },
+                    {
+                      "id": "19000000677",
+                      "name": "auto.drom.ru",
+                      "type": "HOST"
+                    },
+                    {
+                      "id": "19002217006",
+                      "name": "дром.ru",
+                      "type": "HOST"
+                    },
+                    {
+                      "id": "19900000024",
+                      "name": "Авто.ру: купить и продать авто",
+                      "type": "APPLICATION"
+                    },
+                    {
+                      "id": "19900830072",
+                      "name": "Auto.ru: продажа, покупка авто",
+                      "type": "APPLICATION"
+                    },
+                    {
+                      "id": "19900830535",
+                      "name": "Дром Авто",
+                      "type": "APPLICATION"
+                    },
+                    {
+                      "id": "2499680141",
+                      "name": "Автомобили",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680143",
+                      "name": "Городские автомобили",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680146",
+                      "name": "Семейные автомобили",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680398",
+                      "name": "Подержанные автомобили",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680410",
+                      "name": "Продажа автомобилей",
+                      "type": "INTERESTS"
+                    },
+                    {
+                      "id": "2499680510",
+                      "name": "Автокредит",
+                      "type": "INTERESTS"
+                    }
+                  ]
+                }
+              ],
+              "groups": []
             }
           ]
         },
@@ -29847,6 +29941,92 @@
                   ],
                   "camp_names": [
                     "ТК - Общие запросы - Автотаргетинг"
+                  ]
+                }
+              ],
+              "groups": []
+            },
+            {
+              "name": "ТК - Общая - Аудитории + Автотаргетинг - Автотаргетинг",
+              "items": [
+                {
+                  "c": "tp7_cpc_site",
+                  "t": "ТК - Общая - Аудитории + Автотаргетинг - Автотаргетинг",
+                  "gc": "ct0000_aon_n000_r0000_ct010_ag001_g00",
+                  "gk": "tk_ra_max_conv",
+                  "camps": [
+                    "tp7_cpc_site — TK_RA_max_conv - Екатеринбург"
+                  ],
+                  "camp_names": [
+                    "ТК - Общее - Аудитории + Автотаргетинг"
+                  ],
+                  "rl_audiences": [
+                    {
+                      "rl_id": "2499680510",
+                      "name": "Автокредит",
+                      "type": "INTERESTS",
+                      "description": "Люди, которые интересуются автокредитами и их оформлением",
+                      "interest_type": "short-term"
+                    },
+                    {
+                      "rl_id": "2499680141",
+                      "name": "Автомобили",
+                      "type": "INTERESTS",
+                      "description": "Люди, которые интересуются покупкой или продажей автомобилей.",
+                      "interest_type": "short-term"
+                    },
+                    {
+                      "rl_id": "2499680398",
+                      "name": "Подержанные автомобили",
+                      "type": "INTERESTS",
+                      "description": "Люди, которые интересуются покупкой и продажей автомобилей с пробегом.",
+                      "interest_type": "short-term"
+                    },
+                    {
+                      "rl_id": "2499680410",
+                      "name": "Продажа автомобилей",
+                      "type": "INTERESTS",
+                      "description": "Люди, которые посещают салоны и центры продажи автомобилей, автоломбарды, организации, занимающиеся выкупом автомобилей",
+                      "interest_type": "short-term"
+                    },
+                    {
+                      "rl_id": "19900000024",
+                      "name": "Авто.ру: купить и продать авто",
+                      "type": "APPLICATION",
+                      "description": "OQTOPY TECHNOLOGY L.L.C",
+                      "interest_type": "short-term"
+                    },
+                    {
+                      "rl_id": "19900830072",
+                      "name": "Auto.ru: продажа, покупка авто",
+                      "type": "APPLICATION",
+                      "description": "Direct Cursus Computer Systems Trading",
+                      "interest_type": "short-term"
+                    },
+                    {
+                      "rl_id": "19000000530",
+                      "name": "drom.ru",
+                      "type": "HOST",
+                      "description": null,
+                      "interest_type": "short-term"
+                    },
+                    {
+                      "rl_id": "19900830535",
+                      "name": "Дром Авто",
+                      "type": "APPLICATION",
+                      "description": "Amayama Auto LLC",
+                      "interest_type": "short-term"
+                    }
+                  ],
+                  "audiences": [
+                    "APPLICATION:19900000024",
+                    "APPLICATION:19900830072",
+                    "APPLICATION:19900830535",
+                    "HOST:19000000530",
+                    "INTERESTS:2499680141",
+                    "INTERESTS:2499680398",
+                    "INTERESTS:2499680410",
+                    "INTERESTS:2499680510"
                   ]
                 }
               ],
