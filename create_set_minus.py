@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import threading
 
 _DEPS: dict = {}
 
@@ -234,7 +237,207 @@ _SLEPOK_MINUS_MODE: dict[str, str] = {
     "scherbakova": "shared_set",
     "terehov": "group",
     "karavaev": "group",
+    # kuderko — ЯВНО «group» (2026-07-28). Раньше слепка тут не было и он молча падал в дефолт
+    # «group»; запись поведение НЕ меняет, она снимает молчаливый дефолт. Именно «group», а не
+    # «shared_set»/«campaign», потому что у kuderko минуса живут ПО ГРУППАМ (118 per-group файлов
+    # {slepok}__<slug>_minus.txt в tp2, живой кабинет: 331 группа из 720 с минусами), а кампанийных
+    # источников нет ФИЗИЧЕСКИ: {slepok}_minus_shared.txt = 0 файлов и ct-уровневый {slepok}_minus.txt
+    # = 0 файлов → `_collect_pack_minus` даёт 0 фраз в ЛЮБОМ режиме. Смена режима на не-group только
+    # СНЯЛА бы минуса с групп (`apply_group_minus`), ничего не добавив.
+    "kuderko": "group",
 }
+# Остальные слепки (_SLEPOK_CANONICAL в pack_resolver.py) в карте НЕ перечислены и работают в
+# дефолтном «group»: salamahin, gordeeva, zubakin, chepelev, tumashenko, piterkina, avto_sk,
+# avtolajt_bu, sk_krs, gen_ses, dmp.
+
+# ── ИМЕНОВАННЫЕ наборы минус-фраз слепка → БИБЛИОТЕКА минус-фраз аккаунта ────────────────────────
+# Источник: {site_type}/_minus_sets/{slepok}.json в паке (пишет slepki_editor.apply_save_minus_sets,
+# читает UI slepki_editor.read_minus_sets). Решение Семёна 2026-07-28: эти наборы должны попадать
+# в библиотеку минус-фраз аккаунта и привязываться к кампаниям tp2-tp5.
+# Путь НЕ зависит от {slepok}_minus_shared.txt / ct-уровневого {slepok}_minus.txt: у kuderko их нет
+# вовсе (0 файлов), а наборы есть (4 набора, 1635 фраз).
+#
+# ЛИМИТЫ ДИРЕКТА (офиц. справка, .claude/skills/yandex-direct/docs/keywords/negative-keywords-library.md):
+#   :12  «Вы можете создать до 30 таких наборов»                → на аккаунт
+#   :22/:28/:30 «Максимально допустимое количество символов — 4096 без учета пробелов» → на набор
+#        (это ровно _MINUS_SHARED_SET_CHAR_BUDGET выше — тот же лимит, переиспользуем его)
+#   :12/:41 «К одной группе можно привязать до трех наборов» / «выберите до трех наборов» → на кампанию
+#   docs/keywords/negative-keywords.md — «Количество слов для одной минус-фразы — не более 7».
+_MINUS_LIB_MAX_SETS_ACCOUNT = 30
+_MINUS_LIB_MAX_SETS_PER_CAMPAIGN = 3
+
+# Кэш результата ensure_named_minus_sets на (login, slepok, site_type): набор создаётся ОДИН раз
+# на прогон. Без него каждая кампания делала бы свой get+add, а два токен-потока (DIRECT_TOKEN_THREADS=2)
+# могли бы одновременно не увидеть чужой набор и создать ДУБЛЬ с тем же именем.
+_NAMED_SETS_CACHE: dict[tuple, dict] = {}
+_NAMED_SETS_LOCK = threading.Lock()
+
+
+def _read_slepok_minus_sets(slepok: str, site_type: str) -> list[dict]:
+    """Прочитать ИМЕНОВАННЫЕ наборы минус-фраз слепка из локального зеркала пака.
+
+    Путь — зеркало slepki_editor._pack_rel_minus_sets: {PACK_ROOT}/{site_type}/_minus_sets/{slug}.json.
+    Формат файла: {"slug","site_type","sets":[{"name","phrases":[...]}]} ИЛИ голый список наборов.
+    Файла нет / битый JSON → [] (не падаем: слепок без наборов — легитимный случай).
+    """
+    key = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
+    site_type = (site_type or "").strip()
+    if not key or not site_type:
+        return []
+    path = os.path.join(kp.PACK_ROOT, site_type, "_minus_sets", f"{key}.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    raw = data.get("sets") if isinstance(data, dict) else (data if isinstance(data, list) else None)
+    out: list[dict] = []
+    for it in (raw or []):
+        if not isinstance(it, dict):
+            continue
+        name = re.sub(r"\s+", " ", str(it.get("name") or "").strip())
+        phrases = [str(p) for p in (it.get("phrases") or []) if str(p).strip()]
+        if name or phrases:
+            out.append({"name": name, "phrases": phrases})
+    return out
+
+
+def _clean_minus_set_phrases(phrases: list, city: str = "", region: str = "") -> tuple[list[str], int]:
+    """Нормализовать фразы набора: trim, дедуп caseless, ≤7 слов, гео-чистка своего города.
+
+    Возвращает (фразы, сколько отброшено по лимиту «7 слов»). Гео-чистка обязательна:
+    собственный город аккаунта в минусах заминусовал бы свой же трафик (_strip_account_geo).
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    too_long = 0
+    for p in phrases or []:
+        w = re.sub(r"\s+", " ", str(p).strip())
+        if not w:
+            continue
+        if len(w.split()) > 7:
+            too_long += 1
+            continue
+        k = w.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(w)
+    return _strip_account_geo(out, city, region), too_long
+
+
+def ensure_named_minus_sets(token: str, login: str, slepok: str, site_type: str,
+                            city: str = "", region: str = "") -> dict:
+    """Создать/переиспользовать в БИБЛИОТЕКЕ минус-фраз аккаунта именованные наборы слепка.
+
+    ИДЕМПОТЕНТНО: сначала `negativekeywordsharedsets.get`; набор с ТЕМ ЖЕ именем (caseless)
+    переиспользуется как есть — повторный прогон дублей не плодит и содержимое не переписывает.
+    Создаётся только недостающее, через `negativekeywordsharedsets.add`, с сохранением имени.
+
+    Лимиты соблюдаются ЯВНО, без тихой обрезки: набор длиннее 4096 симв. без пробелов или
+    не влезающий в 30 наборов аккаунта — НЕ создаётся, причина уходит в errors (видимая ошибка).
+
+    Возврат: {"ok", "ids", "created", "reused", "errors", "sets_in_structure", "skipped"}.
+    """
+    res: dict = {"ok": True, "ids": [], "created": [], "reused": [], "errors": [],
+                 "sets_in_structure": 0, "skipped": ""}
+    sets = _read_slepok_minus_sets(slepok, site_type)
+    res["sets_in_structure"] = len(sets)
+    if not sets:
+        res["skipped"] = "в структуре слепка нет именованных наборов минус-фраз"
+        return res
+    if not token:
+        res["ok"] = False
+        res["errors"].append("нет токена v5 — библиотечные наборы минус-фраз НЕ созданы")
+        return res
+    jm = _v5_get("negativekeywordsharedsets", token, login, ["Id", "Name"])
+    if not isinstance(jm, dict) or "error" in jm:
+        res["ok"] = False
+        res["errors"].append("negativekeywordsharedsets.get: "
+                             + (_v5_err(jm) if isinstance(jm, dict) else "нет ответа"))
+        return res
+    existing = [(s.get("Id"), s.get("Name") or "")
+                for s in ((jm.get("result") or {}).get("NegativeKeywordSharedSets") or [])]
+    by_name: dict[str, int] = {}
+    for sid, nm in existing:
+        k = re.sub(r"\s+", " ", str(nm).strip()).lower()
+        if k and sid and k not in by_name:
+            by_name[k] = int(sid)
+    free_slots = _MINUS_LIB_MAX_SETS_ACCOUNT - len(existing)
+
+    for s in sets:
+        name = s.get("name") or ""
+        if not name:
+            res["ok"] = False
+            res["errors"].append("набор без имени в структуре слепка — пропущен")
+            continue
+        hit = by_name.get(name.lower())
+        if hit:
+            if hit not in res["ids"]:
+                res["ids"].append(hit)
+            res["reused"].append(name)
+            continue
+        words, too_long = _clean_minus_set_phrases(s.get("phrases"), city, region)
+        if too_long:
+            res["errors"].append(f"«{name}»: {too_long} фраз(ы) длиннее 7 слов — не вошли в набор")
+        if not words:
+            res["ok"] = False
+            res["errors"].append(f"«{name}»: после нормализации и гео-чистки не осталось фраз — набор НЕ создан")
+            continue
+        chars = sum(len(w.replace(" ", "")) for w in words)
+        if chars > _MINUS_SHARED_SET_CHAR_BUDGET:
+            res["ok"] = False
+            res["errors"].append(
+                f"«{name}»: {chars} симв. без пробелов при лимите Директа "
+                f"{_MINUS_SHARED_SET_CHAR_BUDGET} ({len(words)} фраз) — набор НЕ создан "
+                f"(тихая обрезка запрещена, набор надо разделить в структуре слепка)")
+            continue
+        if free_slots <= 0:
+            res["ok"] = False
+            res["errors"].append(
+                f"«{name}»: в библиотеке аккаунта уже {len(existing)} наборов при лимите "
+                f"{_MINUS_LIB_MAX_SETS_ACCOUNT} — набор НЕ создан")
+            continue
+        j_add = _v5_call("negativekeywordsharedsets", "add", token, login, {
+            "NegativeKeywordSharedSets": [{"Name": name[:255], "NegativeKeywords": words}]
+        })
+        add_res = ((j_add.get("result") or {}).get("AddResults") or []) if isinstance(j_add, dict) else []
+        errs = (add_res[0].get("Errors") or []) if add_res else []
+        try:
+            new_id = int((add_res[0].get("Id") or 0) if add_res and not errs else 0)
+        except (TypeError, ValueError):
+            new_id = 0
+        if new_id > 0:
+            res["ids"].append(new_id)
+            res["created"].append(name)
+            by_name[name.lower()] = new_id
+            free_slots -= 1
+        else:
+            res["ok"] = False
+            msg = ("; ".join(str(e.get("Message") or e.get("Details") or e) for e in errs)
+                   or (_v5_err(j_add) if isinstance(j_add, dict) and "error" in j_add else "пустой ответ add"))
+            res["errors"].append(f"«{name}»: negativekeywordsharedsets.add — {str(msg)[:160]}")
+    return res
+
+
+def ensure_named_minus_sets_cached(token: str, login: str, slepok: str, site_type: str,
+                                   city: str = "", region: str = "") -> dict:
+    """ensure_named_minus_sets один раз на (login, slepok, site_type) за жизнь процесса.
+
+    Лок обязателен: два токен-потока набора (DIRECT_TOKEN_THREADS=2) иначе могли бы одновременно
+    получить пустой `negativekeywordsharedsets.get` и создать ДВА набора с одним именем.
+    """
+    ckey = ((login or "").lower(),
+            _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower()),
+            (site_type or "").strip())
+    with _NAMED_SETS_LOCK:
+        hit = _NAMED_SETS_CACHE.get(ckey)
+        if hit is not None:
+            return hit
+        res = ensure_named_minus_sets(token, login, slepok, site_type, city=city, region=region)
+        # Кэшируем и неуспех тоже: повторять падающий v5-вызов на каждую кампанию бессмысленно.
+        _NAMED_SETS_CACHE[ckey] = res
+        return res
 
 
 def _collect_pack_minus(slepok: str, site_type: str, tp_code: str) -> list[str]:

@@ -1941,6 +1941,11 @@ def _apply_campaign_direct_minus(*args, **kwargs):
     return _create_set_minus_module()._apply_campaign_direct_minus(*args, **kwargs)
 
 
+def _ensure_named_minus_sets(*args, **kwargs):
+    """Именованные наборы минус-фраз слепка → библиотека минус-фраз аккаунта (идемпотентно)."""
+    return _create_set_minus_module().ensure_named_minus_sets_cached(*args, **kwargs)
+
+
 def _create_search_test_campaign(
     token: str,
     login: str,
@@ -3668,6 +3673,7 @@ def _create_set_orchestrator_deps() -> dict:
         "_create_text_via_token",   # DIRECT_API_FIRST: tp2/tp4 через баллы (token), фолбэк на cookie
         "_create_tp1_campaign", "_create_tp1_via_cookie", "_create_tp3_campaign", "_create_tp5_campaign",
         "_dedup_callouts", "_deferred_save", "_deferred_set_status", "_first_url_feed",
+        "_ensure_named_minus_sets",   # именованные наборы минус-фраз слепка → библиотека аккаунта
         "_account_offer_urls", "_feed_url_for_model",
         "_account_offer_prices", "_brand_ct_from_coder", "_creative_images_for_ct",
         "_get_or_create_minus_set", "_goal_vse_formy", "_grid_list_campaigns", "_ints", "_job_db_progress",

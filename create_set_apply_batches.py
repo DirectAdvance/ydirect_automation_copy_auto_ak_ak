@@ -69,6 +69,33 @@ def _is_rsya(name: str) -> bool:
     return m is not None and m.group("tp") == "1"
 
 
+def select_campaign_ids_by_tp(created: list[dict], tp_numbers) -> list[int]:
+    """id созданных кампаний, чьё ИМЯ несёт кодер ``tpN_(cpc|cpa)_(site|kviz)`` из *tp_numbers*.
+
+    *created* — вывод ``campaign_result.created_campaigns``: [{id, name, …}, …].
+    *tp_numbers* — iterable номеров tp (int или str), напр. ``(2, 3, 4, 5)``.
+
+    Нужен для аспектов, которые ставятся НЕ на все tp: библиотечные наборы минус-фраз идут
+    на tp2-tp5 и намеренно НЕ идут на tp1 (минус-фразы режут охват РСЯ — TP1_CAMPAIGN_MINUS_WRONG).
+    Имя без распознаваемого кодера в выборку не попадает.
+    """
+    wanted = {str(t).strip() for t in (tp_numbers or []) if str(t).strip()}
+    out: list[int] = []
+    for row in created or []:
+        if not isinstance(row, dict):
+            continue
+        m = _TP_SEARCH_RE.search(str(row.get("name") or ""))
+        if not m or m.group("tp") not in wanted:
+            continue
+        try:
+            cid = int(row.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if cid > 0 and cid not in out:
+            out.append(cid)
+    return out
+
+
 def _batch_with_item_fallback(
     grid: "gf.GridClient",
     login: str,

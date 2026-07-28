@@ -244,7 +244,9 @@ def _pack_rel_minus_sets(site_type: str, slepok: str) -> str:
     """Относительный путь файла ИМЕНОВАННЫХ наборов минус-слов внутри kontent_oktyabr.
     Уровень (слепок × тип сайта): {site_type}/_minus_sets/{slepok}.json.
     НЕ per-(tp,ct) (в отличие от keywords/callouts): наборы — свойство кабинета целиком.
-    Отдельно от {slepok}_minus_shared.txt (тот читает движок создания — не трогаем)."""
+    Файл отдельный от {slepok}_minus_shared.txt, но с 2026-07-28 движок создания читает ОБА:
+    create_set_minus._read_slepok_minus_sets заводит эти наборы в библиотеке минус-фраз аккаунта
+    (negativekeywordsharedsets) и привязывает их к кампаниям tp2-tp5 (решение Семёна)."""
     site_type = _safe_token(site_type, "site_type")
     slepok = _safe_token(slepok, "slepok")
     return posixpath.join(site_type, "_minus_sets", f"{slepok}.json")

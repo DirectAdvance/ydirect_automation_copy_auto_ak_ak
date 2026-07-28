@@ -150,6 +150,7 @@ def create_set_response(deps: dict):
     _deferred_save = deps['_deferred_save']
     _deferred_set_status = deps['_deferred_set_status']
     _first_url_feed = deps['_first_url_feed']
+    _ensure_named_minus_sets = deps.get('_ensure_named_minus_sets')   # наборы слепка → библиотека
     _get_or_create_minus_set = deps['_get_or_create_minus_set']
     _goal_vse_formy = deps['_goal_vse_formy']
     _grid_list_campaigns = deps['_grid_list_campaigns']
@@ -1668,6 +1669,74 @@ def create_set_response(deps: dict):
                     "[batch-aspects] login=%s exception: %s", login, str(_batch_ex)[:300]
                 )
         # ── конец batch-аспектов ─────────────────────────────────────────────────────────
+        # ── ИМЕНОВАННЫЕ НАБОРЫ МИНУС-ФРАЗ СЛЕПКА → библиотека аккаунта → tp2-tp5 ──────────
+        # Решение Семёна 2026-07-28: наборы из структуры слепка ({site_type}/_minus_sets/{slug}.json,
+        # редактор слепков) должны СОЗДАВАТЬСЯ в библиотеке минус-фраз аккаунта и ПРИВЯЗЫВАТЬСЯ к
+        # кампаниям tp2-tp5. tp1 намеренно НЕ в списке: минус-фразы режут охват РСЯ без пользы
+        # (то же правило, что у TP1_CAMPAIGN_MINUS_WRONG в ERRORS_JOURNAL).
+        # Блок НЕ под гейтом DIRECT_BATCH_ASPECTS (он off в проде) — это самостоятельный шаг.
+        # Идемпотентность: ensure_named_minus_sets_cached сперва читает negativekeywordsharedsets.get
+        # и переиспользует набор с тем же ИМЕНЕМ; apply_minus_sets_batch делает narrow-RMW merge
+        # libraryMinusKeywordsIds (уже привязанные наборы, в т.ч. инлайновый «Минуса общие»
+        # у shared_set-слепков, сохраняются). Повторный прогон дублей не создаёт.
+        try:
+            if callable(_ensure_named_minus_sets):
+                from .campaign_result import created_campaigns as _extract_created_ms
+                from .create_set_apply_batches import (
+                    apply_minus_sets_batch as _apply_ms_batch,
+                    select_campaign_ids_by_tp as _select_ms_ids,
+                )
+                from .create_set_minus import _MINUS_LIB_MAX_SETS_PER_CAMPAIGN as _MS_CAP
+                _ms_camp_ids = _select_ms_ids(_extract_created_ms(results), (2, 3, 4, 5))
+                if _ms_camp_ids:
+                    _ms = _ensure_named_minus_sets(
+                        _st_token, login, agent, eff_site, city=((ctx or {}).get("city") or ""))
+                    for _mse in (_ms.get("errors") or []):
+                        _add_job_err(_job, f"наборы минус-фраз: {_mse}")
+                    _ms_ids = list(_ms.get("ids") or [])
+                    _ms_report: dict = {
+                        "sets_in_structure": _ms.get("sets_in_structure", 0),
+                        "created": _ms.get("created") or [], "reused": _ms.get("reused") or [],
+                        "library_ids": _ms_ids, "campaigns": len(_ms_camp_ids),
+                        "errors": list(_ms.get("errors") or []),
+                    }
+                    if _ms_ids:
+                        _ms_att = _apply_ms_batch(login, _ms_camp_ids, _repair_deps(),
+                                                  minus_set_ids=_ms_ids,
+                                                  agency=(_w_agency or body.get("agency") or ""))
+                        # Директ разрешает привязать к ОДНОЙ кампании не более 3 наборов (офиц.
+                        # справка negative-keywords-library.md:41). Полный список мог не пройти —
+                        # тогда повторяем первыми _MS_CAP и ГРОМКО сообщаем, что не привязано.
+                        if not _ms_att.get("ok") and len(_ms_ids) > _MS_CAP:
+                            _ms_dropped = _ms_ids[_MS_CAP:]
+                            _ms_att = _apply_ms_batch(login, _ms_camp_ids, _repair_deps(),
+                                                      minus_set_ids=_ms_ids[:_MS_CAP],
+                                                      agency=(_w_agency or body.get("agency") or ""))
+                            _add_job_err(_job, (
+                                f"наборы минус-фраз: к кампаниям привязано {_MS_CAP} наборов из "
+                                f"{len(_ms_ids)} (лимит Директа — {_MS_CAP} набора на кампанию); "
+                                f"НЕ привязаны id {_ms_dropped} — они созданы в библиотеке аккаунта, "
+                                f"привязать вручную или объединить наборы в структуре слепка"))
+                            _ms_report["not_attached_ids"] = _ms_dropped
+                        _ms_report["attach"] = _ms_att
+                        if not _ms_att.get("ok"):
+                            _add_job_err(_job, "наборы минус-фраз: привязка к кампаниям tp2-tp5 не "
+                                               f"прошла — {str(_ms_att.get('error'))[:200]}")
+                    if _job is not None:
+                        _job["minus_sets"] = _ms_report
+                    import logging as _mslog
+                    _mslog.getLogger("direct.batches").info(
+                        "[minus-sets] login=%s slepok=%s site=%s sets=%s created=%s reused=%s "
+                        "campaigns=%s errors=%s",
+                        login, agent, eff_site, _ms_report["sets_in_structure"],
+                        len(_ms_report["created"]), len(_ms_report["reused"]),
+                        len(_ms_camp_ids), len(_ms_report["errors"]))
+        except Exception as _ms_ex:  # noqa: BLE001 — best-effort, набор не роняем
+            import logging as _mslog
+            _mslog.getLogger("direct.batches").error(
+                "[minus-sets] login=%s exception: %s", login, str(_ms_ex)[:300])
+            _add_job_err(_job, f"наборы минус-фраз: {str(_ms_ex)[:200]}")
+        # ── конец именованных наборов минус-фраз ─────────────────────────────────────────
         # Лимит баллов Директа (152): человекочитаемое предупреждение + сколько НЕ создано.
         units_note = None
         deferred_id = None
