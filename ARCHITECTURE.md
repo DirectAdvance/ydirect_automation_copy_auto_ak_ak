@@ -288,13 +288,20 @@ campaign_naming; `_TITLE_PROMO_IDX`/бренд-кэши→text_gen; `_CONTENT_CA
 Диспетчеризация по `it.type → _TYPE_TO_TP` в `create_set_orchestrator.py:409`.
 Полный per-tp чек-лист (настройки, галочки, контент) — §3 в `DOD.md`.
 
+> ⚠️ **«Создаётся через» — про КАМПАНИЮ-оболочку.** Для tp1/tp2/tp4/tp5 **группы и ключи идут через
+> Grid, а не через v5** (`AddUnifiedAdGroups` + `AddKeywords` тем же клиентом): только Grid ставит
+> `relevanceMatch` атомарно при создании, а смешанный транспорт (Grid-группы + v5 `keywords.add`)
+> даёт лаг репликации и ключи-фантомы. tp1 переведён на этот контур 2026-07-27 (`d44236d1`,
+> `00a6745f`) вместе с удалением пост-патча «Фаза 1.5»; tp2/tp4 — 2026-07-09, tp5 — 2026-07-08.
+> Детали и живые числа — `DOD.md` §1.2a.
+
 | tp | Внутр. имя диспетчера | Тип кампании | Создаётся через |
 |----|-----------------------|--------------|-----------------|
-| tp1 | `tp1_rsy` | РСЯ (Марки/Модели/Общее, КС + автотаргет) | v5 API |
-| tp2 | `search_test` | Поиск | v5 API |
+| tp1 | `tp1_rsy` | РСЯ (Марки/Модели/Общее, КС + автотаргет) | кампания — v501; **группы+ключи — Grid** |
+| tp2 | `search_test` | Поиск | кампания — v501; **группы+ключи — Grid** |
 | tp3 | `rsya_gallery` | Товарная галерея (legacy) — ЕПК канал Поиск ТОЛЬКО `placementTypes=["ADV_GALLERY"]`, ShoppingAd+ListingAd без TextAd, автотаргет `search_tp2`, fan-out по фидам как tp5/tp7. Редко используется. Подробно — §3.3 `DOD.md` | `create_set_feeds`/`feed_builders` |
-| tp4 | `search_dynamic` | Поиск + Динамика (`isOrganicSearchEnabled=True`) | v5 API |
-| tp5 | `search_gallery` | Поиск + Товарная галерея (TextAd+ListingAd+ShoppingAd, ЕПК) | v5 API + Grid-finalize |
+| tp4 | `search_dynamic` | Поиск + Динамика (`isOrganicSearchEnabled=True`) | кампания — v501; **группы+ключи — Grid** |
+| tp5 | `search_gallery` | Поиск + Товарная галерея (TextAd+ListingAd+ShoppingAd, ЕПК) | кампания — v501; **группы+ключи — Grid** + Grid-finalize |
 | tp6 | UAC (отд. ветка) | Мастер кампаний (МК). Имя = `{базовое имя} - {метка}`, метка ∈ `автотаргетинг / КС / аудитории / КС+аудитории` (без CPC/CPA). Кодер позиции: `{ct}_aon_n000_r0000_ct001_ag011_g00`. UI-бейдж вид таргетинга. | Grid/UAC (`create_set_master_product.py`) |
 | tp7 | UAC (отд. ветка) | Товарные кампании (ТК), ShoppingAd/ListingAd по фиду. Имя = `{базовое имя} - {метка}`. Кодер позиции: `{ct}_aon_n000_r0000_ct010_ag001_g00`. | Grid/UAC (`create_set_master_product.py`) |
 | tp8 | `post_tp8` | Посевы Telegram, Grid `GdPostCampaign`/`GdPostAdGroup`/`GdPostAd`; один CPC-вариант, группы из `direct/slepki/posevy.json` | Grid (`create_set_tp8_10.py`) |

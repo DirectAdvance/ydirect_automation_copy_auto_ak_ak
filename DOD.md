@@ -26,8 +26,8 @@
 | # | Критерий (DoD) | Код при нарушении | Как проверить | Как добить | Статус |
 |---|---|---|---|---|---|
 | 1.1 | Набор создан без ошибок | `summary.errors=0` | `live_verification.summary.errors` | зависит от кода ниже | ⬜ |
-| 1.2 | Автотаргет поиска = ТОЛЬКО `EXACT_V2_MARK` + `WITHOUT_BRAND` (не «все галочки») — **касается tp2, tp4, tp5** (tp1 — РСЯ, автотаргет не трогаем; tp3 — Search/товарная галерея `ADV_GALLERY` (НЕ РСЯ), автотаргет как `search_tp2` — см. §3.3; tp6/tp7 — UAC, поддерживают `targeting_mode`: `keywords` / `audience` / `autotarget`-fallback) | `WRONG_AUTOTARGET` | Grid `groups_for_edit` → `relevanceMatch` | **АТОМАРНО при создании групп** (Grid `AddUnifiedAdGroups` profile=`search_tp2`): tp5 v3 (2026-07-08), token-путь **tp2/tp4** — 2026-07-09 (был хрупкий пост-патч `_grid_set_search_autotarget` по edit-view → упразднён); cookie-путь tp2/tp4 — `create_full`. Пост-патч по `groups_for_edit` больше НЕ используется | 🟡 |
-| 1.2a | **`relevanceMatch.isActive` группы = `("_aon_" in имя_группы)`** для **всех tp, включая tp1 РСЯ**. Дефект: кодер `aon` + `isActive=False` ИЛИ кодер `aoff` + `isActive=True`. Инцидент 2026-07-27 (`porg-pl6iavd5`): группа `ct0146_aon_...` (Jetour X50, кампания 713080285) — `isActive=False`; группа `ct0301_aoff_...` (Tenet T4, 713080436) — `isActive=True`; причина: `isActive` не выставлялся из флага кодера, побеждал дефолт Яндекса. ⚠️ Существующий `WRONG_AUTOTARGET` (`grid_content_verifier.py:104-108`) охватывает только tp2/tp4/tp5 и проверяет КАТЕГОРИИ (`EXACT_V2_MARK`/`WITHOUT_BRAND`) — этот критерий его дополняет и явно распространяется на **tp1 РСЯ**, где именно поэтому дефект был невидим. | — (нет авто-детектора; проверка ручная) | Grid `GroupsForEdit` → `relevanceMatch.isActive` (`grid_read.py:335`) | ⬜ нет авто-фиксера; корень — передача `isActive` из флага кодера при `AddUnifiedAdGroups` | ⬜ |
+| 1.2 | Автотаргет поиска = ТОЛЬКО `EXACT_V2_MARK` + `WITHOUT_BRAND` (не «все галочки») — **касается tp2, tp4, tp5** (tp1 — РСЯ, КАТЕГОРИИ не проверяем: автотаргет сетей намеренно широкий, но `isActive` обязателен — см. 1.2a; tp3 — Search/товарная галерея `ADV_GALLERY` (НЕ РСЯ), автотаргет как `search_tp2` — см. §3.3; tp6/tp7 — UAC, поддерживают `targeting_mode`: `keywords` / `audience` / `autotarget`-fallback) | `WRONG_AUTOTARGET` | Grid `groups_for_edit` → `relevanceMatch` | **АТОМАРНО при создании групп** (Grid `AddUnifiedAdGroups` profile=`search_tp2`): tp5 v3 (2026-07-08), token-путь **tp2/tp4** — 2026-07-09 (был хрупкий пост-патч `_grid_set_search_autotarget` по edit-view → упразднён); cookie-путь tp2/tp4 — `create_full`; **tp1 — 2026-07-27** (`d44236d1`, см. 1.2a). Пост-патч по `groups_for_edit` больше НЕ используется. ⚠️ **tp5: профиль `search_tp2` ставится ВСЕГДА**, независимо от планового autotarget-флага — в поисковой кампании Директа автотаргет выключить НЕЛЬЗЯ (доменный факт Семёна 2026-07-27, `create_set_tp1_builders.py:324-328`) | 🟡 |
+| 1.2a | **`relevanceMatch.isActive` группы = `("_aon_" in имя_группы)`** — для tp1 РСЯ, tp2, tp4 (tp3 — по профилю `search_tp2`). ⚠️ **ИСКЛЮЧЕНИЕ tp5: `isActive=True` ВСЕГДА**, в т.ч. у групп планового `aoff` — это НОРМА, а не дефект (автотаргет на поиске не выключается; `_aon_` в имени tp5-группы корректен всегда, «чинить» его нельзя — `create_set_tp1_builders.py:87-95` не трогать). Дефект (tp1/tp2/tp4): кодер `aon` + `isActive=False` ИЛИ кодер `aoff` + `isActive=True`. **Корень и фикс (2026-07-27, `d44236d1`+`00a6745f`):** tp1-группы создавались v501 `adgroups.add`, который `relevanceMatch` не умеет → побеждал дефолт Яндекса; пост-фактум Grid `UpdateUnifiedAdGroups` («Фаза 1.5») оказался **доказанным no-op** — кампаниям `713089308` и `713089104` послали ПРОТИВОПОЛОЖНЫЕ `isActive`, живая картина вышла идентичной (84 ON / 29 SUSPENDED в обеих). Фаза 1.5 УДАЛЕНА; tp1-группы (включая «все фиды» Фазы 4a) создаются атомарным Grid `AddUnifiedAdGroups` с `relevanceMatch.isActive` при создании — как tp2/tp4/tp5. Ключи tp1 переведены на Grid `AddKeywords` тем же клиентом: смешанный транспорт (Grid-группы + v5 `keywords.add`) даёт ключи-фантомы (`DMP_TP2_KEYWORDS_LOST_MIXED_TRANSPORT`). | `WRONG_AUTOTARGET` (**авто-детектор ЕСТЬ** с 2026-07-27: `grid_read` считает `wrong_autotarget_rsya_groups`, `grid_content_verifier.py:115-124` поднимает error по tp1) | Grid `GroupsForEdit` → `relevanceMatch.isActive` (`grid_read.py:335`) | корень закрыт при создании; in-place ремонт — `keywords_repair` (`repair_planner.py:162`) | ✅ (было 600 дефектных групп из 1325 и 14 РК из 24 → стало **0 из 1325 групп / 0 из 24 кампаний** на контрольных прогонах `fbb63cc8f962`, `3f56db987ab9`, `96f76846fc68`; боевой прогон 4 аккаунтов 2026-07-28 — `wrong_autotarget_groups=0`, 0 дефектных из 12/10/10/10 РК) |
 | 1.3 | Все поисковые группы С ключами | `NO_KEYWORDS_LIVE` | Grid: `keyword_count` группы | keyword_repair (докрутка); корень — Phase 2 при создании | ⬜ |
 | 1.4 | Глоб. минус-слова («отзывы») на уровне КАМПАНИИ (tp2/tp4/tp5) | `GLOBAL_MINUS_CAMPAIGN_MISSING` | Grid unified-payload → `minusKeywords`+`libraryMinusKeywordsIds` | `_enabled_minus_words` в deps (create) + **пост-аудит** `_audit_global_minus_campaign` → `fix_global_minus_campaign` (Grid `set_campaign_minus_keywords`, in-place, D6 2026-07-09) | ✅ |
 | 1.5 | Каталог tp7 (ct0000) подхватывает страницы (не 0) | — (визуально в кабинете) | UI «Страницы каталога» / фид | `it_lff=[]` для ct0000 (сделано) | ✅ |
@@ -39,6 +39,14 @@
 | 1.10 | **URL объявления → ПРАВИЛЬНАЯ модель группы** (не чужая модель марки, не `/quiz`, не неточная формульная). Ссылка группы «Марки» должна вести на страницу марки (`/auto/haval`), ссылка группы «Модели» (напр. ct0042 «Changan UNI-T») должна вести на url ЭТОЙ модели из фида (`/auto/changan/uni-t/i/suv-5d`), НЕ на первый оффер бренда (cs55) и НЕ на формульную без хвоста. Товарный сниппет (модель/город) — следствие правильности url. | `MODEL_URL_BRAND_FALLBACK_WRONG_MODEL` / `MODEL_GROUP_HREF_QUIZ` (авто-детектора пока НЕТ — визуально в кабинете / сверка href vs mark+folder группы) | Ссылка объявления в кабинете vs `mark_id`+`folder_id` оффера фида | **Root-cause:** `_grid_feed_offer_urls` (FeedOffersPreview = sample, не все офферы) → модель вне выборки не находит точный ключ → brand-fallback на чужую модель. **Вариант A (задеплоен 2026-07-13):** `no_brand_fallback` для сегмента «Модели» в `_feed_url_for_model` (`create_set_feeds.py:335`) → нет точного ключа → формульный `_model_page_href` (верная модель, БЕЗ хвоста `/i/suv-5d`). **Вариант B (raw XML, `_auto_feed_urls` доливка в `_account_offer_urls`, ЗАДЕПЛОЕН 2026-07-13):** точный url модели из ПОЛНОГО raw XML фида (`home/yandex.xml`) по ключу `mark_id`+`folder_id`, доливается в `_account_offer_urls` через `setdefault`. **2026-07-27:** `/quiz` запрещён для всех generated Direct объявлений и кнопок; sanitizer заменяет `/quiz` на корень сайта до link-check и перед `_combo_button`. | 🟡 (A+B задеплоены; `/quiz`-регрессии закрыты кодом; live readback после ремонта обязателен) |
 | 1.11 | **БУ-сайты (`site_type='С пробегом'`) НЕ получают глобальные минус-фильтры фида по маркам/моделям**. Глобальные minus marks/models в feedFilter допустимы для новых авто, но для БУ-аккаунтов режут валидный used-car ассортимент. Позитивные фильтры конкретной марки/модели остаются. | `AUTO_USED_FEED_TP1_TP7_404_CONTENT_GUARDS` | Grid/UAC feed filters: для `С пробегом` нет `NOT_CONTAINS*` по global marks/models; бренд/модельные группы имеют only-positive фильтр | `create_set_tp1_builders._apply_global_feed_minus_for_site`; `GridClient.add_shopping_ads(apply_global_minus=False)`; `tp7` positive-only | 🟡 (код+тесты+деплой OK; live create/readback не проверено) |
 | 1.12 | **Односегментная 404-посадка (`/auto`, `/catalog`) fallback'ится на корень домена**, а не остаётся 404. Таймаут/5xx/сетевая ошибка по-прежнему fail-open возвращают исходный URL. | — | `resolve_or_fallback_url('https://bucars-kuban.site/auto')` | `link_check._parent_path`: `/auto` → origin | ✅ (real smoke: `/auto` → root 200) |
+| 1.13 | **Корневая ссылка — дефект ТОЛЬКО у групп сегментов «Марки»/«Модели».** Для сегмента **«Общее»** (не-брендовые `ct`: «Автокредит», «Автосалон», «Рассрочка», «Авито», «Дром», «Трейд-ин»…) href = **корень сайта — ЭТО ШТАТНО, а не дефект**. Механика: `_valid_pack_brand_name` отвергает не-марку → `real_brand=''` → `_pack_group_href` (`create_set_text_builders.py:56-58`) возвращает `site_href.rstrip('/')`; формульный deep-link по теме звать НЕЛЬЗЯ — он воскрешает `BUTTON_404_GENERIC_AVTO` (`/auto/avto`) на сотнях item'ов. Проверено `curl` (2026-07-28, `bucars-kuban.site`): корень `200`, `/catalog/avtokredit` и `/rassrochka` — **404**, страниц под эти темы на сайтах нет. Решение Семёна: оставить как есть, на раздел не переводить. | `ROOT_HREF` — только при `сегмент ∈ {Марки, Модели}` | детект обязан делить по СЕГМЕНТУ: суммарный `ROOT_HREF` без разбивки диагностически бесполезен (детекторы живут на LXC101 `/tmp/_detect_root_href.py`, `/tmp/_href2.py`, `/tmp/_detect_root_href_v2.py` — в репо их нет) | — (ложная тревога чинить не надо) | ✅ норма зафиксирована 2026-07-28 |
+
+> **⚠️ `WRONG_AUTOTARGET` внутри джобы (`live_verification`) — НЕ приговор** (боевой прогон 2026-07-28).
+> Grid между созданием групп и in-job проверкой отдаёт реплику с лагом: `porg-xjxpfxby` дал
+> `errors=12`, `porg-rgwzgo57` — `errors=6`, а живой перезамер ТЕМ ЖЕ ридером
+> (`GridReadClient.campaign_content_counts`) **после** отложенной добивки дал
+> `wrong_autotarget_groups=0` на всех 4 аккаунтах; у `rgwzgo57` репейр отчитался «исполнено 0» —
+> дефект снялся сам. **Мерить автотаргет надо ПОСЛЕ delayed repair**, а не по джобе.
 
 ### 1.c DoD «Структура слепков → Создание РК 1:1» (задача 7, согласовано 2026-07-15)
 
@@ -133,7 +141,7 @@
 | `NO_ADS_LIVE` | error | 0 объявлений | grid_content_verifier.py:65 | ✅ create-cookie underfilled guard: `ads=0`/`rep.errors` удаляют partial DRAFT и не дают `ok:true` |
 | `ADGROUP_NAME_MISSING` | error | у группы нет имени | grid_content_verifier.py:70 | 🟡 |
 | `NO_KEYWORDS_LIVE` | error | поисковая группа без ключей | grid_content_verifier.py:84,97 | ✅ для новых tp2/tp4: `only_gks` прокинут в packer, search-группы без ключей пропускаются, ключи дедупятся между группами; repair остаётся для старых РК |
-| `WRONG_AUTOTARGET` | error | автотаргет ≠ EXACT_V2_MARK+WITHOUT_BRAND | grid_content_verifier.py:89 | 🟡 (keyword_repair/пересоздание) |
+| `WRONG_AUTOTARGET` | error | **две разные проверки под одним кодом:** tp2/4/5 — профиль ≠ `EXACT_V2_MARK`+`WITHOUT_BRAND` (`counts.wrong_autotarget_groups`); **tp1 РСЯ** — `relevanceMatch.isActive` ≠ флагу кодера `_aon_`/`_aoff_` (`counts.wrong_autotarget_rsya_groups`, с 2026-07-27). tp5 `aoff` с `isActive=True` — НЕ дефект (§1.2a) | grid_content_verifier.py:109 (tp2/4/5) и :120 (tp1) | 🟡 (keyword_repair; корень закрыт атомарным созданием. ⚠️ in-job срабатывание может быть лагом реплики Grid — перемерять ПОСЛЕ delayed repair) |
 | `DYNAMIC_PLACES_ON` | warn | динамич. места включены там, где нельзя (tp2) | grid_content_verifier.py:104 | 🟡 |
 | `MINUS_PLACES_MISSING` | warn | нет минус-площадок (tp1 РСЯ) | grid_content_verifier.py:122 | 🟡 |
 | `CALLOUTS_MISSING_LIVE` | warn | **tp1–tp5: у кампании не привязаны уточнения** (`inheritableCallouts.assetValue` пуст). Гейт: только tp1–tp5 — **tp6/tp7 (МК/Товарка, UAC) уточнения не поддерживают** и НЕ флагаются | grid_content_verifier.py:148 | ⬜ (report-only) |
@@ -179,11 +187,14 @@
 > на лимит помечается `keywords_truncated=True`, и по КЛЮЧЕВОМУ измерению такая кампания **не судится
 > вовсе** (ни `NO_KEYWORDS_LIVE`, ни `BUILD_LIVE_*`) — иначе недосчёт дал бы гарантированный ложный
 > «live < build» и ложный ремонт.
-> **⚠️ tp1/tp3 zero-kw:** группа в режиме «полный автотаргет» создаётся БЕЗ реальных ключей
-> (спецключ `---autotargeting` оседает как `relevanceMatch`, а не как `GdKeyword`,
-> `create_set_tp1_builders.py:297-304`). Поэтому для tp1/tp3 активный `relevanceMatch` ГАСИТ zero-kw
-> (по дизайну), а `WRONG_AUTOTARGET` для tp1 не выдаётся вовсе — у РСЯ автотаргет намеренно широкий.
-> Семантика tp2/4/5 не изменена (регресс проверен).
+> **⚠️ tp1/tp3 zero-kw:** группа в режиме «полный автотаргет» создаётся БЕЗ реальных ключей —
+> таргетинг живёт в `relevanceMatch`, а не в `GdKeyword` (псевдоключ `---autotargeting` больше
+> НЕ шлётся вовсе, `create_set_tp1_builders.py:366-371`). Поэтому для tp1/tp3 активный
+> `relevanceMatch` ГАСИТ zero-kw (по дизайну).
+> **⚠️ Устарело:** «`WRONG_AUTOTARGET` для tp1 не выдаётся вовсе» — с 2026-07-27 выдаётся:
+> по КАТЕГОРИЯМ tp1 действительно не судится (у РСЯ автотаргет намеренно широкий), но по
+> `isActive` vs `_aon_`/`_aoff_` — судится (`counts.wrong_autotarget_rsya_groups` →
+> `grid_content_verifier.py:115-124`, severity `error`). Семантика tp2/4/5 не изменена.
 
 > **Кампанийные АССЕТЫ (`CALLOUTS_MISSING_LIVE` / `SITELINK_SET_MISSING_LIVE` / `PROMO_MISSING`),
 > 2026-07-18 — 0 новых обращений к API.** Источник — тот же ответ `CampaignsEditData`, которым уже
@@ -227,7 +238,8 @@
 | `UAC_TEXTS_MISSING` | error | текстов <3 | uac_verifier.py:124 |
 | `UAC_SITELINKS_MISSING` | warn | быстрых ссылок <8 | uac_verifier.py:128 |
 | `UAC_MEDIA_MISSING` | warn | нет медиа (картинки/видео) | uac_verifier.py:132 |
-| `UAC_IMAGES_LOW` | error | **в пуле своего `ct` есть ≥5 картинок, а в кампанию попало меньше** — картинки теряются по дороге. Ровно **одна** попытка пересоздания с удалением; если после неё снова меньше — кампанию ОСТАВЛЯЕМ и пишем ошибку (второй попытки не бывает: `repair_auto.auto_recreate_request` не планирует recreate для джобы с `_repair_parent_job_id`). Добор из `ct0000`/другого `ct` запрещён. Пул не прокинут (старые джобы) → прежнее строгое поведение. | uac_read.py + uac_verifier.py |
+| `CONTENT_GAP_NO_CREATIVE` | **блок создания** | tp6/tp7 **не создаём ТОЛЬКО в вырожденном случае: 0 картинок И 0 видео** для своего `ct` (порог env `DIRECT_UAC_IMAGES_CREATE_MIN`, дефолт `1`; `0` снимает блок совсем). Единственная оставшаяся preflight-блокировка по креативам — прежняя `CONTENT_GAP_IMAGES_LOW` (`пул < 5` → не создавать) **УДАЛЕНА 2026-07-27** как основанная на неверном прочтении потолка Яндекса за минимум. | create_set_master_product.py:957-976 |
+| `UAC_IMAGES_LOW` | error | **в пуле своего `ct` есть ≥5 картинок (порог `DIRECT_UAC_IMAGES_MIN`, дефолт 5), а в кампанию попало меньше** — картинки теряются по дороге. Ровно **одна** попытка пересоздания с удалением; если после неё снова меньше — кампанию ОСТАВЛЯЕМ и пишем ошибку (второй попытки не бывает: `repair_auto.auto_recreate_request` не планирует recreate для джобы с `_repair_parent_job_id`). Добор из `ct0000`/другого `ct` запрещён. Пул не прокинут (старые джобы) → прежнее строгое поведение. | uac_read.py + uac_verifier.py |
 | `UAC_IMAGES_POOL_SHORT` | warn | **в пуле своего `ct` физически меньше 5 картинок и мы взяли всё, что есть** — это НЕ ошибка (решение Семёна 2026-07-27: «мне нужна кампания даже с 4 изображениями, это лучше чем вообще её не будет»). Кампания создаётся с тем, что есть; удалять/пересоздавать НЕЛЬЗЯ — код намеренно отсутствует в `repair_planner._RECREATE_CODES` и `repair_gate._UAC_REPLACE_CODES`. Чинится только добавлением картинок в `Manual/<ct>/`. | uac_verifier.py |
 | `UAC_VIDEO_MISSING` | low | видео-марка (BAIC/Belgee/Haval/Москвич) с картинками, но БЕЗ видео при непустом пуле (D3-UAC 2026-07-09) | `campaign_spec_audit._audit_uac_video_missing` |
 | `UAC_FEED_MISSING` | error | tp7 без фида | uac_verifier.py:135 |
@@ -368,7 +380,11 @@ ct (не upload-fail) ставит терминальный `image_no_pool` (а�
 - **P1 (остаётся):** #2 UTM-на-группах (`TrackingParams`) — не покрыт (группо-уровень, риск ложных
   детектов). `IMAGES_FORBIDDEN` ⛔ ОТМЕНЁН 2026-07-19 (см. §1.b-off), раньше — только repair_plan; live-fix
   `WRONG_AUTOTARGET`/`NO_KEYWORDS_LIVE` через `UpdateUnifiedAdGroups` хрупок (edit-view lag) —
-  эскалировать на recreate / подтверждать showConditions.
+  эскалировать на recreate / подтверждать showConditions. **2026-07-27 диагноз уточнён:** для СВЕЖИХ
+  групп это не «хрупко», а **доказанный no-op** (см. §1.2a) — как средство ПЕРВИЧНОЙ установки
+  автотаргета пост-фактум `UpdateUnifiedAdGroups` применять нельзя вовсе; автотаргет ставится
+  атомарно при создании группы. In-place ремонт по УЖЕ отреплицировавшимся группам
+  (`keywords_repair`) остаётся легальным.
 
 **Вердикт:** петля «создано→не по DoD→добивается» — ядро + кампанийные галочки tp1–tp5 (P0) добиваются
 авто (P0 закрыт кодом 2026-07-09, ждёт живого прогона). Остаток P1: UTM-на-группах, минус-на-кампании,
@@ -658,7 +674,17 @@ Live-код `EMPTY_DEFAULT_TEXT_LIVE` (§1.b.3) чинит пустой; нед�
 
 ### Глобальные инварианты — куда падают (API-поля, для справки)
 
-Источник — `CAMPAIGN_INVARIANTS.md`. Гейт: `blueprint.py::api_create_set` (нет счётчика/цели → `400`).
+Источник — `CAMPAIGN_INVARIANTS.md`. **Гейт метрики стоит на ШАГЕ ПЛАНА** (2026-07-27): `/set_plan`
+зовёт ту же `create_set_metrika.prepare_metrika` и отдаёт `metrika_alert {needed,error,counter_id,
+goal_id,metrika_note}` (`create_set_plan.py:375 _metrika_alert_for`, ответ остаётся `200`); запуск
+джобы отбивается по этому алерту в `routes_jobs.py:161-172` **до** `job_new` — осиротевшей задачи в
+очереди не будет. Это покрывает и **API-путь мимо формы**: фронтовые гарды
+(`static/direct/automation_create.js`) срабатывают только на клик в UI, а реальный инцидент
+(`METRIKA_GOAL_MISSING_VIA_API_PATH`, джоба `7fc7af30fff1`) был именно программным запуском.
+Нижняя страховка `prepare_metrika` в оркестраторе создания остаётся. Оба легальных исключения
+сохранены: `via_cookie+no_cpa` → `needed=False`+note; счётчик без цели → доподтягивание
+`goal_vse_formy`. Сбой Метрики/БД или непроведённые коллбэки → `needed=False` (план не блокируем),
+причём непроведённые коллбэки пишут ВИДИМЫЙ WARNING `direct.plan` (раз на процесс).
 Чек-лист этих правил — ниже в 3.0; здесь — реальные имена полей API (v5/v501/Grid vs UAC).
 
 | Глоб. правило | Значение | tp1–tp5 (v5/v501/Grid) | tp6/tp7 (UAC) |
@@ -680,7 +706,11 @@ Live-код `EMPTY_DEFAULT_TEXT_LIVE` (§1.b.3) чинит пустой; нед�
       снята → пара `cpc`+`cpa`; активна (`no_cpa`) → остаётся ТОЛЬКО одна кампания (`cpc`).
       Create-runtime должен принимать оба ключа (`no_cpa` и UI/plan alias `n`); иначе plan может
       показать 0 CPA, а builder tp1/tp5 создаст скрытые CPA-пары.
-- [ ] #1 Метрика + `goal_id` (гейт `api_create_set`: нет счётчика/цели → `400`).
+- [ ] #1 Метрика + `goal_id` — проверяется **на шаге плана**: `/set_plan` → `metrika_alert.needed`,
+      гейт очереди `routes_jobs.py:161-172` отбивает `create_set_async` с `400` ДО `job_new`
+      (см. врезку выше). Детект-запрос без живого создания: `POST /direct/api/set_plan` без `goal_id`
+      → `metrika_alert.needed == true`; тот же `metrika_alert` в `create_set_async` → `400` и **ноль**
+      новых строк в `direct_automation_jobs`.
 - [ ] #2 UTM-метка: **tp1–tp5** на ГРУППАХ (`TrackingParams`), **tp6/tp7** на КАМПАНИИ (`tracking_params`).
 - [ ] #3 Персонализация (адаптивные тексты) **ВЫКЛ**.
 - [ ] #4 Мониторинг сайта **ВКЛ** (tp1–tp5; у UAC тумблера нет).
@@ -697,7 +727,7 @@ Live-код `EMPTY_DEFAULT_TEXT_LIVE` (§1.b.3) чинит пустой; нед�
     (`create_set_context.py:_account_ctx`, дефолт `225`=Россия; таргет — область, не город). `r`-код
     кодера — из `_resolve_region(city)`. Для tp6/tp7 (UAC) заполненность регионов проверяет
     `UAC_REGION_MISSING` (`uac_verifier.py:102`, `detail.regions≤0`).
-- [ ] **Пост-настройка провалена → позиция `failed`, не `ok`.** Если после создания кампании провалился любой шаг (финализация, обновление `relevanceMatch.isActive`, привязка бюджета/мест/ассетов, применение промо/уточнений) — позиция обязана получить `failed`, а НЕ `ok`. Три известных дыры (2026-07-27): (1) `create_set_finalize.py:222` — `UpdateCampaigns` шлётся голым `_post` без ретрая транзиентов (у РСЯ-близнеца стоит `post_idempotent`); сбой → tp2/tp4 остаётся без бюджета/мест/ассетов, позиция рапортует `ok`; инцидент 712885317. (2) `create_set_tp1_builders.py:398-403` — провал «Фазы 1.5» (установка `relevanceMatch.isActive`) пишется в `rep["errors"]`, вызывающий код на `:1471` проверяет `rep["error"]` → кампания уходит `ok` с неверным автотаргетингом. (3) `repair_auto.py:617-624` — сбой удаления UAC-черновика ставит `queued:False` всему recreate-пакету, исправные позиции не добиваются.
+- [ ] **Пост-настройка провалена → позиция `failed`, не `ok`.** Если после создания кампании провалился любой шаг (финализация, обновление `relevanceMatch.isActive`, привязка бюджета/мест/ассетов, применение промо/уточнений) — позиция обязана получить `failed`, а НЕ `ok`. Известные дыры (2026-07-27): (1) `create_set_finalize.py:222` — `UpdateCampaigns` шлётся голым `_post` без ретрая транзиентов (у РСЯ-близнеца стоит `post_idempotent`); сбой → tp2/tp4 остаётся без бюджета/мест/ассетов, позиция рапортует `ok`; инцидент 712885317. (2) ~~провал «Фазы 1.5» (пост-фактум установка `relevanceMatch.isActive`) уходит в `rep["errors"]`, а вызывающий смотрит `rep["error"]`~~ — **снято 2026-07-27**: Фаза 1.5 удалена целиком, `relevanceMatch` ставится атомарно при создании группы, а падение Grid `AddUnifiedAdGroups` возвращает `rep` без `adgroups` → вызывающий зовёт `_cleanup_partial` и сносит черновик (`ok=True` с неверным автотаргетом невозможен, `create_set_tp1_builders.py:356-360`). (3) `repair_auto.py:617-624` — сбой удаления UAC-черновика ставит `queued:False` всему recreate-пакету, исправные позиции не добиваются.
 
 ### 3.1 tp1 — РСЯ (текстовые объявления в сетях)
 
@@ -705,7 +735,18 @@ Live-код `EMPTY_DEFAULT_TEXT_LIVE` (§1.b.3) чинит пустой; нед�
 - [ ] Канал = **РСЯ**: `Network` ВКЛ, `Search` OFF (`_PLATFORMS_RSYA`, `_finalize_rsya`).
 - [ ] Стратегия: `cpc` → **AVERAGE_CPA**, `cpa` → **PAY_FOR_CONVERSION** (GoalId + WeeklySpendLimit, микро-₽).
 - [ ] Минус-площадки = **голый ХОСТ** (`_place_host` → `disabledPlaces`), из вкладки минус-площадок.
-- [ ] Ключи / автотаргет группы — **не трогаем** (РСЯ, без `relevanceMatch`).
+- [ ] **Автотаргет группы — ставим явно** (с 2026-07-27 `d44236d1`; прежняя формулировка «не трогаем,
+      РСЯ без `relevanceMatch`» БОЛЬШЕ НЕ ВЕРНА). `relevanceMatch.isActive = bool(autotarget)` из флага
+      кодера (`_aon_`/`_aoff_`) выставляется **атомарно при создании группы** через Grid
+      `AddUnifiedAdGroups` (`gc.build_adgroup`, дефолтная ветка: при `autotarget=True` — все 5 категорий
+      + 3 бренда, при `False` — `isActive=False` с пустыми списками). Пост-патч `UpdateUnifiedAdGroups`
+      по свежим группам — доказанный no-op, применять нельзя (см. 1.2a).
+- [ ] **Ключи tp1 — Grid `AddKeywords` тем же клиентом**, что создавал группы (Фаза 2,
+      `create_set_tp1_builders.py:362-379`), НЕ v5 `keywords.add`: смешанный транспорт даёт лаг
+      репликации Grid→v5 и ключи-фантомы (LIVE=0). Псевдоключ `---autotargeting` не шлём — автотаргет
+      живёт в `relevanceMatch`. Режимы: `aon` без `keep_keywords` → ключей нет (таргетинг =
+      `relevanceMatch`); `aoff` → реальные ключи; `aon + keep_keywords` → «КС + Автотаргетинг».
+      Группа «все фиды» (Фаза 4a, `Товарная галерея · <фид>`) идёт ТЕМ ЖЕ Grid-транспортом.
 
 **Контент загружен:**
 - [ ] **7 заголовков** + тексты (`_RA_TITLES_CAP=7`, `_fill_titles(n=7)`).
@@ -810,6 +851,13 @@ Live-код `EMPTY_DEFAULT_TEXT_LIVE` (§1.b.3) чинит пустой; нед�
       2026-07-09 — tp5 снова комбинированный, это финал).
 - [ ] Автотаргет группы = **`aon`** ВСЕГДА для tp5 (независимо от autotarget-флага бренд-группы) —
       ключи/relevanceMatch ставятся отдельно (`create_set_tp1_builders.py:47-51`).
+      ⛔ **Это НЕ баг и «чинить» его нельзя** (решение Семёна 2026-07-27): в поисковой кампании
+      Директа автотаргет выключить невозможно в принципе, поэтому `_aon_` в имени tp5-группы
+      корректен ВСЕГДА, а живое `relevanceMatch.isActive=True` у группы планового `aoff` — норма.
+      Плановый autotarget-флаг у tp5 значит лишь «бренд-ключи вместо чистого автотаргетинга» и
+      управляет только Фазой 2 (ключи); профиль `search_tp2` (`EXACT_V2_MARK`+`WITHOUT_BRAND`)
+      применяется безусловно. Прежнее `search_tp2 if autotarget` давало дефолтные категории и было
+      источником 4 живых `WRONG_AUTOTARGET` на tp5 `aoff`.
 - [ ] **7 заголовков** + тексты — как tp1 (TextAd снова есть).
 - [ ] Ключи в группах (84–149/группа), одна группа **на бренд** + фильтр по коллекции (per-бренд `feed_models`).
 - [ ] Быстрые ссылки — на объявлении; уточнения — через **наследуемые Grid-callouts**
@@ -1047,7 +1095,9 @@ Live 2026-07-22 (3 завершённых job): `porg-pl6iavd5` `5662588a0358` =
 
 | # | Критерий | Статус |
 |---|---|---|
-| 4.1 | Время создания приемлемое (НЕ 1+ час на 14 РК) | 🟡 (замер 59581fdd9f9d 2026-07-10: **41 мин** создание 14 РК + ~час хвост добивки [починен, см. 4.2]. Инфра уже оптимизирована: батч add, parallel-заливка картинок [воркеры 8→10 `DIRECT_IMG_UPLOAD_WORKERS`], units-probe раз-на-набор. **Главный оставшийся рычаг = LLM-генерация контента per-РК**) |
+| 4.1 | Время создания приемлемое (НЕ 1+ час на 14 РК) | 🟡 (замер 59581fdd9f9d 2026-07-10: **41 мин** создание 14 РК + ~час хвост добивки [починен, см. 4.2]. Инфра уже оптимизирована: батч add, parallel-заливка картинок [воркеры 8→10 `DIRECT_IMG_UPLOAD_WORKERS`], units-probe раз-на-набор. **2026-07-27:** полный набор 26 items — **1939 с против базы 2677 с** (`3f56db987ab9` vs `69a140093e78`, −27.6 %); главный вклад дал реюз наборов быстрых ссылок по содержимому + батч (`75d64c0a`): `v501:sitelinks.add` **774 вызова / 444 с → 6 вызовов / 4.6 с**. **Главный оставшийся рычаг = LLM-генерация контента per-РК**) |
+| 4.5 | **Наблюдаемость: пер-item пер-стадийные тайминги** — по любому прогону можно построить профиль wall-clock без инструментирования на ходу | ✅ (`stage_timing.py`, коммит `d666f3ba`) — см. врезку ниже |
+| 4.6 | **Разбивка `has_issues` пишется на ВСЕХ терминальных статусах**, а не только на `done` | ✅ (`dc564106`; подтверждено на `3f56db987ab9` со `status=error`: `lv_errors=0`, `ver_errors=1`) — см. врезку ниже |
 | 4.2 | Набор ДОЖИМАЕТСЯ — не зависает / не прерывается | 🟡 (R2-6 2026-07-10: «добивка держит родителя `running` ~час» ПОЧИНЕНА — dcr content_repair больше не absorb'ится в родителя, флаг `DIRECT_DCR_DETACH_PARENT`=ON: карточка → `done` сразу после создания+аудита, content_repair крутится демоном асинхронно. Реальные докрутки [recreate/UAC/finalize] не тронуты. Live не проверено) |
 | 4.3 | Write-gate: **параллельность между агентствами**, сериализация только ВНУТРИ одного | ✅ (коммиты `c2c8b01` / `064b1d6` 2026-07-21) |
 | 4.4 | Карточка job показывает время **текущего исполнения аккаунта**, а не общее ожидание в очереди | ✅ (2026-07-23: `started_at` сохраняется в `direct_automation_jobs`, list/recent jobs подмешивают `direct_agency_active.started_at`, `routes_jobs` считает `elapsed` для `running` от `started_at`; ожидание в очереди не должно увеличивать таймер исполнения. При ручной остановке job уже созданные черновики НЕ удаляются автоматически — удаление только отдельным действием.) |
@@ -1060,6 +1110,37 @@ Live 2026-07-22 (3 завершённых job): `porg-pl6iavd5` `5662588a0358` =
 > `_claim_next_job` (закрывает кросс-процессный зазор внутри логина). Смотреть ОШИБОЧНЫМ
 > признаком «зависание другого агентства» при работе нескольких параллельных наборов —
 > нельзя: это по-проекту независимые потоки.
+
+> **4.5 `STAGE_TIMING` — как снять профиль прогона** (`stage_timing.py`, 2026-07-27).
+> Каждая стадия пишет ОДНУ строку в stdout воркера (journald), тело — валидный JSON:
+> `STAGE_TIMING {"job","login","item","tp","type","ch","stage","ms","ok"}`. Контекст item'а
+> живёт в `threading.local` (`set_item` в начале `_run_item`), поэтому глубокие транспортные
+> стадии подхватывают `job/item/tp` сами. Покрыты **оба транспорта** — `v501:*`
+> (`direct_v501_client.py:248`) и `grid:*` (`grid_create.py:144`, `grid_finalize.py:395`) — плюс
+> item-уровневые `content_gen`, `wait_tp1_images`, `item_total`
+> (`create_set_orchestrator.py:1087/1165/1358`). Замер НИКОГДА не меняет поведение: любая ошибка
+> таймера проглатывается, исключение из блока пробрасывается, строка пишется с `"ok":false`.
+> Снятие (⚠️ **`jq` на LXC101 НЕТ** — пример с `jq` в докстринге модуля неисполним; агрегировать
+> питоном):
+> ```
+> journalctl -u direct-create-worker --since '<старт>' -o cat \
+>   | grep '^STAGE_TIMING ' | sed 's/^STAGE_TIMING //'
+> ```
+> → сгруппировать по `stage` (`n`, `sum(ms)`) любым python-однострочником.
+> ⚠️ **«Остаток» = `item_total` − Σ стадий — это ВСЁ неинструментированное** (LLM-генерация вне
+> `content_gen`, работа с картинками, паузы анти-блока, ожидания). Читать его как «время
+> картинок» — ошибка интерпретации.
+
+> **4.6 `has_issues` на терминальных статусах** (`dc564106`, `annotate_job_issues`,
+> `queue_server.py:2179-2190`). Разбивка считается на `done` / `error` / `cancelled` — раньше
+> только на `done`, из-за чего при `failed>0` (статус уходит в `error` — а это ровно тот случай,
+> где дефекты вероятнее всего) система молчала: числа были только в `live_verification.summary`
+> и `verification.summary`. Статус от разбивки по-прежнему НЕ зависит. Верификации не было
+> (нет `summary` ни там, ни там) → вместо лживых нулей пишется `result["has_issues_unknown"]=true`.
+> **`interrupted` не покрыт СОЗНАТЕЛЬНО:** он ставится SQL-апдейтом recover/watchdog
+> (`queue_server.py:244,2402`, `job_repository.py:348`) мимо `result`, верификация там не
+> отрабатывала вовсе — нули были бы враньём. UI (`automation_jobs.js`) показывает разбивку и в
+> карточке `error`, плюс явную строку «верификация не выполнялась».
 
 ---
 
@@ -1144,11 +1225,18 @@ Live 2026-07-22 (3 завершённых job): `porg-pl6iavd5` `5662588a0358` =
 
 ## Процедура проверки готового набора (по этому DoD)
 
-1. Дождаться `status=done` джоба (не interrupted/running).
+1. Дождаться терминального статуса джоба (не `running`). **`error` разбирать так же тщательно, как
+   `done`:** при `failed>0` статус всегда `error`, и именно там дефекты вероятнее всего; разбивка
+   `result.has_issues` пишется на `done`/`error`/`cancelled` (§4.6). `has_issues_unknown=true` →
+   верификация не отрабатывала, нулям верить нельзя. `interrupted` разбивки не несёт by design.
 2. Прочитать `result.live_verification.summary.errors` + `issues[].code` → пункты §1.
 3. По кодам issues определить, что добивать (таблица §1).
+   ⚠️ `WRONG_AUTOTARGET` из джобы перемерить ПОСЛЕ отложенной добивки (врезка после таблицы §1.a):
+   лаг реплики Grid даёт ложные срабатывания, которые снимаются сами.
 4. Визуально в кабинете: 1.5 каталог, 1.6 ссылки, контент §2, per-tp §3.
+   Корневые ссылки считать ТОЛЬКО по сегментам «Марки»/«Модели» (§1.13): «Общее» → корень штатно.
 5. `journalctl -u direct-create-worker.service` на предмет 1.9 и транзиентных Яндекс-ошибок (1000/500 — не наши баги).
+   Там же — профиль времени по `STAGE_TIMING` (§4.5), если прогон показался медленным.
 6. Отметить в этом файле статусы ✅/🟡/⬜ по факту прогона.
 </content>
 </invoke>
