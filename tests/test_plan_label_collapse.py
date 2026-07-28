@@ -18,7 +18,8 @@ def test_no_selection_matches_everything():
 
 @pytest.mark.parametrize("tp_num", [1, 2, 4, 5])
 @pytest.mark.parametrize("tail", ["КС", "Автотаргетинг", "КС + Автотаргетинг",
-                                  "Автотаргетинг + КС", "Ключевики"])
+                                  "Автотаргетинг + КС", "Ключевики",
+                                  "Ключевые слова", "Автотаргет"])
 def test_collapsed_ui_label_matches_full_camp_name(tp_num, tail):
     """UI прислал базу без хвоста — кампания с хвостом обязана попасть в план."""
     sel = {"РСЯ - Комби - Марки"}
