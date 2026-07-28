@@ -24,6 +24,16 @@ from direct import create_set_audiences as csa
 from direct import create_set_minus as csm
 
 
+def _orchestrator_src() -> str:
+    """Исходник оркестратора по пути ФАЙЛА теста (без импорта automation_runtime).
+
+    `import automation_runtime` перенастраивает deps всего пакета (configure) и протекал
+    на соседние файлы тестов в общем прогоне (падали brand-guard тесты auto_regressions).
+    """
+    return (pathlib.Path(__file__).resolve().parent.parent
+            / "create_set_orchestrator.py").read_text(encoding="utf-8")
+
+
 # ── Imp2: канал кампании ─────────────────────────────────────────────────────────────────────
 
 def test_channel_from_campaign_spec_matches_cookie_path():
@@ -146,13 +156,18 @@ def test_pack_is_deterministic_including_names():
     assert [x["phrases"] for x in a] == [x["phrases"] for x in b]
 
 
-def test_pack_names_are_unique_and_mention_sources():
+def test_pack_names_are_unique_and_independent_of_sources():
+    """Раунд-3 (Imp2): имя НЕ содержит имён исходных наборов — иначе правка слепка родит сироту."""
     packed, _ = csm._pack_minus_sets(_sets([4020, 1586, 2415, 4045]),
-                                     csm._MINUS_SHARED_SET_CHAR_BUDGET, 3)
+                                     csm._MINUS_SHARED_SET_CHAR_BUDGET, 3,
+                                     name_prefix="kuderko · С пробегом")
     names = [b["name"] for b in packed]
     assert len(set(n.lower() for n in names)) == len(names), names
-    assert all(len(n) <= 255 for n in names)
-    assert any("набор0" in n for n in names)
+    assert all(len(n) <= csm._MINUS_SET_NAME_MAX for n in names)
+    assert not any("набор0" in n for n in names), names
+    assert names == ["kuderko · С пробегом — минуса 1/3",
+                     "kuderko · С пробегом — минуса 2/3",
+                     "kuderko · С пробегом — минуса 3/3"]
 
 
 def test_pack_dedups_phrases_across_sets():
@@ -342,9 +357,7 @@ def test_own_region_phrases_are_stripped(tmp_path):
 
 
 def test_orchestrator_passes_region_to_named_sets():
-    from direct import automation_runtime as ar
-
-    src = pathlib.Path(ar.__file__).with_name("create_set_orchestrator.py").read_text(encoding="utf-8")
+    src = _orchestrator_src()
     block = src.split("_ms = _ensure_named_minus_sets(")[1][:600]
     assert "region=" in block, "гео-гард по области без region не работает"
     assert "oblasts" in block
@@ -443,13 +456,13 @@ def test_partial_failure_keeps_ok_but_lists_failed_campaigns(monkeypatch):
 
 
 def test_orchestrator_truncates_only_on_minus_set_validation():
-    from direct import automation_runtime as ar
-
-    src = pathlib.Path(ar.__file__).with_name("create_set_orchestrator.py").read_text(encoding="utf-8")
+    src = _orchestrator_src()
     block = src.split("if _ms_ids:")[1].split("if _job is not None:")[0]
     assert 'if _ms_att.get("minus_set_validation") and len(_ms_ids) > _MS_CAP:' in block, \
         "усечение до 3 наборов не должно срабатывать на любой неуспех"
-    assert '_ms_report["retry"] = "full_list"' in block, "транзиент → повтор ПОЛНЫМ списком"
+    # раунд-3 (Minor 5): повтор полным списком — ТОЛЬКО транспортный отказ, с backoff
+    assert '_ms_report["retry"] = "full_list_after_transport_error"' in block, \
+        "транзиент → повтор ПОЛНЫМ списком"
     assert '_ms_failed = _ms_att.get("failed_campaigns") or []' in block, \
         "частичный провал привязки обязан попадать в ошибки джобы"
 
@@ -469,9 +482,7 @@ def test_struct_audience_group_count_sums_tps(monkeypatch):
 
 
 def test_empty_ret_map_is_raised_into_job_errors():
-    from direct import automation_runtime as ar
-
-    src = pathlib.Path(ar.__file__).with_name("create_set_orchestrator.py").read_text(encoding="utf-8")
+    src = _orchestrator_src()
     assert "if not ret_map:" in src
     assert "_cs_aud.struct_audience_group_count(agent, eff_site)" in src
     assert "аудитории структуры НЕ отправлены" in src

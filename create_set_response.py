@@ -20,6 +20,7 @@ def build_create_set_response(*, created: int, failed: int, launch: bool,
                               repair_gate_summary: dict[str, Any] | None = None,
                               auto_repair: dict[str, Any] | None = None,
                               skipped_existing: int = 0,
+                              losses: list[dict[str, Any]] | None = None,
                               chan_A_wall_sec: float | None = None,
                               chan_B_wall_sec: float | None = None) -> dict[str, Any]:
     """Return the public create_set JSON payload."""
@@ -46,6 +47,11 @@ def build_create_set_response(*, created: int, failed: int, launch: bool,
         "prepare": prepare_report,
         "repair_gate": repair_gate_summary,
         "auto_repair": auto_repair,
+        # ПОТЕРИ прогона: часть плана НЕ доехала в кабинет (аудитории не отправлены, минус-фразы
+        # не влезли/разошлись с кабинетом, наборы не привязались). Верификаторы это не ловят —
+        # они сверяют созданное. Ключ читает create_job_status.compute_job_issues_breakdown и
+        # поднимает has_issues, иначе такая джоба оставалась ЗЕЛЁНОЙ.
+        "losses": list(losses or []),
         # Wall-clock таймеры параллельных каналов. None при DIRECT_PARALLEL_CHANNELS=0.
         # Базовая точка: job 446ab5bd0ab3 = 2397s, 23 A-item, один токен-поток.
         # При двух суб-потоках ожидаемый выигрыш: chan_A_wall_sec ≈ 1200s (-50%).

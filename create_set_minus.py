@@ -337,22 +337,42 @@ def _set_chars(words) -> int:
     return sum(len(str(w).replace(" ", "")) for w in (words or []))
 
 
-def _pack_name(base_names: list[str], part_no: int, parts_total: int) -> str:
-    """Имя склеенного набора: «A + B» (+ «(часть N)» если исходный набор разрезан).
+def _norm_minus_phrase(w) -> str:
+    """Единый нормализатор минус-фразы для СВЕРКИ состава: trim + схлопнуть пробелы + lower.
 
-    Имя обязано быть СТАБИЛЬНЫМ (реюз по имени на повторном прогоне) и понятным в кабинете.
-    Обрезаем по 255 (лимит Name у negativekeywordsharedsets), хвост «(часть N/M)» держим ВСЕГДА:
-    без него две разрезанные части после обрезки могли бы схлопнуться в одно имя.
+    Обязан применяться к ОБЕИМ сторонам сравнения. Раньше сторона «кабинет» нормализовалась,
+    а сторона «слепок» — нет, поэтому фраза с двойным пробелом всегда числилась отсутствующей.
     """
-    tail = f" (часть {part_no}/{parts_total})" if parts_total > 1 else ""
-    head = " + ".join(n for n in base_names if n) or "Минуса слепка"
-    room = 255 - len(tail)
-    if len(head) > room:
-        head = head[: max(1, room - 1)].rstrip() + "…"
-    return head + tail
+    return re.sub(r"\s+", " ", str(w or "").strip()).lower()
 
 
-def _pack_minus_sets(sets: list[dict], budget: int, max_sets: int) -> tuple[list[dict], list[str]]:
+# Лимит длины Name у `negativekeywordsharedsets` в справке Директа НЕ подтверждён: в
+# negative-keywords-library.md документирован только лимит 4096 символов на СОСТАВ набора.
+# Поэтому берём заведомо консервативные 100 символов — новая схема имён
+# («kuderko · С пробегом — минуса 1/3») укладывается в ~35 символов, запас кратный.
+_MINUS_SET_NAME_MAX = 100
+
+
+def _pack_minus_set_name(prefix: str, part_no: int, parts_total: int) -> str:
+    """Имя склеенного набора: «{слепок} · {тип сайта} — минуса N/M».
+
+    Имя НЕ зависит от СОСТАВА наборов слепка — ни от имён исходных наборов, ни от того, как
+    фразы легли по корзинам. Это обязательное свойство: прежнее имя было конкатенацией имён
+    исходных наборов + «(часть N/M)», поэтому ЛЮБАЯ правка набора в слепке двигала границу
+    корзины и меняла имя. Реюз по имени промахивался, старый набор навсегда оставался сиротой
+    в библиотеке аккаунта (лимит 30 наборов на аккаунт, автоуборки нет).
+
+    M фиксировано (`_MINUS_LIB_MAX_SETS_PER_CAMPAIGN`), а не «сколько корзин реально вышло»:
+    иначе имя снова поехало бы при переходе 3 корзины → 2. Заодно снимается прежняя путаница
+    нумерации, где корзина с ХВОСТОМ набора могла называться «часть 1/2».
+    """
+    name = (f"{prefix} — минуса {part_no}/{parts_total}" if prefix
+            else f"Минуса слепка {part_no}/{parts_total}")
+    return name[:_MINUS_SET_NAME_MAX]
+
+
+def _pack_minus_sets(sets: list[dict], budget: int, max_sets: int,
+                     *, name_prefix: str = "") -> tuple[list[dict], list[str]]:
     """Склеить именованные наборы слепка в ≤``max_sets`` наборов по ``budget`` симв. без пробелов.
 
     Зачем: Директ разрешает привязать к одной кампании не более ТРЁХ наборов
@@ -365,7 +385,9 @@ def _pack_minus_sets(sets: list[dict], budget: int, max_sets: int) -> tuple[list
       • глобальный дедуп по caseless-ключу, побеждает ПЕРВОЕ вхождение;
       • раскладка — first-fit: фраза кладётся в ПЕРВЫЙ уже открытый набор, куда влезает,
         иначе открывается следующий (пока их < max_sets).
-    Один и тот же вход даёт один и тот же выход, включая имена.
+    Один и тот же вход даёт один и тот же выход. ИМЕНА при этом от входа не зависят вовсе
+    (`_pack_minus_set_name`: позиция корзины + фиксированное M) — реюз по имени стабилен
+    по построению, даже если состав наборов в слепке правили.
 
     Возвращает (наборы, непоместившиеся фразы). НЕ обрезает молча: всё, что не влезло
     в max_sets×budget, отдаётся вызывающему списком — тот обязан сообщить ГРОМКО.
@@ -397,31 +419,13 @@ def _pack_minus_sets(sets: list[dict], budget: int, max_sets: int) -> tuple[list
                 bins.append({"src": ([src] if src else []), "phrases": [w], "chars": cost})
             else:
                 leftover.append(w)   # не влезло ни в один набор — вернём вызывающему
-    # Имена: «(часть N/M)» только у тех исходных наборов, что реально разрезаны между наборами.
-    spread = {}
-    for b in bins:
-        for nm in b["src"]:
-            spread[nm] = spread.get(nm, 0) + 1
-    part_no: dict[str, int] = {}
+    # Имена — по ПОЗИЦИИ корзины и фиксированному max_sets. Уникальны по построению, поэтому
+    # прежняя страховка от коллизии имён после обрезки больше не нужна. Исходные имена наборов
+    # слепка остаются в `src` (для отчёта/лога), но в ИМЯ набора не попадают — см. _pack_minus_set_name.
     packed: list[dict] = []
-    for b in bins:
-        parts_total = max((spread.get(nm, 1) for nm in b["src"]), default=1)
-        if parts_total > 1:
-            _key = next(nm for nm in b["src"] if spread.get(nm, 1) == parts_total)
-            part_no[_key] = part_no.get(_key, 0) + 1
-            _no = part_no[_key]
-        else:
-            _no = 1
-        packed.append({"name": _pack_name(b["src"], _no, parts_total),
+    for i, b in enumerate(bins):
+        packed.append({"name": _pack_minus_set_name(name_prefix, i + 1, max_sets),
                        "phrases": b["phrases"], "src": list(b["src"])})
-    # Страховка от коллизии имён после обрезки по 255: имена наборов обязаны быть уникальны.
-    _used: set[str] = set()
-    for i, p in enumerate(packed):
-        nm = p["name"]
-        if nm.lower() in _used:
-            nm = f"{nm[:245]} #{i + 1}"
-        _used.add(nm.lower())
-        p["name"] = nm
     return packed, leftover
 
 
@@ -442,8 +446,9 @@ def ensure_named_minus_sets(token: str, login: str, slepok: str, site_type: str,
     `negativekeywordsharedsets.add`, с сохранением имени.
 
     СВЕРКА СОДЕРЖИМОГО при реюзе: `get` читает и `NegativeKeywords`, состав набора в кабинете
-    сравнивается с составом из слепка. Расхождение → ГРОМКОЕ предупреждение в errors (сколько
-    фраз в кабинете, сколько в слепке, каких не хватает). Содержимое чужого набора НЕ
+    сравнивается с составом из слепка. Расхождение = в кабинете НЕТ каких-то фраз слепка
+    (набор-надмножество, куда директолог дописал своё, — законное состояние, НЕ ошибка) →
+    ГРОМКОЕ предупреждение в errors, каких фраз не хватает. Содержимое чужого набора НЕ
     переписываем намеренно: набор — общий объект АККАУНТА, он может висеть и на кампаниях
     директолога, которых мы не создавали; тихий `update` порезал бы их показы. Это та же
     политика, что у матчинга ТОЛЬКО по точному имени (см. PACK_MINUS_PER_GROUP_LOST).
@@ -451,7 +456,9 @@ def ensure_named_minus_sets(token: str, login: str, slepok: str, site_type: str,
     СКЛЕЙКА (решение Семёна 2026-07-28): наборов в слепке больше трёх (лимит Директа на
     кампанию, negative-keywords-library.md:41) → фразы детерминированно укладываются в ТРИ
     набора по 4096 симв. без пробелов (`_pack_minus_sets`), чтобы ни одна фраза не потерялась.
-    Не влезло даже в 3×4096 → видимая ошибка со списком, без тихой обрезки.
+    Не влезло даже в 3×4096 → видимая ошибка со списком, без тихой обрезки. Имя склеенного
+    набора — «{слепок} · {тип сайта} — минуса N/3», от СОСТАВА не зависит: правка набора в
+    слепке переиспользует тот же набор кабинета, а не плодит сирот под новым именем.
 
     Возврат: {"ok", "ids", "created", "reused", "errors", "sets_in_structure", "skipped",
               "packed_from", "packed_into", "mismatch", "not_packed"}.
@@ -513,8 +520,12 @@ def ensure_named_minus_sets(token: str, login: str, slepok: str, site_type: str,
     if len(cleaned) > _MINUS_LIB_MAX_SETS_PER_CAMPAIGN:
         _total_chars = _set_chars([p for c in cleaned for p in c["phrases"]])
         _cap = _MINUS_LIB_MAX_SETS_PER_CAMPAIGN * _MINUS_SHARED_SET_CHAR_BUDGET
+        # Префикс имени — только (слепок, тип сайта): от СОСТАВА наборов имя зависеть не должно,
+        # иначе правка набора в слепке рождает новый набор в кабинете, а старый остаётся сиротой.
+        _name_prefix = f"{_SLEPOK_KEY.get((slepok or '').lower(), (slepok or '').lower())} · {site_type}".strip()
         packed, leftover = _pack_minus_sets(cleaned, _MINUS_SHARED_SET_CHAR_BUDGET,
-                                            _MINUS_LIB_MAX_SETS_PER_CAMPAIGN)
+                                            _MINUS_LIB_MAX_SETS_PER_CAMPAIGN,
+                                            name_prefix=_name_prefix)
         res["packed_from"] = len(cleaned)
         res["packed_into"] = len(packed)
         if leftover:
@@ -538,14 +549,16 @@ def ensure_named_minus_sets(token: str, login: str, slepok: str, site_type: str,
             res["reused"].append(name)
             # Реюз по имени БЕЗ сверки состава был тихой потерей правок слепка: набор
             # переиспользовался как есть, новые фразы не доезжали и в отчёте не всплывали.
-            _live = {re.sub(r"\s+", " ", str(w).strip()).lower()
-                     for w in live_phrases.get(hit, []) if str(w).strip()}
-            _want = {w.lower() for w in words}
-            _missing = [w for w in words if w.lower() not in _live]
-            if _missing or len(_live) != len(_want):
+            # Обе стороны — через ОДИН нормализатор (_norm_minus_phrase). Расхождение =
+            # ТОЛЬКО непустой `_missing`: набор-надмножество (директолог дописал фраз руками)
+            # — законное состояние кабинета, а не ошибка. Прежнее `len(_live) != len(_want)`
+            # давало вечное «не хватает 0» на любом надмножестве.
+            _live = {_norm_minus_phrase(w) for w in live_phrases.get(hit, []) if str(w).strip()}
+            _missing = [w for w in words if _norm_minus_phrase(w) not in _live]
+            if _missing:
                 _sample = "; ".join(_missing[:10]) + (" …" if len(_missing) > 10 else "")
                 _msg = (f"«{name}»: набор в кабинете ОТЛИЧАЕТСЯ от слепка — в кабинете "
-                        f"{len(_live)} фраз, в слепке {len(_want)}, не хватает {len(_missing)}; "
+                        f"{len(_live)} фраз, в слепке {len(words)}, не хватает {len(_missing)}; "
                         f"содержимое НЕ обновлено (набор — общий объект аккаунта, перезапись "
                         f"порезала бы чужие кампании) — обновите набор вручную"
                         + (f": {_sample}" if _sample else ""))

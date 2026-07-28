@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import os
 import threading
+import time
 
 from flask import jsonify, request
 
@@ -37,6 +38,10 @@ def _compute_token_threads() -> int:
 # units≈0) до перевода остатка набора на куку. Мелкий/транзиентный/ложный 152 при живых баллах не
 # уводит на куку зря (у агентства баллов много — одиночный 152 обычно транзиент).
 _API_FIRST_FLIP_STREAK = 2
+
+# Пауза перед ПОВТОРОМ привязки наборов минус-фраз тем же payload. Ретраим только транспортные
+# отказы (кука/сеть/Grid), и мгновенный повтор попадал бы ровно в то же окно сбоя.
+_MS_RETRY_BACKOFF_SEC = 3.0
 
 
 class _ASharedCookieState:
@@ -474,21 +479,38 @@ def create_set_response(deps: dict):
 
         results = []
         _job = _CREATE_JOBS.get(body.get("_job_id")) if body.get("_job_id") else None
-        # «Аудитории не отправлены» обязано быть ВИДНО в итогах джобы. Пустая карта условий
-        # (нет токена / retargetinglists.get не отдал ничего) означает, что НИ ОДНА структурная
-        # аудитория tp1/tp2/tp4/tp5 не уедет; раньше это оставалось warning'ом позиции, который
-        # не влияет на has_issues (create_job_status берёт разбивку из верификации) и режется
-        # до 5 на позицию → джоба оставалась зелёной при полной потере аудиторий.
+
+        # ── ВИДИМОСТЬ ПОТЕРЬ ────────────────────────────────────────────────────────────────
+        # ПОТЕРЯ = часть плана НЕ доехала в кабинет (аудитории не отправлены, минус-фразы не
+        # влезли, наборы не привязались). Верификаторы этого не ловят: они сверяют СОЗДАННОЕ,
+        # а не отправленное. `_add_job_err` кладёт текст только в job["errors_log"], который
+        # create_job_status прямо считает НЕзначимым, в /api/create/jobs не отдаётся и нигде
+        # не рисуется, — то есть сам по себе джобу зелёной быть не мешает.
+        # Поэтому потери ДОПОЛНИТЕЛЬНО едут в result["losses"] и поднимают тот же гейт
+        # has_issues, что и ошибки верификации (create_job_status.compute_job_issues_breakdown).
+        _losses: list[dict] = []
+
+        def _note_loss(kind: str, message: str, count: int = 1) -> None:
+            """Зафиксировать потерю: в errors_log (как раньше) И в result["losses"] (гейт)."""
+            _losses.append({"kind": str(kind), "count": int(count or 0),
+                            "message": str(message)[:300]})
+            _add_job_err(_job, message)
+
+        # Пустая карта условий (нет токена / retargetinglists.get не отдал ничего) означает,
+        # что НИ ОДНА структурная аудитория tp1/tp2/tp4/tp5 не уедет; раньше это оставалось
+        # warning'ом позиции (режется до 5 на позицию) → джоба оставалась зелёной при полной
+        # потере аудиторий.
         if not ret_map:
             try:
                 _aud_groups = _cs_aud.struct_audience_group_count(agent, eff_site)
             except Exception:  # noqa: BLE001 — счётчик не должен ронять создание
                 _aud_groups = 0
             if _aud_groups:
-                _add_job_err(_job, (
+                _note_loss("audiences_not_sent", (
                     f"аудитории структуры НЕ отправлены: карта условий ретаргетинга кабинета "
                     f"{login} не прочитана (нет токена v5 / retargetinglists.get пуст) — "
-                    f"{_aud_groups} групп(ы) со структурными аудиториями останутся без них"))
+                    f"{_aud_groups} групп(ы) со структурными аудиториями останутся без них"),
+                    count=_aud_groups)
         _units_block = False                          # сработал лимит баллов Директа (error 152)
         _units_pending = 0                               # сколько пунктов плана НЕ создано из-за лимита
         _units_from = None                               # индекс ПЕРВОГО несозданного пункта (для остатка/докрутки)
@@ -1718,8 +1740,11 @@ def create_set_response(deps: dict):
                         # (мультирегиональные аккаунты), _region_geo_stems разбирает через запятую.
                         region=", ".join((ctx or {}).get("oblasts") or [])
                                or ((ctx or {}).get("oblast") or ""))
+                    # Каждая строка ошибок наборов — это ПОТЕРЯ фраз/набора (not_packed,
+                    # расхождение с кабинетом, «набор НЕ создан», фразы >7 слов): в
+                    # result["losses"] → джоба не зелёная.
                     for _mse in (_ms.get("errors") or []):
-                        _add_job_err(_job, f"наборы минус-фраз: {_mse}")
+                        _note_loss("minus_sets", f"наборы минус-фраз: {_mse}")
                     _ms_ids = list(_ms.get("ids") or [])
                     _ms_report: dict = {
                         "sets_in_structure": _ms.get("sets_in_structure", 0),
@@ -1744,32 +1769,41 @@ def create_set_response(deps: dict):
                                 _ms_att = _apply_ms_batch(login, _ms_camp_ids, _repair_deps(),
                                                           minus_set_ids=_ms_ids[:_MS_CAP],
                                                           agency=_ms_agency)
-                                _add_job_err(_job, (
+                                _note_loss("minus_sets_not_attached", (
                                     f"наборы минус-фраз: к кампаниям привязано {_MS_CAP} наборов из "
                                     f"{len(_ms_ids)} (лимит Директа — {_MS_CAP} набора на кампанию); "
                                     f"НЕ привязаны id {_ms_dropped} — они созданы в библиотеке аккаунта, "
-                                    f"привязать вручную или объединить наборы в структуре слепка"))
+                                    f"привязать вручную или объединить наборы в структуре слепка"),
+                                    count=len(_ms_dropped))
                                 _ms_report["not_attached_ids"] = _ms_dropped
-                            else:
+                            elif _ms_att.get("error_kind") == "transport":
+                                # Повтор ТЕМ ЖЕ payload имеет смысл ТОЛЬКО на транспорте
+                                # (кука/сеть/Grid). На валидации Директа идентичный payload
+                                # гарантированно упадёт снова — второй заход лишь удваивает
+                                # задержку и шум в журнале. Короткий backoff обязателен:
+                                # мгновенный ретрай попадает в то же окно сбоя куки/Grid.
+                                time.sleep(_MS_RETRY_BACKOFF_SEC)
                                 _ms_att = _apply_ms_batch(login, _ms_camp_ids, _repair_deps(),
                                                           minus_set_ids=_ms_ids,
                                                           agency=_ms_agency)
-                                _ms_report["retry"] = "full_list"
+                                _ms_report["retry"] = "full_list_after_transport_error"
+                            else:
+                                _ms_report["retry"] = "none_validation_error"
                         _ms_report["attach"] = _ms_att
                         if not _ms_att.get("ok"):
-                            _add_job_err(_job, (
+                            _note_loss("minus_sets_attach_failed", (
                                 "наборы минус-фраз: привязка к кампаниям tp2-tp5 не прошла "
                                 f"({_ms_att.get('error_kind') or 'unknown'}) — "
-                                f"{str(_ms_att.get('error'))[:200]}"))
+                                f"{str(_ms_att.get('error'))[:200]}"), count=len(_ms_camp_ids))
                         # ЧАСТИЧНЫЙ провал (ok=True, но часть кампаний не обновилась) раньше
                         # оседал только в отчёте: _add_job_err звался лишь при ok=False.
                         _ms_failed = _ms_att.get("failed_campaigns") or []
                         if _ms_failed:
                             _ms_fids = [str((f or {}).get("campaign_id") or "?") for f in _ms_failed]
-                            _add_job_err(_job, (
+                            _note_loss("minus_sets_partial", (
                                 f"наборы минус-фраз: НЕ привязаны к {len(_ms_failed)} кампаниям из "
                                 f"{len(_ms_camp_ids)} — id {', '.join(_ms_fids[:20])}"
-                                + (" …" if len(_ms_fids) > 20 else "")))
+                                + (" …" if len(_ms_fids) > 20 else "")), count=len(_ms_failed))
                     if _job is not None:
                         _job["minus_sets"] = _ms_report
                     import logging as _mslog
@@ -1783,7 +1817,8 @@ def create_set_response(deps: dict):
             import logging as _mslog
             _mslog.getLogger("direct.batches").error(
                 "[minus-sets] login=%s exception: %s", login, str(_ms_ex)[:300])
-            _add_job_err(_job, f"наборы минус-фраз: {str(_ms_ex)[:200]}")
+            # Исключение здесь = наборы слепка не доехали вовсе → тоже потеря, не только лог.
+            _note_loss("minus_sets_exception", f"наборы минус-фраз: {str(_ms_ex)[:200]}")
         # ── конец именованных наборов минус-фраз ─────────────────────────────────────────
         # Лимит баллов Директа (152): человекочитаемое предупреждение + сколько НЕ создано.
         units_note = None
@@ -1977,6 +2012,7 @@ def create_set_response(deps: dict):
             repair_gate_summary=repair_gate_summary,
             auto_repair=auto_repair,
             skipped_existing=skipped_existing,
+            losses=_losses,
             chan_A_wall_sec=_chan_A_wall,
             chan_B_wall_sec=_chan_B_wall,
         ))

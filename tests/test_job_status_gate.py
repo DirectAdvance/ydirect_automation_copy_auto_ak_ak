@@ -116,6 +116,7 @@ def test_breakdown_includes_all_fields():
         "lv_errors", "ver_errors",        # source breakdown (new)
         "live_errors",                     # JS backward-compat alias (= lv_errors + ver_errors)
         "live_warnings", "gate_skips", "positions_with_errors",
+        "losses",                          # потери прогона (result["losses"]), раунд-3
     }
 
 

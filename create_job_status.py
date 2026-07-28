@@ -87,6 +87,20 @@ def _count_positions_with_errors(data: dict[str, Any]) -> int:
         return 0
 
 
+def _losses_count(data: dict[str, Any]) -> int:
+    """Сколько ПОТЕРЬ зафиксировал сам прогон (`result["losses"]`).
+
+    Потеря = часть плана НЕ доехала в кабинет: аудитории не отправлены (пустая карта условий),
+    минус-фразы не влезли в наборы (`not_packed`), набор в кабинете разошёлся со слепком,
+    наборы не привязались к части кампаний. Верификаторы этого не видят (они сверяют то, что
+    создано, а не то, что не отправлено), поэтому потери — САМОСТОЯТЕЛЬНЫЙ значимый сигнал.
+    """
+    try:
+        return len([x for x in (data.get("losses") or []) if x])
+    except (TypeError, AttributeError):
+        return 0
+
+
 def has_verification_data(data: dict[str, Any] | None) -> bool:
     """True, если хотя бы один верификатор реально отработал и отдал summary.
 
@@ -116,6 +130,9 @@ def compute_job_issues_breakdown(
     Gate logic (what is significant vs штатное):
     - SIGNIFICANT → live_verification.summary.errors > 0
       (error-severity findings from verifiers: missing groups, wrong config, etc.)
+    - SIGNIFICANT → result["losses"] непустой (часть плана НЕ доехала: аудитории не
+      отправлены, минус-фразы не влезли, наборы не привязались). Верификаторы это НЕ ловят:
+      они сверяют созданное, а не отправленное, поэтому джоба оставалась зелёной.
     - NOT significant alone → warnings, gate_skips, errors_log
       (штатные report-only warns; infrastructure connectivity issues)
     - Out of scope here → build.errors[] plural (separate task, create_set_orchestrator ⛔)
@@ -126,7 +143,8 @@ def compute_job_issues_breakdown(
     lv_errors = _lv_summary_int(d, "errors")    # live_verification.summary.errors
     ver_errors = _ver_summary_int(d, "errors")   # verification.summary.errors (static verifier)
     total_errors = lv_errors + ver_errors
-    if total_errors == 0:
+    losses = _losses_count(d)
+    if total_errors == 0 and losses == 0:
         return None  # чистый done
     live_warnings = _lv_summary_int(d, "warnings")
     gate_skips = _as_int(d.get("gate_skips"))
@@ -138,6 +156,7 @@ def compute_job_issues_breakdown(
         "live_warnings": live_warnings,
         "gate_skips": gate_skips,
         "positions_with_errors": positions_with_errors,
+        "losses": losses,                  # потери прогона (result["losses"]), не от верификаторов
     }
 
 
@@ -154,11 +173,17 @@ def annotate_job_issues(kind: str | None, data: dict[str, Any] | None) -> None:
     - есть дефекты          → `has_issues` = разбивка (как и раньше);
     - верификация чистая    → ключей нет вовсе (поведение `done` не меняется);
     - верификации не было   → `has_issues_unknown = True` (НЕ нули в `has_issues`).
+
+    Флаги СОВМЕСТИМЫ и считаются НЕЗАВИСИМО (раньше был `elif`): разбивка теперь может
+    появиться и от потерь прогона (`result["losses"]`) при отсутствующей верификации —
+    и тогда «есть потери» не должно затирать «верификации не было».
+    Для старых путей поведение не меняется: там разбивка непуста только если есть
+    `*.summary.errors`, а это и есть наличие данных верификации.
     """
     if not isinstance(data, dict) or (kind or "") not in CREATE_JOB_KINDS:
         return
     breakdown = compute_job_issues_breakdown(kind, data)
     if breakdown:
         data["has_issues"] = breakdown
-    elif not has_verification_data(data):
+    if not has_verification_data(data):
         data["has_issues_unknown"] = True
