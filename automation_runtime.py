@@ -1890,18 +1890,12 @@ def _tp7_listings_minus_filters(*args, **kwargs):
 # КАМПАНИИ 20 000 символов БЕЗ пробелов (лимит Директа), создать набор.
 # Привязка — через v5 campaigns.update (NegativeKeywordSharedSetIds) — для TEXT_CAMPAIGN
 # это валидное поле верхнего уровня (в отличие от tp1/tp5 где Grid libraryMinusKeywordsIds).
-# Карта механизма привязки минусов по слепку (как в РЕАЛЬНЫХ аккаунтах — live-аудит):
-#   campaign   → NegativeKeywords прямо на кампании (≤20 000 симв. без пробелов) — pavlov, kryuchkova
-#   shared_set → переиспользовать/создать набор «Минуса общие», привязать через NegativeKeywordSharedSetIds — scherbakova
-#   group      → NegativeKeywords на каждой группе объявлений (≤4 096 симв./группа) — terehov
-# Default для неизвестного слепка — "group" (безопасно, текущее поведение).
-_SLEPOK_MINUS_MODE: dict[str, str] = {
-    "pavlov": "campaign",
-    "kryuchkova": "campaign",
-    "scherbakova": "shared_set",
-    "terehov": "group",
-    "karavaev": "group",
-}
+# Карта механизма привязки минусов по слепку — ЕДИНЫЙ источник: `create_set_minus`.
+# Здесь раньше лежал ВТОРОЙ экземпляр той же карты, и они разошлись: `kuderko` был внесён только
+# в create_set_minus, а create_set_feed_builders берёт карту через deps ИМЕННО отсюда. Реэкспорт
+# вместо копии: `create_set_minus` ничего не импортирует из automation_runtime (только DI через
+# configure), поэтому цикла импорта нет.
+from .create_set_minus import _SLEPOK_MINUS_MODE  # noqa: E402  (единая карта режимов минусов)
 
 
 def _create_set_minus_deps() -> dict:

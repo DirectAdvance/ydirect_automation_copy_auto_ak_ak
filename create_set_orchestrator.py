@@ -474,7 +474,22 @@ def create_set_response(deps: dict):
 
         results = []
         _job = _CREATE_JOBS.get(body.get("_job_id")) if body.get("_job_id") else None
-        _units_block = False                             # сработал лимит баллов Директа (error 152)
+        # «Аудитории не отправлены» обязано быть ВИДНО в итогах джобы. Пустая карта условий
+        # (нет токена / retargetinglists.get не отдал ничего) означает, что НИ ОДНА структурная
+        # аудитория tp1/tp2/tp4/tp5 не уедет; раньше это оставалось warning'ом позиции, который
+        # не влияет на has_issues (create_job_status берёт разбивку из верификации) и режется
+        # до 5 на позицию → джоба оставалась зелёной при полной потере аудиторий.
+        if not ret_map:
+            try:
+                _aud_groups = _cs_aud.struct_audience_group_count(agent, eff_site)
+            except Exception:  # noqa: BLE001 — счётчик не должен ронять создание
+                _aud_groups = 0
+            if _aud_groups:
+                _add_job_err(_job, (
+                    f"аудитории структуры НЕ отправлены: карта условий ретаргетинга кабинета "
+                    f"{login} не прочитана (нет токена v5 / retargetinglists.get пуст) — "
+                    f"{_aud_groups} групп(ы) со структурными аудиториями останутся без них"))
+        _units_block = False                          # сработал лимит баллов Директа (error 152)
         _units_pending = 0                               # сколько пунктов плана НЕ создано из-за лимита
         _units_from = None                               # индекс ПЕРВОГО несозданного пункта (для остатка/докрутки)
         _units_switched = False                          # на 152 ВЕСЬ остаток переведён на куки-путь (бесшовно)
@@ -1695,7 +1710,14 @@ def create_set_response(deps: dict):
                 _ms_camp_ids = _select_ms_ids(_extract_created_ms(results), (2, 3, 4, 5))
                 if _ms_camp_ids:
                     _ms = _ensure_named_minus_sets(
-                        _st_token, login, agent, eff_site, city=((ctx or {}).get("city") or ""))
+                        _st_token, login, agent, eff_site,
+                        city=((ctx or {}).get("city") or ""),
+                        # Гео-гард по ОБЛАСТИ аккаунта: без region «Волгоградская область»
+                        # оставалась в минусах и резала собственный трафик
+                        # (_strip_account_geo → _region_geo_stems). `oblasts` — список
+                        # (мультирегиональные аккаунты), _region_geo_stems разбирает через запятую.
+                        region=", ".join((ctx or {}).get("oblasts") or [])
+                               or ((ctx or {}).get("oblast") or ""))
                     for _mse in (_ms.get("errors") or []):
                         _add_job_err(_job, f"наборы минус-фраз: {_mse}")
                     _ms_ids = list(_ms.get("ids") or [])
@@ -1706,27 +1728,48 @@ def create_set_response(deps: dict):
                         "errors": list(_ms.get("errors") or []),
                     }
                     if _ms_ids:
+                        _ms_agency = (_w_agency or body.get("agency") or "")
                         _ms_att = _apply_ms_batch(login, _ms_camp_ids, _repair_deps(),
                                                   minus_set_ids=_ms_ids,
-                                                  agency=(_w_agency or body.get("agency") or ""))
-                        # Директ разрешает привязать к ОДНОЙ кампании не более 3 наборов (офиц.
-                        # справка negative-keywords-library.md:41). Полный список мог не пройти —
-                        # тогда повторяем первыми _MS_CAP и ГРОМКО сообщаем, что не привязано.
-                        if not _ms_att.get("ok") and len(_ms_ids) > _MS_CAP:
-                            _ms_dropped = _ms_ids[_MS_CAP:]
-                            _ms_att = _apply_ms_batch(login, _ms_camp_ids, _repair_deps(),
-                                                      minus_set_ids=_ms_ids[:_MS_CAP],
-                                                      agency=(_w_agency or body.get("agency") or ""))
-                            _add_job_err(_job, (
-                                f"наборы минус-фраз: к кампаниям привязано {_MS_CAP} наборов из "
-                                f"{len(_ms_ids)} (лимит Директа — {_MS_CAP} набора на кампанию); "
-                                f"НЕ привязаны id {_ms_dropped} — они созданы в библиотеке аккаунта, "
-                                f"привязать вручную или объединить наборы в структуре слепка"))
-                            _ms_report["not_attached_ids"] = _ms_dropped
+                                                  agency=_ms_agency)
+                        if not _ms_att.get("ok"):
+                            # Усечение до _MS_CAP — ТОЛЬКО когда Директ отверг payload валидацией
+                            # ИМЕННО по наборам (лимит 3 набора на кампанию, офиц. справка
+                            # negative-keywords-library.md:41). На транзиентном отказе Grid/куки
+                            # усечение потеряло бы наборы и записало в журнал ложный диагноз
+                            # «лимит Директа» — там нужен повтор ПОЛНЫМ списком.
+                            # После склейки в 3 набора (_pack_minus_sets) эта ветка почти мертва.
+                            if _ms_att.get("minus_set_validation") and len(_ms_ids) > _MS_CAP:
+                                _ms_dropped = _ms_ids[_MS_CAP:]
+                                _ms_att = _apply_ms_batch(login, _ms_camp_ids, _repair_deps(),
+                                                          minus_set_ids=_ms_ids[:_MS_CAP],
+                                                          agency=_ms_agency)
+                                _add_job_err(_job, (
+                                    f"наборы минус-фраз: к кампаниям привязано {_MS_CAP} наборов из "
+                                    f"{len(_ms_ids)} (лимит Директа — {_MS_CAP} набора на кампанию); "
+                                    f"НЕ привязаны id {_ms_dropped} — они созданы в библиотеке аккаунта, "
+                                    f"привязать вручную или объединить наборы в структуре слепка"))
+                                _ms_report["not_attached_ids"] = _ms_dropped
+                            else:
+                                _ms_att = _apply_ms_batch(login, _ms_camp_ids, _repair_deps(),
+                                                          minus_set_ids=_ms_ids,
+                                                          agency=_ms_agency)
+                                _ms_report["retry"] = "full_list"
                         _ms_report["attach"] = _ms_att
                         if not _ms_att.get("ok"):
-                            _add_job_err(_job, "наборы минус-фраз: привязка к кампаниям tp2-tp5 не "
-                                               f"прошла — {str(_ms_att.get('error'))[:200]}")
+                            _add_job_err(_job, (
+                                "наборы минус-фраз: привязка к кампаниям tp2-tp5 не прошла "
+                                f"({_ms_att.get('error_kind') or 'unknown'}) — "
+                                f"{str(_ms_att.get('error'))[:200]}"))
+                        # ЧАСТИЧНЫЙ провал (ok=True, но часть кампаний не обновилась) раньше
+                        # оседал только в отчёте: _add_job_err звался лишь при ok=False.
+                        _ms_failed = _ms_att.get("failed_campaigns") or []
+                        if _ms_failed:
+                            _ms_fids = [str((f or {}).get("campaign_id") or "?") for f in _ms_failed]
+                            _add_job_err(_job, (
+                                f"наборы минус-фраз: НЕ привязаны к {len(_ms_failed)} кампаниям из "
+                                f"{len(_ms_camp_ids)} — id {', '.join(_ms_fids[:20])}"
+                                + (" …" if len(_ms_fids) > 20 else "")))
                     if _job is not None:
                         _job["minus_sets"] = _ms_report
                     import logging as _mslog

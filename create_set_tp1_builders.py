@@ -298,6 +298,7 @@ def _build_tp1_adgroups(
     all_feeds_list: list | None = None,
     site_type: str = "",
     campaign_is_new: bool = False,
+    campaign_mode: str = "",
 ) -> dict:
     """Наполнить РСЯ (tp1 ЕПК) группами БАТЧЕМ через v501:
     adgroups.add (с TrackingParams и minus) → keywords.add → adimages.add → ads.add(TextAd+Image).
@@ -314,6 +315,10 @@ def _build_tp1_adgroups(
     предмутационный снимок имён групп (лишний Grid-запрос в горячем пути; при сбое чтения снимок
     равен None и сверка потерянного ответа AddUnifiedAdGroups отключилась бы совсем). Дефолт False
     оставлен намеренно: для непустой кампании снимок обязателен (коллизии имён групп).
+
+    campaign_mode: mode СПЕКИ кампании, которой принадлежат группы (`UnifiedCampaignSpec.mode` у
+    tp1 — `network_cpa`/`network_payconv`; `_create_search_test_campaign(mode='search')` у tp5).
+    Им — и только им — выбирается поле аудиторий (`create_set_audiences.is_search_channel`).
     → {adgroups, keywords, ads, images_uploaded, sitelinks_set, errors, deferred}."""
     rep = {"adgroups": 0, "keywords": 0, "ads": 0, "images_uploaded": 0,
            "sitelinks_set": sitelink_set_id or 0, "errors": [], "deferred": 0}
@@ -341,6 +346,10 @@ def _build_tp1_adgroups(
     #                           isActive=False с пустыми списками при autotarget=False.
     _gcl = gc.GridCreateClient(login, cookie=grid_cookie)
     _is_tp5 = (tp_code == "tp5")
+    # Канал КАМПАНИИ (spec/mode), а НЕ список tp-кодов: tp5 — поисковая кампания
+    # (create_set_feed_builders.py:607 «tp3 и tp5 — оба Search-канал»), и её аудитории обязаны
+    # ехать в searchRetargetings. Прежний `tp_code in ("tp2","tp4")` отправлял их в сетевое поле.
+    _search_channel = _cs_aud.is_search_channel(mode=campaign_mode, tp_code=tp_code)
     _g_items = [gc.build_adgroup(
         campaign_id=int(campaign_id),
         name=(g.get("name") or "группа")[:255],
@@ -350,10 +359,10 @@ def _build_tp1_adgroups(
         autotargeting=(True if _is_tp5 else bool(autotarget)),
         autotargeting_profile=("search_tp2" if _is_tp5 else ""),
         # Аудитории структуры (g["audiences"] — id условий, резолвнутые под ЦЕЛЕВОЙ кабинет
-        # в _build_tp1_from_pack). tp1/tp5 — сетевое поле retargetings; searchRetargetings
-        # только у поисковых tp2/tp4 (_build_tp2_adgroups).
+        # в _build_tp1_from_pack). Поле — по каналу кампании: поиск → searchRetargetings,
+        # сеть (tp1 РСЯ) → retargetings.
         retargeting_ids=g.get("audiences"),
-        retargeting_on_search=(tp_code in ("tp2", "tp4")),
+        retargeting_on_search=_search_channel,
     ) for g in groups]
     _aud_notes = _cs_aud.group_notes(groups)
     if _aud_notes:
@@ -896,8 +905,12 @@ def _build_tp1_from_pack(
     only_cts: set | None = None,
     all_feeds_list: list | None = None,
     campaign_is_new: bool = False,
+    campaign_mode: str = "",
 ) -> dict:
     """Наполнить РСЯ (tp1/tp5 ЕПК) бренд-группами из пака M3.
+
+    campaign_mode: mode спеки уже созданной кампании (`network_cpa`/`network_payconv` у tp1,
+    `search` у tp5) — прокидывается в `_build_tp1_adgroups`, где им выбирается поле аудиторий.
 
     all_feeds_list (тег «все фиды»): [(feed_id, feed_name, …), …] — в одной кампании создаётся
     ГРУППА НА КАЖДЫЙ фид (ShoppingAd + ListingAd) вместо fan-out N кампаний. Бренд-группы из
@@ -1265,7 +1278,8 @@ def _build_tp1_from_pack(
                                products_only=_skip_text_ads,
                                grid_cookie=grid_cookie, tp_code=tp_code,
                                all_feeds_list=all_feeds_list, site_type=site_type,
-                               campaign_is_new=bool(campaign_is_new))
+                               campaign_is_new=bool(campaign_is_new),
+                               campaign_mode=campaign_mode)
     rep["cts"] = len(pack)
     rep["groups_built"] = len(groups)
     rep["callouts_pool"] = len(co_pool)
@@ -1491,7 +1505,10 @@ def _create_tp1_single(
             only_gks=only_gks, only_cts=only_cts,
             all_feeds_list=all_feeds_list,
             # кампания создана строкой выше (v501.create_unified_campaign) → групп в ней 0
-            campaign_is_new=True)
+            campaign_is_new=True,
+            # канал кампании берём из ТОЙ ЖЕ спеки, которой она создана (`spec.mode`) —
+            # им выбирается поле аудиторий в _build_tp1_adgroups
+            campaign_mode=mode)
         if tp1_build.get("skipped") and tp1_build.get("image_no_pool"):
             _fail = _cleanup_partial(str(tp1_build.get("skipped")))
             _deleted_cid = _fail.get("campaign_id")

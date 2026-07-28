@@ -445,7 +445,10 @@ def _create_text_via_token(
                                       apply_group_minus=_apply_group_minus, only_cts=only_cts,
                                       only_gks=only_gks,
                                       # shell TEXT_CAMPAIGN создан шагом 1 выше → групп в нём 0
-                                      campaign_is_new=True)
+                                      campaign_is_new=True,
+                                      # ТОТ ЖЕ mode, которым создан shell (mode="search"):
+                                      # tp2/tp4 — Search-канал → аудитории в searchRetargetings
+                                      campaign_mode="search")
     except Exception as e:  # noqa: BLE001
         build = {"error": str(e)[:240]}
     _errs = build.get("errors") or []
@@ -855,7 +858,10 @@ def _create_tp5_single(data: dict, token: str, login: str, name: str, pay: str,
             tp_code="tp5", only_gks=only_gks, only_cts=only_cts,
             all_feeds_list=all_feeds_list,
             # кампания создана шагом 1 выше (_create_search_test_campaign) → групп в ней 0
-            campaign_is_new=True)
+            campaign_is_new=True,
+            # ТОТ ЖЕ mode, которым создана кампания шагом 1 (mode="search"): tp5 — Search-канал,
+            # значит аудитории структуры едут в searchRetargetings, а не в сетевое retargetings
+            campaign_mode="search")
     except Exception as e:  # noqa: BLE001
         tp5_build = {"error": str(e)[:240]}
 

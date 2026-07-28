@@ -39,6 +39,38 @@ _ACC_LOCK = threading.Lock()
 # login → {"by_name": {норм. имя: [id, ...]}, "ids": {id, ...}} условий ЦЕЛЕВОГО кабинета.
 _ACCOUNT_CONDITIONS: dict[str, dict] = {}
 
+# Каналы кампаний набора, если spec/mode до билдера не доехали (фолбэк, НЕ основной путь).
+# Единственный сетевой канал — tp1 (`automation_runtime._PLATFORMS_RSYA`: network=True/search=False,
+# `create_set_tp1_builders.py:2454` spec network=True). tp2/tp4 — `_PLATFORMS_SEARCH_ONLY`
+# (`create_set_feed_builders.py:174` search=True/network=False), tp3/tp5 — тоже Search-канал
+# (`create_set_feed_builders.py:607` «tp3 и tp5 — оба Search-канал», spec :613).
+_NETWORK_TP_CODES = frozenset({"tp1"})
+
+
+def is_search_channel(campaign_spec: dict | None = None, mode: str = "",
+                      tp_code: str = "") -> bool:
+    """Канал кампании → в какое поле группы едут аудитории.
+
+    Поиск → ``searchRetargetings``; сеть (РСЯ) → ``retargetings`` (HAR-разбор в шапке модуля).
+    Признак берётся от КАМПАНИИ, а не от списка tp-кодов: tp5 — поисковая кампания
+    (`create_set_feed_builders.py:607-613`), и по tp-списку `("tp2","tp4")` её аудитории
+    уезжали в сетевое поле.
+
+    Источники по убыванию авторитетности:
+      1. ``campaign_spec`` с ключами ``search``/``network`` — ровно как `grid_create.create_full:936`
+         (куки/Grid-путь: `search_only = search and not network`);
+      2. ``mode`` спеки v501 — `cmc.UnifiedCampaignSpec.mode` у tp1 (`network_cpa`/`network_payconv`)
+         и `_create_search_test_campaign(mode=…)` у tp5 (`search`): префикс `network` → сеть;
+      3. ``tp_code`` — фолбэк по каналу tp (см. `_NETWORK_TP_CODES`), когда ни spec, ни mode не дошли.
+    """
+    if isinstance(campaign_spec, dict) and (
+            "search" in campaign_spec or "network" in campaign_spec):
+        return bool(campaign_spec.get("search")) and not bool(campaign_spec.get("network"))
+    m = str(mode or "").strip().lower()
+    if m:
+        return not m.startswith("network")
+    return str(tp_code or "").strip().lower() not in _NETWORK_TP_CODES
+
 
 def _norm_name(name) -> str:
     """Ключ матчинга имени условия: NBSP→пробел, схлопнутые пробелы, casefold.
@@ -163,9 +195,29 @@ def struct_audiences_by_gk(slepok: str, site_type: str, tp_code: str) -> dict[st
                 for p in pairs:
                     if p not in bucket:
                         bucket.append(p)
-    except Exception:  # noqa: BLE001 — чтение структуры не должно ронять создание
+    except Exception as exc:  # noqa: BLE001 — чтение структуры не должно ронять создание
+        # НЕ молчим: сбой чтения структуры = ТИХАЯ потеря ВСЕХ аудиторий позиции. Раньше здесь
+        # был голый `out = {}` без единой строки в логе — падение выглядело как «аудиторий нет».
         out = {}
+        _msg = (f"[audiences] ОШИБКА чтения структуры {slepok}/{site_type}/{tp_code}: "
+                f"{type(exc).__name__}: {str(exc)[:200]} — аудитории этого tp НЕ будут проставлены")
+        print(_msg, flush=True)
+        import logging as _alog
+        _alog.getLogger("direct.audiences").exception(_msg)
     return out
+
+
+def struct_audience_group_count(slepok: str, site_type: str,
+                                tp_codes=("tp1", "tp2", "tp4", "tp5")) -> int:
+    """Сколько групп структуры несут аудитории (по всем ``tp_codes``).
+
+    Нужен оркестратору, чтобы отличить «в слепке аудиторий нет» от «аудитории есть, но карта
+    условий кабинета не прочитана» — во втором случае джоба обязана быть НЕ зелёной.
+    """
+    total = 0
+    for tp in (tp_codes or ()):
+        total += len(struct_audiences_by_gk(slepok, site_type, str(tp)) or {})
+    return total
 
 
 def resolve_for_account(login: str, pairs) -> tuple[list[str], list[str]]:

@@ -147,11 +147,13 @@ def test_all_adgroup_call_sites_pass_audiences():
 
     src_tp1 = inspect.getsource(create_set_tp1_builders._build_tp1_adgroups)
     assert 'retargeting_ids=g.get("audiences")' in src_tp1
-    assert 'retargeting_on_search=(tp_code in ("tp2", "tp4"))' in src_tp1
+    # поле выбирается КАНАЛОМ кампании (spec/mode), а не списком tp-кодов
+    assert "retargeting_on_search=_search_channel" in src_tp1
+    assert "is_search_channel(mode=campaign_mode, tp_code=tp_code)" in src_tp1
 
     src_tp2 = inspect.getsource(create_set_text_builders._build_tp2_adgroups)
     assert 'retargeting_ids=g.get("audiences")' in src_tp2
-    assert "retargeting_on_search=True" in src_tp2       # поиск tp2/tp4
+    assert "retargeting_on_search=bool(search_channel)" in src_tp2
 
     src_cookie = inspect.getsource(grid_create.create_full)
     assert 'retargeting_ids=g.get("audiences")' in src_cookie
@@ -159,15 +161,16 @@ def test_all_adgroup_call_sites_pass_audiences():
 
 
 def test_group_sources_attach_audiences():
-    """Обе фабрики групп (куки и токен) обязаны проставлять g["audiences"] по gk."""
+    """Все три фабрики групп (куки, токен tp1/tp5, токен tp2/tp4) проставляют g["audiences"] по gk."""
     import inspect
 
+    from direct import create_set_text_builders as t
     from direct import create_set_tp1_builders as b
 
-    for fn in (b._tp1_pack_groups, b._build_tp1_from_pack):
+    for fn in (b._tp1_pack_groups, b._build_tp1_from_pack, t._build_text_from_pack):
         src = inspect.getsource(fn)
-        assert "struct_audiences_by_gk(slepok, site_type, tp_code)" in src
-        assert "_cs_aud.attach_to_group(" in src
+        assert "struct_audiences_by_gk(slepok, site_type, tp_code)" in src, fn.__name__
+        assert "_cs_aud.attach_to_group(" in src, fn.__name__
 
 
 def test_update_item_defaults_to_empty_lists():

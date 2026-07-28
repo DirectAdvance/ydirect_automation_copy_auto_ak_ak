@@ -66,7 +66,8 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
                         autotarget: bool = False,
                         keep_keywords: bool = False,
                         site_type: str = "",
-                        campaign_is_new: bool = False) -> dict:
+                        campaign_is_new: bool = False,
+                        search_channel: bool = True) -> dict:
     """Наполнить Поисковую (tp2) / tp5 группами БАТЧЕМ: adgroups.add → keywords.add → ads.add(TextAd).
 
     groups: [{name, keywords:[], minus:[], title, text, href, title2?, callout_ext_ids?}].
@@ -82,6 +83,9 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
     предмутационный снимок имён групп (лишний Grid-запрос, а при сбое чтения сверка потерянного
     ответа AddUnifiedAdGroups отключилась бы совсем). Дефолт False: для непустой кампании снимок
     обязателен (коллизии имён групп).
+    search_channel: канал КАМПАНИИ (spec `search`/`network`, см. `create_set_audiences.is_search_channel`)
+    — им выбирается поле аудиторий: поиск → `searchRetargetings`, сеть → `retargetings`. Этот билдер
+    вызывается только из `_build_text_from_pack` (tp2/tp4/tp5 — все поисковые), поэтому дефолт True.
     → {adgroups, keywords, ads, errors, deferred}."""
     rep = {"adgroups": 0, "keywords": 0, "ads": 0, "images_uploaded": 0, "errors": [], "deferred": 0}
     rids = [int(r) for r in (region_ids or []) if str(r).lstrip("-").isdigit()] or [225]
@@ -142,9 +146,10 @@ def _build_tp2_adgroups(token: str, login: str, campaign_id: int,
             autotargeting=bool(autotarget),
             autotargeting_profile=("search_tp2" if autotarget else ""),   # EXACT_V2_MARK + WITHOUT_BRAND атомарно
             # Аудитории структуры (g["audiences"] — id условий, резолвнутые под ЦЕЛЕВОЙ кабинет
-            # в _tp1_pack_groups). Это ПОИСКОВЫЙ путь tp2/tp4 → поле searchRetargetings.
+            # в _build_text_from_pack / _tp1_pack_groups). Поле выбирается КАНАЛОМ кампании,
+            # а не списком tp-кодов: поиск → searchRetargetings, сеть → retargetings.
             retargeting_ids=g.get("audiences"),
-            retargeting_on_search=True,
+            retargeting_on_search=bool(search_channel),
         ))
     _aud_notes = _cs_aud.group_notes(groups)
     if _aud_notes:
@@ -457,7 +462,8 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
                           keep_keywords: bool = False,
                           only_cts: list[str] | None = None,
                           only_gks: set | None = None,
-                          campaign_is_new: bool = False) -> dict:
+                          campaign_is_new: bool = False,
+                          campaign_mode: str = "search") -> dict:
     """Наполнить текстовую кампанию (tp1/tp2/tp5): структура→модель-ct→ключи/минус/уточнения
     из пака M3 (по tp_code)→группы+объявления+callouts. Тексты — из titles/texts. Всё черновиком.
 
@@ -542,6 +548,12 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
         _batch_hrefs.append(_pack_group_href(_pct, _pbrand, _preal, _feed_urls, href, site_type))
     _resolve_urls_batch(_batch_hrefs)
 
+    # Аудитории структуры {gk → [(id условия, имя)]} — читается один раз на кампанию.
+    # Зеркало token-пути tp1/tp5 (_build_tp1_from_pack:1063). Без этого на token/DIRECT_API_FIRST
+    # пути tp2/tp4 группы уходили в Grid с g["audiences"]=None, и аудитории доезжали только
+    # cookie-фолбэком (_tp1_pack_groups:2224).
+    _aud_by_gk = _cs_aud.struct_audiences_by_gk(slepok, site_type, tp_code)
+
     for ct, _gk, _uname in _units:
         _grp_pack = (pack.get(ct, {}).get("_groups") or {}).get(_gk) if _gk else None
         data = _grp_pack or pack.get(ct) or {}
@@ -592,7 +604,7 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
                                            model=(_uname if (_multi and _uname) else brand))
         if ((not autotarget) or keep_keywords) and not _keywords:
             continue
-        groups.append({
+        _g_new = {
             # per-adgroup (multi): кодер-имя строим через _text_group_name — дисплейное имя ГРУППЫ
             # (структурный _uname) уходит в "тему" кодера, а не вместо кодера целиком.
             # dmp (_struct_names): чистая тема без кодера (как прежде).
@@ -616,7 +628,10 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
             "image_path": (tp2_all_images[0] if tp2_all_images else None) if tp_code not in ("tp2", "tp4") else None,
             "image_paths": tp2_all_images[:5] if tp_code not in ("tp2", "tp4") else [],
             "callouts": data.get("callouts", []),   # уточнения слепка по модели (из пака)
-        })
+        }
+        # Аудитории структуры (tp2/tp4): только по gk группы, резолв под ЦЕЛЕВОЙ кабинет.
+        _cs_aud.attach_to_group(_g_new, login, _aud_by_gk.get(_gk) if _gk else None)
+        groups.append(_g_new)
     if not groups:
         return {"skipped": f"пак пуст по {len(cts)} модель-ct"}
     # «Уточнения» (callouts) из пака: создаём общий пул AdExtensions один раз (дедуп) →
@@ -636,7 +651,9 @@ def _build_text_from_pack(token: str, login: str, campaign_id: int, slepok: str,
                               apply_group_minus=apply_group_minus, autotarget=autotarget,
                               keep_keywords=keep_keywords,
                               site_type=site_type,
-                              campaign_is_new=bool(campaign_is_new))
+                              campaign_is_new=bool(campaign_is_new),
+                              search_channel=_cs_aud.is_search_channel(
+                                  mode=campaign_mode, tp_code=tp_code))
     rep["cts"] = len(cts)
     rep["groups_built"] = len(groups)
     rep["callouts_pool"] = len(co_pool)

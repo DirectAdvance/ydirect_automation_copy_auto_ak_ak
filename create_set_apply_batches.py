@@ -431,6 +431,16 @@ def apply_minus_sets_batch(
     CampaignsEditData, merges (no duplicates), sends UpdateCampaigns.
     Batch + per-item fallback. Returns {ok, applied, failed_campaigns}.
 
+    Диагноз отказа отдаётся МАШИНОЧИТАЕМО, а не только текстом:
+      ``error_kind``            — ``"validation"`` (Директ отверг сам payload: ответ содержал
+                                  ``validationResult.errors``) либо ``"transport"``
+                                  (кука/сеть/Grid — повтор ТЕМ ЖЕ списком безопасен);
+      ``minus_set_validation``  — True, если валидация ругается ИМЕННО на наборы минус-фраз
+                                  (``libraryMinusKeywordsIds`` в ``path`` или ``MINUS``/``LIBRARY``
+                                  в ``code``).
+    Без этого вызывающий не мог отличить «лимит Директа по наборам» от транзиентного отказа
+    и на ЛЮБОЙ неуспех усекал список наборов до трёх, записывая в журнал ложный диагноз.
+
     TODO: вынести inline GraphQL + _narrow_bases в GridClient.set_campaign_minus_sets
     (grid_finalize.py) — тогда этот метод сведётся к обёртке как у остальных аспектов.
     Ждём синхронизации с агентом, правящим grid_finalize.
@@ -473,6 +483,10 @@ def apply_minus_sets_batch(
         return {"ok": True, "applied": 0, "failed_campaigns": [],
                 "skipped": "all_skipped_by_strategy"}
 
+    # Копим ошибки ВАЛИДАЦИИ Директа отдельно от транспортных: только они означают, что payload
+    # отвергнут по существу (например, лимит наборов на кампанию), а не что связь/кука отвалились.
+    _val_errors: list = []
+
     def _send_items(grid_inst: gf.GridClient, batch_items: list[dict]) -> list[dict]:
         r = grid_inst._post("UpdateCampaigns", q,
                             {"login": login, "input": {"campaignUpdateItems": batch_items}})
@@ -480,10 +494,25 @@ def apply_minus_sets_batch(
         res = (data.get("data") or {}).get("updateCampaigns") or {}
         vr = res.get("validationResult") or {}
         if data.get("errors") or vr.get("errors"):
+            if vr.get("errors"):
+                _val_errors.extend(vr.get("errors") or [])
             raise gf.GridFinalizeError(
                 "batch minus-sets: " + json.dumps(
                     data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
         return res.get("updatedCampaigns") or []
+
+    def _minus_set_validation() -> bool:
+        """Валидация Директа ругается ИМЕННО на наборы минус-фраз (а не на что-то соседнее)."""
+        for e in _val_errors:
+            if not isinstance(e, dict):
+                continue
+            blob = json.dumps(e, ensure_ascii=False).lower()
+            if "libraryminuskeywordsids" in blob:
+                return True
+            code = str(e.get("code") or "").upper()
+            if "MINUS" in code or "LIBRARY" in code:
+                return True
+        return False
 
     _item_pairs: list = []
     for _it in items:
@@ -501,7 +530,10 @@ def apply_minus_sets_batch(
     )
     if not updated:
         return {"ok": False, "applied": 0, "failed_campaigns": failed[:40],
-                "error": "batch+fallback minus_sets: all items failed"}
+                "error": "batch+fallback minus_sets: all items failed",
+                "error_kind": ("validation" if _val_errors else "transport"),
+                "minus_set_validation": _minus_set_validation(),
+                "validation_errors": _val_errors[:10]}
 
     updated_ids: list[int] = []
     for row in updated or []:
@@ -516,8 +548,12 @@ def apply_minus_sets_batch(
     return {
         "ok": True,
         "applied": n_ok,
+        # ЧАСТИЧНЫЙ провал: ok=True (что-то привязалось), но эти кампании остались без наборов.
+        # Вызывающий обязан поднять их в ошибки джобы, иначе потеря невидима.
         "failed_campaigns": failed[:40],
         "minus_set_ids": clean_mids,
+        "error_kind": ("validation" if _val_errors else ("transport" if failed else "")),
+        "minus_set_validation": _minus_set_validation(),
     }
 
 

@@ -145,23 +145,29 @@ def _city_geo_declensions(city_name: str) -> set[str] | None:
 
 
 def _region_geo_stems(region: str) -> list[str]:
-    """Извлечь adj-стем из строки области (напр. «Волгоградская область» → «волгоградск»).
+    """Извлечь adj-стемы из строки области (напр. «Волгоградская область» → «волгоградск»).
 
-    Обрабатывает только первое слово строки (прилагательное), снимает адъективное
-    окончание и восстанавливает стем на «ск».  Возвращает [] если строка пустая
-    или первое слово не распознаётся как прилагательное.
+    Строка может нести НЕСКОЛЬКО областей через запятую («Волгоградская область, Ростовская
+    область» — мультирегиональный аккаунт, `_account_ctx` возвращает `oblasts` списком), поэтому
+    разбираем каждую часть, как `_strip_account_geo` уже делает с городами.  У каждой части берём
+    первое слово (прилагательное), снимаем адъективное окончание и восстанавливаем стем на «ск».
+    Возвращает [] если строка пустая или ни одна часть не распознаётся как прилагательное.
     """
     if not region:
         return []
-    first = region.strip().lower().split()[0] if region.strip() else ""
-    if not first:
-        return []
-    for sfx in ("ская", "ский", "ское", "ские", "ских", "ского", "ской", "ском", "скому", "скими"):
-        if first.endswith(sfx) and len(first) > len(sfx):
-            root = first[: -len(sfx)]
-            stem = root + "ск"
-            return [stem] if len(stem) >= 5 else []
-    return []
+    stems: list[str] = []
+    for part in re.split(r"[,;/]", str(region)):
+        first = part.strip().lower().split()[0] if part.strip() else ""
+        if not first:
+            continue
+        for sfx in ("ская", "ский", "ское", "ские", "ских", "ского", "ской", "ском", "скому", "скими"):
+            if first.endswith(sfx) and len(first) > len(sfx):
+                root = first[: -len(sfx)]
+                stem = root + "ск"
+                if len(stem) >= 5 and stem not in stems:
+                    stems.append(stem)
+                break
+    return stems
 
 
 def _strip_account_geo(minus_words: list[str], city: str, region: str = "") -> list[str]:
@@ -326,18 +332,129 @@ def _clean_minus_set_phrases(phrases: list, city: str = "", region: str = "") ->
     return _strip_account_geo(out, city, region), too_long
 
 
+def _set_chars(words) -> int:
+    """Символы набора БЕЗ пробелов — ровно так лимит 4096 считает Директ."""
+    return sum(len(str(w).replace(" ", "")) for w in (words or []))
+
+
+def _pack_name(base_names: list[str], part_no: int, parts_total: int) -> str:
+    """Имя склеенного набора: «A + B» (+ «(часть N)» если исходный набор разрезан).
+
+    Имя обязано быть СТАБИЛЬНЫМ (реюз по имени на повторном прогоне) и понятным в кабинете.
+    Обрезаем по 255 (лимит Name у negativekeywordsharedsets), хвост «(часть N/M)» держим ВСЕГДА:
+    без него две разрезанные части после обрезки могли бы схлопнуться в одно имя.
+    """
+    tail = f" (часть {part_no}/{parts_total})" if parts_total > 1 else ""
+    head = " + ".join(n for n in base_names if n) or "Минуса слепка"
+    room = 255 - len(tail)
+    if len(head) > room:
+        head = head[: max(1, room - 1)].rstrip() + "…"
+    return head + tail
+
+
+def _pack_minus_sets(sets: list[dict], budget: int, max_sets: int) -> tuple[list[dict], list[str]]:
+    """Склеить именованные наборы слепка в ≤``max_sets`` наборов по ``budget`` симв. без пробелов.
+
+    Зачем: Директ разрешает привязать к одной кампании не более ТРЁХ наборов
+    (docs/keywords/negative-keywords-library.md:41). Решение Семёна 2026-07-28 — не отбрасывать
+    лишние наборы (у kuderko/«С пробегом» 4-й набор «Марки и модели авто» = 685 фраз = 41 % объёма),
+    а СКЛЕИВАТЬ фразы в три набора по бюджету 4096.
+
+    Детерминированность (обязательна, иначе реюз по имени сломается):
+      • порядок наборов и фраз — как в файле структуры, никакой сортировки и множеств;
+      • глобальный дедуп по caseless-ключу, побеждает ПЕРВОЕ вхождение;
+      • раскладка — first-fit: фраза кладётся в ПЕРВЫЙ уже открытый набор, куда влезает,
+        иначе открывается следующий (пока их < max_sets).
+    Один и тот же вход даёт один и тот же выход, включая имена.
+
+    Возвращает (наборы, непоместившиеся фразы). НЕ обрезает молча: всё, что не влезло
+    в max_sets×budget, отдаётся вызывающему списком — тот обязан сообщить ГРОМКО.
+    """
+    bins: list[dict] = []
+    leftover: list[str] = []
+    seen: set[str] = set()
+    for s in sets or []:
+        src = str(s.get("name") or "")
+        for p in (s.get("phrases") or []):
+            w = str(p)
+            k = w.lower()
+            if k in seen:
+                continue
+            seen.add(k)
+            cost = len(w.replace(" ", ""))
+            placed = False
+            for b in bins:
+                if b["chars"] + cost <= budget:
+                    b["phrases"].append(w)
+                    b["chars"] += cost
+                    if src and src not in b["src"]:
+                        b["src"].append(src)
+                    placed = True
+                    break
+            if placed:
+                continue
+            if len(bins) < max_sets and cost <= budget:
+                bins.append({"src": ([src] if src else []), "phrases": [w], "chars": cost})
+            else:
+                leftover.append(w)   # не влезло ни в один набор — вернём вызывающему
+    # Имена: «(часть N/M)» только у тех исходных наборов, что реально разрезаны между наборами.
+    spread = {}
+    for b in bins:
+        for nm in b["src"]:
+            spread[nm] = spread.get(nm, 0) + 1
+    part_no: dict[str, int] = {}
+    packed: list[dict] = []
+    for b in bins:
+        parts_total = max((spread.get(nm, 1) for nm in b["src"]), default=1)
+        if parts_total > 1:
+            _key = next(nm for nm in b["src"] if spread.get(nm, 1) == parts_total)
+            part_no[_key] = part_no.get(_key, 0) + 1
+            _no = part_no[_key]
+        else:
+            _no = 1
+        packed.append({"name": _pack_name(b["src"], _no, parts_total),
+                       "phrases": b["phrases"], "src": list(b["src"])})
+    # Страховка от коллизии имён после обрезки по 255: имена наборов обязаны быть уникальны.
+    _used: set[str] = set()
+    for i, p in enumerate(packed):
+        nm = p["name"]
+        if nm.lower() in _used:
+            nm = f"{nm[:245]} #{i + 1}"
+        _used.add(nm.lower())
+        p["name"] = nm
+    return packed, leftover
+
+
+def _minus_set_live_phrases(entry: dict) -> list[str]:
+    """Фразы набора из ответа v5 `negativekeywordsharedsets.get` (список или {"Items": [...]})."""
+    nk = (entry or {}).get("NegativeKeywords")
+    if isinstance(nk, dict):
+        nk = nk.get("Items")
+    return [str(x) for x in (nk or [])]
+
+
 def ensure_named_minus_sets(token: str, login: str, slepok: str, site_type: str,
                             city: str = "", region: str = "") -> dict:
     """Создать/переиспользовать в БИБЛИОТЕКЕ минус-фраз аккаунта именованные наборы слепка.
 
     ИДЕМПОТЕНТНО: сначала `negativekeywordsharedsets.get`; набор с ТЕМ ЖЕ именем (caseless)
-    переиспользуется как есть — повторный прогон дублей не плодит и содержимое не переписывает.
-    Создаётся только недостающее, через `negativekeywordsharedsets.add`, с сохранением имени.
+    переиспользуется, повторный прогон дублей не плодит. Создаётся только недостающее, через
+    `negativekeywordsharedsets.add`, с сохранением имени.
 
-    Лимиты соблюдаются ЯВНО, без тихой обрезки: набор длиннее 4096 симв. без пробелов или
-    не влезающий в 30 наборов аккаунта — НЕ создаётся, причина уходит в errors (видимая ошибка).
+    СВЕРКА СОДЕРЖИМОГО при реюзе: `get` читает и `NegativeKeywords`, состав набора в кабинете
+    сравнивается с составом из слепка. Расхождение → ГРОМКОЕ предупреждение в errors (сколько
+    фраз в кабинете, сколько в слепке, каких не хватает). Содержимое чужого набора НЕ
+    переписываем намеренно: набор — общий объект АККАУНТА, он может висеть и на кампаниях
+    директолога, которых мы не создавали; тихий `update` порезал бы их показы. Это та же
+    политика, что у матчинга ТОЛЬКО по точному имени (см. PACK_MINUS_PER_GROUP_LOST).
 
-    Возврат: {"ok", "ids", "created", "reused", "errors", "sets_in_structure", "skipped"}.
+    СКЛЕЙКА (решение Семёна 2026-07-28): наборов в слепке больше трёх (лимит Директа на
+    кампанию, negative-keywords-library.md:41) → фразы детерминированно укладываются в ТРИ
+    набора по 4096 симв. без пробелов (`_pack_minus_sets`), чтобы ни одна фраза не потерялась.
+    Не влезло даже в 3×4096 → видимая ошибка со списком, без тихой обрезки.
+
+    Возврат: {"ok", "ids", "created", "reused", "errors", "sets_in_structure", "skipped",
+              "packed_from", "packed_into", "mismatch", "not_packed"}.
     """
     res: dict = {"ok": True, "ids": [], "created": [], "reused": [], "errors": [],
                  "sets_in_structure": 0, "skipped": ""}
@@ -350,32 +467,36 @@ def ensure_named_minus_sets(token: str, login: str, slepok: str, site_type: str,
         res["ok"] = False
         res["errors"].append("нет токена v5 — библиотечные наборы минус-фраз НЕ созданы")
         return res
-    jm = _v5_get("negativekeywordsharedsets", token, login, ["Id", "Name"])
+    # NegativeKeywords читаем СРАЗУ: без состава набора реюз по имени не может заметить, что
+    # набор в кабинете разошёлся со слепком (правки в редакторе слепков не доезжали молча).
+    jm = _v5_get("negativekeywordsharedsets", token, login, ["Id", "Name", "NegativeKeywords"])
     if not isinstance(jm, dict) or "error" in jm:
         res["ok"] = False
         res["errors"].append("negativekeywordsharedsets.get: "
                              + (_v5_err(jm) if isinstance(jm, dict) else "нет ответа"))
         return res
-    existing = [(s.get("Id"), s.get("Name") or "")
-                for s in ((jm.get("result") or {}).get("NegativeKeywordSharedSets") or [])]
+    _rows = ((jm.get("result") or {}).get("NegativeKeywordSharedSets") or [])
+    existing = [(s.get("Id"), s.get("Name") or "") for s in _rows]
     by_name: dict[str, int] = {}
-    for sid, nm in existing:
-        k = re.sub(r"\s+", " ", str(nm).strip()).lower()
-        if k and sid and k not in by_name:
+    live_phrases: dict[int, list[str]] = {}
+    for row in _rows:
+        sid = row.get("Id")
+        k = re.sub(r"\s+", " ", str(row.get("Name") or "").strip()).lower()
+        if not sid:
+            continue
+        live_phrases[int(sid)] = _minus_set_live_phrases(row)
+        if k and k not in by_name:
             by_name[k] = int(sid)
     free_slots = _MINUS_LIB_MAX_SETS_ACCOUNT - len(existing)
 
+    # ── Нормализация + гео-чистка ДО реюза/склейки: и сверка содержимого, и укладка обязаны
+    # сравнивать ровно то, что реально уехало бы в кабинет.
+    cleaned: list[dict] = []
     for s in sets:
         name = s.get("name") or ""
         if not name:
             res["ok"] = False
             res["errors"].append("набор без имени в структуре слепка — пропущен")
-            continue
-        hit = by_name.get(name.lower())
-        if hit:
-            if hit not in res["ids"]:
-                res["ids"].append(hit)
-            res["reused"].append(name)
             continue
         words, too_long = _clean_minus_set_phrases(s.get("phrases"), city, region)
         if too_long:
@@ -384,7 +505,55 @@ def ensure_named_minus_sets(token: str, login: str, slepok: str, site_type: str,
             res["ok"] = False
             res["errors"].append(f"«{name}»: после нормализации и гео-чистки не осталось фраз — набор НЕ создан")
             continue
-        chars = sum(len(w.replace(" ", "")) for w in words)
+        cleaned.append({"name": name, "phrases": words})
+    if not cleaned:
+        return res
+
+    # ── Склейка в ≤3 набора, если наборов больше лимита Директа на кампанию ──────────────────
+    if len(cleaned) > _MINUS_LIB_MAX_SETS_PER_CAMPAIGN:
+        _total_chars = _set_chars([p for c in cleaned for p in c["phrases"]])
+        _cap = _MINUS_LIB_MAX_SETS_PER_CAMPAIGN * _MINUS_SHARED_SET_CHAR_BUDGET
+        packed, leftover = _pack_minus_sets(cleaned, _MINUS_SHARED_SET_CHAR_BUDGET,
+                                            _MINUS_LIB_MAX_SETS_PER_CAMPAIGN)
+        res["packed_from"] = len(cleaned)
+        res["packed_into"] = len(packed)
+        if leftover:
+            res["ok"] = False
+            res["not_packed"] = leftover
+            _sample = "; ".join(leftover[:20]) + (" …" if len(leftover) > 20 else "")
+            _msg = (f"НЕ ВЛЕЗЛО в {_MINUS_LIB_MAX_SETS_PER_CAMPAIGN} набора × "
+                    f"{_MINUS_SHARED_SET_CHAR_BUDGET} симв.: {len(leftover)} фраз "
+                    f"(всего {_total_chars} симв. без пробелов при потолке {_cap}) — {_sample}")
+            res["errors"].append(_msg)
+            print(f"[minus-sets] {login}/{slepok}/{site_type}: {_msg}", flush=True)
+        cleaned = packed
+
+    for s in cleaned:
+        name = s.get("name") or ""
+        words = list(s.get("phrases") or [])
+        hit = by_name.get(name.lower())
+        if hit:
+            if hit not in res["ids"]:
+                res["ids"].append(hit)
+            res["reused"].append(name)
+            # Реюз по имени БЕЗ сверки состава был тихой потерей правок слепка: набор
+            # переиспользовался как есть, новые фразы не доезжали и в отчёте не всплывали.
+            _live = {re.sub(r"\s+", " ", str(w).strip()).lower()
+                     for w in live_phrases.get(hit, []) if str(w).strip()}
+            _want = {w.lower() for w in words}
+            _missing = [w for w in words if w.lower() not in _live]
+            if _missing or len(_live) != len(_want):
+                _sample = "; ".join(_missing[:10]) + (" …" if len(_missing) > 10 else "")
+                _msg = (f"«{name}»: набор в кабинете ОТЛИЧАЕТСЯ от слепка — в кабинете "
+                        f"{len(_live)} фраз, в слепке {len(_want)}, не хватает {len(_missing)}; "
+                        f"содержимое НЕ обновлено (набор — общий объект аккаунта, перезапись "
+                        f"порезала бы чужие кампании) — обновите набор вручную"
+                        + (f": {_sample}" if _sample else ""))
+                res.setdefault("mismatch", []).append(name)
+                res["errors"].append(_msg)
+                print(f"[minus-sets] {login}: {_msg}", flush=True)
+            continue
+        chars = _set_chars(words)
         if chars > _MINUS_SHARED_SET_CHAR_BUDGET:
             res["ok"] = False
             res["errors"].append(
