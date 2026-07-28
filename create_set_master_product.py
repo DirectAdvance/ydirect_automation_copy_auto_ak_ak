@@ -13,6 +13,7 @@ from .uac_verifier import UAC_IMAGES_MIN as _UAC_IMAGES_MIN
 from .uac_verifier import images_create_min as _uac_images_create_min
 from .model_urls import (_brand_level_url, _is_degenerate_feed_url, _model_page_href,
                          _strip_site_domain_label, _strip_url_query)
+from .text_norm import _cap_first
 
 
 def _site_root_href(href: str) -> str:
@@ -51,7 +52,9 @@ def _pavlov_multibrand_texts(brand: str = "") -> list[str]:
     b = (brand or "").strip().split()[0] if (brand or "").strip() else "новое авто"
     return [
         f"Купить {b} в кредит. Убрали наценку. Выгода до 900 000 ₽. Оставьте заявку!",
-        f"{b} в наличии. КАСКО на год и взнос 0 ₽. Одобрение 98%. Рассчитайте платёж!",
+        # ⚠️ ≤81 симв. по конструкции: при b="новое авто" строка была 82 симв. и `_trim_to_word`
+        # рубил её до «…Одобрение 98%. Рассчитайте» (оборванный призыв в live, 2026-07-28).
+        f"{_cap_first(b)} в наличии. КАСКО на год и взнос 0 ₽. Одобрение 98%. Заявка онлайн!",
         "Выберите марку в наличии. Трейд-ин выше рынка и 3 платежа за наш счёт.",
     ]
 
@@ -65,13 +68,85 @@ def _pavlov_multibrand_sitelinks() -> list[dict]:
     ]
 
 
+# Смысловая «голова» числовой добивки: без числа она сама по себе пустая («Выгода», «Платёж»).
+_UAC_NUM_HEAD = r"(?:выгода|скидка|плат[её]ж|цена|одобрение|взнос|кредит)"
+_UAC_DANGLING_NUM_RE = re.compile(
+    r"(?i)(?:\s|^)(?:" + _UAC_NUM_HEAD + r"\s+)?(?:от|до|за|с)\s+\d[\d\s]*(?:[.,;:!—-]\s*)?$")
+_UAC_DANGLING_HEAD_RE = re.compile(
+    r"(?i)(?:\s|^)(?:" + _UAC_NUM_HEAD + r"\s+)?(?:от|до|за)\s*$")
+
+
 def _strip_dangling_uac_tail(text: str) -> str:
     """Убрать обрезанные хвосты UAC-текстов: «от 9», «за 15», «до 900» без единицы/объекта."""
     s = re.sub(r"\s+", " ", str(text or "")).strip()
     if not s:
         return ""
-    s = re.sub(r"(?i)(?:\s|^)(?:от|до|за|с)\s+\d[\d\s]*(?:[.,;:!—-]\s*)?$", "", s).strip()
-    return s.rstrip(" .,!;:—-")
+    # Вместе с числом снимаем и его смысловую «голову» («Выгода до 900» → пусто, а не «Выгода»).
+    s = re.sub(_UAC_DANGLING_NUM_RE, "", s).strip()
+    # Висячая связка без числа («Выгода до», «Платёж от») — остаток обрезки числовой добивки.
+    s = re.sub(_UAC_DANGLING_HEAD_RE, "", s).strip()
+    return _cap_first(s.rstrip(" .,!;:—-"))
+
+
+# ── Числовая «добивка» UAC-контента ────────────────────────────────────────────────────────
+# ⛔ Голый фрагмент («до 45%», «от 900 000 ₽») НЕ является законченной фразой: приклеенный к
+# призыву он давал живой бред «Оставьте заявку до 45%» (Мастер, 2026-07-28). Поэтому:
+#   1) берём из собственного контента кампании ЦЕЛЫЙ сегмент с числом («Выгода до 45%»,
+#      «Платёж от 9 000 ₽/мес»), а не regex-обрывок;
+#   2) к призыву цепляем хвост, ТОЛЬКО если он согласуется с ним грамматически
+#      (обстоятельство времени «за 15 минут»); иначе сегмент идёт ОТДЕЛЬНЫМ предложением;
+#   3) не влезло в лимит — строка остаётся короче, но осмысленной (кандидат без числа
+#      отсеется number-гейтом вызывающего кода).
+_UAC_NUM_RE = re.compile(
+    r"(?i)\b(?:до|от)\s+\d[\d\s]*(?:[%₽]|руб\.?|р\.|тыс\.?|млн\.?|платеж\w*|минут\w*)?"
+)
+# Хвост, синтаксически согласованный с «Оставьте заявку …»: только обстоятельство времени.
+_UAC_CTA_COMPAT_RE = re.compile(r"(?i)^(?:за|в течение)\s+\d")
+_UAC_CTA_HINT = "за 15 минут"          # согласуется с призывом («Оставьте заявку за 15 минут»)
+_UAC_NUM_CLAUSE_FALLBACK = "Одобрение за 15 минут"   # законченная фраза для НЕ-призывной позиции
+_UAC_NUM_CLAUSE_MAX = 34               # длиннее — это целое предложение источника, не «хвост»
+
+
+def _uac_number_clause(sources) -> str:
+    """Законченный сегмент с числом из собственного контента кампании («Выгода до 45%»)."""
+    for _src in sources or []:
+        s = re.sub(r"\s+", " ", str(_src or "")).strip()
+        if not s:
+            continue
+        for seg in re.split(r"[.!?]+", s):
+            seg = seg.strip().strip(" .,!;:—-")
+            if not seg or len(seg) > _UAC_NUM_CLAUSE_MAX or not _UAC_NUM_RE.search(seg):
+                continue
+            return _cap_first(seg)
+    return ""
+
+
+def _attach_cta_hint(base: str, clause: str, limit: int) -> str:
+    """«{base}. Оставьте заявку …» с грамматически совместимым хвостом (или без него)."""
+    b = str(base or "").strip().rstrip(" .,!;:—-")
+    if not b:
+        return ""
+    c = str(clause or "").strip().rstrip(" .,!;:—-")
+    cands: list[str] = []
+    if c and _UAC_CTA_COMPAT_RE.match(c):
+        cands.append(f"{b}. Оставьте заявку {c.lower()}")
+    elif c:
+        cands.append(f"{b}. {_cap_first(c)}. Оставьте заявку")
+    cands.append(f"{b}. Оставьте заявку {_UAC_CTA_HINT}")
+    for cand in cands:
+        if len(cand) <= limit:
+            return cand
+    return b
+
+
+def _attach_number_clause(base: str, clause: str, limit: int) -> str:
+    """Добить строку числом ОТДЕЛЬНЫМ предложением, а не обрывком через пробел."""
+    b = str(base or "").strip().rstrip(" .,!;:—-")
+    if not b:
+        return ""
+    c = str(clause or "").strip().rstrip(" .,!;:—-") or _UAC_NUM_CLAUSE_FALLBACK
+    cand = f"{b}. {_cap_first(c)}"
+    return cand if len(cand) <= limit else b
 
 
 def _strip_online_word(text: str) -> str:
@@ -771,14 +846,8 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
         _seen_live_texts = {_variant_norm_key(_x) for _x in it_texts if _variant_norm_key(_x)}
 
         def _uac_text_number_hint() -> str:
-            for _src in list(it_titles or []) + list(_llm_titles or []) + list(_llm_texts or []):
-                _m = re.search(
-                    r"(?i)\b(?:до|от)\s+\d[\d\s]*(?:[%₽]|руб\.?|р\.|тыс\.?|млн\.?|платеж\w*|минут\w*)?",
-                    str(_src or ""),
-                )
-                if _m:
-                    return _m.group(0).strip()
-            return "за 15 минут"
+            return _uac_number_clause(
+                list(it_titles or []) + list(_llm_titles or []) + list(_llm_texts or []))
 
         def _append_uac_live_text(_raw: str) -> None:
             if len(it_texts) >= 3:
@@ -786,7 +855,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             _x = _sanitize_content(_soften_uac_sitelink_text(str(_raw or "")), max_len=81)
             _x = _trim_to_word(_strip_credit_rate(_x), 81).rstrip(" .")
             if _x and not _is_non_auto and not _has_number(_x):
-                _x = _trim_to_word(f"{_x} {_uac_text_number_hint()}", 81).rstrip(" .")
+                _x = _attach_number_clause(_x, _uac_text_number_hint(), 81)
             if (not _x or _is_bad_start(_x) or _bad_ad_text(_x) or not _common_content_ok(_x)
                     or (not _is_non_auto and not _has_number(_x))
                     or len(_x) < _TP67_MIN_TEXT_LEN):
@@ -820,15 +889,8 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
         # только 2 текста, если все M3-формулировки попали в одни offer-buckets. Для live-пути
         # нельзя брать generic fallback, поэтому делаем короткие варианты из собственных
         # заголовков/ссылок этой же кампании и больше не прогоняем их через bucket-сжиматель.
-        _hint = "за 15 минут"
-        for _src in list(it_titles or []) + list(_llm_titles or []) + list(_llm_texts or []):
-            _m = re.search(
-                r"(?i)\b(?:до|от)\s+\d[\d\s]*(?:[%₽]|руб\.?|р\.|тыс\.?|млн\.?|платеж\w*|минут\w*)?",
-                str(_src or ""),
-            )
-            if _m:
-                _hint = _m.group(0).strip()
-                break
+        _hint = _uac_number_clause(
+            list(it_titles or []) + list(_llm_titles or []) + list(_llm_texts or []))
         _emergency_seeds: list[str] = []
         for _s in list(_pre_semantic_sitelinks or []) + list(_sl_base or []) + list(it_sitelinks or []):
             if isinstance(_s, dict):
@@ -840,7 +902,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             _base = re.split(r"[.!?]", _soften_uac_sitelink_text(str(_seed or "")), maxsplit=1)[0].strip()
             if not _base:
                 continue
-            _x = _trim_to_word(_sanitize_content(f"{_base}. Оставьте заявку {_hint}", max_len=81), 81).rstrip(" .")
+            _x = _trim_to_word(_sanitize_content(_attach_cta_hint(_base, _hint, 81), max_len=81), 81).rstrip(" .")
             if (not _x or _is_bad_start(_x) or _bad_ad_text(_x) or not _common_content_ok(_x)
                     or (not _is_non_auto and not _has_number(_x))
                     or len(_x) < _TP67_MIN_TEXT_LEN):
@@ -850,15 +912,8 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
                 continue
             it_texts.append(_x)
     if _live_generated_content and len(it_titles) < 5:
-        _title_hint = "за 15 минут"
-        for _src in list(it_titles or []) + list(it_texts or []) + list(_llm_titles or []) + list(_llm_texts or []):
-            _m = re.search(
-                r"(?i)\b(?:до|от)\s+\d[\d\s]*(?:[%₽]|руб\.?|р\.|тыс\.?|млн\.?|платеж\w*|минут\w*)?",
-                str(_src or ""),
-            )
-            if _m:
-                _title_hint = _m.group(0).strip()
-                break
+        _title_hint = _uac_number_clause(
+            list(it_titles or []) + list(it_texts or []) + list(_llm_titles or []) + list(_llm_texts or []))
         _title_seeds: list[str] = []
         _title_seeds.extend(str(_t or "") for _t in list(_llm_titles or []) + list(it_texts or []) + list(_llm_texts or []))
         for _s in list(_pre_semantic_sitelinks or []) + list(_sl_base or []) + list(it_sitelinks or []):
@@ -878,7 +933,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
                            for tok in _own):
                     _base = f"{_brand_prefix} {_base}"
             if not _is_non_auto and not _has_number(_base):
-                _base = f"{_base} {_title_hint}"
+                _base = _attach_number_clause(_base, _title_hint, 56)
             _t = _sanitize_content(_base, max_len=56)
             _t = _fill_title(_replace_sep_hyphen(_replace_emdash(_strip_credit_rate(_t))), 45, 56)
             _t = _trim_to_word(_t, 56).rstrip(" .")
@@ -1109,15 +1164,8 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
 
     if len(it_texts) < 3:
         _final_seen_texts = {_variant_norm_key(_x) for _x in it_texts if _variant_norm_key(_x)}
-        _num_hint = "за 15 минут"
-        for _src in list(it_titles or []) + list(_llm_titles or []) + list(_llm_texts or []):
-            _m = re.search(
-                r"(?i)\b(?:до|от)\s+\d[\d\s]*(?:[%₽]|руб\.?|р\.|тыс\.?|млн\.?|платеж\w*|минут\w*)?",
-                str(_src or ""),
-            )
-            if _m:
-                _num_hint = _m.group(0).strip()
-                break
+        _num_hint = _uac_number_clause(
+            list(it_titles or []) + list(_llm_titles or []) + list(_llm_texts or []))
 
         def _append_final_uac_text(_raw: str) -> None:
             if len(it_texts) >= 3:
@@ -1126,7 +1174,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             if not _base:
                 return
             if not _is_non_auto and not _has_number(_base):
-                _base = f"{_base}. Оставьте заявку {_num_hint}"
+                _base = _attach_cta_hint(_base, _num_hint, 81)
             _x = _sanitize_content(_base, max_len=81)
             _x = _trim_to_word(_strip_credit_rate(_x), 81).rstrip(" .")
             if (not _x or _is_bad_start(_x) or _bad_ad_text(_x) or not _common_content_ok(_x)
