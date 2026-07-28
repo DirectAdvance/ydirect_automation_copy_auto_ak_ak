@@ -1,14 +1,20 @@
 """Порядок источников ВИДЕО (правило Семёна 2026-07-28).
 
 Ролики, залитые под конкретного директолога, живут в его папке слепка
-(``_slepki_data/<слепок>/videos``), а не в общем пуле ``agency/Video/<ct>``. Для ЛЮБОГО
-слепка порядок обязан быть:
+(``_slepki_data/<слепок>/videos``), а не в общем пуле ``agency/Video/<ct>``. Порядок —
+ДВА ЯРУСА, внутри каждого источники идут свой → общий → чужой:
 
-  1) СВОЙ слепок → 2) ОБЩИЙ пул → 3) ЧУЖОЙ слепок (последний фолбэк, при нехватке).
+  ЯРУС 1 (точная модель): 1) СВОЙ слепок → 2) ОБЩИЙ пул → 3) ЧУЖОЙ слепок;
+  ЯРУС 2 (подмена бренда): 4) свой слепок → 5) общий пул → 6) чужой слепок.
 
-Инцидент, который это чинит: ``Haval_Dargo_*`` Павлова лежали в общем пуле ``ct0112`` и
+Инцидент №1, который это чинит: ``Haval_Dargo_*`` Павлова лежали в общем пуле ``ct0112`` и
 выигрывали у генеративных ``ct0112_*.mp4`` ЧИСТО ПО АЛФАВИТУ ('H' < 'c'), поэтому уезжали
 в три чужие tp7-кампании (porg-pl6iavd5 / porg-azsw6eyh / porg-4ealp4ry).
+
+Инцидент №2 (2026-07-28, «точный ролик Jolion важнее чужого Dargo»): brand-fallback общего
+пула срабатывал ДО ступени «чужой слепок», поэтому для опустевших папок пула ct0118/ct0119/
+ct0120 чужой слепок получал ``ct0112_*`` (Haval Dargo) вместо точного ролика своей модели
+из пака Павлова.
 """
 from direct import kontent_pack as kp
 
@@ -45,7 +51,39 @@ def _patch(monkeypatch, *, pool: dict, slepki: dict, models: dict) -> None:
     monkeypatch.setattr(kp, "_filter_valid_videos", lambda paths: list(paths))
 
 
-_MODELS = {"ct0112": "Haval Dargo", "ct0299": "Haval Dargo X", "ct0119": "Haval Jolion"}
+_MODELS = {"ct0112": "Haval Dargo", "ct0299": "Haval Dargo X", "ct0119": "Haval Jolion",
+           "ct0118": "Haval H9"}
+
+
+def test_exact_model_in_foreign_slepok_beats_pool_brand_fallback(monkeypatch):
+    """ЯРУС 1 > ЯРУС 2: точный Jolion из ЧУЖОГО слепка важнее Dargo из общего пула.
+
+    Папка пула ``ct0119`` опустела (батч by_code уехал в пак Павлова) → brand-fallback пула
+    подставлял ``ct0112_*`` (Haval Dargo). Теперь сначала ищется точная модель во всех
+    источниках, и только потом подмена бренда."""
+    _patch(
+        monkeypatch,
+        pool={"ct0112": ["ct0112_01.mp4", "ct0112_02.mp4"]},   # ct0119 в пуле пуст
+        slepki={"pavlov": {"ct0119": ["Haval_Jolion_16x9.mp4", "Haval_Jolion_1x1.mp4"]}},
+        models=_MODELS,
+    )
+    got = kp.videos_for_ct("porg-azsw6eyh", "ct0119", limit=2, brand_hint="Haval",
+                           slepok="scherbakova")
+    assert got == [_slepok_rel("pavlov", "Haval_Jolion_16x9.mp4"),
+                   _slepok_rel("pavlov", "Haval_Jolion_1x1.mp4")]
+
+
+def test_pool_brand_fallback_still_works_when_model_absent_everywhere(monkeypatch):
+    """Точной модели нет НИГДЕ (ни в слепках, ни в пуле) → brand-fallback пула, как раньше."""
+    _patch(
+        monkeypatch,
+        pool={"ct0112": ["ct0112_01.mp4", "ct0112_02.mp4"]},
+        slepki={"pavlov": {"ct0112": ["Haval_Dargo_16x9.mp4"]}},
+        models=_MODELS,
+    )
+    got = kp.videos_for_ct("porg-azsw6eyh", "ct0118", limit=2, brand_hint="Haval",
+                           slepok="scherbakova")
+    assert got == [_pool_rel("ct0112", "ct0112_01.mp4"), _pool_rel("ct0112", "ct0112_02.mp4")]
 
 
 def test_own_slepok_wins_over_common_pool(monkeypatch):

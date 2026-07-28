@@ -1563,19 +1563,30 @@ def _videos_from_slepok_folders(folders: list, ct: str, model_key: str, brand_wo
 
 def videos_for_ct(login: str, ct: str, limit: int = 2, brand_hint: str = "",
                   slepok: str = "") -> list:
-    """Видео ПО КОНКРЕТНОЙ МОДЕЛИ/МАРКЕ (ct) — ТРИ ступени источников (правило Семёна 2026-07-28):
+    """Видео ПО КОНКРЕТНОЙ МОДЕЛИ/МАРКЕ (ct) — ДВА ЯРУСА × ТРИ источника (правило Семёна
+    2026-07-28: «точный ролик Jolion важнее чужого Dargo»).
 
+    ЯРУС 1 — ТОЧНАЯ модель (ключ-ct или ключ-модели):
       1) СВОЙ слепок — ``_slepki_data/<канон слепка>/videos`` (напр. ``pavlov``) и слепок-сборка
          аккаунта ``_slepki_data/<бренд>_<город>_<суффикс логина>``; состав задаёт
          ``_videos_map.json`` {ct или ключ-модели: [файл.mp4, ...]};
-      2) ОБЩИЙ пул ``/Users/Shared/agency/Video/<ct>/`` (``videos_pool_for_ct``);
-      3) ЧУЖОЙ слепок — ПОСЛЕДНИЙ фолбэк, только если своего и общего нет.
+      2) ОБЩИЙ пул ``/Users/Shared/agency/Video/<ct>/`` (``videos_pool_for_ct``, exact-only);
+      3) ЧУЖОЙ слепок — точная модель.
+
+    ЯРУС 2 — ПОДМЕНА БРЕНДА (другая модель той же марки), тот же порядок источников:
+      4) свой слепок → 5) общий пул (brand-fallback) → 6) чужой слепок.
+
+    Почему ярусами: brand-fallback общего пула раньше срабатывал ДО ступени «чужой слепок», и
+    после переноса батча ``by_code`` в пак Павлова опустевшие папки пула ct0118/ct0119/ct0120
+    отдавали чужому слепку ``ct0112_*`` (Haval **Dargo**) вместо точного ролика своей модели,
+    лежащего в паке Павлова. Точное совпадение модели — где бы оно ни лежало — важнее подмены
+    бренда; порядок источников (свой → пул → чужой) внутри каждого яруса сохранён.
 
     Ролики, залитые под конкретного директолога, кладутся в его папку слепка, а НЕ в общий пул:
     иначе они выигрывали у общего пула по алфавиту и уезжали в чужие аккаунты (инцидент
     2026-07-27: ``Haval_Dargo_*`` Павлова попали в три чужие tp7-кампании).
 
-    ``slepok`` — канон слепка кампании (``_SLEPOK_KEY``); пусто → ступень 1 работает только по
+    ``slepok`` — канон слепка кампании (``_SLEPOK_KEY``); пусто → ступени 1/4 работают только по
     суффиксу логина (прежнее поведение). Лимит Директа — 2 видео на мастер."""
     ct = _norm_ct(ct)
     if not ct or ct == GENERAL_CT:
@@ -1584,18 +1595,35 @@ def videos_for_ct(login: str, ct: str, limit: int = 2, brand_hint: str = "",
     ct_models = feeds_ct_model()
     model_key = _ct_model_key(ct)
     brand_word = _ct_brand_word(ct, ct_models, brand_hint)
-    # brand-fallback внутри слепка разрешаем ТОЛЬКО брендовому ct (у модельного ct есть своё
-    # имя модели) — иначе чужая модель своего слепка перебила бы точное совпадение общего пула.
+    # brand-подмену внутри слепка разрешаем ТОЛЬКО брендовому ct (у модельного ct есть своё
+    # имя модели) — иначе чужая модель слепка перебила бы точное совпадение другого источника.
     allow_brand = not (ct_models.get(ct) or "").strip()
     own, foreign = _slepok_video_folders(slepok, login)
-    mine = _videos_from_slepok_folders(own, ct, model_key, brand_word, _lim, ct_models, allow_brand)
+
+    # ── ЯРУС 1: точная модель ─────────────────────────────────────────────────────────────
+    mine = _videos_from_slepok_folders(own, ct, model_key, brand_word, _lim, ct_models, False)
     if mine:
         return mine
-    pool = videos_pool_for_ct(ct, _lim, brand_hint=brand_hint)
+    pool = videos_pool_for_ct(ct, _lim, brand_hint=brand_hint, allow_brand=False)
     if pool:
         return pool
-    return _videos_from_slepok_folders(foreign, ct, model_key, brand_word, _lim,
-                                       ct_models, allow_brand)
+    other = _videos_from_slepok_folders(foreign, ct, model_key, brand_word, _lim, ct_models, False)
+    if other:
+        return other
+
+    # ── ЯРУС 2: подмена бренда ────────────────────────────────────────────────────────────
+    if allow_brand:
+        mine_brand = _videos_from_slepok_folders(own, ct, model_key, brand_word, _lim,
+                                                 ct_models, True)
+        if mine_brand:
+            return mine_brand
+    pool_brand = videos_pool_for_ct(ct, _lim, brand_hint=brand_hint)
+    if pool_brand:
+        return pool_brand
+    if allow_brand:
+        return _videos_from_slepok_folders(foreign, ct, model_key, brand_word, _lim,
+                                           ct_models, True)
+    return []
 
 
 _VIDEO_DURATION_CACHE: dict[tuple[str, float, int], float] = {}
@@ -1647,7 +1675,8 @@ def _filter_valid_videos(paths: list) -> list:
     return out
 
 
-def videos_pool_for_ct(ct: str, limit: int = 2, brand_hint: str = "") -> list:
+def videos_pool_for_ct(ct: str, limit: int = 2, brand_hint: str = "",
+                       allow_brand: bool = True) -> list:
     """Видео из общего per-ct пула M3 ``/Users/Shared/agency/Video/<ct>/`` (индекс
     external_assets, ключ ``Video|video|<ct>``, kind ``video_external``).
 
@@ -1659,7 +1688,11 @@ def videos_pool_for_ct(ct: str, limit: int = 2, brand_hint: str = "") -> list:
     для брендовых ct сегмента «Марки», у которых нет записи в feeds_ct_model() (нет фид-картинки)
     и brand_word иначе остался бы пустым, полностью блокируя brand-fallback. Если caller НЕ
     передал brand_hint, марка резолвится из справочника ag_part1 по ct (3й источник ниже) —
-    поэтому brand-fallback НЕ зависит от случайного покрытия фид-картинок."""
+    поэтому brand-fallback НЕ зависит от случайного покрытия фид-картинок.
+
+    ``allow_brand=False`` — только ТОЧНОЕ совпадение ct, без подмены бренда. Нужен
+    ``videos_for_ct``, где brand-fallback пула обязан идти НИЖЕ ступени «чужой слепок»
+    (точный ролик своей модели важнее чужой модели той же марки)."""
     ct = _norm_ct(ct)
     if not ct or ct == GENERAL_CT:
         return []
@@ -1672,6 +1705,8 @@ def videos_pool_for_ct(ct: str, limit: int = 2, brand_hint: str = "") -> list:
     result = _fetch_valid_videos(rels, _lim)
     if result:
         return result
+    if not allow_brand:
+        return []
     # Brand-fallback: точного ct нет в пуле Video/ (брендовый ct без своей папки, напр. ct0111
     # Haval). Берём ролики из модельных ct того же бренда.
     # brand_word: 1й приоритет — feeds_ct_model (ct→'Brand Model' из фид-картинок); 2й —
