@@ -1094,7 +1094,17 @@ def _create_tp5_campaign(token: str, login: str, base_name: str, counter_id: int
         # Структурные tp5 (camp_names/segment) должны называться ровно как в слепке.
         # Суффикс фида нужен только при настоящем fan-out по нескольким фидам, иначе в кабинете
         # имя расходится со структурой («… — yandex.xml» вместо каноничного «КС+Автотаргетинг»).
-        _keep_struct_name = bool(single_feed or segment or products_only or only_gks or only_cts)
+        # ⚠️ Условие обязано смотреть на ЧИСЛО фидов, а не только на тип кампании. Цикл выше —
+        # fan-out по ВСЕМ фидам аккаунта; при структурной tp5 (`segment`/`only_*`) имя оставалось
+        # одним на все итерации → кампании-близнецы с ОДИНАКОВЫМ именем, без суффикса версии
+        # (`_uniq` их не видит: метка фида приклеивается уже после плана).
+        # Живой инцидент 2026-07-28, porg-pl6iavd5: 12 кампаний tp5 на 2 уникальных имени
+        # (9 + 3), при плане в 6 позиций и 9 разрешённых фидах аккаунта.
+        # Один фид — имя как в слепке (расхождения со структурой нет). Несколько — метка фида
+        # обязательна, иначе имена неразличимы (решение Семёна 2026-07-28).
+        _multi_feed = len(data["feeds"]) > 1
+        _keep_struct_name = (not _multi_feed) and bool(
+            single_feed or segment or products_only or only_gks or only_cts)
         nm_cpc = base_name if _keep_struct_name else (_csctx.dedup_name_segments(f"{base_name} — {_f_label}") if _f_label else base_name)
         nm_cpa = nm_cpc.replace("tp5_cpc_site", "tp5_cpa_site", 1)
         fm_entry = next((f for f in mf_list if int(f["id"]) == int(feed_id)), None)
