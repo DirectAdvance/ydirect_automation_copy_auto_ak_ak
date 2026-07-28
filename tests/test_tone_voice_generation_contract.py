@@ -249,8 +249,13 @@ def test_first_campaign_watchdog_has_separate_fail_fast_budget():
     assert "sla_timeout" in source
     assert '"set", "slepok"' in source
     assert "* _CREATE_SET_SLA_PER_CAMPAIGN_SEC" in source
-    assert "не создана ни одна кампания" in source
+    assert "ни одной кампании за " in source
     assert source.index("_CREATE_FIRST_CAMPAIGN_TIMEOUT") < source.index("_CREATE_RUNNING_TIMEOUT")
+    # Бюджет — нижняя граница, а не приговор: убиваем только вместе с ТИШИНОЙ (нет ни стадий
+    # создания, ни обработанных item'ов). Иначе сторож режет живой прогон, у которого первая
+    # кампания ещё не доехала (2026-07-28, porg-pl6iavd5 — грузил картинки tp2).
+    assert "_CREATE_FIRST_CAMPAIGN_STALL" in source
+    assert "_stage_timing.last_progress" in source
 
 
 def test_common_sitelinks_do_not_call_ai_during_creation():

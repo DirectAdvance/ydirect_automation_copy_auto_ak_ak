@@ -15,6 +15,7 @@ from flask import session
 
 from . import repair_auto as rauto
 from . import repair_gate as rgate
+from . import stage_timing as _stage_timing   # watchdog: отметки стадий = признак жизни джобы
 from . import slepki_editor as _sed
 from . import write_gate as _write_gate
 from .copy_engine import (
@@ -57,6 +58,10 @@ _CREATE_MAX_PER_AGENCY = 1
 _CREATE_ACTIVE_AGENCIES: dict[str, int] = {}
 _CREATE_RUNNING_TIMEOUT = int(os.environ.get("DIRECT_CREATE_RUNNING_TIMEOUT", "900"))
 _CREATE_FIRST_CAMPAIGN_TIMEOUT = int(os.environ.get("DIRECT_CREATE_FIRST_CAMPAIGN_TIMEOUT", "900"))
+# Тишина (нет ни одной стадии создания и ни одного обработанного item'а), после которой джобу
+# без единой кампании считаем зависшей. Работает В ПАРЕ с порогом выше: убиваем, только если
+# прошёл бюджет И столько же времени не было признаков работы.
+_CREATE_FIRST_CAMPAIGN_STALL = int(os.environ.get("DIRECT_CREATE_FIRST_CAMPAIGN_STALL", "300"))
 # M3 content generation plus first-run image preupload can legitimately take >90s per campaign
 # while still heartbeating. Keep a bounded overall SLA, but leave enough budget for warm caches.
 _CREATE_SET_SLA_PER_CAMPAIGN_SEC = int(os.environ.get("DIRECT_CREATE_SET_SLA_PER_CAMPAIGN_SEC", "240"))
@@ -384,7 +389,12 @@ def _create_watchdog_tick() -> None:
         for jid, job in list(_CREATE_JOBS.items()):
             if job.get("status") != "running":
                 continue
-            heartbeat = max(float(job.get("_heartbeat") or 0), float(job.get("started_at") or 0))
+            # Признак жизни — ЛЮБОЙ из трёх: обработанный item (`_heartbeat`), отметка стадии
+            # создания (Grid/v501/заливка картинок — `stage_timing`), либо сам старт джобы.
+            # Без стадий оба сторожа считали «мёртвым» прогон, который минутами гонит картинки
+            # и генерацию до первой кампании (2026-07-28, porg-pl6iavd5).
+            heartbeat = max(float(job.get("_heartbeat") or 0), float(job.get("started_at") or 0),
+                            float(_stage_timing.last_progress(jid) or 0))
             if not heartbeat:
                 continue
             _stuck = now - heartbeat
@@ -416,14 +426,24 @@ def _create_watchdog_tick() -> None:
                         _CREATE_ACTIVE_AGENCIES.pop(agency, None)
                     _agency_gate_release(agency, jid)
                     continue
+            # «Первая кампания не появилась» САМО ПО СЕБЕ не значит «зависло»: на свежем аккаунте
+            # генерация контента и заливка картинок (каждая — cache MISS) идут минутами, и первая
+            # кампания законно доезжает позже бюджета. 2026-07-28 этот сторож убил ЖИВОЙ прогон
+            # porg-pl6iavd5 (42 кампании), который в тот момент грузил картинки tp2 — 1 создана из 42.
+            # Поэтому добиваем условием ТИШИНЫ (`_stuck` — время с последнего признака жизни выше).
+            # Есть свежая отметка — джоба работает, не трогаем. Порог по времени оставлен нижней
+            # границей: раньше него не убиваем никогда, то есть правка строго СМЯГЧАЕТ прежнее поведение.
+            _silent = _stuck
             if (_started
                     and _kind in ("set", "slepok")
                     and int(job.get("created") or 0) <= 0
-                    and (now - _started) > _CREATE_FIRST_CAMPAIGN_TIMEOUT):
+                    and (now - _started) > _CREATE_FIRST_CAMPAIGN_TIMEOUT
+                    and _silent > _CREATE_FIRST_CAMPAIGN_STALL):
                 job["status"] = "error"
                 job["error"] = (
-                    "watchdog: за "
-                    f"{int(_CREATE_FIRST_CAMPAIGN_TIMEOUT // 60)} мин не создана ни одна кампания"
+                    "watchdog: ни одной кампании за "
+                    f"{int((now - _started) // 60)} мин и никаких признаков работы "
+                    f"последние {int(_silent // 60)} мин"
                 )
                 job["result"] = {"error": job["error"], "first_campaign_timeout": True}
                 job["finished_at"] = now

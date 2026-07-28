@@ -33,6 +33,40 @@ PREFIX = "STAGE_TIMING"
 
 _LOCAL = threading.local()
 
+# ── Признак жизни джобы для watchdog'а ──────────────────────────────────────────────────────
+# `emit` — единственная точка, через которую проходит КАЖДАЯ стадия создания (Grid, v501,
+# заливка картинок). Поэтому отметка времени отсюда — самый честный «джоба жива»: она есть и
+# тогда, когда первая кампания ещё не готова (генерация контента + заливка картинок на свежем
+# аккаунте занимают минуты). Счётчик созданных кампаний таким признаком НЕ является: 2026-07-28
+# watchdog убил живой прогон porg-pl6iavd5 (42 кампании), который в тот момент грузил картинки tp2.
+_PROGRESS: dict[str, float] = {}
+_PROGRESS_LOCK = threading.Lock()
+_PROGRESS_MAX = 200                       # джоб в памяти; выше — чистим самые старые отметки
+
+
+def note_progress(job_id) -> None:
+    """Отметить активность джобы. Никогда не бросает."""
+    try:
+        jid = str(job_id or "").strip()
+        if not jid:
+            return
+        with _PROGRESS_LOCK:
+            _PROGRESS[jid] = time.time()
+            if len(_PROGRESS) > _PROGRESS_MAX:
+                for _old, _ in sorted(_PROGRESS.items(), key=lambda kv: kv[1])[:len(_PROGRESS) - _PROGRESS_MAX]:
+                    _PROGRESS.pop(_old, None)
+    except Exception:  # noqa: BLE001 — замер не имеет права ломать создание
+        pass
+
+
+def last_progress(job_id) -> float:
+    """Время последней стадии джобы (time.time()); 0.0 — стадий не было."""
+    try:
+        with _PROGRESS_LOCK:
+            return float(_PROGRESS.get(str(job_id or "").strip()) or 0.0)
+    except Exception:  # noqa: BLE001
+        return 0.0
+
 
 def _chan_label() -> str:
     """Метка канала из имени потока (createset-chanA1-units → A1)."""
@@ -83,6 +117,7 @@ def emit(stage_name: str, ms: float, ok: bool = True, **extra) -> None:
         for k, v in (extra or {}).items():
             if v not in (None, ""):
                 row[k] = v
+        note_progress(row.get("job"))
         print(f"{PREFIX} {json.dumps(row, ensure_ascii=False, sort_keys=True)}", flush=True)
     except Exception:  # noqa: BLE001 — логирование best-effort
         pass
