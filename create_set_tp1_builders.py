@@ -384,6 +384,15 @@ def _build_tp1_adgroups(
                     f"{tp_code} Grid: позиционный сдвиг групп — ключи могут быть смещены")
         rep["adgroups"] = sum(1 for x in ag_ids if x)
         rep["relevance_match_set"] = rep["adgroups"]  # атомарно при создании
+        # Гейт «создано групп ≠ отправлено» — в ТОКЕННОМ пути tp1 его не было вовсе (ревью
+        # 2026-07-28). Куки-путь идёт через `grid_create.create_full`, который гейт зовёт, а этот
+        # рапортовал только `adgroups`: верификатор сравнивает `build["groups"]` с
+        # `build["groups_expected"]`, обоих ключей тут не было — потеря групп уходила МОЛЧА
+        # (ни GROUPS_CREATED_LESS_THAN_SENT, ни NO_ADGROUPS_REPORTED не срабатывали).
+        # `groups` выставляем ДО гейта: он считает созданное именно из него.
+        from .grid_create import _gate_groups_created as _gate_groups
+        rep["groups"] = rep["adgroups"]
+        _gate_groups(rep, len(groups))
     except gc.GridCreateError as _ge:
         # Группы не созданы → rep без adgroups → вызывающий (:1433) вызовет _cleanup_partial
         # и снесёт черновик. ok=True с неверным автотаргетом невозможен.

@@ -1753,7 +1753,10 @@ def create_set_response(deps: dict):
                         # (_strip_account_geo → _region_geo_stems). `oblasts` — список
                         # (мультирегиональные аккаунты), _region_geo_stems разбирает через запятую.
                         region=", ".join((ctx or {}).get("oblasts") or [])
-                               or ((ctx or {}).get("oblast") or ""))
+                               or ((ctx or {}).get("oblast") or ""),
+                        # Кэш наборов — на ЭТУ джобу: иначе разовый сбой v5 запоминался бы
+                        # до рестарта и отдавался всем следующим прогонам аккаунта.
+                        job_id=str(body.get("_job_id") or ""))
                     # Каждая строка ошибок наборов — это ПОТЕРЯ фраз/набора (not_packed,
                     # расхождение с кабинетом, «набор НЕ создан», фразы >7 слов): в
                     # result["losses"] → джоба не зелёная.

@@ -277,6 +277,7 @@ _MINUS_LIB_MAX_SETS_PER_CAMPAIGN = 3
 # могли бы одновременно не увидеть чужой набор и создать ДУБЛЬ с тем же именем.
 _NAMED_SETS_CACHE: dict[tuple, dict] = {}
 _NAMED_SETS_LOCK = threading.Lock()
+_NAMED_SETS_CACHE_MAX = 200          # ключ пер-джобный → таблицу надо ограничивать, иначе течёт
 
 
 def _read_slepok_minus_sets(slepok: str, site_type: str) -> list[dict]:
@@ -603,13 +604,21 @@ def ensure_named_minus_sets(token: str, login: str, slepok: str, site_type: str,
 
 
 def ensure_named_minus_sets_cached(token: str, login: str, slepok: str, site_type: str,
-                                   city: str = "", region: str = "") -> dict:
-    """ensure_named_minus_sets один раз на (login, slepok, site_type) за жизнь процесса.
+                                   city: str = "", region: str = "", job_id: str = "") -> dict:
+    """ensure_named_minus_sets один раз на (job_id, login, slepok, site_type).
 
     Лок обязателен: два токен-потока набора (DIRECT_TOKEN_THREADS=2) иначе могли бы одновременно
     получить пустой `negativekeywordsharedsets.get` и создать ДВА набора с одним именем.
+
+    ⚠️ Кэш ПЕР-ДЖОБНЫЙ, а не процессный (ревью 2026-07-28). Кэшируем и неуспех тоже — повторять
+    падающий v5-вызов на каждую кампанию бессмысленно, — но без `job_id` в ключе этот неуспех жил
+    до рестарта: один транзиентный сбой Direct отравлял ВСЕ последующие прогоны того же аккаунта,
+    возвращая им ошибку без единого обращения к API. Симметрично и с успехом: директолог мог
+    поменять набор в кабинете, а процесс продолжал отдавать старый снимок.
+    Пустой `job_id` (внешние вызовы) → прежнее поведение, кэш на процесс.
     """
-    ckey = ((login or "").lower(),
+    ckey = (str(job_id or ""),
+            (login or "").lower(),
             _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower()),
             (site_type or "").strip())
     with _NAMED_SETS_LOCK:
@@ -617,8 +626,10 @@ def ensure_named_minus_sets_cached(token: str, login: str, slepok: str, site_typ
         if hit is not None:
             return hit
         res = ensure_named_minus_sets(token, login, slepok, site_type, city=city, region=region)
-        # Кэшируем и неуспех тоже: повторять падающий v5-вызов на каждую кампанию бессмысленно.
         _NAMED_SETS_CACHE[ckey] = res
+        if len(_NAMED_SETS_CACHE) > _NAMED_SETS_CACHE_MAX:      # ключей стало больше — чистим старые
+            for _old in list(_NAMED_SETS_CACHE)[:len(_NAMED_SETS_CACHE) - _NAMED_SETS_CACHE_MAX]:
+                _NAMED_SETS_CACHE.pop(_old, None)
         return res
 
 
