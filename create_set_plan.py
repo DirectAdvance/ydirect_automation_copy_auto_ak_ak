@@ -221,6 +221,59 @@ def _tp1_plan_names(slepok: str, site_type: str, r_code: str) -> list[dict]:
     return _tp_plan_names(slepok, site_type, "tp1")
 
 
+_POSEVY_STRUCT_KEY = "posevy"          # ключ слепка Посевов (direct/slepki/posevy.json)
+
+
+def _posevy_brand_label(group_name: str) -> str:
+    """Бренд-метка кампании Посевов из имени группы: «Telegram — Tenet» → «Tenet».
+
+    Имя без бренд-хвоста («Telegram», «Telegram + Max») → мультибренд «Посевы».
+    Источник тот же, что видит пользователь в дереве набора, — имя группы структуры."""
+    parts = re.split(r"\s+[—–]\s+", str(group_name or "").strip())
+    tail = parts[-1].strip() if len(parts) > 1 else ""
+    return tail or "Посевы"
+
+
+def _posevy_positions(site_type: str, tp_code: str) -> list[dict]:
+    """Кампании Посевов (tp8/tp9/tp10) из структуры слепка `posevy` — ЗЕРКАЛО дерева UI.
+
+    UI (`automation_create.js:_acPosevyTree/_acPosevyCampaign`) рисует ОДИН чекбокс на ГРУППУ,
+    и в `data-desc`/`data-grp` кладёт `group.name`. Поэтому и план строим по группам ТОГО ЖЕ
+    источника: `_json("slepki_structure.json")` → `slepki_store.assemble()`, из которого
+    `/direct/api/ui_structure` отдаёт структуру фронту. Второго прочтения posevy.json нет —
+    иначе движок снова разойдётся с интерфейсом (баг 2026-07-28: план всегда 12 кампаний,
+    захардкоженный список брендов игнорировал выбор пользователя).
+
+    Фолбэк типа сайта — `_resolve_struct_site_type` (тот же, что у UI: нет такого site_type →
+    первый тип с непустым tp).
+
+    Возвращает [{"label": group.name, "ct": "ct0300", "brand": "Tenet"}, …]."""
+    struct = _json("slepki_structure.json").get("directologists", [])
+    d = next((x for x in struct if x.get("key") == _POSEVY_STRUCT_KEY), None)
+    if not d:
+        return []
+    _st_key = _resolve_struct_site_type(_POSEVY_STRUCT_KEY, site_type)
+    st = next((s for s in d.get("site_types", []) if s.get("name") == _st_key), None)
+    if not st:
+        return []
+    out: list[dict] = []
+    seen: set = set()
+    for tp in st.get("tp", []):
+        if tp.get("code") != tp_code:
+            continue
+        for grp in tp.get("groups", []) or []:
+            item = next((i for i in (grp.get("items") or []) if isinstance(i, dict)), {})
+            label = str(grp.get("name") or item.get("t") or "").strip()
+            if not label or label in seen:
+                continue
+            seen.add(label)
+            ct = str(item.get("gc") or "").split("_")[0].strip().lower()
+            if not re.fullmatch(r"ct\d{4}", ct):
+                ct = "ct0000"                       # группа без валидного кодера → мультибренд
+            out.append({"label": label, "ct": ct, "brand": _posevy_brand_label(label)})
+    return out
+
+
 # site_type'ы с АВТОМОБИЛЬНОЙ сегментной классификацией (Марки/Модели/Общее по справочнику
 # ag_part1). Слепки НЕ из этого списка (напр. «dmp» / «Прочее») — split-driven: их ct нет в
 # _ct_segment_map, поэтому _ct_segment() вырождается в дефолт «Марки» для ВСЕХ групп и склеивает
@@ -826,10 +879,11 @@ def _set_plan_response():
     _TEXT_PLAN = {"search_test": "Поиск (тест)", "tp1_rsy": "РСЯ", "search_gallery": "Поиск + Динамика + ТГ",
                   "search_dynamic": "Поиск + Динамика", "rsya_gallery": "Товарная галерея (РСЯ)"}
     for v in variants:
-        # ── Посевы (tp8/tp9/tp10) — 4 кампании на tp: мультибренд + 3 монобренда ──
-        # Решение Семёна 2026-07-22: вместо 3 кампаний теперь 12 (3 tp × 4 варианта):
-        # мультибренд (ct0000) + Tenet (ct0300) + Lada (ct0181) + Haval (ct0111).
-        # Список брендов фиксированный для всех аккаунтов независимо от ассортимента.
+        # ── Посевы (tp8/tp9/tp10) — кампании 1:1 со структурой слепка `posevy` ──
+        # Источник = `_posevy_positions` (тот же assemble(), что рисует дерево набора в UI):
+        # одна кампания на группу структуры, ct из кодера группы, бренд из её имени.
+        # Раньше здесь был захардкоженный список брендов и безусловный обход трёх tp —
+        # план всегда получался 12 кампаний и ИГНОРИРОВАЛ выбор пользователя (2026-07-28).
         if str(v) == "posevy":
             from .create_set_tp8_10 import _campaign_name as _post_camp_name  # noqa: PLC0415
             _POSEVY_TP_LABELS = {
@@ -837,51 +891,43 @@ def _set_plan_response():
                 "tp9":  "Посевы Max",
                 "tp10": "Посевы Telegram+Max",
             }
-            # Монобренды (фиксированный список по решению Семёна 2026-07-22)
-            _POSEVY_MONO_BRANDS = [
-                ("Tenet", "ct0300"),
-                ("Lada",  "ct0181"),
-                ("Haval", "ct0111"),
-            ]
+            # Семантика выбора у Посевов ОБРАТНАЯ tp1-tp7: невыбранный tp просто ОТСУТСТВУЕТ в
+            # selected_pos (в tp1-tp7 его отсекает список variants, а посевы включаются флагом
+            # agent_group="posevy"). Поэтому: пришёл хоть один ключ 8/9/10 → строгий фильтр по
+            # ключам; ключей нет вовсе (вызов по API, retry, старый клиент) → прежнее поведение.
+            _posevy_sent = {n for n in (8, 9, 10)
+                            if (selected_pos.get(str(n)) or selected_pos.get(n)) is not None}
             for _post_tp in ("tp8", "tp9", "tp10"):
-                # 1. Мультибренд-кампания (ct0000, brand_label="Посевы") — как раньше
-                _post_name_raw = _post_camp_name(_post_tp, "ct0000", r_code, oblast, "Посевы")
-                _post_nm, _post_renamed = _uniq(_post_name_raw)
-                plan.append({
-                    "type":        f"post_{_post_tp}",
-                    "variant":     "posevy",
-                    "tp":          _post_tp,
-                    "pay":         None,
-                    "name":        _post_nm,
-                    "renamed":     _post_renamed,
-                    "budget":      10_000,    # SPEC §2.9
-                    "cpa":         None,
-                    "r_code":      r_code,
-                    "oblast":      oblast,
-                    "ct":          "ct0000",  # мультибренд
-                    "brand_label": "Посевы",
-                    "save_draft":  True,
-                    "t":           _POSEVY_TP_LABELS[_post_tp],  # метка для UI
-                })
-                # 2. Монобрендовые кампании (Tenet / Lada / Haval)
-                for _brand_name, _brand_ct in _POSEVY_MONO_BRANDS:
-                    _brand_name_raw = _post_camp_name(_post_tp, _brand_ct, r_code, oblast, _brand_name)
-                    _brand_nm, _brand_renamed = _uniq(_brand_name_raw)
+                _post_tp_num = int(_post_tp[2:])
+                if _posevy_sent and _post_tp_num not in _posevy_sent:
+                    continue
+                # None = ограничений нет (ключ tp пришёл пустым) → строим все кампании tp
+                _post_sel = _sel_labels(_post_tp_num) or _sel_groups(_post_tp_num)
+                _post_positions = _posevy_positions(site_type, _post_tp)
+                if not _post_positions:
+                    warnings.append(f"{_post_tp} (Посевы): нет в структуре слепка «posevy» — пропущен")
+                    continue
+                for _post_pos in _post_positions:
+                    if _post_sel is not None and _post_pos["label"] not in _post_sel:
+                        continue
+                    _post_name_raw = _post_camp_name(_post_tp, _post_pos["ct"], r_code, oblast,
+                                                     _post_pos["brand"])
+                    _post_nm, _post_renamed = _uniq(_post_name_raw)
                     plan.append({
                         "type":        f"post_{_post_tp}",
                         "variant":     "posevy",
                         "tp":          _post_tp,
                         "pay":         None,
-                        "name":        _brand_nm,
-                        "renamed":     _brand_renamed,
-                        "budget":      10_000,
+                        "name":        _post_nm,
+                        "renamed":     _post_renamed,
+                        "budget":      10_000,    # SPEC §2.9
                         "cpa":         None,
                         "r_code":      r_code,
                         "oblast":      oblast,
-                        "ct":          _brand_ct,
-                        "brand_label": _brand_name,
+                        "ct":          _post_pos["ct"],
+                        "brand_label": _post_pos["brand"],
                         "save_draft":  True,
-                        "t":           _POSEVY_TP_LABELS[_post_tp],
+                        "t":           _POSEVY_TP_LABELS[_post_tp],  # метка для UI
                     })
             continue
         if str(v) in _TEXT_PLAN:
