@@ -86,6 +86,47 @@ def _strip_tp1_target_tail(name: str) -> str:
         out = nxt
     return out
 
+
+def _canon_camp_name(name: str) -> str:
+    """Каноническая форма имени кампании — зеркало JS `_canonicalCampaignName`
+    (`static/direct/automation.js`): NBSP→пробел, схлопнутые пробелы, ровно « - » и « + »."""
+    s = str(name or "").replace(" ", " ")
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"\s*\+\s*", " + ", s)
+    s = re.sub(r"\s*-\s*", " - ", s)
+    return s.strip()
+
+
+def _match_camp_label(sel: set | None, tp_num: int, *names: str) -> bool:
+    """Выбрана ли кампания в дереве набора (`selected_pos`)?
+
+    UI строит метки через `automation.js:_campaignize` → `_campCollapseName`: имя канонизируется,
+    а для tp1/tp2/tp4/tp5 ещё и теряет хвост таргетинга («… - КС», «… - Автотаргетинг»,
+    «… - КС + Автотаргетинг») — варианты хвоста схлопнуты в ОДИН узел дерева. Движок же
+    фильтрует по сырому `camp_names` из структуры слепка, с хвостом.
+
+    Сравниваем обе стороны в одной форме. Без этого весь tp молча выпадает из плана:
+    2026-07-28 полный прогон scherbakova/Мультибренд вернул только tp7 (у tp7 хвоста нет),
+    и запуск отбился гейтом `stale_client_product_only_stream`.
+    """
+    if sel is None:
+        return True
+    collapse = tp_num in (1, 2, 4, 5)
+
+    def _norm(value: str) -> str:
+        canon = _canon_camp_name(value)
+        return _strip_tp1_target_tail(canon) if collapse else canon
+
+    sel_norm = {_norm(s) for s in sel}
+    for nm in names:
+        raw = (nm or "").strip()
+        if not raw:
+            continue
+        if raw in sel or _norm(raw) in sel_norm:
+            return True
+    return False
+
+
 def _build_name(is_master: bool, is_autotarget: bool, pay: str, r_code: str, oblast: str,
                 sq: str = "site", cat: str | None = None, ct: str = "ct0000",
                 targeting_label: str | None = None) -> str:
@@ -968,7 +1009,7 @@ def _set_plan_response():
                     for c in camps1:
                         cname = c.get("name") or ""
                         # фильтр выбранных позиций: по имени кампании ИЛИ по её доминантному сегменту
-                        if sel_tp1 is not None and cname not in sel_tp1 and (c.get("segment") not in sel_tp1):
+                        if not _match_camp_label(sel_tp1, 1, cname, c.get("segment")):
                             continue
                         # управляющие теги: реестр OVERRIDE → UI-эвристика (х3/все фиды)
                         _ctags = _detect_tags(c, tags1.get(cname), siblings=_sib1)
@@ -1095,7 +1136,7 @@ def _set_plan_response():
                 if camps4:
                     for c in camps4:
                         cname = c.get("name") or ""
-                        if sel4 is not None and cname not in sel4 and (c.get("segment") not in sel4):
+                        if not _match_camp_label(sel4, 4, cname, c.get("segment")):
                             continue
                         _at4, _keep4 = _txt_targeting_mode(cname, c.get("targeting") or "")
                         _og4 = list(c.get("gks") or [])
@@ -1257,7 +1298,7 @@ def _set_plan_response():
                 if camps2:
                     for c in camps2:
                         cname = c.get("name") or ""
-                        if sel2 is not None and cname not in sel2 and (c.get("segment") not in sel2):
+                        if not _match_camp_label(sel2, 2, cname, c.get("segment")):
                             continue
                         _at2, _keep2 = _txt_targeting_mode(cname, c.get("targeting") or "")
                         _og2 = list(c.get("gks") or [])
@@ -1322,7 +1363,7 @@ def _set_plan_response():
                     tags5 = _cptags5(agent, site_type, "tp5")
                     for c in camps5:
                         cname = c.get("name") or ""
-                        if sel5 is not None and cname not in sel5 and (c.get("segment") not in sel5):
+                        if not _match_camp_label(sel5, 5, cname, c.get("segment")):
                             continue
                         _at5, _keep5 = _txt_targeting_mode(cname, c.get("targeting") or "")
                         _af5 = _ALLF5 in _detect5(c, tags5.get(cname))
