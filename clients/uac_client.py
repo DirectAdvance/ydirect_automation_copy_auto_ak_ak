@@ -699,15 +699,26 @@ class UacClient:
                 except UacApiError:
                     pass
                 time.sleep(0.3)
+            # ⚠️ ЛОКАЛЬНЫЕ видео — ВНУТРИ `if not content_ids`, как и картинки.
+            # Путь СОЗДАНИЯ: prefetch уже залил 4 картинки + 2 видео и положил их в
+            # preloaded_content_ids; повторная заливка тех же mp4 давала 2+2=4 видео при лимите
+            # Яндекса 2 → HTTP 400 ContentDefectIds.Gen.SIZE_OF_VIDEO_CONTENTS_CANNOT_BE_MORE_THAN_MAX
+            # и падение ВСЕХ брендовых tp7 (UAC_VIDEO_CONTENTS_OVER_MAX, 14 позиций в 3 джобах
+            # 2026-07-29). Ловится тестом test_uac_preloaded_content_ids_skip_file_uploads.
+            for path in spec.video_files[:2]:               # ЛОКАЛЬНЫЕ видео (multipart, лимит 2)
+                try:
+                    content_ids.append(self.upload_video_file(path, spec.adv_type))
+                except UacApiError:
+                    pass
+                time.sleep(0.3)
+        # ⚠️ Видео по URL — СНАРУЖИ `if not content_ids`, это НЕ ошибка отступа.
+        # Путь КОПИРОВАНИЯ предзаполняет content_ids id-шниками КАРТИНОК источника, а видео
+        # переносит ссылками — если спрятать этот цикл внутрь, копия останется без видео.
+        # Контракт закреплён тестом test_uac_client_uploads_video_urls_when_image_content_ids_are_preseeded.
+        # Путь создания сюда не попадает: MasterCampaignSpec video_urls не заполняет (всегда []).
         for u in spec.video_urls:                           # видео по URL
             try:
                 content_ids.append(self.upload_content(u, "video", spec.adv_type))
-            except UacApiError:
-                pass
-            time.sleep(0.3)
-        for path in spec.video_files[:2]:                   # ЛОКАЛЬНЫЕ видео (multipart, лимит 2)
-            try:
-                content_ids.append(self.upload_video_file(path, spec.adv_type))
             except UacApiError:
                 pass
             time.sleep(0.3)

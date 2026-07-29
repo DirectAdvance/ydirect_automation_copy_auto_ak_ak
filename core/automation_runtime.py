@@ -2932,7 +2932,16 @@ def _drop_used_car(items: list, site_type: str) -> list:
     «подержанные», «used», «пробег»): для нового-авто-сайта такие УТП недопустимы."""
     if _is_bu_site(site_type):
         return list(items)
-    return [x for x in items if not _BU_RE.search(str(x.get("title", "") if isinstance(x, dict) else x))]
+
+    def _positive(x) -> str:
+        # ⚠️ Только позитивная часть: у ключей пака минус-хвост вида «-бу -пробег -подержанный»
+        # ЗАПРЕЩАЕТ б/у-показ, а _BU_RE читал его как признак б/у-запроса и убивал фразу целиком.
+        # Так терялись ct0001 buynew (182), ct0006 avtocredit (192), ct0010 drom (151)
+        # — TP1_OBSHIE_KEYWORDS_LOST, 2026-07-29. Заголовки УТП (dict) минусов не имеют.
+        raw = str(x.get("title", "") if isinstance(x, dict) else x)
+        return " ".join(w for w in raw.split() if not w.startswith("-"))
+
+    return [x for x in items if not _BU_RE.search(_positive(x))]
 
 
 # Парный фильтр к _BU_RE: лексика НОВЫХ авто, недопустимая на сайте «С пробегом».

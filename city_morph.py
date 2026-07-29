@@ -201,7 +201,12 @@ def _drop_foreign_city_keywords(keywords: list, own_city: str) -> list:
                if c and c not in own and (not own5 or own5 not in c)]
     out = []
     for k in (keywords or []):
-        kl = str(k).lower()
+        # ⚠️ Матчим ТОЛЬКО позитивную часть фразы, без минус-хвоста.
+        # Раньше сравнивалась целая строка: фраза «avito ru купить авто -уфа -липецк» падала
+        # из-за города в МИНУСАХ, который её как раз и запрещает в чужом городе.
+        # Так молча терялись все ключи групп ct0008 avtoru (138) и ct0009 avito (175)
+        # — TP1_OBSHIE_KEYWORDS_LOST, 2026-07-29.
+        kl = " ".join(w for w in str(k).lower().split() if not w.startswith("-"))
         if any(_city_stem_hit(kl, c) for c in foreign):
             continue
         out.append(k)
