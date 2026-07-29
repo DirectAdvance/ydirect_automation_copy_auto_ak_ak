@@ -504,6 +504,10 @@ _TAGS_TTL = 5.0  # сек
 def _tags_all_tp(slepok: str, site_type: str) -> dict[str, dict[str, set]]:
     """{tp → {camp_key → {labels}}} по (slepok, site_type), одним запросом. Сбой/нет таблицы → {}."""
     import time
+    from . import kontent_pack as kp  # noqa: PLC0415 — как в остальном модуле, ленивый импорт
+    # Теги («х3», «все фиды») заведены на БАЗОВЫЙ тип сайта; витринный сплит их бы не нашёл,
+    # и состав создаваемого набора тихо поменялся бы. Нормализуем ДО ключа кэша.
+    site_type = kp.base_site_type(site_type)
     key = _slepok_key(slepok)
     slepok_vals = sorted({slepok, key})
     ck = (tuple(slepok_vals), site_type)

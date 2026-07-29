@@ -337,9 +337,15 @@ def _pick_working_cookie_local(ulogin: str, accounts: tuple[str, ...] = DEFAULT_
     # НЕуправляющая агентская кука победит → Grid «No rights» → слепой верификатор). Дубли
     # убираем, сохраняя порядок; остальные агентства остаются фолбэком.
     _mng = _resolve_managing_agency(ulogin)
+    if not _mng and len(accounts) == 1:
+        # Explicit single-account probes (for example from a token/agency override
+        # or a gateway fallback) are already scoped to the intended agency. Preserve
+        # its terminal rights error instead of degrading to generic "no cookie fit".
+        _mng = str(accounts[0] or "").strip().lower()
     if _mng and _mng not in ("none", ""):
         accounts = tuple(dict.fromkeys((_mng, *accounts)))
     last_err: Exception | None = None
+    managing_errs: list[str] = []
     expired_accs: list[str] = []   # only when the fresh Glavpotok source also confirms expiry
     fresh_seen: set[str] = set()
     for acc in accounts:
@@ -363,6 +369,10 @@ def _pick_working_cookie_local(ulogin: str, accounts: tuple[str, ...] = DEFAULT_
                     return cookie
                 except Exception as e:  # noqa: BLE001 — кука не подошла → следующий источник/аккаунт
                     last_err = e
+                    if _mng and acc == _mng:
+                        body = str(getattr(e, "body", "") or e)
+                        label = "fresh" if is_fresh else "local"
+                        managing_errs.append(f"{label}: {body[:240]}")
                     # Retry только когда свежая кука с главпотока выглядит протухшей/login-page.
                     # ``No rights``/``Нет прав`` НЕ ретраим: это доступ агентства к ulogin.
                     retryable_auth = is_fresh and _cookie_retryable_auth_text(
@@ -380,6 +390,11 @@ def _pick_working_cookie_local(ulogin: str, accounts: tuple[str, ...] = DEFAULT_
             f"кука протухла на главпотоке (сессия Яндекса истекла) для агентств: "
             f"{', '.join(expired_accs)}. Обновите куку в главпотоке (перелогиньтесь в этом "
             f"агентском аккаунте) — текущая для ulogin={ulogin} мертва [need_reset].")
+    if _mng and managing_errs:
+        details = " | ".join(managing_errs)
+        raise RuntimeError(
+            f"кука управляющего агентства {_mng} не имеет web/Grid-прав к ulogin={ulogin}: "
+            f"{details}")
     raise RuntimeError(f"ни одна кука не подошла к ulogin={ulogin}: {last_err}")
 
 

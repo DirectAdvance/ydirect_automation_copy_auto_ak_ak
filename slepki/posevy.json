@@ -1,628 +1,628 @@
 {
-  "key": "posevy",
-  "name": "Посевы",
-  "ui_group": "posevy",
-  "auto": false,
-  "site_types": [
+ "key": "posevy",
+ "name": "Посевы",
+ "ui_group": "posevy",
+ "auto": false,
+ "site_types": [
+  {
+   "name": "Мультибренд",
+   "tp": [
     {
-      "name": "Мультибренд",
-      "tp": [
+     "code": "tp8",
+     "title": "Telegram",
+     "groups": [
+      {
+       "name": "Telegram",
+       "items": [
         {
-          "code": "tp8",
-          "title": "Telegram",
-          "groups": [
-            {
-              "name": "Telegram",
-              "items": [
-                {
-                  "c": "tp8_cpc_site",
-                  "t": "Telegram",
-                  "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram — Tenet",
-              "items": [
-                {
-                  "c": "tp8_cpc_site",
-                  "t": "Telegram — Tenet",
-                  "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram — Lada",
-              "items": [
-                {
-                  "c": "tp8_cpc_site",
-                  "t": "Telegram — Lada",
-                  "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram — Haval",
-              "items": [
-                {
-                  "c": "tp8_cpc_site",
-                  "t": "Telegram — Haval",
-                  "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "code": "tp9",
-          "title": "Max",
-          "groups": [
-            {
-              "name": "Max",
-              "items": [
-                {
-                  "c": "tp9_cpc_site",
-                  "t": "Max",
-                  "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Max — Tenet",
-              "items": [
-                {
-                  "c": "tp9_cpc_site",
-                  "t": "Max — Tenet",
-                  "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Max — Lada",
-              "items": [
-                {
-                  "c": "tp9_cpc_site",
-                  "t": "Max — Lada",
-                  "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Max — Haval",
-              "items": [
-                {
-                  "c": "tp9_cpc_site",
-                  "t": "Max — Haval",
-                  "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "code": "tp10",
-          "title": "Telegram + Max",
-          "groups": [
-            {
-              "name": "Telegram + Max",
-              "items": [
-                {
-                  "c": "tp10_cpc_site",
-                  "t": "Telegram + Max",
-                  "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram + Max — Tenet",
-              "items": [
-                {
-                  "c": "tp10_cpc_site",
-                  "t": "Telegram + Max — Tenet",
-                  "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram + Max — Lada",
-              "items": [
-                {
-                  "c": "tp10_cpc_site",
-                  "t": "Telegram + Max — Lada",
-                  "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram + Max — Haval",
-              "items": [
-                {
-                  "c": "tp10_cpc_site",
-                  "t": "Telegram + Max — Haval",
-                  "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            }
-          ]
+         "c": "tp8_cpc_site",
+         "t": "Telegram",
+         "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
         }
-      ]
+       ]
+      },
+      {
+       "name": "Telegram — Tenet",
+       "items": [
+        {
+         "c": "tp8_cpc_site",
+         "t": "Telegram — Tenet",
+         "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram — Lada",
+       "items": [
+        {
+         "c": "tp8_cpc_site",
+         "t": "Telegram — Lada",
+         "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram — Haval",
+       "items": [
+        {
+         "c": "tp8_cpc_site",
+         "t": "Telegram — Haval",
+         "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      }
+     ]
     },
     {
-      "name": "Монобренд",
-      "tp": [
+     "code": "tp9",
+     "title": "Max",
+     "groups": [
+      {
+       "name": "Max",
+       "items": [
         {
-          "code": "tp8",
-          "title": "Telegram",
-          "groups": [
-            {
-              "name": "Telegram",
-              "items": [
-                {
-                  "c": "tp8_cpc_site",
-                  "t": "Telegram",
-                  "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram — Tenet",
-              "items": [
-                {
-                  "c": "tp8_cpc_site",
-                  "t": "Telegram — Tenet",
-                  "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram — Lada",
-              "items": [
-                {
-                  "c": "tp8_cpc_site",
-                  "t": "Telegram — Lada",
-                  "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram — Haval",
-              "items": [
-                {
-                  "c": "tp8_cpc_site",
-                  "t": "Telegram — Haval",
-                  "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "code": "tp9",
-          "title": "Max",
-          "groups": [
-            {
-              "name": "Max",
-              "items": [
-                {
-                  "c": "tp9_cpc_site",
-                  "t": "Max",
-                  "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Max — Tenet",
-              "items": [
-                {
-                  "c": "tp9_cpc_site",
-                  "t": "Max — Tenet",
-                  "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Max — Lada",
-              "items": [
-                {
-                  "c": "tp9_cpc_site",
-                  "t": "Max — Lada",
-                  "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Max — Haval",
-              "items": [
-                {
-                  "c": "tp9_cpc_site",
-                  "t": "Max — Haval",
-                  "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "code": "tp10",
-          "title": "Telegram + Max",
-          "groups": [
-            {
-              "name": "Telegram + Max",
-              "items": [
-                {
-                  "c": "tp10_cpc_site",
-                  "t": "Telegram + Max",
-                  "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram + Max — Tenet",
-              "items": [
-                {
-                  "c": "tp10_cpc_site",
-                  "t": "Telegram + Max — Tenet",
-                  "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram + Max — Lada",
-              "items": [
-                {
-                  "c": "tp10_cpc_site",
-                  "t": "Telegram + Max — Lada",
-                  "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram + Max — Haval",
-              "items": [
-                {
-                  "c": "tp10_cpc_site",
-                  "t": "Telegram + Max — Haval",
-                  "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            }
-          ]
+         "c": "tp9_cpc_site",
+         "t": "Max",
+         "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
         }
-      ]
+       ]
+      },
+      {
+       "name": "Max — Tenet",
+       "items": [
+        {
+         "c": "tp9_cpc_site",
+         "t": "Max — Tenet",
+         "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Max — Lada",
+       "items": [
+        {
+         "c": "tp9_cpc_site",
+         "t": "Max — Lada",
+         "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Max — Haval",
+       "items": [
+        {
+         "c": "tp9_cpc_site",
+         "t": "Max — Haval",
+         "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      }
+     ]
     },
     {
-      "name": "С пробегом",
-      "tp": [
+     "code": "tp10",
+     "title": "Telegram + Max",
+     "groups": [
+      {
+       "name": "Telegram + Max",
+       "items": [
         {
-          "code": "tp8",
-          "title": "Telegram",
-          "groups": [
-            {
-              "name": "Telegram",
-              "items": [
-                {
-                  "c": "tp8_cpc_site",
-                  "t": "Telegram",
-                  "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram — Tenet",
-              "items": [
-                {
-                  "c": "tp8_cpc_site",
-                  "t": "Telegram — Tenet",
-                  "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram — Lada",
-              "items": [
-                {
-                  "c": "tp8_cpc_site",
-                  "t": "Telegram — Lada",
-                  "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram — Haval",
-              "items": [
-                {
-                  "c": "tp8_cpc_site",
-                  "t": "Telegram — Haval",
-                  "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "code": "tp9",
-          "title": "Max",
-          "groups": [
-            {
-              "name": "Max",
-              "items": [
-                {
-                  "c": "tp9_cpc_site",
-                  "t": "Max",
-                  "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Max — Tenet",
-              "items": [
-                {
-                  "c": "tp9_cpc_site",
-                  "t": "Max — Tenet",
-                  "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Max — Lada",
-              "items": [
-                {
-                  "c": "tp9_cpc_site",
-                  "t": "Max — Lada",
-                  "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Max — Haval",
-              "items": [
-                {
-                  "c": "tp9_cpc_site",
-                  "t": "Max — Haval",
-                  "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "code": "tp10",
-          "title": "Telegram + Max",
-          "groups": [
-            {
-              "name": "Telegram + Max",
-              "items": [
-                {
-                  "c": "tp10_cpc_site",
-                  "t": "Telegram + Max",
-                  "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram + Max — Tenet",
-              "items": [
-                {
-                  "c": "tp10_cpc_site",
-                  "t": "Telegram + Max — Tenet",
-                  "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram + Max — Lada",
-              "items": [
-                {
-                  "c": "tp10_cpc_site",
-                  "t": "Telegram + Max — Lada",
-                  "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram + Max — Haval",
-              "items": [
-                {
-                  "c": "tp10_cpc_site",
-                  "t": "Telegram + Max — Haval",
-                  "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            }
-          ]
+         "c": "tp10_cpc_site",
+         "t": "Telegram + Max",
+         "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
         }
-      ]
-    },
-    {
-      "name": "Квиз",
-      "tp": [
+       ]
+      },
+      {
+       "name": "Telegram + Max — Tenet",
+       "items": [
         {
-          "code": "tp8",
-          "title": "Telegram",
-          "groups": [
-            {
-              "name": "Telegram",
-              "items": [
-                {
-                  "c": "tp8_cpc_site",
-                  "t": "Telegram",
-                  "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram — Tenet",
-              "items": [
-                {
-                  "c": "tp8_cpc_site",
-                  "t": "Telegram — Tenet",
-                  "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram — Lada",
-              "items": [
-                {
-                  "c": "tp8_cpc_site",
-                  "t": "Telegram — Lada",
-                  "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram — Haval",
-              "items": [
-                {
-                  "c": "tp8_cpc_site",
-                  "t": "Telegram — Haval",
-                  "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "code": "tp9",
-          "title": "Max",
-          "groups": [
-            {
-              "name": "Max",
-              "items": [
-                {
-                  "c": "tp9_cpc_site",
-                  "t": "Max",
-                  "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Max — Tenet",
-              "items": [
-                {
-                  "c": "tp9_cpc_site",
-                  "t": "Max — Tenet",
-                  "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Max — Lada",
-              "items": [
-                {
-                  "c": "tp9_cpc_site",
-                  "t": "Max — Lada",
-                  "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Max — Haval",
-              "items": [
-                {
-                  "c": "tp9_cpc_site",
-                  "t": "Max — Haval",
-                  "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "code": "tp10",
-          "title": "Telegram + Max",
-          "groups": [
-            {
-              "name": "Telegram + Max",
-              "items": [
-                {
-                  "c": "tp10_cpc_site",
-                  "t": "Telegram + Max",
-                  "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram + Max — Tenet",
-              "items": [
-                {
-                  "c": "tp10_cpc_site",
-                  "t": "Telegram + Max — Tenet",
-                  "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram + Max — Lada",
-              "items": [
-                {
-                  "c": "tp10_cpc_site",
-                  "t": "Telegram + Max — Lada",
-                  "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            },
-            {
-              "name": "Telegram + Max — Haval",
-              "items": [
-                {
-                  "c": "tp10_cpc_site",
-                  "t": "Telegram + Max — Haval",
-                  "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
-                  "gk": "aon_n000_ct018_ag001_g00"
-                }
-              ]
-            }
-          ]
+         "c": "tp10_cpc_site",
+         "t": "Telegram + Max — Tenet",
+         "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
         }
-      ]
+       ]
+      },
+      {
+       "name": "Telegram + Max — Lada",
+       "items": [
+        {
+         "c": "tp10_cpc_site",
+         "t": "Telegram + Max — Lada",
+         "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram + Max — Haval",
+       "items": [
+        {
+         "c": "tp10_cpc_site",
+         "t": "Telegram + Max — Haval",
+         "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      }
+     ]
     }
-  ]
+   ]
+  },
+  {
+   "name": "Монобренд",
+   "tp": [
+    {
+     "code": "tp8",
+     "title": "Telegram",
+     "groups": [
+      {
+       "name": "Telegram",
+       "items": [
+        {
+         "c": "tp8_cpc_site",
+         "t": "Telegram",
+         "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram — Tenet",
+       "items": [
+        {
+         "c": "tp8_cpc_site",
+         "t": "Telegram — Tenet",
+         "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram — Lada",
+       "items": [
+        {
+         "c": "tp8_cpc_site",
+         "t": "Telegram — Lada",
+         "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram — Haval",
+       "items": [
+        {
+         "c": "tp8_cpc_site",
+         "t": "Telegram — Haval",
+         "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "code": "tp9",
+     "title": "Max",
+     "groups": [
+      {
+       "name": "Max",
+       "items": [
+        {
+         "c": "tp9_cpc_site",
+         "t": "Max",
+         "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Max — Tenet",
+       "items": [
+        {
+         "c": "tp9_cpc_site",
+         "t": "Max — Tenet",
+         "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Max — Lada",
+       "items": [
+        {
+         "c": "tp9_cpc_site",
+         "t": "Max — Lada",
+         "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Max — Haval",
+       "items": [
+        {
+         "c": "tp9_cpc_site",
+         "t": "Max — Haval",
+         "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "code": "tp10",
+     "title": "Telegram + Max",
+     "groups": [
+      {
+       "name": "Telegram + Max",
+       "items": [
+        {
+         "c": "tp10_cpc_site",
+         "t": "Telegram + Max",
+         "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram + Max — Tenet",
+       "items": [
+        {
+         "c": "tp10_cpc_site",
+         "t": "Telegram + Max — Tenet",
+         "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram + Max — Lada",
+       "items": [
+        {
+         "c": "tp10_cpc_site",
+         "t": "Telegram + Max — Lada",
+         "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram + Max — Haval",
+       "items": [
+        {
+         "c": "tp10_cpc_site",
+         "t": "Telegram + Max — Haval",
+         "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "С пробегом",
+   "tp": [
+    {
+     "code": "tp8",
+     "title": "Telegram",
+     "groups": [
+      {
+       "name": "Telegram",
+       "items": [
+        {
+         "c": "tp8_cpc_site",
+         "t": "Telegram",
+         "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram — Tenet",
+       "items": [
+        {
+         "c": "tp8_cpc_site",
+         "t": "Telegram — Tenet",
+         "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram — Lada",
+       "items": [
+        {
+         "c": "tp8_cpc_site",
+         "t": "Telegram — Lada",
+         "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram — Haval",
+       "items": [
+        {
+         "c": "tp8_cpc_site",
+         "t": "Telegram — Haval",
+         "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "code": "tp9",
+     "title": "Max",
+     "groups": [
+      {
+       "name": "Max",
+       "items": [
+        {
+         "c": "tp9_cpc_site",
+         "t": "Max",
+         "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Max — Tenet",
+       "items": [
+        {
+         "c": "tp9_cpc_site",
+         "t": "Max — Tenet",
+         "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Max — Lada",
+       "items": [
+        {
+         "c": "tp9_cpc_site",
+         "t": "Max — Lada",
+         "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Max — Haval",
+       "items": [
+        {
+         "c": "tp9_cpc_site",
+         "t": "Max — Haval",
+         "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "code": "tp10",
+     "title": "Telegram + Max",
+     "groups": [
+      {
+       "name": "Telegram + Max",
+       "items": [
+        {
+         "c": "tp10_cpc_site",
+         "t": "Telegram + Max",
+         "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram + Max — Tenet",
+       "items": [
+        {
+         "c": "tp10_cpc_site",
+         "t": "Telegram + Max — Tenet",
+         "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram + Max — Lada",
+       "items": [
+        {
+         "c": "tp10_cpc_site",
+         "t": "Telegram + Max — Lada",
+         "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram + Max — Haval",
+       "items": [
+        {
+         "c": "tp10_cpc_site",
+         "t": "Telegram + Max — Haval",
+         "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Квиз",
+   "tp": [
+    {
+     "code": "tp8",
+     "title": "Telegram",
+     "groups": [
+      {
+       "name": "Telegram",
+       "items": [
+        {
+         "c": "tp8_cpc_site",
+         "t": "Telegram",
+         "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram — Tenet",
+       "items": [
+        {
+         "c": "tp8_cpc_site",
+         "t": "Telegram — Tenet",
+         "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram — Lada",
+       "items": [
+        {
+         "c": "tp8_cpc_site",
+         "t": "Telegram — Lada",
+         "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram — Haval",
+       "items": [
+        {
+         "c": "tp8_cpc_site",
+         "t": "Telegram — Haval",
+         "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "code": "tp9",
+     "title": "Max",
+     "groups": [
+      {
+       "name": "Max",
+       "items": [
+        {
+         "c": "tp9_cpc_site",
+         "t": "Max",
+         "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Max — Tenet",
+       "items": [
+        {
+         "c": "tp9_cpc_site",
+         "t": "Max — Tenet",
+         "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Max — Lada",
+       "items": [
+        {
+         "c": "tp9_cpc_site",
+         "t": "Max — Lada",
+         "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Max — Haval",
+       "items": [
+        {
+         "c": "tp9_cpc_site",
+         "t": "Max — Haval",
+         "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "code": "tp10",
+     "title": "Telegram + Max",
+     "groups": [
+      {
+       "name": "Telegram + Max",
+       "items": [
+        {
+         "c": "tp10_cpc_site",
+         "t": "Telegram + Max",
+         "gc": "ct0000_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram + Max — Tenet",
+       "items": [
+        {
+         "c": "tp10_cpc_site",
+         "t": "Telegram + Max — Tenet",
+         "gc": "ct0300_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram + Max — Lada",
+       "items": [
+        {
+         "c": "tp10_cpc_site",
+         "t": "Telegram + Max — Lada",
+         "gc": "ct0181_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      },
+      {
+       "name": "Telegram + Max — Haval",
+       "items": [
+        {
+         "c": "tp10_cpc_site",
+         "t": "Telegram + Max — Haval",
+         "gc": "ct0111_aon_n000_r0000_ct018_ag001_g00",
+         "gk": "aon_n000_ct018_ag001_g00"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
 }

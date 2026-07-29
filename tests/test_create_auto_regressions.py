@@ -1390,3 +1390,50 @@ def test_ai_agents_data_has_no_installment_content():
         if not name.startswith("__"):
             _walk(value)
     assert bad == [], bad
+
+
+# ── ⛔ «Кредитное решение» — единый список запретов + маркер типа сайта «С пробегом» ──
+def test_banned_content_covers_credit_decision_and_installment():
+    from direct import text_norm, ai_agents
+    for bad in ("Одобрение за 30 минут. Кредитное решение. Выгодно",
+                "Кредитного решения за 5 минут", "Кредитные решения от 15 банков",
+                "Первый взнос 0 ₽. Рассрочка"):
+        assert text_norm.mentions_banned_content(bad), bad
+        assert ai_agents.has_installment(bad), bad          # тот же список, не вторая копия
+        assert "решени" not in text_norm.strip_banned_content(bad).lower()
+        assert "рассрочк" not in text_norm.strip_banned_content(bad).lower()
+    keep = "Авто в кредит. Одобрение за 30 минут. Первый взнос 0 ₽. Платеж от 9 000 ₽/мес"
+    assert not text_norm.mentions_banned_content(keep)
+    assert text_norm.strip_banned_content(keep) == keep
+    assert create_set_assets._trim_ad_line(
+        "Одобрение за 30 минут. Кредитное решение. Выгодно", 56).lower().find("решени") == -1
+
+
+def _bu_assets_env(monkeypatch, bu: bool):
+    monkeypatch.setattr(create_set_assets, "_drop_new_car", lambda items, _st: list(items))
+    monkeypatch.setattr(create_set_assets, "_is_bu_site", lambda st: bu)
+    monkeypatch.setitem(create_set_assets.__dict__, "_fill_title", text_gen._fill_title)
+
+
+_BU_MARKER_RE = __import__("re").compile(r"(?i)с\s+пробегом|(?<![а-яё])б\s*/?\s*у(?![а-яё])")
+
+
+def test_used_car_site_type_is_visible_in_content(monkeypatch):
+    _bu_assets_env(monkeypatch, True)
+    titles = create_set_assets._upgrade_credit_titles(["Авто в кредит от 9 000 ₽/мес"], 7,
+                                                      "С пробегом")
+    texts = create_set_assets._upgrade_credit_texts(["Авто в кредит от 9 000 ₽/мес"], 3,
+                                                    "С пробегом")
+    assert any(_BU_MARKER_RE.search(t) for t in titles), titles
+    assert any(_BU_MARKER_RE.search(x) for x in texts), texts
+    assert all(len(t) <= create_set_assets._RA_TITLE_MAX for t in titles), titles
+    assert all(len(x) <= create_set_assets._RA_TEXT_MAX for x in texts), texts
+    assert not [t for t in titles if "новое авто с пробегом" in t.lower()], titles
+
+
+def test_new_car_site_type_never_gets_used_car_marker(monkeypatch):
+    _bu_assets_env(monkeypatch, False)
+    titles = create_set_assets._upgrade_credit_titles(["Авто в кредит от 9 000 ₽/мес"], 7, "Мульти")
+    texts = create_set_assets._upgrade_credit_texts(["Авто в кредит от 9 000 ₽/мес"], 3, "Мульти")
+    assert not [t for t in titles if _BU_MARKER_RE.search(t)], titles
+    assert not [x for x in texts if _BU_MARKER_RE.search(x)], texts

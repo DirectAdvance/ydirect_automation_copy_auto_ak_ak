@@ -101,6 +101,55 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_log_login
     ON audit_log (account_login, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS home_accounts (
+    login           TEXT PRIMARY KEY,
+    label           TEXT NOT NULL DEFAULT '',
+    account_id      BIGINT,
+    agency_login    TEXT NOT NULL DEFAULT 'skuderko1',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS optimizer_events (
+    id              SERIAL PRIMARY KEY,
+    account_login   TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    schedule        TEXT NOT NULL DEFAULT 'weekly',
+    mode            TEXT NOT NULL DEFAULT 'manual',
+    data_lag_days   INTEGER NOT NULL DEFAULT 1,
+    template_key    TEXT,
+    settings_json   JSONB NOT NULL DEFAULT '{}',
+    status          TEXT NOT NULL DEFAULT 'active',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_optimizer_events_login
+    ON optimizer_events (account_login, status, id);
+
+CREATE TABLE IF NOT EXISTS optimizer_event_rules (
+    id              SERIAL PRIMARY KEY,
+    event_id        INTEGER NOT NULL REFERENCES optimizer_events(id) ON DELETE CASCADE,
+    priority        INTEGER NOT NULL DEFAULT 100,
+    name            TEXT NOT NULL,
+    level           TEXT NOT NULL DEFAULT 'account',
+    condition_json  JSONB NOT NULL DEFAULT '{}',
+    action_json     JSONB NOT NULL DEFAULT '{}',
+    status          TEXT NOT NULL DEFAULT 'active'
+);
+CREATE INDEX IF NOT EXISTS idx_optimizer_event_rules_event
+    ON optimizer_event_rules (event_id, priority, id);
+
+CREATE TABLE IF NOT EXISTS optimizer_event_runs (
+    id              BIGSERIAL PRIMARY KEY,
+    event_id        INTEGER REFERENCES optimizer_events(id) ON DELETE SET NULL,
+    account_login   TEXT NOT NULL,
+    preview_json    JSONB NOT NULL DEFAULT '{}',
+    applied         BOOLEAN NOT NULL DEFAULT FALSE,
+    ran_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_optimizer_event_runs_login
+    ON optimizer_event_runs (account_login, ran_at DESC);
 """
 
 
@@ -217,6 +266,214 @@ def rules_delete(rule_id: int) -> bool:
             deleted = cur.rowcount > 0
         conn.commit()
         return deleted
+    finally:
+        conn.close()
+
+
+# ── Home accounts ─────────────────────────────────────────────────────────────
+
+def home_accounts_list() -> list[dict]:
+    """Saved Home-mode Direct accounts."""
+    conn = _connect()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT login, label, account_id, agency_login, created_at::text, updated_at::text "
+                "FROM home_accounts ORDER BY created_at, login"
+            )
+            return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def home_account_upsert(
+    login: str,
+    label: str = "",
+    account_id: int | None = None,
+    agency_login: str = "skuderko1",
+) -> dict:
+    """Create or update a saved Home account."""
+    conn = _connect()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                INSERT INTO home_accounts (login, label, account_id, agency_login, updated_at)
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (login) DO UPDATE SET
+                    label = EXCLUDED.label,
+                    account_id = EXCLUDED.account_id,
+                    agency_login = EXCLUDED.agency_login,
+                    updated_at = NOW()
+                RETURNING login, label, account_id, agency_login,
+                          created_at::text, updated_at::text
+                """,
+                (login, label or login, account_id, agency_login or "skuderko1"),
+            )
+            row = dict(cur.fetchone())
+        conn.commit()
+        return row
+    finally:
+        conn.close()
+
+
+# ── K50-style optimizer events ───────────────────────────────────────────────
+
+def optimizer_events_list(account_login: str | None = None) -> list[dict]:
+    """K50-style Home optimizer events with nested rules."""
+    conn = _connect()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if account_login:
+                cur.execute(
+                    "SELECT id, account_login, name, schedule, mode, data_lag_days, "
+                    "template_key, settings_json, status, created_at::text, updated_at::text "
+                    "FROM optimizer_events WHERE account_login = %s ORDER BY id DESC",
+                    (account_login,),
+                )
+            else:
+                cur.execute(
+                    "SELECT id, account_login, name, schedule, mode, data_lag_days, "
+                    "template_key, settings_json, status, created_at::text, updated_at::text "
+                    "FROM optimizer_events ORDER BY id DESC"
+                )
+            events = [dict(r) for r in cur.fetchall()]
+            if not events:
+                return []
+            ids = [e["id"] for e in events]
+            cur.execute(
+                "SELECT id, event_id, priority, name, level, condition_json, action_json, status "
+                "FROM optimizer_event_rules WHERE event_id = ANY(%s) ORDER BY event_id, priority, id",
+                (ids,),
+            )
+            rules_by_event: dict[int, list[dict]] = {}
+            for row in cur.fetchall():
+                rules_by_event.setdefault(row["event_id"], []).append(dict(row))
+            for event in events:
+                event["rules"] = rules_by_event.get(event["id"], [])
+            return events
+    finally:
+        conn.close()
+
+
+def optimizer_event_get(event_id: int) -> dict | None:
+    rows = optimizer_events_list(None)
+    for row in rows:
+        if int(row["id"]) == int(event_id):
+            return row
+    return None
+
+
+def optimizer_event_create(
+    account_login: str,
+    name: str,
+    schedule: str,
+    mode: str,
+    data_lag_days: int,
+    template_key: str | None,
+    settings_json: dict,
+    rules: list[dict],
+    status: str = "active",
+) -> int:
+    """Create optimizer event and nested event rules."""
+    import json
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO optimizer_events
+                    (account_login, name, schedule, mode, data_lag_days,
+                     template_key, settings_json, status, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                RETURNING id
+                """,
+                (
+                    account_login, name, schedule, mode, int(data_lag_days or 0),
+                    template_key, json.dumps(settings_json or {}), status,
+                ),
+            )
+            event_id = cur.fetchone()[0]
+            for rule in sorted(rules or [], key=lambda r: int(r.get("priority") or 100)):
+                cur.execute(
+                    """
+                    INSERT INTO optimizer_event_rules
+                        (event_id, priority, name, level, condition_json, action_json, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        event_id,
+                        int(rule.get("priority") or 100),
+                        rule.get("name") or "Правило",
+                        rule.get("level") or "account",
+                        json.dumps(rule.get("condition_json") or {}),
+                        json.dumps(rule.get("action_json") or {}),
+                        rule.get("status") or "active",
+                    ),
+                )
+        conn.commit()
+        return event_id
+    finally:
+        conn.close()
+
+
+def optimizer_event_update(event_id: int, **fields) -> bool:
+    """Update event scalar fields."""
+    import json
+    allowed = {"name", "schedule", "mode", "data_lag_days", "template_key", "settings_json", "status"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return False
+    params = {}
+    for k, v in updates.items():
+        params[k] = json.dumps(v) if isinstance(v, (dict, list)) else v
+    set_clause = ", ".join(f"{k} = %({k})s" for k in params)
+    params["event_id"] = event_id
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE optimizer_events SET {set_clause}, updated_at = NOW() WHERE id = %(event_id)s",
+                params,
+            )
+            ok = cur.rowcount > 0
+        conn.commit()
+        return ok
+    finally:
+        conn.close()
+
+
+def optimizer_event_delete(event_id: int) -> bool:
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM optimizer_events WHERE id = %s", (event_id,))
+            ok = cur.rowcount > 0
+        conn.commit()
+        return ok
+    finally:
+        conn.close()
+
+
+def optimizer_event_runs_append(
+    event_id: int | None,
+    account_login: str,
+    preview: dict,
+    applied: bool = False,
+) -> int:
+    """Append optimizer event preview/apply result."""
+    import json
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO optimizer_event_runs (event_id, account_login, preview_json, applied) "
+                "VALUES (%s, %s, %s, %s) RETURNING id",
+                (event_id, account_login, json.dumps(preview), applied),
+            )
+            row_id = cur.fetchone()[0]
+        conn.commit()
+        return row_id
     finally:
         conn.close()
 

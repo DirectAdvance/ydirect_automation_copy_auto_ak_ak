@@ -124,6 +124,14 @@ def create_app() -> Flask:
         "rule_runs_append":    repository.rule_runs_append,
         "audit_log_append":    repository.audit_log_append,
         "audit_log_list":      repository.audit_log_list,
+        "home_accounts_list":  repository.home_accounts_list,
+        "home_account_upsert": repository.home_account_upsert,
+        "optimizer_events_list":       repository.optimizer_events_list,
+        "optimizer_event_get":         repository.optimizer_event_get,
+        "optimizer_event_create":      repository.optimizer_event_create,
+        "optimizer_event_update":      repository.optimizer_event_update,
+        "optimizer_event_delete":      repository.optimizer_event_delete,
+        "optimizer_event_runs_append": repository.optimizer_event_runs_append,
     }
 
     bp = Blueprint(

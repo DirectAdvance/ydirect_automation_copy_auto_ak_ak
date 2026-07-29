@@ -20,9 +20,25 @@
 from __future__ import annotations
 
 import re
+import importlib
 
 from .ai_agents_data import AGENTS, AGENT_ADS, EXAMPLE_BANK, CROSS_SIGNATURE, ALIEN_SIGNATURE_RE
-from .text_norm import mentions_banned_content, strip_banned_content
+from . import text_norm as _text_norm
+
+_REQUIRED_TEXT_NORM_EXPORTS = ("mentions_banned_content", "strip_banned_content")
+if not all(hasattr(_text_norm, name) for name in _REQUIRED_TEXT_NORM_EXPORTS):
+    _text_norm = importlib.reload(_text_norm)
+
+_missing_text_norm_exports = [
+    name for name in _REQUIRED_TEXT_NORM_EXPORTS if not hasattr(_text_norm, name)
+]
+if _missing_text_norm_exports:
+    raise ImportError(
+        "direct.text_norm missing exports: " + ", ".join(_missing_text_norm_exports)
+    )
+
+mentions_banned_content = _text_norm.mentions_banned_content
+strip_banned_content = _text_norm.strip_banned_content
 
 # Допустимые значения промо (сверены интроспекцией grid/api + офиц. докой):
 PROMO_TYPES = ["DISCOUNT", "PROFIT", "CASHBACK", "GIFT", "FREE"]
@@ -118,7 +134,9 @@ SITE_TYPE_PROFILE = {
 # Типы сайтов про ТОЛЬКО НОВЫЕ авто — на них неуместна лексика «с пробегом / б/у» (зеркало
 # _BU_BAN для обратной стороны). По рабочему правилу «Мульти + БУ» генерируем как новые авто:
 # БУ-лексика допустима только для явного типа «С пробегом».
-NEW_ONLY_SITE_TYPES = {"Монобренд", "Мультибренд", "Квиз", "Мульти + БУ"}
+from .kontent_pack import SiteTypeSet as _SiteTypeSet   # `in` понимает «Монобренд · Lada»
+
+NEW_ONLY_SITE_TYPES = _SiteTypeSet({"Монобренд", "Мультибренд", "Квиз", "Мульти + БУ"})
 BU_SITE_TYPES = {"С пробегом"}
 
 

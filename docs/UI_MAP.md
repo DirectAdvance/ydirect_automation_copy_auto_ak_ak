@@ -82,7 +82,12 @@ const IS_ADMIN = {{ is_admin | tojson }};
 | `/direct/automation/copy` | `direct-copy.service` :5022 | `copy_main.py`, `routes_copy.py`, `templates/direct/copy.html`, `templates/direct/copy_other.html`, `templates/direct/_copy_common.html`, `static/direct/copy_*.js/css` |
 | `/direct/automation/slepki` | `direct-slepki.service` :5023 | `slepki_main.py`, `routes_slepki_edit.py`, `templates/direct/slepki.html`, `static/direct/slepki_ui.js/css` |
 | `/direct/automation/accounts` | `direct-accounts.service` :5024 | `accounts_main.py`, `templates/direct/accounts.html`, `static/direct/accounts_ui.js` |
-| `/direct/autorules` | `autorules_main.py` :5027 | `routes_autorules.py`, `templates/direct/autorules.html` |
+| `/direct/autorules`, `/direct/autorules/home` | `autorules_main.py` :5027 | `routes_autorules.py`, `templates/direct/autorules.html` |
+
+`/direct/autorules/home` содержит Home-only вкладку «Оптимизатор»: K50-style события, шаблоны,
+приоритеты правил, задержка данных и preview/report. API живёт под
+`/direct/api/ar/home/optimizer/*`, таблицы — `direct_autorules.optimizer_events`,
+`optimizer_event_rules`, `optimizer_event_runs`.
 
 `/direct/automation/copy` — каноническая страница копирования. Старый скрытый
 `#panel-copy` в `templates/direct/index.html` является legacy-остатком прежней SPA-вкладки и не
@@ -197,6 +202,7 @@ home/seoadvanced/direct/deploy/nginx-direct-location.conf
 | `/direct/api/ai/` | `127.0.0.1:5026` |
 | `/direct/api/ar/` | `127.0.0.1:5027` |
 | `/direct/autorules` | `127.0.0.1:5027` |
+| `/direct/autorules/home` | `127.0.0.1:5027` |
 | остальное `/direct/` | `127.0.0.1:5020` |
 
 `direct-gateway.service` (:5025) — внутренний loopback-брокер кук/токенов. Его нельзя

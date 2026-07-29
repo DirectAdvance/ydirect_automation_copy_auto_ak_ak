@@ -18,6 +18,8 @@ from flask import jsonify, request, session
 import psycopg2
 import psycopg2.extras
 
+from . import kontent_pack as _kp_tags  # base_site_type: split «Монобренд · Lada» → «Монобренд»
+
 
 _TAG_REGISTRY = "direct_automation.tag_registry"
 _CAMPAIGN_TAGS = "direct_automation.campaign_tags"
@@ -82,7 +84,7 @@ def register_tags_routes(bp, access: Callable) -> None:
     def _camp_scope(b: dict):
         """Достать (slepok,site_type,tp,camp_key) из тела; None,err при пустом поле."""
         slepok = (b.get("slepok") or "").strip()
-        site_type = (b.get("site_type") or "").strip()
+        site_type = _kp_tags.base_site_type((b.get("site_type") or "").strip())  # split→базовый тип
         tp = (b.get("tp") or "").strip()
         camp_key = (b.get("camp_key") or "").strip()
         if not (slepok and site_type and tp and camp_key):
@@ -200,7 +202,7 @@ def register_tags_routes(bp, access: Callable) -> None:
         ключу `tp|camp_key` (ровно ключ клиентского _SL_CAMPTAG_CACHE).
         """
         slepok = (request.args.get("slepok") or "").strip()
-        site_type = (request.args.get("site_type") or "").strip()
+        site_type = _kp_tags.base_site_type((request.args.get("site_type") or "").strip())  # split→базовый тип
         if not (slepok and site_type):
             return jsonify({"error": "нужны slepok/site_type"}), 400
         items: dict = {}

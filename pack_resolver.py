@@ -103,7 +103,6 @@ def _selected_slepok_key(raw: str) -> str:
 
 # ── Статус локального индекса/зеркала контент-пака M3 ────────────────────
 _M3_KONTENT_ROOT = "/opt/neuro_kontent"  # sshfs-монт папки нейродиректолога с M3
-_M3_SEGMENTS = ("Монобренд", "Мультибренд", "Квиз", "Мульти + БУ", "С пробегом")
 
 
 def _m3_content_status(timeout: float = 8.0) -> dict:

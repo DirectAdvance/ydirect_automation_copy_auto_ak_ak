@@ -680,11 +680,14 @@ def _fetch_many(remote_paths: list) -> dict:
 
 
 def _remote_ct_dir(segment: str, tp: str, ct: str) -> str:
-    return posixpath.join(M3_PACK_ROOT, segment, tp, _norm_ct(ct) or GENERAL_CT)
+    # base_site_type: «Монобренд · Lada» → «Монобренд» (витринный сплит, см. SEGMENTS)
+    return posixpath.join(M3_PACK_ROOT, base_site_type(segment), tp, _norm_ct(ct) or GENERAL_CT)
 
 
 def _pack_entry(segment: str, tp: str, ct: str) -> dict:
-    return _load_index().get("packs", {}).get(f"{segment}|{tp}|{_norm_ct(ct) or GENERAL_CT}", {})
+    # ключ индекса построен по ПАПКАМ пака → сегмент нормализуем (витринный сплит site_type)
+    key = f"{base_site_type(segment)}|{tp}|{_norm_ct(ct) or GENERAL_CT}"
+    return _load_index().get("packs", {}).get(key, {})
 
 
 def remote_asset_key(remote_abs: str) -> str:
@@ -1073,6 +1076,49 @@ def content_assets(segment: str, tp: str, ct: str, slepok: str = "") -> list[dic
     return rows
 
 SEGMENTS = ("Монобренд", "Мультибренд", "Квиз", "Мульти + БУ", "С пробегом")
+
+# ── ВИТРИННЫЙ СПЛИТ site_type (2026-07-29) ───────────────────────────────────
+# «Монобренд» в UI разрезан на «Монобренд · Lada», «· Haval», …, «· Общая»: это
+# УРОВЕНЬ ОТОБРАЖЕНИЯ и выбора при создании РК, а НЕ новая папка пака. Контент всех
+# восьми вкладок физически лежит в одной папке `kontent_oktyabr/Монобренд/tpN/ctNNNN/`
+# (пак read-only, ночной sync_content_m3.py затирает самодеятельность), поэтому любой
+# site_type перед походом в пак и перед сравнением с литералами сегмента нормализуется
+# сюда. Без этого разрезанные вкладки ушли бы в несуществующие папки и потеряли ключи.
+_SITE_TYPE_SPLIT_RE = re.compile(r"\s*·.*$")
+
+
+def base_site_type(site_type: str) -> str:
+    """«Монобренд · Lada» → «Монобренд». Не-разрезанные имена возвращает как есть."""
+    s = str(site_type or "").strip()
+    if "·" not in s:
+        return s
+    base = _SITE_TYPE_SPLIT_RE.sub("", s).strip()
+    return base if base in SEGMENTS else s
+
+
+class SiteTypeSet(frozenset):
+    """Множество site_type, у которого `in` понимает витринный сплит.
+
+    `"Монобренд · Lada" in SiteTypeSet({"Монобренд", ...})` → True. Нужен там, где
+    принадлежность к сегменту решает поведение (правила плана, картинки, гард
+    б/у-лексики): без него разрезанные вкладки молча выпали бы из всех этих правил —
+    тексты про новые авто перестали бы чиститься, tp1 ушёл бы в split-driven ветку.
+    Обычный `frozenset` наследуется, чтобы сохранить всю прочую семантику множества.
+
+    ⚠️ Нормализован ТОЛЬКО `in`. Операции множеств сплит-имён не понимают:
+    `s.issuperset({"Монобренд · Lada"})` → False, `s & {"Монобренд · Lada"}` → пусто.
+    Все текущие точки использования — `in`; нужен другой оператор — нормализуй явно
+    через `base_site_type`, а не полагайся на этот класс.
+    """
+
+    def __contains__(self, item) -> bool:            # noqa: D105
+        if super().__contains__(item):
+            return True
+        try:
+            return super().__contains__(base_site_type(item))
+        except Exception:
+            return False
+
 SLEPOK_KEYS = ("pavlov", "scherbakova", "kryuchkova", "terehov", "karavaev",
                "salamahin", "gordeeva", "zubakin", "chepelev", "tumashenko",
                "kuderko", "dmp")
@@ -1244,7 +1290,8 @@ def _filter_bu_images(paths: list) -> list:
 
 
 def _ct_dir(segment: str, tp: str, ct: str) -> str:
-    return os.path.join(PACK_ROOT, segment, tp, _norm_ct(ct) or GENERAL_CT)
+    # base_site_type: «Монобренд · Lada» → «Монобренд» (витринный сплит, см. SEGMENTS)
+    return os.path.join(PACK_ROOT, base_site_type(segment), tp, _norm_ct(ct) or GENERAL_CT)
 
 
 # ── чтение контента по НАШЕМУ ct (= имя папки пака) ──────────────────────────

@@ -705,6 +705,8 @@ def _account_prefill_response():
         c2 = _victory_conn()
         try:
             cur = c2.cursor()
+            # site_type здесь — строка из записи аккаунта (local_gsheet_sites), всегда базовый тип;
+            # split-вкладки («Монобренд · Lada») не пишутся в accounts и не хранятся в ad_templates.
             cur.execute("SELECT kind, content FROM public.direct_ad_templates "
                         "WHERE enabled AND site_type=%s ORDER BY kind, id", (site_type,))
             for kind, content in cur.fetchall():
@@ -722,6 +724,8 @@ def _account_prefill_response():
         try:
             cur = c3.cursor()
             r_rule = None
+            # site_type здесь — из записи аккаунта (базовый тип), нормализация не нужна:
+            # direct_automation_rules хранит только базовые типы без split-суффикса.
             # Приоритет: правило для конкретного города аккаунта
             if acc_city:
                 cur.execute("SELECT goal_type, cpa::numeric, budget::numeric, adjustment_pct "

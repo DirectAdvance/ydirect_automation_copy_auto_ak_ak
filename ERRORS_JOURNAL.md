@@ -4,6 +4,162 @@
 > метод решения → **помогло или нет** (проверено живым прогоном). Перед фиксом любой ошибки —
 > СНАЧАЛА искать её здесь: возможно, решение уже известно или уже пробовали и не помогло.
 
+### COPY_UAC_HREF_IMAGES_NOT_1TO1 — UAC-копия теряла paths и порядок картинок (2026-07-29)
+- Симптом: copy job `5dc4ca62df05` (`porg-qrriv2wt` → `porg-63s3kxux`, target
+  `geelybase-196.ru`) создала 12/12 tp6/tp7 кампаний, но ссылки `/quiz` и модельные URL частично
+  стали главной страницей, а картинки не совпали 1в1. Live read-back: `hashes_equal=False` у всех
+  12 пар; пример `712846924 /quiz` → `713137113 /`, `712847305 /auto/geely/monjaro/...` → `/`.
+- Где: `copy_engine._copy_run_job` UAC-only branch + `copy_uac._copy_uac_campaigns`.
+- Root-cause: UAC ветка не использует v5 snapshot (в job campaigns/adgroups/ads/adimages = 0) и
+  строит `MasterCampaignSpec` сама. До фикса `href=target_href`, где `target_href` заранее был
+  `https://<target_domain>` без исходного path. Картинки брались через `_copy_uac_media_urls` —
+  рекурсивный поиск URL по нестабильному detail payload, включая preview/meta URL, без опоры на
+  упорядоченный список `contents`.
+- Решение: для каждой UAC-кампании брать исходный `d.href` и прогонять через `_copy_target_href`
+  (замена домена с сохранением path/query/fragment). Для media недостаточно повторно загрузить
+  `contents[].source_url`: UAC может пересоздать другой `direct_image_hash`. Финальный фикс —
+  предварительно добавить исходные `AdImageHash` в target через v501 `adimages.add` из source
+  `OriginalUrl`, затем создавать/патчить UAC через source `contents[].id`; URL-загрузка оставлена
+  только fallback'ом, когда source content ids недоступны.
+- Проверено кодом: `py_compile copy_uac.py`; pytest guard на `/quiz`, модельный path при пустом
+  source_domain, ordered `contents[].source_url`, extraction `contents[].id/direct_image_hash` —
+  5 passed.
+- Repair job `5dc4ca62df05` (2026-07-29): созданы новые DRAFT `713139080, 713139079,
+  713139089, 713139094, 713139101, 713139108, 713139120, 713139122, 713139140, 713139139,
+  713139152, 713139153`; source content ids пропатчены в target. Для target-библиотеки пришлось
+  добавить 3 missing hash: `AjTquKL-wjdC_BqHlXA0Mw`, `My3VJ0dS3PT3AKzJDXsTiw`,
+  `g1nzRR5SFQe1H6CmN_mG6A`. Live read-back: все 12 `href_ok=True`, `img_ok=True`, status `draft`.
+  Старые ошибочные DRAFT `713137051, 713137050, 713137061, 713137085, 713137087, 713137100,
+  713137098, 713137113, 713137119, 713137124, 713137133, 713137136` удалены; повторный read-back:
+  `old_gone_count=12`. Mapping записан в `direct_automation_jobs.result.manual_uac_repair_20260729`.
+- НЕ помогло ранее: общий v5 `copy_verify` — в UAC-only job он видел 0 сущностей и не сравнивал
+  href/images; cookie postprocess проверял только минимальное число картинок, не identity/order.
+  Первый фикс через `contents[].source_url` починил href, но не гарантировал картинки: для model
+  `get-uac/.../thumb|s4x3` Direct выдавал новые hash.
+
+### CONTENT_EDITOR_AD_HREF_COOKIE_RIGHTS_MASKED — `ad_href` падал с ложным последним `401 No rights` (2026-07-29)
+- Симптом: Agent Board #50 / `content_jobs.job_id=ce_39f8cdd30779` (`gordeeva`,
+  `porg-nxhtsz6c`, `ad_href`, `/auto/changan/uni-s-cs55plus/i-restyling/suv-5d` →
+  `/auto/changan/uni-s-cs55plus/1-rest/suv-5d`) упала как
+  `ни одна кука не подошла ... HTTP 401 No rights`.
+- Root-cause: управляющее агентство известно и v5-владелец подтверждён как
+  `victoryagency-direct1618440`, но его fresh/local cookie на `linkinfo` возвращают
+  `403 Нет прав`; дальнейший перебор чужих агентств возвращал `401 No rights` и затирал
+  первичную actionable причину. `gateway_client.gw_cookie` после JSON-ошибки broker'а мог уходить
+  в локальный fallback и повторять/маскировать тот же подбор.
+- Решение: `campaign._pick_working_cookie_local` сохраняет ошибку управляющего агентства и в конце
+  отдаёт `кука управляющего агентства ... не имеет web/Grid-прав`; `gateway_client.gw_cookie`
+  распознаёт terminal cookie-rights ошибки broker'а и не делает локальный fallback.
+- Live-проверка: `/gw/cookie?login=porg-nxhtsz6c&force_refresh=0` отдаёт новую ошибку по
+  `victoryagency-direct1618440`; v5 read-back: 13 кампаний / 4362 ads, старый path в 26
+  `RESPONSIVE_AD`, новый path = 0. No-op `ads.update` по одному ad_id вернул `3000 / Нет доступа к API`.
+- Статус: 🟡 код задеплоен и сервисы `direct-gateway`, `direct-content`, `direct-content-worker`
+  перезапущены; исходная операция не добита, нужен web/Grid-доступ к `porg-nxhtsz6c` или отдельное
+  решение Семёна по способу правки.
+- Повтор #51 (`ce_0970ceaea695`, `gordeeva`, `porg-m6atla56`): исходно упала тем же
+  `ни одна кука не подошла ... HTTP 401 No rights`. Live root-cause 2026-07-29:
+  v5-владелец/row agency/override = `victoryagency-direct1618440`; broker `/gw/cookie` после
+  restart отдаёт точную ошибку `кука управляющего агентства ... не имеет web/Grid-прав` с
+  `fresh/local linkinfo -> 403 Нет прав`. Доп. hardening: standalone/local single-account fallback
+  без DI-resolver теперь тоже сохраняет эту terminal rights-ошибку, а не деградирует в generic
+  `ни одна кука...`. Live Direct read-back: 20 `ResponsiveAd` в `OFF` кампаниях
+  `702891187/702891201/702891211/702891248/702891267` всё ещё имеют старый path
+  `/auto/changan/uni-s-cs55plus/i-restyling/suv-5d`, новый path = 0. Current Grid RMW execute
+  остановлен до мутации на `403 Нет прав`; no-op official `ads.update` v5 и v501 по
+  `ad_id=17256545488` вернул `3000 Аккаунт пользователя блокирован / Нет доступа к API`.
+  Job row error обновлён на точную причину; добивка невозможна до возврата web/Grid-прав или
+  отдельного решения Семёна по способу правки.
+- Повтор #52 (`ce_f10156cabe2a`, `gordeeva`, `porg-q6m3wzlz`): исходно упала тем же
+  `ни одна кука не подошла ... HTTP 401 No rights`. Live root-cause 2026-07-29:
+  row agency/v5-владелец = `victoryagency-direct1618440`; текущий executor на fresh/local cookie
+  останавливается до мутации с `403 Нет прав`. Live Direct read-back: 20 `TextAd` в DRAFT/OFF
+  кампаниях `703013688/703013701/703013707/703013734/703013753` всё ещё имеют старый path
+  `/auto/changan/uni-s-cs55plus/i-restyling/suv-5d`, новый path = 0. No-op official `ads.update`
+  по `ad_id=17266309206` вернул `3000 Нет доступа к API / Аккаунт пользователя блокирован`.
+  Job row error обновлён на точную причину; добивка невозможна до возврата web/Grid-прав или
+  отдельного решения Семёна по способу правки.
+- Повтор #53 (`ce_72ffaeb95c6d`, `gordeeva`, `porg-whs6d5n5`): исходно упала тем же
+  `ни одна кука не подошла ... HTTP 401 No rights`. Live root-cause 2026-07-29:
+  row agency и OAuth read-owner = `victorylotsofads1`; его fresh/local cookie на `linkinfo`
+  возвращают `403 Нет прав`, а no-op official `ads.update` по `ad_id=17447602599` возвращает
+  `3000 Нет доступа к API / Аккаунт пользователя блокирован`. Доп. hardening: executor
+  `content_jobs` теперь создаёт Grid factory с явной `job.agency`, берёт cookie через
+  `pick_working_cookie(login, accounts=(job.agency,), force_refresh=True)` и передаёт её в
+  `get_grid_client`, поэтому job без resolvable managing-agency больше не деградирует в
+  default-перебор с последней чужой `401`. Live Direct read-back: 13 неархивных `TextAd`
+  в `OFF/DRAFT` кампаниях `705293824/705293850/705293872` всё ещё имеют старый path
+  `/auto/changan/uni-s-cs55plus/i-restyling/suv-5d`, новый path = 0; ещё 10 old-path `TextAd`
+  находятся в архивных кампаниях и не трогались. Row `content_jobs.error/result` обновлён на
+  точную terminal-причину; добивка невозможна до возврата web/Grid-прав к `porg-whs6d5n5` или
+  отдельного решения Семёна по способу правки.
+
+### CONTENT_EDITOR_AD_HREF_API_WRITE_BLOCKED — `ad_href` падал на `ads.update: Нет доступа к API` (2026-07-29)
+- Симптом (Agent Board #47, job `ce_2eb3812dd1c7`, `porg-qv22znqh`): смена
+  `/auto/changan/cs75-plus/i/suv-5d` → `/auto/changan/cs75-plus/iv/suv-5d` нашла 54 цели,
+  но завершилась `replaced=0`, `confirmed=0`, `ads.update: Нет доступа к API`.
+- Где: `content_replace_routes.py::_replace_ad_href`.
+- Root-cause: `ad_href` для `TextAd` писал через официальный v5 `ads.update`, а на этом клиенте
+  write API возвращает `error_code=3000`, `Аккаунт пользователя блокирован`. Repro:
+  no-op `ads.update` того же Href на `ad_id=17327384320` → `Нет доступа к API`; `ads.get`
+  при этом читается нормально. Это противоречило текущему контракту content-editor: массовые
+  записи делать через cookie/Grid.
+- Решение: `ad_href` переведён на cookie/Grid RMW: `TextAd` → `text_ads_for_update` +
+  `update_text_ads(..., allow_empty_image_hashes=True)`, `ResponsiveAd` →
+  `adaptive_ads_for_update` + `update_adaptive_text_ads`; v5 остаётся только для read-back.
+- Статус: 🟡 код проверен локально (`py_compile`, `direct/tests/test_content_ad_href_grid.py` —
+  2 passed), `direct-content-worker` перезапущен. Повтор 2026-07-29 после команды админа
+  "взять новую с главпотока": `/opt/scripts/.secret/glavpotok_cookies.py` обновил 6 свежих
+  агентских cookie, включая `victoryagency-direct1618440`; `need_reset` ушёл, но Grid/UAC probe
+  для `porg-qv22znqh` теперь возвращает `HTTP 403 / Нет прав`. OAuth read видит аккаунт только
+  через `victoryagency-direct1618440`, остальные агентские токены получают `8800 Объект не найден`
+  (или неагентский `8000`). Live `ads.get` по `17327384320`–`17327384329` подтвердил, что старый
+  path всё ещё стоит в `OFF/DRAFT` кампании `703748303`; операция не добита до возврата web/Grid
+  прав или отдельного решения по удалённому в реестре аккаунту.
+- Follow-up по вопросу Семёна "куки пробовал перебором" (2026-07-29): да, выполнен полный live
+  перебор cookie. Локальный `/opt/scripts/.secret/cookies.json`: 7 аккаунтов (`skuderko1` + 6
+  default); свежий главпоток: 6 default-агентств, `skuderko1` отсутствует. Итог: управляющая
+  `victoryagency-direct1618440` стабильно возвращает `403 Нет прав`, все остальные cookie —
+  `401 No rights`; рабочей web/Grid cookie нет. Row `ce_2eb3812dd1c7` обновлён на
+  `blocked_reason=cookie_rights_full_bruteforce_failed`. Live v5 read-back по 54 id: 12 `TextAd`
+  всё ещё на старом path в `OFF/DRAFT` кампании `703748303`, новый path = 0; остальные 42 id уже
+  ведут на другие модели и не являются текущими old-path целями.
+- Повтор #48 (`ce_b27147271334`, `gordeeva`, `e-20074375`): job была исполнена старым worker
+  `python-postgresql:3399472` до рестарта и упала тем же v5-путём. Repro 2026-07-29:
+  no-op `ads.update` по `ad_id=17497079160` → `error_code=3000`,
+  `Аккаунт пользователя блокирован / Нет доступа к API`; v5 read-back видит 12 активных `TextAd`
+  в кампании `705858919` со старым path. Повторный прогон текущим Grid-кодом остановлен на
+  cookie-доступе: `e-20074375` через `direct-gateway`/главпоток возвращает `need_reset`/Passport,
+  поэтому live-добивка невозможна до перелогина агентской cookie. Job оставлена terminal `error`.
+- Повтор #49 (`ce_7986eedfae67`, `gordeeva`, `e-20074377`): job была исполнена старым worker
+  `python-postgresql:3399472` до фикса/restart и упала тем же v5-путём. Live read-back 2026-07-29:
+  12 `TextAd` (`17495459782`–`17495459793`) в кампании `705838023` всё ещё имеют старый path
+  `/auto/changan/cs75-plus/i/suv-5d`, новый path = 0. Доп. hardening: для `ad_href` отключён
+  лишний `_load_account` callout/Grid enrichment (`include_callouts=False` в worker `/links`/
+  preview/replace), чтобы чтение ссылок не зависело от cookie. Live-добивка текущим Grid-кодом
+  невозможна сейчас: `direct-gateway` для `e-20074377` отдаёт 502/`need_reset`, фолбэк
+  `glavpotok.ru` висит на SOCKS/SSL timeout; операция не применена, job оставлена terminal `error`
+  до перелогина агентской cookie.
+- НЕ помогло ранее: v5/v501 `ads.update` для Href (работало на части аккаунтов, но падает на
+  аккаунтах с заблокированным official write API).
+
+### COPY_ADS_GET_1000_TRANSIENT — ads.get падал с кодом 1000 и не ретраился (2026-07-28)
+- Симптом (copy job `c3cb103f420a`, `porg-mjyh6hjv` → `porg-xqsyuplp`): после pull кампаний
+  (`26` в скоупе) и групп (`1025`) джоба упала terminal `error` на
+  `ads.get: [ads.get] 1000: Сервис временно недоступен`.
+- Где: `/opt/scripts/work/slepki_direktologov/scripts/direct_copy.py:direct_call`.
+- Root-cause: Direct API вернул временную недоступность как JSON business-error с HTTP 200.
+  Общий retry-хелпер ретраил HTTP 5xx/429 и коды 52/506, но не 1000/1001/1002, поэтому
+  `get_paginated()` сразу поднимал `RuntimeError` и `phase_pull` не завершал snapshot.
+- Решение: добавить 1000/1001/1002 в `TRANSIENT_API_CODES`, чтобы все v5/v501 вызовы copy-path
+  ретраили это окно тем же backoff, что и прочие transient-ошибки. Дополнительно `copy_main.py`
+  запускает copy worker/retry-daemon на старте сервиса, иначе Agent Board `done` мог ждать
+  следующего ручного `copy_start`.
+- Проверено: synthetic repro до фикса = 1 `ads.get` и `__error__`; после фикса = 2 вызова и успех.
+  `py_compile` OK, `direct/tests/test_direct_copy_transient_retry.py` — 1 passed. `direct-copy.service`
+  active; Agent Board #46 `done` создал retry job `0c1ba3db2827` через штатный daemon.
+- Статус: ✅ код задеплоен; retry job пошла обычной очередью.
+- НЕ помогло ранее: точечный retry только для `campaigns.add` 1000 — не покрывал pull/read-вызовы.
+
 ### VIDEO_BRAND_FALLBACK_BEATS_EXACT_MODEL — подмена бренда из общего пула перебивала точный ролик модели (2026-07-28)
 - Симптом: после переноса батча `by_code` в пак Павлова опустели папки общего пула `ct0118` (Haval H9), `ct0119` (Haval Jolion), `ct0120` (Haval M6) → чужой слепок получал `ct0112_01/02` (Haval **Dargo**), хотя точный ролик своей модели лежит в паке Павлова и достижим ступенью «чужой слепок». Замер: `ct0119` чужой слепок ДО `Haval_Jolion_1x1/_9x16` → ПОСЛЕ переноса `ct0112_01/02`.
 - Где: `kontent_pack.py::videos_for_ct` — три ступени «свой слепок → общий пул → чужой слепок», а brand-fallback сидел ВНУТРИ ступени 2 (`videos_pool_for_ct`, хвост функции) → подмена бренда срабатывала раньше ступени 3.
@@ -4335,6 +4491,57 @@ Root-cause: `_rsya_texts()` не имела dmp-ветки совсем. Выз�
 
 **Статус.** ✅ причина/правило зафиксированы. Правка модала (только шаблон/JS) 2026-07-10 —
 рестарт только `direct-content`, смоук HTTP 302, journal чист.
+
+### CONTENT_EDITOR_WORKER_STALE_TEXT_NORM_IMPORT — воркер держит старый `direct.text_norm` в памяти (2026-07-28)
+
+**Симптом.** Agent Board #42 / `content_jobs.job_id=ce_a5c527188f93` (`karavaev`,
+`porg-vwnkfsr6`, `type=ad_href`, `/auto/changan/cs75-plus/i/suv-5d` →
+`/auto/changan/cs75-plus/iv/suv-5d`) упала:
+`cannot import name 'mentions_banned_content' from 'direct.text_norm'`.
+
+**Корень.** `direct-content-worker.service` был запущен с 2026-07-24 и держал в `sys.modules`
+старую версию `direct.text_norm`; на диске 2026-07-28 функции уже были, локальный импорт проходил.
+Поздний импорт sibling-модуля (`text_gen`/`ai_agents`) обращался к cached-модулю без новых экспортов.
+
+**Фикс/правило.**
+- `content_worker.py`: перед выполнением job добавлен `_ensure_text_norm_exports()` — проверяет
+  `mentions_banned_content` и `strip_banned_content`, при stale-модуле делает `importlib.reload(text_norm)`,
+  при реальном отсутствии экспортов падает понятной ошибкой.
+- После изменений общей логики/санитайзеров всё равно перезапускать `direct-content-worker.service`
+  (см. `CONTENT_EDITOR_TWO_SERVICES_WORKER_STALE`); guard — бэкстоп для долгоживущего процесса.
+
+**Статус.** ✅ 2026-07-28: `py_compile` OK, synthetic reload-smoke OK, worker restarted. Исходная job
+переисполнена: `done`, `replaced=4`, `confirmed=4`, `errors=[]`. Live `_load_account`:
+active old path = 0, new path = 4; прямой v5 по всем 23 кампаниям увидел старый path только в
+`ARCHIVED` объявлениях (архив не восстанавливали и не правили).
+
+**Повтор #43.** `ce_ee855e96b5e9` (`karavaev`, `porg-jxv3b5dm`, `ad_href`) была создана тем же
+stale-воркером до фикса и лежала terminal `error` с тем же ImportError. Код на диске уже имел export
+и guard, локальный импорт `mentions_banned_content`/`strip_banned_content` проходил. Live v5:
+старый path был в 12 `TextAd` неархивной кампании `711066164` (`SUSPENDED`, объявления `OFF`),
+архивных целей по path не было. Операция добита штатным `_replace_ad_href`: `replaced=12`,
+`confirmed=12`, `errors=[]`; read-back: old non-archived = 0, new non-archived = 12. Job обновлена
+в `direct_automation.content_jobs` как `done`; архивные кампании не восстанавливали.
+
+**Повтор #44 / дополнительный hardening.** `ce_3c594f992148` (`karavaev`, `porg-wpjfppa6`,
+`ad_href`) была создана тем же stale-воркером PID `227400` до рестарта и лежала terminal `error`
+с тем же ImportError. Дополнительно усилены top-level импорты `text_gen.py` и `ai_agents.py`: перед
+привязкой `mentions_banned_content`/`strip_banned_content` они reload-ят cached `direct.text_norm`,
+если экспортов нет. Проверено `py_compile`, synthetic stale-reload smoke для обоих модулей и pytest
+`direct/tests/test_create_auto_regressions.py` (66 passed). Worker перезапущен, job переисполнена:
+`done`, `replaced=24`, `confirmed=24`, `errors=[]`; прямой v5 read-back по 25 кампаниям/7581 ads:
+old path = 0, new path = 24. Архивные кампании не восстанавливали.
+
+**Повтор #45 / ad_href без UAC-cookie.** `ce_5a3c1400405e` (`karavaev`, `direct778`, `ad_href`)
+была создана тем же stale-воркером PID `227400` до рестарта и лежала terminal `error` с тем же
+ImportError. Кодовый импорт на диске проходил; live v5 перед записью: 31 неархивная кампания,
+21430 ads, старый path в 36 `TextAd`, новый path = 0. Операция добита через `_replace_ad_href`
+по v5-only `links`-снимку: `done`, `replaced=36`, `confirmed=36`, `errors=[]`; точечный live
+`ads.get` по 36 изменённым ad_id: old path = 0, new path = 36. Доп. hardening:
+`content_editor_helpers._load_account` получил `include_uac_campaigns`; worker для `ad_href` и
+endpoint `/links` передают `False`, потому что UAC Href этим обработчиком не редактируется, а
+cookie-enrichment на `direct778` подвисал. Проверено `py_compile`, synthetic smoke
+`include_uac_campaigns=False` (`uac_calls=0`), restart `direct-content`/`direct-content-worker`.
 
 ### BRAND_ISOLATED_NOT_INTEGRATED — «Belgee.» как рублёный первый элемент, без интеграции в фразу (Д1, 2026-07-10)
 - Симптом (Семён, прогон на аккаунтах Belgee): заголовки «Belgee. Авто в наличии. Кредит от 9 000 ₽/мес»,

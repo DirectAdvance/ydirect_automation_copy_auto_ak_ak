@@ -179,7 +179,11 @@ def _model_page_href(base_href: str, site_type: str, model_name: str) -> str:
       Монобренд «Belgee X50»     → /auto/belgee/x50
       С пробегом «Haval Jolion»  → /catalog/haval/jolion
     """
-    tpl = _SITE_TYPE_URL_TPL.get(site_type)
+    # Витринный сплит: «Монобренд · Lada» → «Монобренд». Промах по этому словарю не заметен —
+    # функция просто вернёт корень сайта вместо страницы модели (сигнатура
+    # AD_HREF_ROOT_INSTEAD_OF_MODEL, ERRORS_JOURNAL.md), поэтому нормализуем здесь.
+    from . import kontent_pack as _kp  # noqa: PLC0415 — локальный импорт, модуль тяжелее этого
+    tpl = _SITE_TYPE_URL_TPL.get(_kp.base_site_type(site_type))
     if not tpl or not model_name:
         return base_href.rstrip("/")
     parts = (model_name or "").strip().split(None, 1)  # split по первому пробелу

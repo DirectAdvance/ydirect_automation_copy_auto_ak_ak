@@ -64,16 +64,21 @@ def preflight_dict(struct: dict, profile: dict | None = None) -> list[str]:
     dl = struct.get("directologists", []) or []
     out: list[str] = []
 
-    # 1. cross-slepok коллизии
-    fp: dict = collections.defaultdict(set)
+    # 1. Дубли структуры — ТОЛЬКО внутри одного слепка И одного типа сайта.
+    # Правило Семёна (2026-07-29): «смотреть в рамках типа сайта и слепка. Если есть кампания
+    # по типу сайта Монобренд, Мультибренд и Монобренд · Lada и они одинаковые — это НЕ дубли».
+    # Совпадение между РАЗНЫМИ слепками (два директолога ведут один шаблон марки) и между
+    # РАЗНЫМИ типами сайта одного слепка — законно и больше не флагается. До сплита правило
+    # сравнивало слепки между собой и после разреза «Монобренд» дало 10 ложных срабатываний.
     for e in dl:
-        for key, items in _sig(e).items():
+        seen: dict = collections.defaultdict(list)
+        for (site, code), items in _sig(e).items():
             if items:
-                fp[frozenset(items)].add((e.get("key"),) + key)
-    for v in fp.values():
-        if len({x[0] for x in v}) > 1:
-            out.append("CROSS_SLEPOK_COLLISION: " + "; ".join(
-                f"{x[0]}/{x[1]}/{x[2]}" for x in sorted(v)))
+                seen[(site, frozenset(items))].append(code)
+        for (site, _items), codes in seen.items():
+            if len(codes) > 1:
+                out.append("DUPLICATE_TP_IN_SITE_TYPE: "
+                           f"{e.get('key')}/{site}: одинаковый набор групп в " + ", ".join(sorted(codes)))
 
     # 2. пустые tp и группы/сплиты
     for e in dl:
@@ -263,23 +268,45 @@ def check(struct_path: Path | None, profile_path: Path | None = None) -> int:
 
     ok = True
     print(f"Слепков: {len(dl)}")
+    # Правило Семёна 2026-07-29: дубль — только внутри ОДНОГО слепка и ОДНОГО типа сайта.
+    # Совпадения между слепками и между типами сайта — законны (один шаблон марки у разных
+    # директологов; «Монобренд», «Мультибренд» и «Монобренд · Lada» с одинаковыми кампаниями).
+    # Поэтому оба списка ниже — справочные, вердикт не меняют.
     if cross:
-        ok = False
-        print(f"❌ CROSS-SLEPOK коллизий: {len(cross)} (синтетические дубли — ЗАПРЕЩЕНЫ)")
+        print(f"ℹ одинаковая структура у РАЗНЫХ слепков: {len(cross)} групп "
+              f"(не дубли — один шаблон марки у разных директологов)")
         for grp in cross:
             print("   ", sorted(grp))
     else:
-        print("✅ cross-slepok коллизий: 0")
+        print("✅ совпадений структуры между слепками: 0")
 
     if same_slepok_cross_site:
         extra_copies = sum(len(occ) - 1 for _key, occ in same_slepok_cross_site)
-        print(f"⚠ cross-site_type дублей структуры ВНУТРИ слепка: "
-              f"{len(same_slepok_cross_site)} групп / {extra_copies} лишних копий "
-              f"(намеренность решает Семён; не блокируют деплой)")
+        print(f"ℹ одинаковая структура в РАЗНЫХ типах сайта одного слепка: "
+              f"{len(same_slepok_cross_site)} групп / {extra_copies} копий (не дубли)")
         for key, occ in same_slepok_cross_site:
             print("   ", f"{key}: " + ", ".join(f"{s}/{t}" for s, t in occ))
     else:
-        print("✅ cross-site_type дублей структуры внутри слепка: 0")
+        print("✅ совпадений структуры между типами сайта: 0")
+
+    # А вот это — настоящий дубль по правилу Семёна: один слепок, один тип сайта, разные tp
+    # с побайтно одинаковым набором групп.
+    dup_in_site: list = []
+    for e in dl:
+        buckets: dict = collections.defaultdict(list)
+        for (site, code), items in _sig(e).items():
+            if items:
+                buckets[(site, frozenset(items))].append(code)
+        for (site, _it), codes in buckets.items():
+            if len(codes) > 1:
+                dup_in_site.append((e["key"], site, sorted(codes)))
+    if dup_in_site:
+        ok = False
+        print(f"❌ дублей ВНУТРИ слепка и типа сайта: {len(dup_in_site)}")
+        for key, site, codes in dup_in_site[:20]:
+            print("   ", f"{key}/{site}: " + ", ".join(codes))
+    else:
+        print("✅ дублей внутри слепка и типа сайта: 0")
 
     if empty_tp:
         ok = False

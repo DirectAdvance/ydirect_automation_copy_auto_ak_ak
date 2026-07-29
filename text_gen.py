@@ -10,21 +10,47 @@ campaign_naming/kontent_pack) импортируются напрямую; bluep
 from __future__ import annotations
 
 import json
+import importlib
 import re
 import sys
 from pathlib import Path
 
 _HERE_TG = Path(__file__).resolve().parent
 
-from .text_norm import (
-    _replace_emdash, _replace_sep_hyphen, _is_bad_start, _trim_to_word,
-    _trim_clean, _sanitize_content,
-    _normalize_numeric_suffixes_bp,
-    _strip_credit_rate, _cap_first, _sentence_case, _RSYA_TEXT_MAX, _split_utp,
-    _has_stamp, _alternate_rhythm, _dedup_by_first_word, _has_number,
-    _bad_ad_title, _bad_ad_text,
-    mentions_banned_content, strip_banned_content,
-)
+from . import text_norm as _text_norm
+
+_REQUIRED_TEXT_NORM_EXPORTS = ("mentions_banned_content", "strip_banned_content")
+if not all(hasattr(_text_norm, name) for name in _REQUIRED_TEXT_NORM_EXPORTS):
+    _text_norm = importlib.reload(_text_norm)
+
+_missing_text_norm_exports = [
+    name for name in _REQUIRED_TEXT_NORM_EXPORTS if not hasattr(_text_norm, name)
+]
+if _missing_text_norm_exports:
+    raise ImportError(
+        "direct.text_norm missing exports: " + ", ".join(_missing_text_norm_exports)
+    )
+
+_replace_emdash = _text_norm._replace_emdash
+_replace_sep_hyphen = _text_norm._replace_sep_hyphen
+_is_bad_start = _text_norm._is_bad_start
+_trim_to_word = _text_norm._trim_to_word
+_trim_clean = _text_norm._trim_clean
+_sanitize_content = _text_norm._sanitize_content
+_normalize_numeric_suffixes_bp = _text_norm._normalize_numeric_suffixes_bp
+_strip_credit_rate = _text_norm._strip_credit_rate
+_cap_first = _text_norm._cap_first
+_sentence_case = _text_norm._sentence_case
+_RSYA_TEXT_MAX = _text_norm._RSYA_TEXT_MAX
+_split_utp = _text_norm._split_utp
+_has_stamp = _text_norm._has_stamp
+_alternate_rhythm = _text_norm._alternate_rhythm
+_dedup_by_first_word = _text_norm._dedup_by_first_word
+_has_number = _text_norm._has_number
+_bad_ad_title = _text_norm._bad_ad_title
+_bad_ad_text = _text_norm._bad_ad_text
+mentions_banned_content = _text_norm.mentions_banned_content
+strip_banned_content = _text_norm.strip_banned_content
 from .city_morph import (
     _city_locative, _content_city, _replace_foreign_city, _drop_foreign_city_keywords,
 )

@@ -324,6 +324,9 @@ def create_app() -> Flask:
     app.register_blueprint(copy_api_bp)
 
     app.register_blueprint(bp)
+    # Agent Board done -> copy retry must not wait for the next manual copy_start.
+    # Start the isolated copy worker/retry daemon with the service process itself.
+    queue._ensure_copy_worker(app)
     return app
 
 

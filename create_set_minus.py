@@ -288,7 +288,9 @@ def _read_slepok_minus_sets(slepok: str, site_type: str) -> list[dict]:
     Файла нет / битый JSON → [] (не падаем: слепок без наборов — легитимный случай).
     """
     key = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
-    site_type = (site_type or "").strip()
+    # Витринный сплит: наборы лежат в физической папке пака («Монобренд/_minus_sets/…»),
+    # имя марочной вкладки такой папке не соответствует → без нормализации наборы «исчезают».
+    site_type = kp.base_site_type(site_type)
     if not key or not site_type:
         return []
     path = os.path.join(kp.PACK_ROOT, site_type, "_minus_sets", f"{key}.json")

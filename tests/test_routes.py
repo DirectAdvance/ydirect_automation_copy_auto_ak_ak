@@ -1324,7 +1324,8 @@ def test_make_job_executor_campaign_rename_skips_account_snapshot(monkeypatch):
     def boom_load_account(*_args, **_kwargs):
         raise AssertionError("campaign_rename must not load full account snapshot")
 
-    def fake_do_replace(token, login, typ, old_text, new_text, content, v5_call, v501_svc, *, mode):
+    def fake_do_replace(token, login, typ, old_text, new_text, content, v5_call, v501_svc,
+                        *, mode, grid_client_factory=None):
         calls.append((token, login, typ, old_text, new_text, content, mode))
         return {"replaced": 1, "errors": []}
 
@@ -1351,6 +1352,55 @@ def test_make_job_executor_campaign_rename_skips_account_snapshot(monkeypatch):
 
     assert out == {"replaced": 1, "errors": []}
     assert calls == [("tok", "acc-login", "campaign_rename", payload, payload, {}, "rename")]
+
+
+def test_make_job_executor_scopes_grid_cookie_to_job_agency(monkeypatch):
+    conn = _FakeScopeConn(row={"directologist": "Иванов"})
+    calls = []
+
+    def fake_load_account(*_args, **_kwargs):
+        return {"links": []}
+
+    def fake_pick_cookie(login, *, accounts, force_refresh=False):
+        calls.append(("pick", login, accounts, force_refresh))
+        return "cookie-for-job-agency"
+
+    def fake_get_grid_client(login, cookie=None, cookie_only=False):
+        calls.append(("grid", login, cookie, cookie_only))
+        return {"grid": login, "cookie": cookie}
+
+    def fake_do_replace(token, login, typ, old_text, new_text, content, v5_call, v501_svc,
+                        *, mode, grid_client_factory=None):
+        grid = grid_client_factory(login)
+        calls.append(("replace", token, login, typ, old_text, new_text, content, mode, grid))
+        return {"replaced": 1, "errors": []}
+
+    monkeypatch.setattr(content_editor, "_load_account", fake_load_account)
+    monkeypatch.setattr(content_editor, "_do_replace", fake_do_replace)
+    monkeypatch.setattr(campaign, "pick_working_cookie", fake_pick_cookie)
+    monkeypatch.setattr(grid_finalize, "get_grid_client", fake_get_grid_client)
+
+    execute = content_editor.make_job_executor(
+        victory_conn=lambda: conn,
+        token_for_login=lambda *a, **k: ("tok", "agency"),
+        direct_tokens=lambda: {"agency": "tok"},
+        v5_call=lambda *a, **k: None,
+        v501_svc=lambda *a, **k: None,
+    )
+
+    out = execute({
+        "login": "acc-login",
+        "agency": "victorylotsofads1",
+        "access_directologists": ["Иванов"],
+        "type": "ad_href",
+        "old_text": "/old",
+        "new_text": "/new",
+        "mode": "link",
+    })
+
+    assert out == {"replaced": 1, "errors": []}
+    assert ("pick", "acc-login", ("victorylotsofads1",), True) in calls
+    assert ("grid", "acc-login", "cookie-for-job-agency", False) in calls
 
 
 # ── _validate_permutation ────────────────────────────────────────────────────

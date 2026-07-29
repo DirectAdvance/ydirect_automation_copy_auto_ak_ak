@@ -326,10 +326,11 @@ def _v5_update_results_errors(resp: dict) -> tuple[int, list[str]]:
 
 
 def _replace_ad_href(token: str, login: str, old_path: str, new_path: str,
-                     content: dict, v5_call: Callable, v501_svc: Callable) -> dict:
+                     content: dict, v5_call: Callable, v501_svc: Callable,
+                     *, grid_client_factory: Callable | None = None) -> dict:
     """Массовая смена посадочной ссылки (Href) во всех объявлениях, где путь == old_path.
-    Host сохраняется, меняется только суффикс. TextAd → v5 ads.update;
-    ResponsiveAd → v501 ads.update (v5 отвергает весь тип, Code 3500). Dynamic/фид/UAC —
+    Host сохраняется, меняется только суффикс. TextAd/ResponsiveAd → cookie/Grid RMW
+    (официальный ads.update на части клиентских аккаунтов закрыт). Dynamic/фид/UAC —
     у них Href нет, в content['links'] они отсутствуют → естественно пропускаются.
     Идемпотентно: объявления, у которых путь уже == new_path, не совпадут с old_path.
     """
@@ -357,7 +358,11 @@ def _replace_ad_href(token: str, login: str, old_path: str, new_path: str,
             skipped.append(f"ad {aid}: тип {subtype or '—'} — Href не редактируется")
             continue
         seen_ids.add(aid)
-        by_subtype[subtype].append({"id": aid, "href": _href_with_new_path(rec.get("href"), new_p)})
+        by_subtype[subtype].append({
+            "id": aid,
+            "campaign_id": rec.get("campaign_id"),
+            "href": _href_with_new_path(rec.get("href"), new_p),
+        })
     if not seen_ids:
         return {"replaced": 0, "errors": ["объявлений с таким путём не найдено"], "skipped": skipped}
 
@@ -366,21 +371,66 @@ def _replace_ad_href(token: str, login: str, old_path: str, new_path: str,
     # иначе воркер берёт errors[0] как провал задания даже при успешной замене.
     errors: list[str] = []
 
-    def _flush(subtype: str, api_field: str, caller):
+    def _campaign_ids(rows: list[dict]) -> list[int]:
+        out: list[int] = []
+        for row in rows:
+            try:
+                cid = int(row.get("campaign_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if cid > 0 and cid not in out:
+                out.append(cid)
+        return out
+
+    def _ad_ids(rows: list[dict]) -> list[int]:
+        return [int(row["id"]) for row in rows if int(row.get("id") or 0) > 0]
+
+    def _flush_grid_text(rows: list[dict]):
         nonlocal replaced
-        items = by_subtype[subtype]
-        for i in range(0, len(items), 100):
-            chunk = items[i:i + 100]
-            params = {"Ads": [{"Id": it["id"], api_field: {"Href": it["href"]}} for it in chunk]}
-            resp = caller("ads", "update", token, login, params)
-            ok_n, errs = _v5_update_results_errors(resp)
-            replaced += ok_n
-            errors.extend(errs)
+        if not rows:
+            return
+        grid = (grid_client_factory or _grid_client)(login)
+        cids = _campaign_ids(rows)
+        ids = _ad_ids(rows)
+        current = grid.text_ads_for_update(cids, ids)
+        payload: list[dict] = []
+        for row in rows:
+            item = dict(current.get(int(row["id"])) or {})
+            if not item:
+                errors.append(f"Grid RMW не вернул TextAd {row['id']}")
+                continue
+            item["href"] = row["href"]
+            payload.append(item)
+        if not payload:
+            return
+        replaced += int(grid.update_text_ads(payload, allow_empty_image_hashes=True) or 0)
+        errors.extend(list(getattr(grid, "last_ad_update_errors", []) or []))
+
+    def _flush_grid_responsive(rows: list[dict]):
+        nonlocal replaced
+        if not rows:
+            return
+        grid = (grid_client_factory or _grid_client)(login)
+        cids = _campaign_ids(rows)
+        ids = _ad_ids(rows)
+        current = grid.adaptive_ads_for_update(cids, ids)
+        payload: list[dict] = []
+        for row in rows:
+            item = dict(current.get(int(row["id"])) or {})
+            if not item:
+                errors.append(f"Grid RMW не вернул ResponsiveAd {row['id']}")
+                continue
+            item["href"] = row["href"]
+            payload.append(item)
+        if not payload:
+            return
+        replaced += int(grid.update_adaptive_text_ads(payload) or 0)
+        errors.extend(list(getattr(grid, "last_ad_update_errors", []) or []))
 
     if by_subtype["TextAd"]:
-        _flush("TextAd", "TextAd", v5_call)          # TextAd.Href — v5 update ок
+        _flush_grid_text(by_subtype["TextAd"])
     if by_subtype["ResponsiveAd"]:
-        _flush("ResponsiveAd", "ResponsiveAd", v501_svc)  # ResponsiveAd.Href — только v501
+        _flush_grid_responsive(by_subtype["ResponsiveAd"])
 
     # Read-back: перечитываем Href по обновлённым ad_id (v5 GET работает для обоих типов).
     all_ids = sorted(seen_ids)
@@ -415,7 +465,8 @@ def _replace_ad_href(token: str, login: str, old_path: str, new_path: str,
 
 def _h_ad_href(ctx: dict) -> dict:
     return _replace_ad_href(ctx["token"], ctx["login"], ctx["old"], ctx["new"],
-                             ctx["content"], ctx["v5_call"], ctx["v501_svc"])
+                             ctx["content"], ctx["v5_call"], ctx["v501_svc"],
+                             grid_client_factory=ctx["grid_client_factory"])
 
 
 def _h_image_replace(ctx: dict) -> dict:
@@ -708,8 +759,14 @@ def register_replace_routes(
             if err:
                 errors.append({"login": login, "error": err})
                 continue
-            # /links не нужны campaign-level наборы → не гоняем Grid-round-trip (блок 3c).
-            content = _load_with_index(token, login, include_campaign_sitelinks=False)
+            # /links не нужны campaign-level наборы и UAC-cookie: Href редактируется только
+            # у v5/v501 TextAd/ResponsiveAd, а UAC-кампании не дают целей для ad_href.
+            content = _load_with_index(
+                token, login,
+                include_campaign_sitelinks=False,
+                include_uac_campaigns=False,
+                include_callouts=False,
+            )
             if content.get("error"):
                 errors.append({"login": login, "error": content["error"]})
                 continue
@@ -780,7 +837,10 @@ def register_replace_routes(
             return jsonify({"error": err}), 404
         # campaign-level наборы нужны превью ТОЛЬКО для sitelink-типов.
         content = _load_with_index(
-            token, login, include_campaign_sitelinks=(typ in _SITELINK_TYPES))
+            token, login,
+            include_campaign_sitelinks=(typ in _SITELINK_TYPES),
+            include_callouts=(typ == "callout"),
+        )
         if content.get("error"):
             return jsonify({"error": content["error"]}), 502
         if mode == "substring":
@@ -836,7 +896,10 @@ def register_replace_routes(
             return jsonify({"error": err}), 404
         # sitelink-замена набора уровня кампании требует блок 3c; остальным типам — нет.
         content = _load_with_index(
-            token, login, include_campaign_sitelinks=(typ in _SITELINK_TYPES))
+            token, login,
+            include_campaign_sitelinks=(typ in _SITELINK_TYPES),
+            include_callouts=(typ == "callout"),
+        )
         if content.get("error"):
             return jsonify({"error": content["error"]}), 502
         out = _do_replace(token, login, typ, old_text, new_text, content, v5_call, v501_svc, mode=mode)

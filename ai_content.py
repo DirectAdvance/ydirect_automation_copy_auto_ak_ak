@@ -342,6 +342,15 @@ def _ai_group_content(login: str, slepok: str, site_type: str, city: str,
 
 # ── БД-библиотека контента слепков (фолбэк при сбое M3): (слепок × тип сайта × kind) → jsonb ──
 # kind='promo' → СПИСОК вариантов промо; kind='campaign' → {titles,texts,sitelinks}.
+def _base_site_type(site_type: str) -> str:
+    """«Монобренд · Lada» → «Монобренд» (витринный сплит, kontent_pack.base_site_type)."""
+    try:
+        from . import kontent_pack as _kp  # noqa: PLC0415
+    except ImportError:  # noqa: BLE001
+        import kontent_pack as _kp  # type: ignore[no-redef]  # noqa: PLC0415
+    return _kp.base_site_type(site_type)
+
+
 def _slepok_content_ensure(cur) -> None:
     cur.execute(
         "CREATE TABLE IF NOT EXISTS public.direct_slepok_content ("
@@ -365,6 +374,7 @@ def _slepok_content_get(slepok: str, site_type: str, kind: str):
         cur = conn.cursor()
         # NB: НЕ зовём _slepok_content_ensure здесь — она делает CREATE TABLE IF NOT EXISTS,
         # что падает на readonly-коннекшене и глушит весь запрос.
+        site_type = _base_site_type(site_type)   # split-вкладки в БД не заведены
         cur.execute("SELECT content FROM public.direct_slepok_content "
                     "WHERE slepok=%s AND site_type=%s AND kind=%s", (slepok, site_type, kind))
         row = cur.fetchone()
@@ -393,6 +403,9 @@ def _slepok_content_save(slepok: str, site_type: str, kind: str, content, source
         return False
     try:
         cur = conn.cursor()
+        # Пишем под БАЗОВЫМ типом: иначе библиотека слепка размножится по марочным вкладкам
+        # («Монобренд · Lada», «· Haval», …), а читатели базового типа их не увидят.
+        site_type = _base_site_type(site_type)
         _slepok_content_ensure(cur)
         cur.execute(
             "INSERT INTO public.direct_slepok_content(slepok, site_type, kind, content, source, updated_at) "

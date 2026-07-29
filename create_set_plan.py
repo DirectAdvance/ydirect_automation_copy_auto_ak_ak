@@ -8,6 +8,7 @@ import re
 from flask import jsonify, request
 
 from . import create_set_context as _csctx  # _parse_targeting_modes (чистый хелпер, без configure)
+from . import kontent_pack as _kp           # SiteTypeSet: `in` понимает «Монобренд · Lada»
 from .model_urls import _strip_site_domain_label as _strip_dom_plan
 
 _DEPS: dict = {}
@@ -178,7 +179,10 @@ def _rule_sets(site_type: str, city: str) -> dict:
     {'cpa','budget'} — оплата за конверсии (CPA), {'cpc_cpa','cpc_budget'} — оплата за клики (CPC).
     Дефолт 2000/5000. cpc_* фолбэчат на cpa/budget, если NULL."""
     d = {"cpa": 2000, "budget": 5000, "cpc_cpa": 2000, "cpc_budget": 5000}
-    st = (site_type or "").strip()
+    # Витринный сплит: в direct_automation_rules строки заведены на БАЗОВЫЙ тип сайта
+    # («Монобренд»), а не на каждую марочную вкладку. Без нормализации «Монобренд · Lada»
+    # не нашёл бы правило и молча уехал бы в дефолт 2000/5000.
+    st = _kp.base_site_type(site_type)
     if not st:
         return d
     sql = ("SELECT cpa::numeric, budget::numeric, cpc_cpa::numeric, cpc_budget::numeric "
@@ -223,6 +227,30 @@ def _resolve_struct_site_type(slepok: str, requested_site_type: str) -> str:
     # Нормальный путь: запрошенный тип найден → возвращаем как есть
     if any(s.get("name") == requested_site_type for s in site_types):
         return requested_site_type
+    # Витринный сплит: запрошен базовый «Монобренд», а в структуре теперь только вкладки
+    # «Монобренд · Lada» и т.п. (старое сохранённое задание / прямой вызов API). Берём вкладку
+    # ТОГО ЖЕ базового типа, иначе фолбэк ниже увёл бы набор в чужой сегмент («Мультибренд»).
+    req_base = _kp.base_site_type(requested_site_type)
+    if req_base == (requested_site_type or "").strip():
+        same = [s for s in site_types
+                if _kp.base_site_type(s.get("name") or "") == req_base
+                and ((s.get("tp") and len(s["tp"]) > 0)
+                     or (s.get("source_campaigns") and len(s["source_campaigns"]) > 0))]
+        if same:
+            # Берём САМУЮ КРУПНУЮ вкладку, а не первую попавшуюся: молча отдать 84 группы из 272
+            # и отрапортовать успех — худший исход, чем отдать основную марку. Вызывающий получает
+            # предупреждение «нет структуры для «Монобренд» — набор построен из «Монобренд · Lada»».
+            def _n_groups(s: dict) -> int:
+                n = 0
+                for t in (s.get("tp") or []):
+                    blocks = list(t.get("splits") or [])
+                    if t.get("groups"):
+                        blocks.append({"groups": t["groups"]})
+                    for b in blocks:
+                        for g in (b.get("groups") or []):
+                            n += len(g.get("items") or [])
+                return n
+            return max(same, key=_n_groups).get("name") or requested_site_type
     # Фолбэк: первый тип с реальным контентом (tp или source_campaigns)
     for s in site_types:
         if (s.get("tp") and len(s["tp"]) > 0) or (
@@ -332,7 +360,8 @@ def _posevy_positions(site_type: str, tp_code: str) -> list[dict]:
 # ag_part1). Слепки НЕ из этого списка (напр. «dmp» / «Прочее») — split-driven: их ct нет в
 # _ct_segment_map, поэтому _ct_segment() вырождается в дефолт «Марки» для ВСЕХ групп и склеивает
 # их в одну кампанию. Для таких — билдер идёт по splits[] (одна кампания на блок, имя = label).
-_AUTO_SEGMENT_SITE_TYPES = {"Мультибренд", "Монобренд", "С пробегом", "Мульти + БУ", "Квиз"}
+_AUTO_SEGMENT_SITE_TYPES = _kp.SiteTypeSet(   # `in` понимает витринный сплит «Монобренд · Lada»
+    {"Мультибренд", "Монобренд", "С пробегом", "Мульти + БУ", "Квиз"})
 
 
 def _tp_seg_name_override(slepok: str, site_type: str, tp_code: str, seg: str, mode: str) -> str | None:

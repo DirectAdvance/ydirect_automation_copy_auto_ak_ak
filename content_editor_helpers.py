@@ -746,6 +746,8 @@ def _load_account(
     grid_client_factory: Callable | None = None,
     uac_read_client_factory: Callable | None = None,
     include_campaign_sitelinks: bool = True,
+    include_uac_campaigns: bool = True,
+    include_callouts: bool = True,
 ) -> dict:
     """Читает кампании, группы, объявления, наборы ссылок и уточнения аккаунта."""
     # 1) Кампании: архивные исключаем из write-preview. Direct не даёт менять объявления
@@ -778,38 +780,39 @@ def _load_account(
     # cookie-only UAC list so editor replacements can target PATCH /uac/campaign.
     uac_read_error: str | None = None
     uac_detail_client = None
-    try:
-        uac_detail_client = _uac_read_client(login, uac_read_client_factory)
-        for row in uac_detail_client.client.list_campaigns():
-            if not isinstance(row, dict):
-                continue
-            try:
-                cid = int(row.get("id") or row.get("direct_id") or row.get("campaign_id") or 0)
-            except (TypeError, ValueError):
-                continue
-            if cid <= 0:
-                continue
-            camp_name.setdefault(
-                cid,
-                row.get("display_name") or row.get("name") or row.get("title") or f"UAC {cid}",
-            )
-            camp_type[cid] = "UAC"
-    except Exception as e:  # noqa: BLE001 - UAC read is enrichment; load can continue with v5 data
-        print(f"[content-editor] UAC list_campaigns failed login={login}: {e!r}", flush=True)
-        uac_read_error = str(e)[:200]
+    if include_uac_campaigns:
         try:
-            for row in _grid_tp67_campaigns(login, grid_client_factory=grid_client_factory):
+            uac_detail_client = _uac_read_client(login, uac_read_client_factory)
+            for row in uac_detail_client.client.list_campaigns():
+                if not isinstance(row, dict):
+                    continue
                 try:
-                    cid = int(row.get("id") or 0)
+                    cid = int(row.get("id") or row.get("direct_id") or row.get("campaign_id") or 0)
                 except (TypeError, ValueError):
                     continue
                 if cid <= 0:
                     continue
-                camp_name.setdefault(cid, row.get("name") or f"UAC {cid}")
+                camp_name.setdefault(
+                    cid,
+                    row.get("display_name") or row.get("name") or row.get("title") or f"UAC {cid}",
+                )
                 camp_type[cid] = "UAC"
-        except Exception as grid_e:  # noqa: BLE001
-            print(f"[content-editor] Grid tp6/tp7 fallback failed login={login}: {grid_e!r}", flush=True)
-            uac_read_error = f"{uac_read_error}; Grid tp6/tp7: {str(grid_e)[:160]}"
+        except Exception as e:  # noqa: BLE001 - UAC read is enrichment; load can continue with v5 data
+            print(f"[content-editor] UAC list_campaigns failed login={login}: {e!r}", flush=True)
+            uac_read_error = str(e)[:200]
+            try:
+                for row in _grid_tp67_campaigns(login, grid_client_factory=grid_client_factory):
+                    try:
+                        cid = int(row.get("id") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if cid <= 0:
+                        continue
+                    camp_name.setdefault(cid, row.get("name") or f"UAC {cid}")
+                    camp_type[cid] = "UAC"
+            except Exception as grid_e:  # noqa: BLE001
+                print(f"[content-editor] Grid tp6/tp7 fallback failed login={login}: {grid_e!r}", flush=True)
+                uac_read_error = f"{uac_read_error}; Grid tp6/tp7: {str(grid_e)[:160]}"
     campaign_ids = sorted(camp_name)
     if not campaign_ids:
         out = {"callouts": [], "sitelinks": [], "ads": [], "links": [], "_ads_by_set": {}}
@@ -1049,29 +1052,30 @@ def _load_account(
     sitelinks_out.extend(uac_sitelinks_out)
 
     # 5) Уточнения (callouts) — adextensions type CALLOUT.
-    exts, err = _v5_paginate(
-        v5_call, "adextensions", token, login,
-        {"SelectionCriteria": {"Types": ["CALLOUT"]},
-         "FieldNames": ["Id", "Type"], "CalloutFieldNames": ["CalloutText"]},
-        "AdExtensions",
-    )
-    if err:
-        return {"error": f"adextensions.get: {err}"}
-    try:
-        campaign_callout_ids = _grid_campaign_callout_ids(
-            login,
-            campaign_ids,
-            grid_client_factory=grid_client_factory,
+    exts = []
+    grid_callout_error = None
+    if include_callouts:
+        exts, err = _v5_paginate(
+            v5_call, "adextensions", token, login,
+            {"SelectionCriteria": {"Types": ["CALLOUT"]},
+             "FieldNames": ["Id", "Type"], "CalloutFieldNames": ["CalloutText"]},
+            "AdExtensions",
         )
-        for cid, callout_ids in campaign_callout_ids.items():
-            for eid in callout_ids:
-                callout_to_camps.setdefault(str(eid), []).append(cid)
-    except Exception as e:  # noqa: BLE001 - read-only enrichment must not break editor load
-        print(f"[content-editor] Grid callout-usages failed login={login}: {e!r}", flush=True)
-        campaign_callout_ids = {}
-        grid_callout_error = f"Grid callout-usages: {str(e)[:200]}"
-    else:
-        grid_callout_error = None
+        if err:
+            return {"error": f"adextensions.get: {err}"}
+        try:
+            campaign_callout_ids = _grid_campaign_callout_ids(
+                login,
+                campaign_ids,
+                grid_client_factory=grid_client_factory,
+            )
+            for cid, callout_ids in campaign_callout_ids.items():
+                for eid in callout_ids:
+                    callout_to_camps.setdefault(str(eid), []).append(cid)
+        except Exception as e:  # noqa: BLE001 - read-only enrichment must not break editor load
+            print(f"[content-editor] Grid callout-usages failed login={login}: {e!r}", flush=True)
+            campaign_callout_ids = {}
+            grid_callout_error = f"Grid callout-usages: {str(e)[:200]}"
     callouts_out: list[dict] = []
     for e in exts:
         eid = str(e.get("Id") or "")

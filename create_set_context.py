@@ -113,8 +113,21 @@ def _account_ctx(login: str):
             "city": _raw_city,
             "directologist": (row.get("directologist") or "").strip()}
 
+def _base_site_type(site_type: str) -> str:
+    """«Монобренд · Lada» → «Монобренд» (витринный сплит, kontent_pack.base_site_type).
+
+    Все справочники в БД (`direct_ad_templates`, `direct_slepok_audiences`,
+    `direct_slepok_content`, `campaign_tags`) заведены на БАЗОВЫЕ типы сайта — марочные
+    вкладки существуют только в структуре слепка и в UI. Без нормализации запрос вернёт
+    пусто, а вызывающий код примет это за «шаблонов нет» и остановит создание РК.
+    """
+    from . import kontent_pack as kp  # noqa: PLC0415 — локальный импорт, модуль тяжелее этого
+    return kp.base_site_type(site_type)
+
+
 def _templates_for(site_type: str):
     """→ (titles, texts, sitelinks[{title,description}]) по типу сайта."""
+    site_type = _base_site_type(site_type)
     conn = _victory_conn()
     try:
         cur = conn.cursor()
@@ -141,6 +154,7 @@ def _slepok_audiences_for(slepok: str, site_type: str, tp: str) -> list[str]:
     Источник: public.direct_slepok_audiences (kind in_market/interests). Пусто → []."""
     if not (slepok and site_type and tp):
         return []
+    site_type = _base_site_type(site_type)   # split-вкладки в БД не заведены
     try:
         conn = _victory_conn()
     except Exception:  # noqa: BLE001
@@ -356,6 +370,7 @@ def _slepok_audience_cats(slepok: str, site_type: str, tp: str) -> list[dict]:
     Пустые категории отбрасываем. Источник тот же, что у _slepok_audiences_for, но без объединения."""
     if not (slepok and site_type and tp):
         return []
+    site_type = _base_site_type(site_type)   # split-вкладки в БД не заведены
     try:
         conn = _victory_conn()
     except Exception:  # noqa: BLE001

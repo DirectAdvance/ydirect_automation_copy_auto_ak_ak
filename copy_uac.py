@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import base64
 from concurrent.futures import ThreadPoolExecutor
 
 from . import campaign as cmc
@@ -112,6 +113,173 @@ def _copy_uac_media_urls(row: dict, *, want: str) -> list[str]:
     for key in preferred_keys:
         walk(row.get(key))
     return urls[:5 if want == "image" else 2]
+
+
+def _copy_uac_content_media_urls(row: dict, *, want: str) -> list[str]:
+    """Prefer explicit UAC content source URLs in the same order as the source campaign."""
+    urls: list[str] = []
+    seen: set[str] = set()
+    image_ext = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+    video_ext = (".mp4", ".mov", ".webm")
+    type_keys = ("type", "content_type", "contentType", "media_type", "mediaType")
+    url_keys = ("source_url", "sourceUrl", "original_url", "originalUrl", "download_url", "url")
+    limit = 5 if want == "image" else 2
+
+    def ok_url(url: str) -> bool:
+        low = url.lower().split("?", 1)[0]
+        if want == "video":
+            return low.endswith(video_ext)
+        return low.endswith(image_ext) or any(x in low for x in ("/image/", "/img/", "avatars.mds.yandex.net"))
+
+    def content_items(value):
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    yield item
+        elif isinstance(value, dict):
+            yield value
+
+    for key in ("contents", "content"):
+        for item in content_items(row.get(key)):
+            raw_type = ""
+            for type_key in type_keys:
+                raw_type = str(item.get(type_key) or "").strip().lower()
+                if raw_type:
+                    break
+            if raw_type and want not in raw_type:
+                continue
+            for url_key in url_keys:
+                url = str(item.get(url_key) or "").strip()
+                if url and ok_url(url) and url not in seen:
+                    seen.add(url)
+                    urls.append(url)
+                    break
+            if len(urls) >= limit:
+                return urls
+    return urls
+
+
+def _copy_uac_campaign_href(row: dict, *, fallback_href: str, source_domain: str, target_domain: str) -> str:
+    src_href = str(_copy_uac_value(
+        row, "href", "target_url", "targetUrl", "direct_url", "directUrl", default="") or "").strip()
+    if not src_href:
+        return fallback_href
+    copied = _copy_target_href(src_href, source_domain, target_domain)
+    return copied or fallback_href
+
+
+def _copy_uac_content_ids(row: dict) -> list[str]:
+    ids: list[str] = []
+    for item in (row.get("contents") or []):
+        if not isinstance(item, dict):
+            continue
+        cid = str(item.get("id") or "").strip()
+        if cid and cid not in ids:
+            ids.append(cid)
+    return ids
+
+
+def _copy_uac_image_hashes(row: dict) -> list[str]:
+    hashes: list[str] = []
+    for item in (row.get("contents") or []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "").strip().lower() != "image":
+            continue
+        h = str(item.get("direct_image_hash") or item.get("image_hash") or item.get("hash") or "").strip()
+        if h and h not in hashes:
+            hashes.append(h)
+    return hashes
+
+
+def _copy_uac_preseed_target_image_hashes(source_login: str, target_login: str, target_agency: str,
+                                          details: list[dict]) -> dict:
+    """Ensure source UAC image hashes exist in target AdImages before source content_id reuse."""
+    rep = {"needed": 0, "existing": 0, "added": 0, "failed": []}
+    hashes: list[str] = []
+    for d in details or []:
+        for h in _copy_uac_image_hashes(d):
+            if h not in hashes:
+                hashes.append(h)
+    rep["needed"] = len(hashes)
+    if not hashes or not callable(_token_for_login) or not callable(_direct_tokens) or not callable(_v501_svc):
+        return rep
+    try:
+        target_token, _ = _token_for_login(
+            target_login, target_agency or _resolve_agency_hint(target_login, ""), _direct_tokens())
+        source_agency = _resolve_agency_hint(source_login, "") if callable(_resolve_agency_hint) else ""
+        source_token, _ = _token_for_login(source_login, source_agency, _direct_tokens())
+    except Exception as e:  # noqa: BLE001
+        rep["failed"].append(f"tokens: {str(e)[:180]}")
+        return rep
+    if not target_token or not source_token:
+        rep["failed"].append("tokens: source/target token пуст")
+        return rep
+
+    existing: set[str] = set()
+    for i in range(0, len(hashes), 100):
+        try:
+            data = _v501_svc("adimages", "get", target_token, target_login,
+                             {"SelectionCriteria": {"AdImageHashes": hashes[i:i + 100]},
+                              "FieldNames": ["AdImageHash"]})
+            for im in ((data.get("result") or {}).get("AdImages") or []):
+                h = str(im.get("AdImageHash") or "").strip()
+                if h:
+                    existing.add(h)
+        except Exception as e:  # noqa: BLE001
+            rep["failed"].append(f"target adimages.get: {str(e)[:180]}")
+            return rep
+    rep["existing"] = len(existing)
+
+    urls: dict[str, str] = {}
+    missing = [h for h in hashes if h not in existing]
+    for i in range(0, len(missing), 100):
+        try:
+            data = _v501_svc("adimages", "get", source_token, source_login,
+                             {"SelectionCriteria": {"AdImageHashes": missing[i:i + 100]},
+                              "FieldNames": ["AdImageHash", "OriginalUrl"]})
+            for im in ((data.get("result") or {}).get("AdImages") or []):
+                h = str(im.get("AdImageHash") or "").strip()
+                u = str(im.get("OriginalUrl") or "").strip()
+                if h and u:
+                    urls[h] = u
+        except Exception as e:  # noqa: BLE001
+            rep["failed"].append(f"source adimages.get: {str(e)[:180]}")
+            return rep
+
+    try:
+        source_client = cmc.build_client(source_login, account=(source_agency or None))
+        if source_client.csrf is None:
+            source_client.link_info("https://ya.ru")
+    except Exception as e:  # noqa: BLE001
+        rep["failed"].append(f"source cookie: {str(e)[:180]}")
+        return rep
+
+    for h in missing:
+        url = urls.get(h)
+        if not url:
+            rep["failed"].append(f"{h}: нет OriginalUrl")
+            continue
+        try:
+            resp = source_client.sess.get(url, timeout=60)
+            if resp.status_code >= 400 or not resp.content:
+                rep["failed"].append(f"{h}: download HTTP {resp.status_code} bytes={len(resp.content)}")
+                continue
+            data = base64.b64encode(resp.content).decode("ascii")
+            res = _v501_svc("adimages", "add", target_token, target_login,
+                            {"AdImages": [{"ImageData": data, "Name": f"{h}.jpg"}]})
+            add = (((res.get("result") or {}).get("AddResults") or [{}])[0])
+            if add.get("Errors"):
+                rep["failed"].append(f"{h}: {str(add.get('Errors'))[:180]}")
+                continue
+            got = str(add.get("AdImageHash") or "").strip()
+            if got == h:
+                rep["added"] += 1
+            else:
+                rep["failed"].append(f"{h}: hash mismatch {got}")
+        except Exception as e:  # noqa: BLE001
+            rep["failed"].append(f"{h}: {str(e)[:180]}")
+    return rep
 
 
 def _copy_uac_filter_list(value, *, target_login: str = "", target_feed_id: int | None = None,
@@ -257,6 +425,12 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
             elif src_id > 0:
                 detail_errors[src_id] = err or "detail пуст"
 
+    preseed = _copy_uac_preseed_target_image_hashes(
+        source_login, target_login, target_agency, list(details_by_src.values()))
+    if preseed.get("failed"):
+        rep["errors"].append(
+            "uac image preseed warnings: " + "; ".join(str(x) for x in preseed["failed"][:4]))
+
     pending_creates: list[tuple[int, int, str, object]] = []
     early_results: dict[int, dict] = {}
 
@@ -308,8 +482,13 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
             # Детерминированный round-robin: у каждой i-й МК свои 5 картинок из архива цели.
             if tgt_img_urls:
                 _img = [tgt_img_urls[(cidx * 5 + k) % len(tgt_img_urls)] for k in range(5)]
+                _content_ids: list[str] = []
             else:
-                _img = _copy_uac_media_urls(d, want="image")
+                _content_ids = _copy_uac_content_ids(d)
+                _img = [] if _content_ids else (
+                    _copy_uac_content_media_urls(d, want="image") or _copy_uac_media_urls(d, want="image"))
+            copy_href = _copy_uac_campaign_href(
+                d, fallback_href=target_href, source_domain=source_domain, target_domain=target_domain)
             # socdem источника, иначе датакласс молча подставит дефолт age_18 вместо возраста источника.
             _sd = _copy_uac_value(d, "socdem", default={}) or {}
             if not isinstance(_sd, dict):
@@ -337,7 +516,7 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
                 _tz = 130
             _extra = {"relevance_match_categories": _rm_cats} if _rm_cats else {}
             spec = cmc.MasterCampaignSpec(
-                href=target_href,
+                href=copy_href,
                 titles=titles[:5],
                 texts=texts[:3],
                 region_ids=region_ids,
@@ -357,8 +536,9 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
                 keywords=keywords,
                 minus_keywords=minus_keywords or ["отзывы"],
                 sitelinks=sitelinks,
+                content_ids=_content_ids,
                 image_urls=_img,
-                video_urls=_copy_uac_media_urls(d, want="video"),
+                video_urls=_copy_uac_content_media_urls(d, want="video") or _copy_uac_media_urls(d, want="video"),
                 audiences=audiences if isinstance(audiences, list) else [],
                 genders=_sd.get("genders") or ["female", "male"],
                 age_lower=str(_sd.get("age_lower") or "age_18"),

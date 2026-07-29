@@ -624,6 +624,73 @@ def test_copy_uac_filter_list_remaps_source_auto_ru_fields_to_target_feed(monkey
     }]
 
 
+def test_copy_uac_campaign_href_preserves_quiz_path_on_target_domain():
+    href = copy_uac._copy_uac_campaign_href(
+        {"href": "https://geelycars-krd.site/quiz?utm=old#form"},
+        fallback_href="https://geelybase-196.ru",
+        source_domain="geelycars-krd.site",
+        target_domain="geelybase-196.ru",
+    )
+
+    assert href == "https://geelybase-196.ru/quiz?utm=old#form"
+
+
+def test_copy_uac_campaign_href_preserves_model_path_when_source_domain_unknown():
+    href = copy_uac._copy_uac_campaign_href(
+        {"href": "https://geelycars-krd.site/auto/geely/monjaro/i-rest/suv-5d"},
+        fallback_href="https://geelybase-196.ru",
+        source_domain="",
+        target_domain="geelybase-196.ru",
+    )
+
+    assert href == "https://geelybase-196.ru/auto/geely/monjaro/i-rest/suv-5d"
+
+
+def test_copy_uac_content_media_urls_uses_ordered_source_urls_only():
+    row = {
+        "contents": [
+            {
+                "type": "image",
+                "source_url": "https://avatars.mds.yandex.net/get-direct/first/orig",
+                "preview_url": "https://avatars.mds.yandex.net/get-direct/preview/first",
+            },
+            {
+                "type": "text",
+                "source_url": "https://avatars.mds.yandex.net/get-direct/not-image/orig",
+            },
+            {
+                "type": "image",
+                "source_url": "https://cdn.example.ru/car-2.jpg?size=full",
+                "thumb": {"url": "https://cdn.example.ru/thumb-2.jpg"},
+            },
+            {
+                "type": "image",
+                "source_url": "https://cdn.example.ru/car-2.jpg?size=full",
+            },
+        ],
+        "media": [{"url": "https://cdn.example.ru/recursive-wrong.jpg"}],
+    }
+
+    assert copy_uac._copy_uac_content_media_urls(row, want="image") == [
+        "https://avatars.mds.yandex.net/get-direct/first/orig",
+        "https://cdn.example.ru/car-2.jpg?size=full",
+    ]
+
+
+def test_copy_uac_extracts_source_content_ids_and_image_hashes_in_order():
+    row = {
+        "contents": [
+            {"id": "c1", "type": "image", "direct_image_hash": "h1"},
+            {"id": "c2", "type": "video", "direct_image_hash": ""},
+            {"id": "c1", "type": "image", "direct_image_hash": "h1"},
+            {"id": "c3", "type": "image", "image_hash": "h3"},
+        ]
+    }
+
+    assert copy_uac._copy_uac_content_ids(row) == ["c1", "c2", "c3"]
+    assert copy_uac._copy_uac_image_hashes(row) == ["h1", "h3"]
+
+
 def test_parse_feed_map_keeps_numeric_mapping_only():
     assert parse_feed_map({"feed_map": {"011": "222", "bad": "333", "44": "0", "55": 666}}) == {
         "11": 222,

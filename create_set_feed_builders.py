@@ -754,10 +754,12 @@ def _tp5_account_data(token: str, login: str, slepok: str, site_type: str, agenc
         minus_set = next((mid for mid, nm in msets if _MINUS_SET_NAME_MARKER in nm), None)
     sitelinks, default_text = [], ""
     try:
+        from . import kontent_pack as _kp_fb  # noqa: PLC0415 — локальный импорт, как в create_set_structure
+        _st_norm = _kp_fb.base_site_type(site_type)  # split «Монобренд · Lada» → «Монобренд»
         conn = _victory_conn()
         cur = conn.cursor()
         cur.execute("SELECT content FROM public.direct_slepok_content "
-                    "WHERE slepok=%s AND site_type=%s AND kind='campaign'", (slepok, site_type))
+                    "WHERE slepok=%s AND site_type=%s AND kind='campaign'", (slepok, _st_norm))
         row = cur.fetchone()
         conn.close()
         if row:

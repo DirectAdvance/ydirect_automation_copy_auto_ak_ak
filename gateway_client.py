@@ -21,6 +21,14 @@ import os
 _DEFAULT_TIMEOUT = 4.0
 
 
+class GatewayHTTPError(RuntimeError):
+    def __init__(self, status_code: int, payload: dict | None = None):
+        self.status_code = status_code
+        self.payload = payload or {}
+        msg = self.payload.get("error") if isinstance(self.payload, dict) else ""
+        super().__init__(msg or f"gateway HTTP {status_code}")
+
+
 def _self_mode() -> bool:
     """Внутри самого direct-gateway процесса (он ставит DIRECT_GATEWAY_SELF=1) HTTP к себе НЕ делаем —
     сразу уходим в локальную функцию. Страховка от самопетли, даже если брокер начнёт вызывать
@@ -45,7 +53,12 @@ def _get(path: str, params: dict, timeout: float = _DEFAULT_TIMEOUT) -> dict:
     import requests  # noqa: PLC0415
 
     resp = requests.get(f"{_base_url()}{path}", params=params, timeout=timeout)
-    resp.raise_for_status()
+    if resp.status_code >= 400:
+        try:
+            payload = resp.json()
+        except Exception:  # noqa: BLE001
+            payload = {}
+        raise GatewayHTTPError(resp.status_code, payload)
     return resp.json()
 
 
@@ -55,8 +68,22 @@ def _post(path: str, payload: dict, timeout: float = _DEFAULT_TIMEOUT) -> dict:
     import requests  # noqa: PLC0415
 
     resp = requests.post(f"{_base_url()}{path}", json=payload, timeout=timeout)
-    resp.raise_for_status()
+    if resp.status_code >= 400:
+        try:
+            body = resp.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        raise GatewayHTTPError(resp.status_code, body)
     return resp.json()
+
+
+def _terminal_cookie_error(text: str) -> bool:
+    s = (text or "").lower()
+    return (
+        "не имеет web/grid-прав" in s
+        or "нет прав" in s
+        or "no rights" in s
+    )
 
 
 def gw_cookie(login: str, *, accounts=None, force_refresh: bool = False,
@@ -72,12 +99,17 @@ def gw_cookie(login: str, *, accounts=None, force_refresh: bool = False,
             timeout = max(timeout, float(os.environ.get("DIRECT_GATEWAY_COOKIE_TIMEOUT", "150")))
         except (TypeError, ValueError):
             timeout = 150.0
+    gateway_error = ""
     try:
         data = _get("/gw/cookie", params, timeout)
         cookie = data.get("cookie")
         if cookie:
             return cookie
         # брокер ответил, но куки нет (протухла) → пусть локальная функция даст свой вердикт/ошибку
+    except GatewayHTTPError as exc:
+        gateway_error = str(exc)
+        if _terminal_cookie_error(gateway_error):
+            raise RuntimeError(gateway_error)
     except Exception:  # noqa: BLE001
         pass
     # ⚠️ Фолбэк В _pick_working_cookie_local, НЕ в pick_working_cookie: иначе (обёртка → gw_cookie →

@@ -184,6 +184,7 @@ def register_content_dashboards(
             ) s ON lower(regexp_replace(s.domain, '^www\\.', ''))
                  = lower(regexp_replace(e.site, '^www\\.', ''))
             WHERE COALESCE(s.directologist, '') <> 'О-Лидер'
+              AND COALESCE(btrim(e.utm_campaign), '') <> ''
             {scope_sql}
             ORDER BY e.visit_date DESC, e.site
         """.format(scope_sql=scope_sql)

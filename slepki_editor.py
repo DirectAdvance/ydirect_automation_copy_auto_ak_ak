@@ -23,7 +23,9 @@ Flask-free ядро (configure(deps) DI, как create_set_finalize_queue.py). �
      следующей джобе сразу) И M3-RAW-источник (m3-relay:/Users/Shared/agency/нейродиректолог —
      правда, переживёт ночной синк sync_content_m3.py + orphan-cleanup). Пишем в ОБА.
   C. preflight (scripts/slepki_preflight.preflight_dict) на ПРЕДЛАГАЕМОМ состоянии ДО записи
-     структурных правок (aon/aoff, add/remove ct) — при коллизии/пустой группе/пустом tp ОТКАЗ.
+     структурных правок (aon/aoff, add/remove ct). Гейт ДЕЛЬТОВЫЙ (`_preflight_new`): отказ, если
+     правка ДОБАВЛЯЕТ нарушение. Старый долг структуры правку не блокирует — иначе редактор
+     мёртв целиком (было ровно так до 2026-07-29).
   D. бэкап+timestamp slepki_structure.json/targeting_profile.json перед записью (обратимо).
   E. аудит-лог правок (кто/когда/что) — Victory public.direct_slepki_edits + локальный jsonl.
 """
@@ -109,6 +111,37 @@ def configure(deps: dict) -> None:
 
 # ── preflight loader (без циклического импорта пакета scripts) ────────────────
 _PREFLIGHT = {"mod": None}
+
+
+def _preflight_new(struct: dict, profile: dict) -> list:
+    """Нарушения, которые ДОБАВЛЯЕТ правка (дельта к состоянию на диске).
+
+    Раньше гейт был абсолютным: `if preflight_dict(struct): отказ`. На реальной структуре это
+    означало «никакая правка невозможна», потому что структура тянет СТАРЫЙ долг, к правке
+    отношения не имеющий (2026-07-29: 300 нарушений на нетронутых слепках — 297 EMPTY_GROUP
+    из chepelev/terehov + 3 CROSS_SLEPOK_COLLISION; `apply_remove_ct_group` отказывал ВСЕГДА,
+    редактор слепков в UI был мёртв).
+
+    Правка не обязана чинить чужой долг — она обязана его не ухудшать. Поэтому сравниваем
+    множество нарушений ДО (пристина с диска) и ПОСЛЕ и возвращаем только НОВЫЕ. Нарушения,
+    которые правка УСТРАНЯЕТ, в отказ не идут (и это правильно: удаление пустой группы
+    уменьшает долг).
+
+    Профиль передаётся тот же, что пойдёт в запись: для `toggle_aon_aoff` это НОВЫЙ профиль,
+    иначе дельта поймала бы разницу «профиль старый vs новый» как нарушение правки.
+    """
+    mod = _preflight_mod()
+    after = [str(v) for v in (mod.preflight_dict(struct, profile) or [])]
+    # пристина: _load_struct отдаёт свежую глубокую копию с диска, мутации `struct` её не задели
+    before = {str(v) for v in (mod.preflight_dict(_load_struct(), profile) or [])}
+    seen: set = set()
+    out: list = []
+    for v in after:
+        if v in before or v in seen:
+            continue
+        seen.add(v)
+        out.append(v)
+    return out
 
 
 def _preflight_mod():
@@ -223,7 +256,11 @@ def _group_fname(fname: str, slug: str) -> str:
 def _pack_rel(site_type: str, tp: str, ct: str, fname: str, group: str = "") -> str:
     """Относительный путь файла пака внутри kontent_oktyabr (подпапка keywords).
     group непустой → имя файла с per-adgroup слагом (см. _group_fname); shared остаётся общим."""
-    site_type = _safe_token(site_type, "site_type")
+    # Витринный сплит: путь в паке строится по ФИЗИЧЕСКОМУ сегменту («Монобренд»), а UI
+    # шлёт имя вкладки («Монобренд · Lada»). Без нормализации запись уедет в папку, куда
+    # читатель (kontent_pack._ct_dir, тоже нормализованный) никогда не заглянет: правка
+    # ключей/уточнений/минус-наборов молча пропала бы, а в паке остался мусор под ночной sync.
+    site_type = _safe_token(kp.base_site_type(site_type), "site_type")
     tp = _safe_token(tp, "tp")
     fname = _safe_token(fname, "fname")
     ctn = kp._norm_ct(ct) or kp.GENERAL_CT
@@ -233,7 +270,11 @@ def _pack_rel(site_type: str, tp: str, ct: str, fname: str, group: str = "") -> 
 def _pack_rel_callouts(site_type: str, tp: str, ct: str, fname: str, group: str = "") -> str:
     """Относительный путь файла уточнений (callouts) внутри kontent_oktyabr.
     Зеркалит kontent_pack.read_callouts: {site_type}/{tp}/{ct}/callouts/{slepok}[__{slug}].txt."""
-    site_type = _safe_token(site_type, "site_type")
+    # Витринный сплит: путь в паке строится по ФИЗИЧЕСКОМУ сегменту («Монобренд»), а UI
+    # шлёт имя вкладки («Монобренд · Lada»). Без нормализации запись уедет в папку, куда
+    # читатель (kontent_pack._ct_dir, тоже нормализованный) никогда не заглянет: правка
+    # ключей/уточнений/минус-наборов молча пропала бы, а в паке остался мусор под ночной sync.
+    site_type = _safe_token(kp.base_site_type(site_type), "site_type")
     tp = _safe_token(tp, "tp")
     fname = _safe_token(fname, "fname")
     ctn = kp._norm_ct(ct) or kp.GENERAL_CT
@@ -247,7 +288,11 @@ def _pack_rel_minus_sets(site_type: str, slepok: str) -> str:
     Файл отдельный от {slepok}_minus_shared.txt, но с 2026-07-28 движок создания читает ОБА:
     create_set_minus._read_slepok_minus_sets заводит эти наборы в библиотеке минус-фраз аккаунта
     (negativekeywordsharedsets) и привязывает их к кампаниям tp2-tp5 (решение Семёна)."""
-    site_type = _safe_token(site_type, "site_type")
+    # Витринный сплит: путь в паке строится по ФИЗИЧЕСКОМУ сегменту («Монобренд»), а UI
+    # шлёт имя вкладки («Монобренд · Lada»). Без нормализации запись уедет в папку, куда
+    # читатель (kontent_pack._ct_dir, тоже нормализованный) никогда не заглянет: правка
+    # ключей/уточнений/минус-наборов молча пропала бы, а в паке остался мусор под ночной sync.
+    site_type = _safe_token(kp.base_site_type(site_type), "site_type")
     slepok = _safe_token(slepok, "slepok")
     return posixpath.join(site_type, "_minus_sets", f"{slepok}.json")
 
@@ -530,7 +575,11 @@ def read_group_keywords(site_type: str, tp: str, ct: str, slepok: str, group: st
     ``kw_source``: ``"pack"`` — ключи из M3-пака; ``"real_library"`` — пак пуст и ключи взяты
     ТЕМ ЖЕ фолбэком, которым их берёт СОЗДАНИЕ кампании (см. ниже)."""
     # компоненты идут прямо в путь (kp._ct_dir / имя файла) → анти-traversal рубеж
-    site_type = _safe_token(site_type, "site_type")
+    # Витринный сплит: путь в паке строится по ФИЗИЧЕСКОМУ сегменту («Монобренд»), а UI
+    # шлёт имя вкладки («Монобренд · Lada»). Без нормализации запись уедет в папку, куда
+    # читатель (kontent_pack._ct_dir, тоже нормализованный) никогда не заглянет: правка
+    # ключей/уточнений/минус-наборов молча пропала бы, а в паке остался мусор под ночной sync.
+    site_type = _safe_token(kp.base_site_type(site_type), "site_type")
     tp = _safe_token(tp, "tp")
     slepok = _safe_token(slepok, "slepok")
     ctn = kp._norm_ct(ct) or kp.GENERAL_CT
@@ -775,7 +824,11 @@ def read_assets(slepok: str, site_type: str) -> dict:
     а не ``{}`` (до 2026-07-19 пустой ввод возвращал пустой результат). Единственный вызывающий —
     роут `/api/slepki/assets`, который отсекает пустые значения раньше (400)."""
     slepok = _safe_token(slepok, "slepok")       # компоненты идут в путь → анти-traversal
-    site_type = _safe_token(site_type, "site_type")
+    # Витринный сплит: путь в паке строится по ФИЗИЧЕСКОМУ сегменту («Монобренд»), а UI
+    # шлёт имя вкладки («Монобренд · Lada»). Без нормализации запись уедет в папку, куда
+    # читатель (kontent_pack._ct_dir, тоже нормализованный) никогда не заглянет: правка
+    # ключей/уточнений/минус-наборов молча пропала бы, а в паке остался мусор под ночной sync.
+    site_type = _safe_token(kp.base_site_type(site_type), "site_type")
     try:
         pairs = _iter_tp_ct(slepok, site_type)
     except Exception:  # noqa: BLE001
@@ -1078,7 +1131,7 @@ def apply_toggle_aon_aoff(spec: dict, actor: str = "") -> dict:
                         touched += 1
 
         # preflight на ПРЕДЛАГАЕМОМ состоянии
-        viol = _preflight_mod().preflight_dict(struct, new_profile)
+        viol = _preflight_new(struct, new_profile)
         if viol:
             return {"ok": False, "error": "preflight отказ", "violations": viol[:20]}
 
@@ -1157,7 +1210,7 @@ def apply_add_ct_group(spec: dict, actor: str = "") -> dict:
             t.setdefault("groups", []).append(target)
         target.setdefault("items", []).append({"c": camp, "t": desc, "gc": gc})
 
-        viol = _preflight_mod().preflight_dict(struct, _load_profile())
+        viol = _preflight_new(struct, _load_profile())
         if viol:
             return {"ok": False, "error": "preflight отказ", "violations": viol[:20]}
         bak = _write_struct(struct)
@@ -1203,7 +1256,7 @@ def apply_remove_ct_group(spec: dict, actor: str = "") -> dict:
         if removed == 0:
             return {"ok": False, "error": f"элемент с gc {gc} не найден"}
 
-        viol = _preflight_mod().preflight_dict(struct, _load_profile())
+        viol = _preflight_new(struct, _load_profile())
         if viol:
             return {"ok": False, "error": "preflight отказ (удаление оставило пустой tp/группу)",
                     "violations": viol[:20]}

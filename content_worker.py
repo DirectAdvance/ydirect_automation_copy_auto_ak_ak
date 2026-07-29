@@ -22,6 +22,7 @@ import socket
 import sys
 import threading
 import time
+import importlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +60,23 @@ _execute = ce.make_job_executor(
 
 def _log(msg: str) -> None:
     print(f"[content-worker] {msg}", flush=True)
+
+
+def _ensure_text_norm_exports() -> None:
+    """Refresh long-lived worker imports after code updates.
+
+    The content worker can run for days. If ``direct.text_norm`` was imported before
+    new helpers were added on disk, later sibling imports can fail against the cached
+    old module object. Reloading only when required keeps the normal hot path intact.
+    """
+    from direct import text_norm
+
+    required = ("mentions_banned_content", "strip_banned_content")
+    if not all(hasattr(text_norm, name) for name in required):
+        importlib.reload(text_norm)
+    missing = [name for name in required if not hasattr(text_norm, name)]
+    if missing:
+        raise RuntimeError(f"direct.text_norm missing exports: {', '.join(missing)}")
 
 
 def _requeue_orphans() -> None:
@@ -165,6 +183,7 @@ def _run_one(job: dict) -> None:
             "finished_at=now() WHERE job_id=%s", (job_id,))
         return
     try:
+        _ensure_text_norm_exports()
         out = _execute(job, is_cancelled=lambda: _is_cancelled(job_id))
         _finish(job_id, out or {})
         _log(f"done  {job_id} replaced={int((out or {}).get('replaced') or 0)} "

@@ -128,13 +128,29 @@ def make_job_executor(*, victory_conn, token_for_login, direct_tokens, v5_call, 
         token, _agency = token_for_login(job["login"], "", tokens)
         if not token:
             raise RuntimeError(f"ни один агентский токен не открывает аккаунт {job['login']}")
+        job_agency = str(job.get("agency") or "").strip()
+
+        def _job_grid_client(login: str):
+            if not job_agency:
+                return _grid_client(login)
+            from . import campaign as cmc
+            from .grid_finalize import get_grid_client
+
+            cookie = cmc.pick_working_cookie(
+                login,
+                accounts=(job_agency,),
+                force_refresh=True,
+            )
+            return get_grid_client(login, cookie=cookie)
+
         # Эти типы работают строго по payload и не требуют текстового снимка аккаунта.
         if (job.get("type") or "") in {"image_replace", "campaign_rename"}:
             if is_cancelled():
                 return {"cancelled": True}
             return _do_replace(token, job["login"], job["type"], job["old_text"],
                                job["new_text"], {}, v5_call, v501_svc,
-                               mode=(job.get("mode") or "exact"))
+                               mode=(job.get("mode") or "exact"),
+                               grid_client_factory=_job_grid_client)
         # campaign-level sitelinks нужны ТОЛЬКО заданиям замены набора уровня кампании
         # (sitelink_title/description). Для ad_title/ad_text/callout/ad_href не гоняем
         # лишний Grid-round-trip (см. блок 3c в _load_account).
@@ -142,13 +158,16 @@ def make_job_executor(*, victory_conn, token_for_login, direct_tokens, v5_call, 
         content = _load_account(
             token, job["login"], v5_call,
             include_campaign_sitelinks=_need_cl_sitelinks,
+            include_uac_campaigns=(job.get("type") or "") != "ad_href",
+            include_callouts=(job.get("type") or "") == "callout",
         )
         if content.get("error"):
             raise RuntimeError(content["error"])
         if is_cancelled():
             return {"cancelled": True}
         return _do_replace(token, job["login"], job["type"], job["old_text"], job["new_text"],
-                           content, v5_call, v501_svc, mode=(job.get("mode") or "exact"))
+                           content, v5_call, v501_svc, mode=(job.get("mode") or "exact"),
+                           grid_client_factory=_job_grid_client)
 
     return execute
 
@@ -268,12 +287,16 @@ def register_content_editor_routes(
         return token, agency, None
 
     def _load_with_index(token: str, login: str, *,
-                         include_campaign_sitelinks: bool = True) -> dict:
+                         include_campaign_sitelinks: bool = True,
+                         include_uac_campaigns: bool = True,
+                         include_callouts: bool = True) -> dict:
         # _load_account уже строит индекс _ads_by_set (без второго запроса ads.get).
         # include_campaign_sitelinks=False пропускает Grid-round-trip блока 3c —
         # для /links и preview/replace НЕ-sitelink типов campaign-level наборы не нужны.
         return _load_account(token, login, v5_call,
-                             include_campaign_sitelinks=include_campaign_sitelinks)
+                             include_campaign_sitelinks=include_campaign_sitelinks,
+                             include_uac_campaigns=include_uac_campaigns,
+                             include_callouts=include_callouts)
 
     # Исполнение заданий вынесено в direct-content-worker.service (make_job_executor).
     try:

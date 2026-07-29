@@ -34,6 +34,20 @@ from flask import render_template, request, jsonify, current_app, session, send_
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+
+def _kp_base_site_type(site_type: str) -> str:
+    """«Монобренд · Lada» → «Монобренд» (витринный сплит, kontent_pack.base_site_type).
+
+    Справочники в БД (`direct_slepok_content` и т.п.) заведены на БАЗОВЫЕ типы сайта;
+    марочные вкладки живут только в структуре слепка и в UI. Импорт локальный —
+    kontent_pack тяжелее и подтягивается лениво, как в остальном модуле.
+    """
+    try:
+        from . import kontent_pack as _kp  # noqa: PLC0415
+    except ImportError:  # noqa: BLE001 — модуль умеет работать и вне пакета (скрипты)
+        import kontent_pack as _kp  # type: ignore[no-redef]  # noqa: PLC0415
+    return _kp.base_site_type(site_type)
+
 # Доступ к Директу: админ (bypass внутри декоратора) ИЛИ юзер с ключом
 # "work" (parent) / "work:direct". Совпадает с навигацией (_nav.html) и
 # реестром _BUILTIN_SECTIONS в app.py — юзер с грантом видит ссылку И может всё.
@@ -2491,6 +2505,7 @@ def _slepok_sitelinks_for(slepok: str, site_type: str) -> list[dict]:
     Источник — колонка sitelinks в direct_slepok_content.
     Возвращает [{Title, Href, Description}, ...] или []."""
     try:
+        site_type = _kp_base_site_type(site_type)   # split-вкладки в direct_slepok_content не заведены
         conn = _victory_conn()
         cur = conn.cursor()
         cur.execute(
@@ -2857,6 +2872,7 @@ def _slepok_campaign_content(slepok: str, site_type: str) -> dict:
     Заголовки/тексты/ссылки лежат ВНУТРИ campaign-контента (отдельных строк нет)."""
     out = {"titles": [], "texts": [], "sitelinks": []}
     try:
+        site_type = _kp_base_site_type(site_type)   # split-вкладки в direct_slepok_content не заведены
         conn = _victory_conn()
         cur = conn.cursor()
         cur.execute("SELECT content FROM public.direct_slepok_content "

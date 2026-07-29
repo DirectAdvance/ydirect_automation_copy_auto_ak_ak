@@ -5,6 +5,355 @@
 
 > Архив сессий старше 3 дней — **STATE_ARCHIVE.md** (ротация 2026-07-19 (2): перенесены сессии 07-16 и старше). Правило ротации — см. CLAUDE.md.
 
+## Сессия 2026-07-29 — Agent Board #53: `ce_72ffaeb95c6d` заблокирована web/Grid-правами
+
+**До:** job `ad_href` (`gordeeva`, `porg-whs6d5n5`, agency `victorylotsofads1`) падала как
+`ни одна кука не подошла ... HTTP 401 No rights`.
+
+**После:** root-cause воспроизведён: OAuth read-owner = `victorylotsofads1`; fresh/local cookie
+этого агентства на `linkinfo` возвращают `403 Нет прав`, а no-op official `ads.update` возвращает
+`3000 Нет доступа к API / Аккаунт пользователя блокирован`. `routes_content_editor.make_job_executor`
+укреплён: Grid factory для content job теперь scoped по `job.agency`, чтобы ошибка управляющей cookie
+не затиралась default-перебором чужих агентств. Row `content_jobs.error/result` обновлён на точную
+причину `cookie_rights_and_api_write_blocked`.
+
+**Проверено/ограничение:** `py_compile` OK, targeted pytest — 7 passed; `direct-content` и
+`direct-content-worker` перезапущены и active. Live v5 read-back: 13 неархивных `TextAd` в
+`OFF/DRAFT` кампаниях `705293824/705293850/705293872` всё ещё имеют старый path, новый path = 0;
+ещё 10 old-path `TextAd` в архивных кампаниях не трогались. Операция не добита: нужен web/Grid-доступ
+к `porg-whs6d5n5` или отдельное решение Семёна.
+
+## Сессия 2026-07-29 — Agent Board #47: полный перебор cookie, blocked подтверждён
+
+**До:** Семён спросил, был ли перебор cookie после блокера #47. Job `ce_2eb3812dd1c7`
+оставалась terminal `error`; кодовый путь `ad_href` уже переведён с official `ads.update` на
+cookie/Grid RMW.
+
+**После:** выполнен полный live-перебор cookie для `porg-qv22znqh`: локальный
+`/opt/scripts/.secret/cookies.json` содержит 7 аккаунтов (`skuderko1` + 6 default), свежий
+главпоток проверен по 6 default-агентствам (`skuderko1` там отсутствует). Результат одинаковый:
+`victoryagency-direct1618440` даёт `403 Нет прав`, остальные агентства — `401 No rights`.
+Рабочей cookie для Grid/UAC-записи нет. Row `content_jobs.error/result.blocked_reason` обновлён на
+точную причину `cookie_rights_full_bruteforce_failed`.
+
+**Проверено/ограничение:** live v5 `ads.get` через `victoryagency-direct1618440` вернул 54/54 id:
+в кампании `703748303` статус `OFF/DRAFT`, старый path сейчас у 12 `TextAd`, новый path = 0;
+остальные 42 id ведут на другие модели. Операция не добита: нужен web/Grid-доступ к
+`porg-qv22znqh` или отдельное решение Семёна по разрешённому способу правки.
+
+## Сессия 2026-07-29 — Agent Board #52: `ce_f10156cabe2a` заблокирована web/Grid-правами
+
+**До:** job `ad_href` (`gordeeva`, `porg-q6m3wzlz`) падала как
+`ни одна кука не подошла ... HTTP 401 No rights`; row agency/v5-владелец =
+`victoryagency-direct1618440`.
+
+**После:** root-cause воспроизведён текущим executor: fresh/local cookie управляющего агентства на
+`linkinfo` возвращают `403 Нет прав`, поэтому Grid RMW останавливается до мутации. Row
+`content_jobs.error` обновлён на точную причину; кодовый фикс немаскирования уже стоит после #50/#51.
+
+**Проверено/ограничение:** live v5 read-back: 20 `TextAd` в DRAFT/OFF кампаниях
+`703013688/703013701/703013707/703013734/703013753` всё ещё имеют старый path
+`/auto/changan/uni-s-cs55plus/i-restyling/suv-5d`, новый path = 0. No-op official `ads.update`
+по `ad_id=17266309206` вернул `3000 Нет доступа к API / Аккаунт пользователя блокирован`.
+Операция не добита: нужен web/Grid-доступ к `porg-q6m3wzlz` или отдельное решение Семёна.
+
+## Сессия 2026-07-29 — Agent Board #51: `ce_0970ceaea695` заблокирована web/Grid-правами
+
+**До:** job `ad_href` (`gordeeva`, `porg-m6atla56`) падала как
+`ни одна кука не подошла ... HTTP 401 No rights`; row agency/override/v5-владелец =
+`victoryagency-direct1618440`.
+
+**После:** root-cause воспроизведён: fresh/local cookie управляющего агентства на `linkinfo`
+возвращают `403 Нет прав`; current Grid RMW execute останавливается до мутации. Дополнительно
+укреплён `campaign._pick_working_cookie_local`: при явном single-account fallback без DI-resolver
+terminal rights-ошибка больше не маскируется generic `ни одна кука...`. Row `content_jobs.error`
+обновлён на точную причину.
+
+**Проверено/ограничение:** `py_compile` OK, pytest `test_campaign_cookie_picker.py` +
+`test_content_ad_href_grid.py` — 5 passed; `direct-gateway`, `direct-content`,
+`direct-content-worker` перезапущены и active. Live `/gw/cookie` отдаёт точную 502-причину;
+v5/v501 no-op `ads.update` по `ad_id=17256545488` вернул `3000 / Аккаунт пользователя блокирован`.
+Direct read-back: 20 `ResponsiveAd` в OFF-кампаниях всё ещё на старом path, новый path = 0.
+Операция не добита: нужен web/Grid-доступ к `porg-m6atla56` или отдельное решение Семёна.
+
+## Сессия 2026-07-29 — Copy UAC porg-qrriv2wt→porg-63s3kxux: href/images 1в1 + repair 12 РК — ЗАДЕПЛОЕНО
+
+**Симптом:** job `5dc4ca62df05` создала 12/12 tp6/tp7 кампаний, но UAC-ссылки `/quiz` и модели
+частично стали главной `https://geelybase-196.ru`, а картинки не совпали с источником.
+Live read-back повторно подтвердил: `712846924 /quiz` → `713137113 /`, `712847305 monjaro` →
+`713137119 /`, `hashes_equal=False` по 5 image hash в обеих парах.
+
+**Причина:** UAC-only branch не имеет v5 snapshot (в job `campaigns/adgroups/ads/adimages = 0`) и
+создаёт `MasterCampaignSpec` вручную. До фикса `copy_uac._copy_uac_campaigns` ставил
+`href=target_href` для всех UAC-кампаний, а картинки брал рекурсивным поиском URL по detail payload
+вместо упорядоченных `contents[].source_url`.
+
+**После в коде:** `direct/copy_uac.py` берёт `d.href` каждой исходной UAC-кампании и меняет только
+домен через `_copy_target_href`. Для картинок финальный путь — source `contents[].id` + preseed
+source `AdImageHash` в target через v501 `adimages.add`; URL-загрузка оставлена fallback'ом.
+Добавлены guard-тесты в `direct/tests/test_copy_integration_guards.py`. `ERRORS_JOURNAL.md`
+пополнен `COPY_UAC_HREF_IMAGES_NOT_1TO1`.
+
+**Repair существующих 12:** созданы новые DRAFT: `713139080, 713139079, 713139089, 713139094,
+713139101, 713139108, 713139120, 713139122, 713139140, 713139139, 713139152, 713139153`.
+Source `content_id` пропатчены в target; для target-библиотеки добавлены 3 missing hash:
+`AjTquKL-wjdC_BqHlXA0Mw`, `My3VJ0dS3PT3AKzJDXsTiw`, `g1nzRR5SFQe1H6CmN_mG6A`. Старые ошибочные
+DRAFT `713137051, 713137050, 713137061, 713137085, 713137087, 713137100, 713137098, 713137113,
+713137119, 713137124, 713137133, 713137136` удалены. Mapping записан в
+`direct_automation_jobs.result.manual_uac_repair_20260729`.
+
+**Деплой/верификация:** md5 Mac==LXC101; `/root/venv/bin/python3 -m py_compile direct/copy_uac.py`
+OK на LXC101; локально targeted pytest UAC subset — 5 passed; полный файл guard-тестов ранее —
+50 passed, 2 unrelated failures в `content_renames_routes.run_rename(... token=...)`. Перед рестартами
+проверял active copy-job = 0; `direct-copy.service` restart, active PID `3768075`. Финальный live
+read-back после удаления старых: все 12 новых `status=draft`, `href_ok=True`, `img_ok=True`;
+`old_gone_count=12`.
+
+## Сессия 2026-07-29 — витринный сплит Монобренда, чистка дублей, имена кампаний, light-UI
+
+**Сделано (всё проверено фактом, бэкапы физические в `direct/slepki/_backup_*_20260729/`):**
+
+1. **Витринный сплит «Монобренд»** → 7 марочных вкладок + «Монобренд · Общая» у 11 слепков.
+   Контент-пак НЕ переезжал: нормализация в одной точке `kontent_pack.base_site_type()`
+   («Монобренд · Lada» → «Монобренд») + `SiteTypeSet` (нормализован только `in`).
+   Точек нормализации закрыто 9 + 2 по находкам проверяющего (`create_set_feed_builders`
+   — sitelinks на split-вкладке были 0 вместо 2–6; `routes_tags` — теги писались под split-именем,
+   а движок читал базовое).
+2. **ct-фиксы Lada:** `ct0885→ct0185`, `ct0890→ct0190`. Всего 71 группа: 28 в Монобренде (ранее)
+   + 43 в остальных типах (+5910 ключей). 8 групп НЕ тронуты по замеру: у salamahin
+   `Мультибренд/tp2,tp4` папка `ct0885` реально существует (267 ключей → стало бы 58).
+3. **Дубли:** 664 группы «марка ⊃ марка+модель» (критерий: та же кампания + тот же ct +
+   префиксное имя + НЕТ своего файла ключей) + 112 групп с мусорными суффиксами
+   (Дилер/Купить/Цена/Сайт/Салон/Новый/города/2024-2025/имя из кодера/`Stapway`).
+   Модельные и кузовные суффиксы (Cross, Liftback, Sedan, SW, Sport, Oktavia, Stepway, Note…)
+   НЕ удалялись — решение Семёна: «это марки и модели, не ошибка».
+   Групп всего: 13582 → 12807 (+1 восстановлена: `chepelev / Changan Alsvin Стоп` ct0030 была
+   единственной в кампании «РСЯ - Комби - Модели - Автотаргетинг»).
+4. **Имена кампаний tp2/tp4/tp5 пака авто — 5024 item, 12 слепков.**
+   (A) хвост таргетинга по ФАКТУ пака: «КС» → «КС + Автотаргетинг» (468 кампаний), плюс канон для
+   «Автотаргет/КС», «КС+ Автотаргет», «КС (Б/У)». Чистый хвост «Автотаргетинг» (без КС) НЕ трогался —
+   решение Семёна держать пару КС/Автотаргетинг раздельно. Незнакомые хвосты («Аудитория») не трогались.
+   (B) марка вкладки Монобренда в имени: «Поиск - Марки - КС» → «Поиск - Haval - Марки - КС + Автотаргетинг».
+   Итог: имён с «Автотаргетинг» 555 из 595; Монобренд-кампаний без марки — 0; слияний 10, все дубли,
+   пар «КС + чистый Автотаргетинг» среди них 0.
+5. **UI:** двухрядные вкладки (базовые типы + чипы марок со счётчиком групп); при создании РК
+   в «Тип сайта» подставляются вкладки ИЗ СТРУКТУРЫ слепка, базовый «Монобренд» убран
+   (иначе бэкенд молча берёт первую вкладку) + подсказка выбрать марку.
+6. **light-загрузка `/direct/automation`:** `/api/ui_structure?light=1&selected=<key>`.
+   **17.5 МБ / 3.24 c → 1.5 МБ / 0.50 c** (в 11.4 раза), у выбранного слепка данные идентичны
+   (chepelev: 7 site_types / 1321 групп в обоих), shell-записей 18 из 19.
+
+**Сломано и починено по ходу (всё — мои регрессии этой сессии):**
+- Страница «Создание РК» висла («Страница не отвечает») — гард в `_fillSiteTypeSelect` проверял
+  `window.SLEPKI`, которой не существует (механика — в MEMORY.md). Лечится `_acSlepki()` + флаг ожидания.
+- **Марки не появлялись в «Тип сайта» при создании РК:** `_fillSiteTypeSelect` вызывался при смене
+  слепка ТОЛЬКО внутри ветки дозагрузки shell (`automation.js:acAgentTag`). После перехода на light
+  слепок часто уже в памяти → ветка не срабатывала → список оставался статическим с голым
+  «Монобренд». Теперь селект перезаполняется на КАЖДУЮ смену слепка.
+  Проверено: scherbakova → Мультибренд + Haval/Lada/Belgee/Tenet/Общая; chepelev → 6 вкладок.
+- **Счётчик кампаний в шапке tp** зависел от ветки расчёта (camp_names → сегменты → плоские группы);
+  любой сбой ветки давал 0 и молча прятал бейдж. Добавлен фолбэк на число групп в tp
+  (`slepki_ui.js:slepkiTpTree`). Пустой tp по-прежнему без бейджа.
+
+**Версии статики (кэш-бастеры) правились 4 раза за сессию** — если UI ведёт себя «как вчера»,
+первым делом сверить `?v=` в `templates/direct/index.html` и `templates/direct/slepki.html`
+с реально изменёнными файлами: рассинхрон = браузер мешает новый JS со старым.
+
+**Решения Семёна 2026-07-29 (оба вопроса ЗАКРЫТЫ, не переоткрывать):**
+- **Дубль = только внутри одного слепка И одного типа сайта.** Совпадение структуры у разных
+  директологов и между типами сайта («Монобренд», «Мультибренд», «Монобренд · Lada» с одинаковыми
+  кампаниями) — НЕ дубль. `slepki_preflight.py` переписан: такие совпадения теперь строка `ℹ`,
+  вердикт не меняют; блокирует только `DUPLICATE_TP_IN_SITE_TYPE`. Прогон после правки:
+  настоящих дублей 0, **EXIT=0** (впервые за сессию), `preflight_dict` для редактора — 0 нарушений.
+- **Марка, заведённая и в Мультибренде, и в Монобренде (836 пар слепок×tp×ct) — трогать не нужно.**
+
+**Открыто:** 8 групп `ct0885/ct0890` намеренно не тронуты по замеру (см. п.2) — не задача, а факт.
+
+**Proposal-файлы (все ПРИМЕНЕНЫ):** `_PROPOSAL_monobrand_split_20260729.md`,
+`_PROPOSAL_dupes_20260729.md`, `_PROPOSAL_camp_names_20260729.md`, `_PROPOSAL_samect_dupes_20260729.md`.
+
+## Сессия 2026-07-29 — Agent Board #50: `ce_39f8cdd30779` заблокирована web/Grid-правами
+
+**До:** job `ad_href` (`gordeeva`, `porg-nxhtsz6c`) падала как
+`ни одна кука не подошла ... HTTP 401 No rights`, что маскировало реальную первую ошибку.
+
+**После:** root-cause воспроизведён: v5-владелец и row agency =
+`victoryagency-direct1618440`; fresh/local cookie этого агентства на `linkinfo` дают
+`403 Нет прав`, остальные агентства дают `401 No rights`. `campaign._pick_working_cookie_local`
+теперь сохраняет ошибку управляющего агентства, `gateway_client.gw_cookie` не фолбэчит локально
+после terminal rights-ошибки broker'а. Row `content_jobs.error` обновлён на точную причину.
+
+**Проверено/ограничение:** `py_compile` OK, `pytest` 4 passed
+(`test_campaign_cookie_picker.py`, `test_content_ad_href_grid.py`); `direct-gateway`,
+`direct-content`, `direct-content-worker` перезапущены и active. Live v5 read-back:
+13 кампаний / 4362 ads, старый path в 26 `RESPONSIVE_AD`, новый path = 0; no-op `ads.update`
+вернул `3000 / Нет доступа к API`. Операция не добита: нужен web/Grid-доступ к
+`porg-nxhtsz6c` или отдельное решение Семёна по способу правки.
+
+## Сессия 2026-07-29 — Agent Board #47: повтор после главпотока, blocked по web-доступу
+
+**До:** #47 был остановлен на `need_reset` для `porg-qv22znqh`; админ попросил попробовать взять
+новую cookie с главпотока. Исходная job `ce_2eb3812dd1c7` оставалась terminal `error` после старого
+v5 `ads.update`.
+
+**После:** `/opt/scripts/.secret/glavpotok_cookies.py` успешно обновил общий
+`/opt/scripts/.secret/cookies.json`: 6 свежих агентских cookie, включая
+`victoryagency-direct1618440`. Повторная проверка cookie для `porg-qv22znqh` больше не даёт
+`need_reset`, но управляющая cookie отвечает `HTTP 403 / Нет прав`; перебор дефолтных агентств и
+OAuth-токенов не нашёл альтернативного владельца (v5 читает только `victoryagency-direct1618440`).
+
+**Проверено/ограничение:** live `ads.get` по первым целевым объявлениям `17327384320`–`17327384329`
+подтвердил старый path `/auto/changan/cs75-plus/i/suv-5d` в неархивной `OFF/DRAFT` кампании
+`703748303`; новый path не применён. Добивка Grid/RMW запрещена текущим web-доступом (`Нет прав`),
+а official `ads.update` остаётся заблокированным для этой job. Нужен доступ/решение Семёна:
+вернуть web/Grid-права агентской сессии к удалённому в реестре аккаунту или явно разрешить иной
+способ правки.
+
+## Сессия 2026-07-29 — Agent Board #49: content-editor job `ce_7986eedfae67` заблокирована cookie
+
+**До:** job `ad_href` (`gordeeva`, `e-20074377`) упала на `ads.update: Нет доступа к API`;
+live `ads.get` по 12 целевым `TextAd` (`17495459782`–`17495459793`) подтвердил старый path
+`/auto/changan/cs75-plus/i/suv-5d` в кампании `705838023`.
+
+**После:** для `ad_href` убран лишний pre-load Grid/callout-usages: `_load_account` получил
+`include_callouts`, executor и `/links` передают `False`, поэтому ссылка не зависит от callout-cookie
+на этапе чтения. Live-добивка текущим Grid/RMW-кодом остановлена на cookie-доступе:
+`direct-gateway` для `e-20074377` отдаёт 502/`need_reset`, фолбэк `glavpotok.ru` зависает на
+SOCKS/SSL timeout. v5 read-back после попытки: 12 old / 0 new; job остаётся terminal `error` до
+обновления агентской cookie.
+
+## Сессия 2026-07-29 — Agent Board #48: content-editor job `ce_b27147271334` заблокирована cookie
+
+**До:** job `ad_href` (`gordeeva`, `e-20074375`) падала на `ads.update: Нет доступа к API`.
+Факт: старый worker `python-postgresql:3399472` исполнил v5-путь до рестарта; no-op repro
+`ads.update` на `ad_id=17497079160` вернул `3000 / Аккаунт пользователя блокирован`, при этом
+v5 read-back читает 12 `TextAd` в OFF-кампании `705858919` со старым path
+`/auto/changan/cs75-plus/i/suv-5d`.
+
+**После:** текущий код `content_replace_routes._replace_ad_href` уже работает через cookie/Grid RMW
+(фикс #47), `direct-content` и `direct-content-worker` active с PID `3690598/3690599`.
+Повторный live-execute текущим кодом дошёл до Grid-write и остановился на
+`need_reset`/Passport для `e-20074375`: ни `direct-gateway`, ни главпоток не дают рабочую cookie.
+Операция не добита; job оставлена terminal `error` до перелогина агентской cookie.
+
+## Сессия 2026-07-29 — Agent Board #47: content-editor job `ce_2eb3812dd1c7` частично исправлена, live заблокирован
+
+**До:** job `ad_href` (`gordeeva`, `porg-qv22znqh`) падала на `ads.update: Нет доступа к API`;
+no-op repro по `ad_id=17327384320` вернул v5 `error_code=3000`, `Аккаунт пользователя блокирован`,
+хотя `ads.get` читает Href нормально. Старый `ad_href` писал `TextAd` через official v5 write API.
+
+**После:** `content_replace_routes._replace_ad_href` переведён на cookie/Grid RMW:
+`TextAd` через `text_ads_for_update` + `update_text_ads(..., allow_empty_image_hashes=True)`,
+`ResponsiveAd` через `adaptive_ads_for_update` + `update_adaptive_text_ads`; v5 остался только для
+read-back. Добавлен regression `direct/tests/test_content_ad_href_grid.py`.
+
+**Проверено/ограничение:** `py_compile` OK, новый тест — `2 passed`; `direct-content-worker.service`
+перезапущен и active. Live-добивка исходной операции не выполнена: Grid init для `porg-qv22znqh`
+падает `need_reset`/Passport, refresh cookie через главпоток завис; без свежей cookie writer
+недоступен. Job оставлена terminal `error` до обновления cookie/доступа.
+
+## Сессия 2026-07-28 — Agent Board #46: copy job `c3cb103f420a` ads.get 1000
+
+**До:** copy job `porg-mjyh6hjv` → `porg-xqsyuplp` упала в `phase_pull` на первом `ads.get`
+после кампаний/групп: `1000: Сервис временно недоступен`; `direct_call()` ретраил HTTP 5xx и
+коды 52/506, но API-code 1000 возвращал terminal `__error__`.
+**После:** `/opt/scripts/work/slepki_direktologov/scripts/direct_copy.py` считает 1000/1001/1002
+transient для всех v5/v501 вызовов copy-path; добавлен regression-тест
+`direct/tests/test_direct_copy_transient_retry.py`. Дополнительно `copy_main.py` стартует
+изолированный copy worker/retry-daemon сразу при старте `direct-copy.service`, чтобы Agent Board
+`done` не ждал следующего ручного `copy_start`.
+**Проверено:** synthetic repro до фикса = 1 вызов/`__error__`, после фикса = 2 вызова/успех;
+`py_compile` и `pytest -q direct/tests/test_direct_copy_transient_retry.py` зелёные.
+`direct-copy.service` перезапущен, active PID `3444713`; smoke `copy` page = 302, `copy_queue`
+без сессии = 401. Agent Board #46 переведён в `done`; auto-daemon сам создал retry
+`0c1ba3db2827` (`target_cleanup=delete_drafts`), исходная job связана через `copy_retry_job_id`.
+
+## Сессия 2026-07-28 — Agent Board #45: content-editor job `ce_5a3c1400405e` добита
+
+**До:** job `ad_href` (`karavaev`, `direct778`) лежала terminal `error` после stale
+`direct-content-worker` PID `227400`: ImportError `mentions_banned_content` из `direct.text_norm`.
+Live v5 перед записью: 31 неархивная кампания, 21430 ads, старый path был в 36 `TextAd`, новый path
+= 0.
+
+**После:** операция добита через `_replace_ad_href` по v5-only `links`-снимку: job обновлена в
+`direct_automation.content_jobs` как `done`, `replaced=36`, `confirmed=36`, `errors=[]`.
+Дополнительно hardened `ad_href`/`/links`: `_load_account(..., include_uac_campaigns=False)` пропускает
+UAC-cookie enrichment там, где Href UAC не редактируется.
+
+**Проверено:** локальный импорт `mentions_banned_content`/`strip_banned_content`, `py_compile`
+`content_editor_helpers/routes_content_editor/content_replace_routes/content_worker`, synthetic smoke
+`include_uac_campaigns=False` (`uac_calls=0`), точечный live `ads.get` по 36 изменённым ad_id:
+old path = 0, new path = 36. `direct-content` и `direct-content-worker` перезапущены, оба active.
+
+## Сессия 2026-07-28 — Agent Board #44: content-editor job `ce_3c594f992148` добита
+
+**До:** job `ad_href` (`karavaev`, `porg-wpjfppa6`) лежала terminal `error` после stale
+`direct-content-worker` PID `227400`: ImportError `mentions_banned_content` из `direct.text_norm`.
+**После:** top-level импорты `text_gen.py` и `ai_agents.py` усилены reload-защитой для cached
+`direct.text_norm`; worker перезапущен, job возвращена в очередь и завершилась `done`,
+`replaced=24`, `confirmed=24`, `errors=[]`.
+
+**Проверено:** `py_compile`, synthetic stale-reload smoke для `text_gen`/`ai_agents`, pytest
+`direct/tests/test_create_auto_regressions.py` (66 passed). Прямой v5 read-back по
+25 кампаниям/7581 ads: old path = 0, new path = 24. Архивные кампании не восстанавливали.
+
+## Сессия 2026-07-28 — Agent Board #43: content-editor job `ce_ee855e96b5e9` добита
+
+**До:** job `ad_href` (`karavaev`, `porg-jxv3b5dm`) лежала terminal `error` после старого
+`direct-content-worker` без свежего `direct.text_norm`: ImportError
+`mentions_banned_content`. **После:** кодовый guard из #42 подтверждён локальным импортом; операция
+добита через `_replace_ad_href` по v5-целям, job переведена в `done`, `replaced=12`,
+`confirmed=12`, `errors=[]`.
+
+**Проверено:** прямой v5 read-back по 18 кампаниям/6988 ads: до правки old path был в 12 объявлениях
+неархивной `SUSPENDED` кампании `711066164`; после правки `old_non_archived=0`,
+`new_non_archived=12`. Архивные кампании не восстанавливали и не правили.
+
+## Сессия 2026-07-28 — Agent Board #42: content-editor job `ce_a5c527188f93` восстановлена
+
+**До:** `direct-content-worker.service` крутился с 2026-07-24 и держал старый in-memory
+`direct.text_norm` без `mentions_banned_content`/`strip_banned_content`; job `ad_href` падала на импорте
+до записи. **После:** в `content_worker.py` добавлен guard `_ensure_text_norm_exports()` с точечным
+`importlib.reload(text_norm)` при stale-модуле; worker перезапущен (PID `3366068`), job возвращена в
+очередь и завершилась `done`, `replaced=4`, `confirmed=4`, `errors=[]`.
+
+**Проверено:** `py_compile` для `content_worker/text_norm/text_gen/ai_agents`, synthetic reload-smoke
+guard-а, journal worker-а. Live/service-снимок `_load_account(porg-vwnkfsr6)`:
+`old_hits=0`, `new_hits=4` для активного инвентаря. Прямой v5 read-back по 23 кампаниям/3168 ads:
+новый path = 4, старый path = 4 только в `ARCHIVED` объявлениях (не трогались по правилу задачи).
+
+## Сессия 2026-07-28 — dmp tp2 восстановлен; теги Щербаковой очищены
+
+`slepki/dmp.json` восстановлен из staging `_proposed_dmp_restore_tp2_20260728.json`: теперь dmp =
+`tp1` (1 item) + `tp2` (5 splits / 35 items: Идентификация, Маркетинговые инструменты,
+Околотематические ключи, Конкуренты, Расширенное СЯ) + `tp6` (2 items). Причина пропажи: cleanup
+`scratchpad/slepki_cleanup_2026-07-25/empty_tp_20260725_175148.json` считал только `groups=0`, а dmp
+`tp2` хранится в `splits`. Проверено локально и на LXC101; JSON валиден, `tp2` совпадает с backup.
+
+Для `scherbakova / Мультибренд` снят ручной тег `каталоги` из `direct_automation.campaign_tags`
+(33 строки: tp1=14, tp3=1, tp5=15, tp7=3). Остались 4 ручных `х3` на гибридных `tp1` Комби/Комби+Фид.
+UI guard в `static/direct/slepki_ui.js` скрывает одноимённый auto-badge, если такой ручной тег уже
+назначен; cache-buster `slepki.html` → `20260728_tag_dedupe_v1`. `direct-slepki.service` и worker
+перезапущены, оба active.
+
+## Сессия 2026-07-28 — ОСТАНОВКА джобы посевов `d5c3f15b1466` (porg-uy3huxcn) по команде Семёна
+
+Причина: в очередь ушло 12 позиций вместо выбранных 4 (tp10 Telegram+Max) — добавились невыбранные
+tp8/tp9 (в `result.missing_posts` видны `tp9_cpc_site_ct0000/ct0300 … Посевы Max`). `POST
+/direct/api/create_set_cancel` 07:34:21 UTC → `cancelled` (updated_at 07:36:25 UTC, 124 с),
+created=0 / failed=0 / done=0, cancelled_children=0. Grid-снимок аккаунта: 67 кампаний,
+`GdPostCampaign`=0, имён tp8/tp9/tp10=0 → посевных кампаний НЕ создано, удалять нечего.
+Зависших `direct_deferred_creates`/`direct_delayed_repairs` (waiting|resumed|claimed|running) нет.
+Сервисы НЕ рестартовались (оба active с 27.07 23:53). **Открыто:** баг «в очередь уходят
+невыбранные tp8/tp9» — не диагностирован, код не правился.
+
+## Сессия 2026-07-28 — ОСТАНОВКА боевой джобы `0978894a65f4` (porg-dmwfp3dk) по команде Семёна
+
+`POST /direct/api/create_set_cancel` в 06:53:07 UTC → статус `cancelled` в 06:56:10 UTC (183 с),
+created=60, failed=0, cancelled_children=0. В кабинете 60 кампаний (v5 State=OFF 59 + Grid DRAFT 1,
+Status=DRAFT у всех 60) — НЕ удалялись. Зависших `direct_deferred_creates`/`direct_delayed_repairs`
+по логину нет (0/0 в waiting|resumed|claimed|running). Сервисы НЕ рестартовались (uptime с 27.07 23:53).
+
 ## Сессия 2026-07-28 — БОЕВОЙ прогон 7 аккаунтов — 4 из 7 сделаны, 3 отбиты content-gap
 
 **Условия Семёна:** удалять только DRAFT (живые не трогать), tp1/tp2/tp4/tp5/tp7, флаг `n`=true,
