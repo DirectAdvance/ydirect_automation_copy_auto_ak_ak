@@ -7,6 +7,21 @@ from typing import Any
 
 _TP_RE = re.compile(r"^\s*tp(\d+)_", re.IGNORECASE)
 _PAY_RE = re.compile(r"^\s*tp\d+_(cpc|cpa)_", re.IGNORECASE)
+_KS_NAME_RE = re.compile(r"(^|[^а-яё])кс([^а-яё]|$)")
+
+
+def _autotarget_expected_by_name(name: str) -> bool:
+    """tp2/tp4: True — автотаргет ДОЛЖЕН быть включён (профиль EXACT_V2_MARK/WITHOUT_BRAND
+    обязателен, WRONG_AUTOTARGET применим). False — имя кампании явно говорит «КС»/«ключев» и
+    НЕ содержит «автотаргет» → автотаргет выключен НАМЕРЕННО (КС-набор без автотаргетинга) и
+    флагать его как дефект нельзя. Та же логика распознавания по имени, что
+    `create_set_plan._txt_targeting_mode` (без доступа к её `tgt`-фолбэку, здесь только live-имя).
+    ⚠️ НЕ звать для tp5 — там профиль `search_tp2` ставится АТОМАРНО и ВСЕГДА независимо от
+    планового autotarget-флага (DOD.md §1.2), имя роли не играет."""
+    low = str(name or "").lower()
+    has_at = "автотаргет" in low
+    has_kw = bool(_KS_NAME_RE.search(low)) or "ключев" in low
+    return not (has_kw and not has_at)
 
 
 def _repair(name: str, cid: int | None) -> dict[str, Any]:
@@ -106,7 +121,14 @@ def verify_grid_content(name: str, campaign_id: int | None,
         # Severity: всегда error — ремонт in-place (keywords_repair → Grid UpdateUnifiedAdGroups,
         # repair_planner.py:162); job-status gate (bacd444e) учитывает только error-коды.
         # Прежний лаг-исключение «warn в in-job» убран: Grid-лаг устранён Phase 1.5 (2026-07-27).
-        if tp in (2, 4, 5) and isinstance(wrong_at, int) and wrong_at > 0:
+        # tp2/tp4: КС-набор БЕЗ «автотаргет» в имени выключает автотаргет НАМЕРЕННО у ВСЕХ своих
+        # групп — гасим ложный WRONG_AUTOTARGET по имени (_autotarget_expected_by_name), иначе
+        # keywords_repair слал ложный ремонт и стирал живые ключи (инцидент 2026-07-30,
+        # porg-rgwzgo57 713155623, 119 групп/15258 ключей). tp5 НЕ проверяем по имени — там
+        # search_tp2 профиль ставится атомарно и ВСЕГДА, isActive=True даже у планового aoff
+        # (DOD.md §1.2), имя не определяет ожидание.
+        if (tp in (2, 4, 5) and isinstance(wrong_at, int) and wrong_at > 0
+                and (tp == 5 or _autotarget_expected_by_name(nm))):
             _at_sev = "error"
             issues.append({"severity": _at_sev, "code": "WRONG_AUTOTARGET",
                            "name": nm, "id": cid, "groups": wrong_at,

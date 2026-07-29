@@ -4,6 +4,58 @@
 > метод решения → **помогло или нет** (проверено живым прогоном). Перед фиксом любой ошибки —
 > СНАЧАЛА искать её здесь: возможно, решение уже известно или уже пробовали и не помогло.
 
+### KEYWORDS_REPAIR_WIPES_LIVE_KEYWORDS — ложный WRONG_AUTOTARGET на КС-кампаниях запускает keywords_repair, который стирает живые ключи через `keywords=[]` (2026-07-30) 🔴
+- Симптом (нашёл Семён по кабинету): `porg-rgwzgo57`, слепок terehov, прогон `3ea62b7775e6` —
+  кампания `713155623 tp4_cpc_site — Поиск + Динамика - Модели - КС`: **119 групп, 0 ключей, все
+  119 пусты**. При создании было `build.keywords=15258`, `errors: []`. Соседние кампании целы
+  (`tp2 Модели - КС + Автотаргетинг` 16477 ключей, `tp1 Модели - КС` 16550).
+- Цепочка (доказана, не гипотеза): (1) `create/create_set_plan.py:489 _txt_targeting_mode` —
+  имя кампании содержит «КС» и НЕ содержит «Автотаргетинг» → `autotarget=False` НАМЕРЕННО (штатно
+  для tp2/tp4). (2) `clients/grid_read.py:351` инкрементит `wrong_at[cid]` для ЛЮБОЙ группы без
+  `isActive+EXACT_V2_MARK+WITHOUT_BRAND` — гейта «намеренно выключен» там не было. (3)
+  `clients/grid_content_verifier.py:124` (было `tp in (2,4,5)` без исключения) поднимал
+  `WRONG_AUTOTARGET` severity=error на ВСЕХ 119 группах → `repair.append(keywords_repair)`
+  ЛОЖНОПОЛОЖИТЕЛЬНО: КС-кампания не обязана иметь автотаргет. (4) `repair/repair_keywords.py:99`
+  (было) — `need_kw` по `groups_for_edit.keyword_count` без гарда `keywords_truncated` (у
+  верификатора гард уже был) — второй потенциальный источник ложного `need_kw=True` на крупных
+  наборах. (5) `repair/repair_keywords.py:161` (было) —
+  `grid.build_update_item(grp, keywords=[], relevance_match=...)`. Комментарий утверждал
+  «UpdateUnifiedAdGroups — подтверждённый no-op для ключей» (решение 2026-07-14, см. запись
+  `DMP_TP2_AUTOTARGET_UPDATE_DUP_KEYWORDS` ниже в журнале). **ЭТА ПОСЫЛКА ОПРОВЕРГНУТА фактом**:
+  `build_update_item` (`clients/grid_finalize.py:3420-3467`) — full-object перезапись, `keywords:[]`
+  уезжает как реальный пустой массив. Косвенное замкнутое доказательство: `add_keywords` в том же
+  прогоне упал `MAX_KEYWORDS_PER_AD_GROUP_EXCEEDED {maxKeywords:200, newKeywordsExceededCount:150}`
+  (ключи ТОГДА ещё были живы), автотаргет применился (в перезамере `WRONG_AUTOTARGET` исчез →
+  апдейт доехал) — вместе с пустыми ключами. Тронута ровно одна кампания — и ровно она пуста.
+- Решение (2026-07-30, direct_fixer, только `clients/grid_content_verifier.py` и
+  `repair/repair_keywords.py`):
+  * **Дефект Б (источник ложняка).** `grid_content_verifier.py` — новый `_autotarget_expected_by_name(name)`
+    (та же логика, что `_txt_targeting_mode`: `has_at="автотаргет" in low`, `has_kw=КС-regex или
+    "ключев" in low`; `has_kw and not has_at` → намеренно выключен → не флагать). Условие
+    WRONG_AUTOTARGET для tp2/tp4: `... and (tp == 5 or _autotarget_expected_by_name(nm))`. **tp5
+    исключён из гейта по имени** — DOD §1.2: профиль `search_tp2` ставится атомарно и ВСЕГДА
+    (`create_set_tp1_builders.py:341,361`), isActive=True даже у планового `aoff`, имя роли не
+    играет. tp1 РСЯ (`wrong_autotarget_rsya_groups`, правило `_aon_`/`_aoff_` в имени ГРУППЫ) не тронут.
+  * **Дефект А (сама потеря данных, defence-in-depth — работает даже если Дефект Б однажды
+    повторится по другой причине).** `repair_keywords.py`: (1) `groups_for_edit(cid, meta=gfe_meta)`
+    — при `keywords_truncated=True` кампания пропускается ЦЕЛИКОМ (ни ключи, ни автотаргет не
+    трогаются), уходит в новый `truncated_campaigns`, `need_kw` для неё не вычисляется вовсе. (2)
+    `keywords=[]` заменено на `keywords=(grp.get("keywords") or [])` — round-trip РЕАЛЬНЫХ ключей,
+    прочитанных ДО цикла (тот же паттерн, что уже безопасно работает в rename-RMW
+    `grid_finalize.py:1742`). Пересчитанные `need_kw`-ключи по-прежнему льются ОТДЕЛЬНО аддитивным
+    `grid.add_keywords(...)` — дублей нет, т.к. в RMW идёт только pre-repair состояние группы.
+- Статус: 🟡 ждёт живого прогона (создан фикс + функциональный offline-тест на fake Grid,
+  подтвердивший round-trip и truncation-skip; живой replay `713155623`-сценария не делался — задача
+  не просила пересоздавать/чинить кампании на живых аккаунтах). `py_compile` Mac+LXC101 OK,
+  targeted pytest 14 passed, полный прогон LXC101 46 failed/825 passed — идентично эталону,
+  regressий нет. Отчёт: `.claude/sdd/keywords-repair-wipe-fix.md`.
+- НЕ помогло ранее: — (первая фиксация сигнатуры). ⚠️ Смежная опровергнутая посылка:
+  «UpdateUnifiedAdGroups — no-op для ключей» (решение 2026-07-14, `DMP_TP2_AUTOTARGET_UPDATE_DUP_KEYWORDS`
+  ниже) — верна была ТОЛЬКО пока round-trip не звали вовсе (пустой массив вместо round-trip);
+  как только на неё стали полагаться буквально («раз no-op — можно слать `[]`»), она перестала
+  быть безопасной. Не повторять вывод «раз когда-то было no-op — можно не round-trip'ить» без
+  проверки на full-object семантику записи.
+
 ### TP1_OBSHIE_KEYWORDS_LOST — в tp1 «Общие» ключи доезжают только в половину групп (2026-07-29) 🔴
 - Симптом (нашёл Семён по кабинету): в кампании `tp1_cpc_site — РСЯ - Комби - Общие - КС`
   8 групп, ключи есть только в 4. В карточке группы `ct0008 Avtoru` поле «Ключевые фразы» ПУСТОЕ,

@@ -73,15 +73,30 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
     results: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
     unfixable: list[dict[str, Any]] = []        # КС-группы без источника ключей (пак пуст/недоступен) — нечинимый остаток, НЕ провал докрутки
+    truncated_campaigns: list[dict[str, Any]] = []  # keywords_truncated: RMW пропущен целиком, не провал
     write_items: list[dict[str, Any]] = []
     intents: dict[int, dict[str, Any]] = {}     # adgroup_id -> intent row (для отчёта)
     skipped = 0
 
     for cid in campaign_ids:
+        gfe_meta: dict[str, Any] = {}
         try:
-            groups = grid.groups_for_edit(cid)
+            groups = grid.groups_for_edit(cid, meta=gfe_meta)
         except Exception as e:  # noqa: BLE001
             failed.append({"campaign_id": cid, "error": f"чтение групп: {str(e)[:200]}"})
+            continue
+        if gfe_meta.get("keywords_truncated"):
+            # Grid обрезал showConditions по лимиту _GFE_LIMIT=10000 строк на кампанию:
+            # grp["keyword_count"]/grp["keywords"] недостоверны для ЧАСТИ групп (какие именно —
+            # неизвестно), а не только для тех, что выглядят пустыми. Round-trip round-trip'нутого
+            # (усечённого) списка через build_update_item затёр бы непрочитанный остаток фраз, и
+            # доверять keyword_count для need_kw тоже нельзя (тот же баг, что уже закрыт у
+            # верификатора — grid_content_verifier.py:98). Пропускаем ВСЮ кампанию целиком:
+            # ни автотаргет-, ни keyword-докрутка ЭТИМ проходом не трогают её группы.
+            truncated_campaigns.append({"campaign_id": cid, "groups": len(groups),
+                                        "note": "keywords_truncated — RMW пропущен, "
+                                                "keyword_count недостоверен"})
+            skipped += len(groups)
             continue
         for grp in groups:
             gid = int(grp.get("adgroup_id") or 0)
@@ -96,6 +111,10 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
                 skipped += 1
                 continue
             rm = grp.get("relevance_match")
+            # keyword_count здесь достоверен: кампании с keywords_truncated=True (Grid обрезал
+            # showConditions по лимиту) пропущены ЦЕЛИКОМ ещё на входе в цикл (см. gfe_meta выше),
+            # тот же гард, что в grid_content_verifier.py:98 — иначе неполный keyword_count даёт
+            # ложный need_kw=True.
             need_kw = int(grp.get("keyword_count") or 0) < _KEYWORDS_MIN
             need_at = not _autotarget_ok(rm)
             if not need_kw and not need_at:
@@ -152,13 +171,19 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
                          "relevanceMatchCategories": ["EXACT_V2_MARK"],
                          "autotargetingBrandSettings": ["WITHOUT_BRAND"]}
             try:
-                # keywords=[] намеренно: UpdateUnifiedAdGroups — подтверждённый no-op для ключей
-                # (они живут отдельно и заливаются AddKeywords ниже; этот апдейт их НЕ добавляет и
-                # НЕ удаляет). Round-trip существующих ключей группы сюда лишь ловил
-                # MUST_NOT_CONTAIN_DUPLICATED_ELEMENTS на дублях фраз и рубил весь батч. Шлём пустой
-                # массив → валидация коллекции ключей проходит, а relevanceMatch (EXACT_V2_MARK/
-                # WITHOUT_BRAND) применяется. Живые ключи группы не трогаются.
-                item = grid.build_update_item(grp, keywords=[], relevance_match=target_rm)
+                # ⚠️ ОПРОВЕРГНУТО (2026-07-30, живой инцидент porg-rgwzgo57 713155623): раньше сюда
+                # слался keywords=[] в расчёте на «UpdateUnifiedAdGroups — no-op для ключей». Это
+                # full-object перезапись — пустой массив реально СТИРАЕТ живые ключи группы (119
+                # групп/15258 ключей обнулились в одном прогоне). Round-trip'им РЕАЛЬНЫЕ ключи,
+                # прочитанные ДО этого цикла (`grp["keywords"]`, grid_finalize.py:3398), тем же
+                # паттерном, что уже безопасно работает в rename-RMW (grid_finalize.py:1742).
+                # need_kw-довеска НЕ дублируется: заново пересчитанные фразы (final_kw при
+                # need_kw+recomputed) льются ОТДЕЛЬНО через аддитивный Grid AddKeywords ниже —
+                # сюда идёт только то, что уже стояло в группе на момент чтения. Дублей внутри
+                # payload по-прежнему не бывает — build_update_item дедуплит `dict.fromkeys`.
+                # Truncated-кампании сюда не попадают вовсе (see loop guard выше).
+                item = grid.build_update_item(grp, keywords=(grp.get("keywords") or []),
+                                              relevance_match=target_rm)
             except Exception as e:  # noqa: BLE001
                 failed.append({"campaign_id": cid, "adgroup_id": gid,
                                "error": f"сборка тела: {str(e)[:180]}"})
@@ -239,6 +264,8 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
     # либо реально применённые группы (applied), либо вообще нет беспаковых остатков (штатный идемпотент).
     # Если применить не удалось НИЧЕГО, а есть только беспаковые группы (unfixable) → ok=False:
     # честно сообщаем «ничего не добили» (executed=0 у вызывающего верно), а не «всё ок».
+    # truncated_campaigns — намеренный пропуск (fail-safe от стирания непрочитанного остатка
+    # ключей), НЕ провал докрутки: не понижает ok, как и unfixable.
     ok = (not failed) and (bool(applied) or not unfixable)
     if not write_items and not failed and not unfixable:
         return {
@@ -247,6 +274,7 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
             "login": login,
             "note": "нет групп для keyword-repair (всё уже корректно/идемпотентно)",
             "skipped_groups": skipped,
+            "truncated_campaigns": truncated_campaigns[:40],
             "transport": "grid",
             "uses_direct_units": False,
         }, 200
@@ -261,6 +289,7 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
         "skipped_groups": skipped,
         "unfixable_no_pack": len(unfixable),
         "unfixable_groups": unfixable[:40],
+        "truncated_campaigns": truncated_campaigns[:40],
         "results": results[:80],
         "failed_campaigns": failed[:40],
         "transport": "grid",
