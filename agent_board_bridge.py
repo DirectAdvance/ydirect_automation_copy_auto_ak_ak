@@ -14,6 +14,26 @@ def _short(value: Any, limit: int = 1200) -> str:
     return (text or "")[:limit]
 
 
+def _append_description_git_context(description: str, contract: str) -> str:
+    if "Git-контекст:" in (description or ""):
+        return description or ""
+    if contract == "copy":
+        context = """Git-контекст:
+- Использовать только copy-git: `direct/.git`, ветка `ydirect_automation_copy_auto_ak_ak`.
+- Перед правками: `cd /opt/scripts/home/seoadvanced/direct && python3 tools/direct_git_guard.py --branch ydirect_automation_copy_auto_ak_ak preflight --scope copy`.
+- После проверенной правки: commit+push только copy-scope файлов в `origin ydirect_automation_copy_auto_ak_ak`.
+- Не трогать content/accounts git для этой задачи."""
+    elif contract == "content-redactor":
+        context = """Git-контекст:
+- Использовать только content/accounts git: `https://github.com/DirectAdvance/yandex_direct_content_redactor`, branch `main`.
+- Перед правками: `cd /opt/scripts/home/seoadvanced && python3 direct/tools/content_redactor_git.py preflight`.
+- После проверенной правки: `cd /opt/scripts/home/seoadvanced && python3 direct/tools/content_redactor_git.py export --commit-message "agent-board #<task_id>: <short change>"`.
+- Не трогать copy-git для этой задачи."""
+    else:
+        return description or ""
+    return "\n\n".join(part for part in ((description or "").strip(), context) if part)
+
+
 def ensure_content_job_agent_column(jobs_exec: Callable, table: str) -> None:
     jobs_exec(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS agent_board_task_id bigint")
 
@@ -85,7 +105,7 @@ def notify_content_job_error(jobs_exec: Callable, table: str, job_id: str) -> in
         return int(row["agent_board_task_id"]) if row and row.get("agent_board_task_id") else None
 
     title = f"Direct content-editor: исправить упавшую задачу {job_id}"
-    description = f"""Автоматически создано из очереди content-editor.
+    description = _append_description_git_context(f"""Автоматически создано из очереди content-editor.
 
 Исходная задача:
 - table: {table}
@@ -109,7 +129,7 @@ def notify_content_job_error(jobs_exec: Callable, table: str, job_id: str) -> in
 5. Обновить `direct/ERRORS_JOURNAL.md` и `direct/STATE.md`.
 
 Не делать destructive-действий без явной необходимости. Архивные кампании не восстанавливать вручную без отдельного решения Семёна.
-"""
+""", "content-redactor")
     task_id = _create_agent_task(title, description, requested_by=row.get("username") or "direct-content")
     if task_id:
         jobs_exec(
@@ -123,7 +143,7 @@ def _copy_job_task_description(row: dict[str, Any]) -> str:
     body = row.get("body") or {}
     result = row.get("result") or {}
     campaign_ids = body.get("campaign_ids") or []
-    return f"""Автоматически создано из очереди копирования кампаний.
+    return _append_description_git_context(f"""Автоматически создано из очереди копирования кампаний.
 
 Исходная copy job:
 - table: public.direct_automation_jobs
@@ -148,7 +168,7 @@ def _copy_job_task_description(row: dict[str, Any]) -> str:
 6. Если повтор опять упадёт, будет создана новая Agent Board задача по новой failed copy job.
 
 Не смешивать с сервисом создания кампаний: это очередь копирования `direct-copy.service`.
-"""
+""", "copy")
 
 
 def notify_copy_job_error(victory_conn_rw: Callable, job_id: str) -> int | None:
@@ -324,7 +344,7 @@ def notify_price_job_error(victory_conn_rw: Callable, job_id: str) -> int | None
         return int(row["agent_board_task_id"]) if row and row.get("agent_board_task_id") else None
 
     title = f"Direct pricecheck: исправить упавшую задачу {job_id}"
-    description = f"""Автоматически создано из очереди сверки/заливки цен.
+    description = _append_description_git_context(f"""Автоматически создано из очереди сверки/заливки цен.
 
 Исходная задача:
 - table: public.direct_price_check_jobs
@@ -346,7 +366,7 @@ def notify_price_job_error(victory_conn_rw: Callable, job_id: str) -> int | None
 5. Обновить `direct/ERRORS_JOURNAL.md` и `direct/STATE.md`.
 
 Заливку цен из очереди вручную запускать только если действие выполняется от admin-контекста или через безопасный серверный recovery этой задачи.
-"""
+""", "content-redactor")
     task_id = _create_agent_task(title, description, requested_by=row.get("created_by") or "direct-pricecheck")
     if task_id:
         conn = victory_conn_rw()
