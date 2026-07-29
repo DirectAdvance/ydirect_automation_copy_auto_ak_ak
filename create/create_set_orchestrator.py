@@ -9,7 +9,7 @@ import time
 
 from flask import jsonify, request
 
-from .. import campaign as cmc
+from ..core import campaign as cmc
 from ..clients import grid_finalize as gf
 from . import stage_timing as _timing
 
@@ -219,7 +219,7 @@ def create_set_response(deps: dict):
         _slepok_for_callouts = _selected_slepok_key(agent or "")
         if _slepok_for_callouts:
             try:
-                from ..direct_repository import victory_conn as _victory_conn_callouts
+                from ..core.direct_repository import victory_conn as _victory_conn_callouts
                 _cco_conn = _victory_conn_callouts()
                 try:
                     _cco_cur = _cco_conn.cursor()
@@ -657,7 +657,7 @@ def create_set_response(deps: dict):
         _tp1_image_future = None
         try:
             from .. import ai_agents as _A_prepare
-            from .. import campaign as _cmc_prepare
+            from ..core import campaign as _cmc_prepare
             from . import create_set_prefetch as _prepare
             from .. import kontent_pack as _kp_prepare
             _prepare.configure({
@@ -1662,7 +1662,7 @@ def create_set_response(deps: dict):
         _batch_report: dict | None = None
         if _BATCH_MODE in ("dual", "only"):
             try:
-                from ..campaign_result import created_campaigns as _extract_created
+                from ..core.campaign_result import created_campaigns as _extract_created
                 from .create_set_apply_batches import apply_campaign_aspects
                 _batch_created = _extract_created(results)
                 if _batch_created:
@@ -1737,7 +1737,7 @@ def create_set_response(deps: dict):
         # у shared_set-слепков, сохраняются). Повторный прогон дублей не создаёт.
         try:
             if callable(_ensure_named_minus_sets):
-                from ..campaign_result import created_campaigns as _extract_created_ms
+                from ..core.campaign_result import created_campaigns as _extract_created_ms
                 from .create_set_apply_batches import (
                     apply_minus_sets_batch as _apply_ms_batch,
                     select_campaign_ids_by_tp as _select_ms_ids,

@@ -14,7 +14,7 @@ Manual/ct0300 физически содержит 4 креатива (Trade-in /
 Здесь pHash подменяется фейком (Pillow есть в проде `/root/venv`, но не в тестовой venv) —
 проверяется ЛОГИКА пула, а не сам DCT.
 """
-import direct.automation_runtime as ar
+import direct.core.automation_runtime as ar
 import direct.clients.uac_client as uac
 
 

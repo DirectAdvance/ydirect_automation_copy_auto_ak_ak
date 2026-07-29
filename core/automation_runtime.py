@@ -32,7 +32,8 @@ from pathlib import Path
 import uuid
 from flask import render_template, request, jsonify, current_app, session, send_file
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# core/ на уровень глубже корня direct/ — путь к seoadvanced/ теперь parents[2].
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
 def _kp_base_site_type(site_type: str) -> str:
@@ -43,7 +44,7 @@ def _kp_base_site_type(site_type: str) -> str:
     kontent_pack тяжелее и подтягивается лениво, как в остальном модуле.
     """
     try:
-        from . import kontent_pack as _kp  # noqa: PLC0415
+        from .. import kontent_pack as _kp  # noqa: PLC0415
     except ImportError:  # noqa: BLE001 — модуль умеет работать и вне пакета (скрипты)
         import kontent_pack as _kp  # type: ignore[no-redef]  # noqa: PLC0415
     return _kp.base_site_type(site_type)
@@ -57,11 +58,11 @@ def _kp_base_site_type(site_type: str) -> str:
 # нет danger-гранта → разрушительные операции доступны только админу.
 
 from . import campaign as cmc  # vendored движок
-from .clients import grid_finalize as gf  # Grid-докрутка ЕПК (tp1-tp5): места показа/ассеты/инварианты
-from .clients import grid_create as gc  # Куки-движок создания/удаления (Grid web-api, без баллов v5)
-from . import kontent_pack as kp  # чтение контент-пака с M3 (/opt/neuro_kontent)
-from . import llm_providers as _llmp   # M3/OpenRouter (вынесено из blueprint; heartbeat инъектим ниже)
-from .llm_providers import (           # ре-экспорт: внутренние вызовы + deps-словари модулей
+from ..clients import grid_finalize as gf  # Grid-докрутка ЕПК (tp1-tp5): места показа/ассеты/инварианты
+from ..clients import grid_create as gc  # Куки-движок создания/удаления (Grid web-api, без баллов v5)
+from .. import kontent_pack as kp  # чтение контент-пака с M3 (/opt/neuro_kontent)
+from .. import llm_providers as _llmp   # M3/OpenRouter (вынесено из blueprint; heartbeat инъектим ниже)
+from ..llm_providers import (           # ре-экспорт: внутренние вызовы + deps-словари модулей
     _M3_LLM_URL, _M3_LLM_TIMEOUT, _M3_LLM_URLS_14B, _M3_LLM_URL_72B,
     _M3_LLM_TIMEOUT_14B, _M3_LLM_REPAIR_TIMEOUT, _M3_CONTENT_IDLE_TIMEOUT, _OPENROUTER_LLM_MODEL,
     _m3_llm_probe, _m3_complete, _m3_complete_url, _m3_complete_parallel,
@@ -69,20 +70,20 @@ from .llm_providers import (           # ре-экспорт: внутренни
     _or_complete_url, _llm_pair_for,
     _strip_error_leak, _has_error_leak,
 )
-from . import text_norm as _tn        # анти-AI санитайзеры (вынесено; _bad_credit_payment_range инъектим ниже)
-from .text_norm import (              # ре-экспорт: внутренние вызовы + deps-словари (globals-lookup)
+from .. import text_norm as _tn        # анти-AI санитайзеры (вынесено; _bad_credit_payment_range инъектим ниже)
+from ..text_norm import (              # ре-экспорт: внутренние вызовы + deps-словари (globals-lookup)
     _replace_emdash, _replace_sep_hyphen, _is_bad_start, _trim_to_word,
     _strip_dangling_num_tail, _strip_dangling_word_tail, _sanitize_content,
     _normalize_numeric_suffixes_bp, _strip_credit_rate, _cap_first, _sentence_case,
     _split_utp, _has_stamp, _alternate_rhythm, _dedup_by_first_word, _has_number,
     _bad_ad_title, _bad_ad_text, _bad_ad_sitelink, _RSYA_TEXT_MAX,
 )
-from . import city_morph as _cm        # склонения/замена городов (вынесено; _title2_blocklist инъектим ниже)
-from .city_morph import (              # ре-экспорт: внутренние вызовы + deps модулей
+from .. import city_morph as _cm        # склонения/замена городов (вынесено; _title2_blocklist инъектим ниже)
+from ..city_morph import (              # ре-экспорт: внутренние вызовы + deps модулей
     _city_locative, _content_city, _RU_CITIES, _replace_foreign_city, _drop_foreign_city_keywords,
 )
-from . import promo_gen as _pg         # генерация/валидация промо (вынесено; _victory_conn инъектим ниже)
-from .promo_gen import (               # ре-экспорт: внутренние вызовы + deps (routes_ai, create_content)
+from .. import promo_gen as _pg         # генерация/валидация промо (вынесено; _victory_conn инъектим ниже)
+from ..promo_gen import (               # ре-экспорт: внутренние вызовы + deps (routes_ai, create_content)
     _promo_extract_json, _extract_title_candidates, _extract_text_candidates,
     _promo_validate, _promo_amount_steps, _promo_preview, _promo_ctx,
 )
@@ -91,60 +92,60 @@ from .campaign_naming import (         # ре-экспорт: deps модуле�
     _ag_part1_map, _ct_for_name, _title2_blocklist, _next_title2,
     _coder_name_real_brand, _brand_ct_from_coder, _brand_from_coder,
 )
-from . import model_urls               # URL-хелперы (чистый, без DI)
-from .model_urls import (
+from .. import model_urls               # URL-хелперы (чистый, без DI)
+from ..model_urls import (
     _strip_url_query, _brand_level_url, _is_site_domain_name, _model_page_href,
 )
 # _title2_blocklist теперь из campaign_naming — инъектим его в city_morph (перенесено из середины).
 _cm.configure({"_title2_blocklist": _title2_blocklist})
-from . import text_gen as _tg          # генерация текстов/заголовков (вынесено; 7 DI инъектим ниже)
-from .text_gen import (                # ре-экспорт: внутр. вызовы + deps-словари (globals-lookup) + _bad_credit_payment_range→text_norm
+from .. import text_gen as _tg          # генерация текстов/заголовков (вынесено; 7 DI инъектим ниже)
+from ..text_gen import (                # ре-экспорт: внутр. вызовы + deps-словари (globals-lookup) + _bad_credit_payment_range→text_norm
     _title_from_template, _PCT_DISC_RE, _coherent_discounts, _variant_norm_key,
     _dedup_prefix_absorb, _fill_variants, _rotated_content_window, _filter_group_keywords,
     _own_brand_tokens, _display_brand, _rsya_texts, _diverse_text_offers,
     _fallback_master_titles, _bad_credit_payment_range, _coherent_payments, _discount_pcts,
     _dominant_discount_pct, _fill_title, _brand_title_set, _rsya_titles,
 )
-from . import ai_content as _aic       # AI-контент объявлений + слепок-контент (вынесено; 4 DI инъектим ниже)
-from .ai_content import (              # ре-экспорт: deps-словари (globals-lookup) + _bp._seed_slepok_content (seed entrypoint)
+from .. import ai_content as _aic       # AI-контент объявлений + слепок-контент (вынесено; 4 DI инъектим ниже)
+from ..ai_content import (              # ре-экспорт: deps-словари (globals-lookup) + _bp._seed_slepok_content (seed entrypoint)
     _CONTENT_CACHE, _CONTENT_CACHE_LOCK, _content_cache_key, _content_complete,
     _ai_campaign_content_for_item, _ai_group_content, _slepok_content_ensure,
     _slepok_content_get, _slepok_content_save, _gen_campaign_content, _seed_slepok_content,
     _account_content_get, _account_content_put,   # #16: account-level content reuse (в пределах прохода)
 )
-from .copy_service import copy_engine as _ce       # копирование кампаний 1:1 (вынесено; 28 DI инъектим ниже)
-from .copy_service import copy_verify as _cv       # сверка source↔target после копирования (report-only)
-from .copy_service.copy_engine import (             # ре-экспорт: _create_worker_loop/_ensure_copy_worker/_wire_copy_routes
+from ..copy_service import copy_engine as _ce       # копирование кампаний 1:1 (вынесено; 28 DI инъектим ниже)
+from ..copy_service import copy_verify as _cv       # сверка source↔target после копирования (report-only)
+from ..copy_service.copy_engine import (             # ре-экспорт: _create_worker_loop/_ensure_copy_worker/_wire_copy_routes
     _copy_run_job, _copy_job_upsert, _copy_feeds_preview, _copy_jobs_recover,
     _COPY_JOBS, _COPY_JOBS_LOCK, _COPY_DEFAULT_FEED_PATH,
 )
-from .repair import repair_gate as rgate  # read-only repair-gate helpers
-from .repair import repair_executor as rex  # scoped repair executors (cookie/Grid-first)
-from .repair import repair_auto as rauto  # repair orchestration without Flask/DB wiring
-from . import verification_service as vsvc  # live verification orchestration without Flask
-from .create import blueprint_targeting as _btg  # ct→сегмент классификатор + профиль таргетинга (DI ниже)
-from .slepki_code import slepki_editor as _sed  # редактор структуры/ключей слепков (edit-джобы очереди, DI ниже)
-from .create.blueprint_targeting import (         # ре-экспорт: внутр. вызовы + внешний from direct.create.blueprint import _ct_segment
+from ..repair import repair_gate as rgate  # read-only repair-gate helpers
+from ..repair import repair_executor as rex  # scoped repair executors (cookie/Grid-first)
+from ..repair import repair_auto as rauto  # repair orchestration without Flask/DB wiring
+from .. import verification_service as vsvc  # live verification orchestration without Flask
+from ..create import blueprint_targeting as _btg  # ct→сегмент классификатор + профиль таргетинга (DI ниже)
+from ..slepki_code import slepki_editor as _sed  # редактор структуры/ключей слепков (edit-джобы очереди, DI ниже)
+from ..create.blueprint_targeting import (         # ре-экспорт: внутр. вызовы + внешний from direct.create.blueprint import _ct_segment
     _gc_ct, _ct_is_model_map, _ct_segment_map, _ct_segment, _seg_canon, _model_cts,
     _segment_donor, _targeting_profile, _slepok_tp_modes, _slepok_profile_excludes_tp,
     _slepki_structure_for_ui, _donor_tp4_models_map, _pack_for_item,
     _slepok_is_auto, _non_auto_slepki, _non_auto_site_types, _slepki_pack_facts,
     _slepki_pack_signature,
 )
-from .create import blueprint_metrika as _bmt    # Метрика (счётчики/цели) + гео-справочник Директа (DI ниже)
-from .create.blueprint_metrika import (           # ре-экспорт: внутр. вызовы (routes/DI-словари)
+from ..create import blueprint_metrika as _bmt    # Метрика (счётчики/цели) + гео-справочник Директа (DI ниже)
+from ..create.blueprint_metrika import (           # ре-экспорт: внутр. вызовы (routes/DI-словари)
     _parse_counter_ids, _metrika_goals_for, _counter_foreign_owner,
     _geo_load, _geo_id, _geo_name_by_id, _geo_type_by_id, _metrika_token, _goal_vse_formy,
 )
-from .create import blueprint_content_rules as _bcr  # правила вкладки «Контент» + фильтрация ассетов (DI ниже)
-from .create.blueprint_content_rules import (     # ре-экспорт: внутр. вызовы + route-registration (_CONTENT_RULES_CACHE)
+from ..create import blueprint_content_rules as _bcr  # правила вкладки «Контент» + фильтрация ассетов (DI ниже)
+from ..create.blueprint_content_rules import (     # ре-экспорт: внутр. вызовы + route-registration (_CONTENT_RULES_CACHE)
     _content_rules_ensure, _content_rules_map, _asset_key_from_local, _manual_rule_lookup_key,
     _content_rule_key, _ct_allowed_for, _content_allowed_list, _content_slepok_list,
     _slepok_allowed_for, _content_only_this_ct, _filter_content_assets, _prioritized_content_assets,
     _explicit_content_assets_for, _ahash_distance, _dedupe_content_assets_for_ui, _CONTENT_RULES_CACHE,
 )
 from .direct_repository import victory_conn as _victory_conn, victory_conn_rw as _victory_conn_rw
-from .clients.yandex_gateway import (
+from ..clients.yandex_gateway import (
     LIVE_V4_URL as _LIVE_V4, V5_URL as _V5, V501_URL as _V501,
     GRID_URL as _GRID_URL, UNITS_PER_CAMPAIGN as _UNITS_PER_CAMPAIGN,
     direct_tokens as _direct_tokens, v5_get as _v5_get, v5_units as _v5_units,
@@ -162,17 +163,17 @@ from .clients.yandex_gateway import (
 # yandex_gateway.*), плюс self-guard (в самом брокере HTTP не делается). Перецеливаем _-алиасы,
 # которые ниже раздаются по DI во все под-модули → потребители переключаются прозрачно.
 # Инкремент 1: ТОЛЬКО units_alive (2 потребителя, не горячий путь) — остальные алиасы пока локальны.
-from .clients import gateway_client as _gwc  # noqa: E402
+from ..clients import gateway_client as _gwc  # noqa: E402
 _units_alive_for_login = _gwc.gw_units_alive
-from . import pack_resolver as _pack_resolver
-from .pack_resolver import (
+from .. import pack_resolver as _pack_resolver
+from ..pack_resolver import (
     _CALLOUT_MAX_EACH, _CALLOUT_MAX_TOTAL_DESKTOP, _CALLOUT_MAX_TOTAL_MOBILE,
     _SLEPOK_KEY, _SLEPOK_CANONICAL, _slepok_key_from_text, _selected_slepok_key,
     _m3_content_status, _m3_gate_wait, _cookies_status_response, _m3_status_response,
     _pack_preview_response, _slepok_segment_counts_response,
 )
-from . import account_service as _account_service
-from .account_service import (
+from .. import account_service as _account_service
+from ..account_service import (
     _ACCOUNT_COLS, DEFAULT_STATUS, _EXCLUDE_DIRECTOLOGS, _TOKEN_ONLY_TYPES, _do_balance, _preflight_creds,
     _account_assets_response, _do_assets, _account_audiences_response,
     _account_prefill_response, _campaigns_response, _stop_all_response, _check_blocks_response,
@@ -221,7 +222,8 @@ from .queue_server import (
     _worker_poll_loop, _ensure_worker_poller, _worker_bootstrap,
 )
 
-_HERE = Path(__file__).resolve().parent
+# Данные (targeting_profile.json, brand_models_catalog.json и пр.) остались в корне direct/.
+_HERE = Path(__file__).resolve().parent.parent
 
 _JSON_CACHE: dict[str, tuple[int, int, object]] = {}
 _JSON_CACHE_LOCK = threading.RLock()
@@ -241,7 +243,7 @@ def _json(name: str):
     инъектированный _json (== этот), поэтому call-sites НЕ меняются.
     """
     if name == "slepki_structure.json":
-        from .slepki_code import slepki_store as _sstore  # noqa: PLC0415
+        from ..slepki_code import slepki_store as _sstore  # noqa: PLC0415
         return _sstore.assemble()
     path = _HERE / name
     stat = path.stat()
@@ -682,7 +684,7 @@ def _donor_tp4_models_map_for_light_ui() -> dict:
 
 def _ui_structure_payload(*, selected_slepok: str = "", light: bool = False) -> dict:
     """Heavy structure data loaded only by UI panels that actually need it."""
-    from .slepki_code import slepki_store as _sstore  # noqa: PLC0415
+    from ..slepki_code import slepki_store as _sstore  # noqa: PLC0415
     struct = (_sstore.assemble_light_for_selected(selected_slepok)
               if light else _json("slepki_structure.json"))
     # Структура слепков живёт в per-slepok файлах (direct/slepki/*.json) — монолита
@@ -1485,7 +1487,7 @@ def _create_set_plan_deps() -> dict:
 
 
 def _create_set_plan_module():
-    from .create import create_set_plan as csp
+    from ..create import create_set_plan as csp
     csp.configure(_create_set_plan_deps())
     return csp
 
@@ -1614,8 +1616,8 @@ def _prefetch_start(login, body, *, is_cancelled=lambda: False):
     if os.getenv("DIRECT_CREATE_QUEUE_PREFETCH", "0").strip().lower() not in ("1", "true", "yes", "on"):
         return
     try:
-        from . import ai_agents as _A
-        from .create import create_set_prefetch as _pf
+        from .. import ai_agents as _A
+        from ..create import create_set_prefetch as _pf
         from . import campaign as _cmc
         _pf.configure({
             "account_ctx": _account_ctx,
@@ -1654,7 +1656,7 @@ def _create_set_context_deps() -> dict:
 
 
 def _create_set_context_module():
-    from .create import create_set_context as cctx
+    from ..create import create_set_context as cctx
     cctx.configure(_create_set_context_deps())
     return cctx
 
@@ -1757,7 +1759,7 @@ def _create_set_feeds_deps() -> dict:
 
 
 def _create_set_feeds_module():
-    from .create import create_set_feeds as csf
+    from ..create import create_set_feeds as csf
     csf.configure(_create_set_feeds_deps())
     return csf
 
@@ -1865,7 +1867,7 @@ _cn.configure({"_victory_conn": _victory_conn, "_ct_segment": _ct_segment,
 
 # uac_verifier: резолвер ct-сегмента, чтобы модельный фильтр товарки требовать только для «Модели»
 # (иначе ложный UAC_PRODUCT_MODEL_FILTER_MISSING на ct-«Общее» вроде ct0001/ct0006).
-from . import uac_verifier as _uv  # noqa: E402
+from .. import uac_verifier as _uv  # noqa: E402
 _uv.configure({"_ct_segment": _ct_segment})
 
 
@@ -1909,7 +1911,7 @@ def _tp7_listings_minus_filters(*args, **kwargs):
 # в create_set_minus, а create_set_feed_builders берёт карту через deps ИМЕННО отсюда. Реэкспорт
 # вместо копии: `create_set_minus` ничего не импортирует из automation_runtime (только DI через
 # configure), поэтому цикла импорта нет.
-from .create.create_set_minus import _SLEPOK_MINUS_MODE  # noqa: E402  (единая карта режимов минусов)
+from ..create.create_set_minus import _SLEPOK_MINUS_MODE  # noqa: E402  (единая карта режимов минусов)
 
 
 def _create_set_minus_deps() -> dict:
@@ -1924,7 +1926,7 @@ def _create_set_minus_deps() -> dict:
 
 
 def _create_set_minus_module():
-    from .create import create_set_minus as csm
+    from ..create import create_set_minus as csm
     csm.configure(_create_set_minus_deps())
     return csm
 
@@ -2174,7 +2176,7 @@ def _create_set_assets_deps() -> dict:
 
 
 def _create_set_assets_module():
-    from .create import create_set_assets as csa
+    from ..create import create_set_assets as csa
     csa.configure(_create_set_assets_deps())
     return csa
 
@@ -2305,7 +2307,7 @@ def _create_set_text_builder_deps() -> dict:
 
 
 def _create_set_text_builder_module():
-    from .create import create_set_text_builders as cstb
+    from ..create import create_set_text_builders as cstb
     cstb.configure(_create_set_text_builder_deps())
     return cstb
 
@@ -2456,7 +2458,7 @@ def _create_set_tp1_builder_deps() -> dict:
 
 
 def _create_set_tp1_builder_module():
-    from .create import create_set_tp1_builders as cstp1
+    from ..create import create_set_tp1_builders as cstp1
     cstp1.configure(_create_set_tp1_builder_deps())
     return cstp1
 
@@ -2482,7 +2484,7 @@ def _ai_sitelinks(login: str, agent_key: str, site_type: str) -> list[dict]:
     """Быстрые ссылки через ИИ M3 — ФОЛБЭК для tp1, когда у слепка их нет (директива пользователя).
     → [{title,description}] (8). При недоступности M3 — _GENERIC_SITELINK_FILLERS (никогда не пусто)."""
     try:
-        from . import ai_agents as A
+        from .. import ai_agents as A
         agent = A.get_agent(agent_key)
         ctx = _promo_ctx(login) or {"site_type": site_type, "domain": "", "salon": "", "city": ""}
         if agent:
@@ -2530,7 +2532,7 @@ def _slepok_sitelinks_for(slepok: str, site_type: str) -> list[dict]:
 def _norm_sitelinks_for_v501(sitelinks: list, href: str = "") -> list[dict]:
     """Нормализовать быстрые ссылки из M3/item/БД в формат sitelinks.add.
     Href у всех ссылок ведёт на главную аккаунта: /sl1.. давали 404."""
-    from . import ai_agents as A
+    from .. import ai_agents as A
     _title_min = A.SITELINK_TITLE_MIN_ACCEPT            # порог приёмки; цель генерации = SITELINK_TITLE_TARGET_MIN
     base = (href or "").rstrip("/")
     out, seen, seen_topics = [], set(), set()
@@ -3037,7 +3039,7 @@ def _image_ct_for_content(ct: str) -> str:
 def _image_identity_key(path: str) -> str:
     """Идентификатор КАРТИНКИ (не файла): «p:<pHash>» → «m:<md5>» → «x:<путь>»."""
     try:
-        from .clients.uac_client import _image_phash as _ph   # локальный импорт: без цикла и без старт-цены
+        from ..clients.uac_client import _image_phash as _ph   # локальный импорт: без цикла и без старт-цены
         _v = _ph(path)                                # кэш по пути внутри uac_client
     except Exception:  # noqa: BLE001 — нет Pillow/numpy → визуальный уровень пропускаем
         _v = None
@@ -3370,7 +3372,7 @@ def _create_set_finalize_deps() -> dict:
 
 
 def _create_set_finalize_module():
-    from .create import create_set_finalize as csfin
+    from ..create import create_set_finalize as csfin
     csfin.configure(_create_set_finalize_deps())
     return csfin
 
@@ -3381,7 +3383,7 @@ _FINALIZE_QUEUE_CONFIGURED = {"done": False}
 def _finalize_queue_module():
     """Модуль async-финализации (Задача F). Конфигурируем один раз: REAL finalize-функции
     (без capture-обёртки — иначе replay в воркере снова захватился бы) + rw-conn."""
-    from .create import create_set_finalize_queue as csfq
+    from ..create import create_set_finalize_queue as csfq
     if not _FINALIZE_QUEUE_CONFIGURED["done"]:
         csfin = _create_set_finalize_module()
         csfq.configure({
@@ -3531,7 +3533,7 @@ def _create_set_feed_builder_deps() -> dict:
 
 
 def _create_set_feed_builder_module():
-    from .create import create_set_feed_builders as csfb
+    from ..create import create_set_feed_builders as csfb
     csfb.configure(_create_set_feed_builder_deps())
     return csfb
 
@@ -3577,7 +3579,7 @@ def _create_set_corrections_deps() -> dict:
 
 
 def _create_set_corrections_module():
-    from .create import create_set_corrections as cscorr
+    from ..create import create_set_corrections as cscorr
     cscorr.configure(_create_set_corrections_deps())
     return cscorr
 
@@ -3614,20 +3616,20 @@ def _apply_corrections(*args, **kwargs):
 # вызовы в наборе всё равно упадут — нет смысла долбить API, нужно остановиться и сказать «повтори завтра».
 def _is_units_exhausted(msg) -> bool:
     """True, если текст ошибки = исчерпание суточного лимита баллов Директа (error 152)."""
-    from .create.create_set_units import is_units_exhausted
+    from ..create.create_set_units import is_units_exhausted
     return is_units_exhausted(msg)
 
 
 def _units_in_result(r) -> bool:
     """152 в результате пункта: и в top-level error, и в вложенных campaigns (tp1 кладёт сводку,
     tp3/tp5 — плоско; проверяем оба, чтобы не пропустить лимит ни в одном движке)."""
-    from .create.create_set_units import units_in_result
+    from ..create.create_set_units import units_in_result
     return units_in_result(r)
 
 
 def _auth_error_in_result(r) -> bool:
     """53 (auth error) в результате пункта — переключаем на cookie-путь как при 152."""
-    from .create.create_set_units import auth_error_in_result
+    from ..create.create_set_units import auth_error_in_result
     return auth_error_in_result(r)
 
 
@@ -3660,7 +3662,7 @@ def _run_master_product_item(*, it, name, href, region_ids, counter_id, goal_id,
                              tpl_titles, tpl_texts, tpl_sitelinks, rs, login,
                              _st_token, _w_agency, _stream_agent, _job, _tp7_mf):
     """tp6/tp7 item handler adapter; implementation lives in create_set_master_product."""
-    from .create.create_set_master_product import run_master_product_item
+    from ..create.create_set_master_product import run_master_product_item
     return run_master_product_item(
         _master_product_deps(),
         it=it, name=name, href=href, region_ids=region_ids, counter_id=counter_id, goal_id=goal_id,
@@ -3706,7 +3708,7 @@ def _create_set_orchestrator_deps() -> dict:
 
 def _create_set_response():
     """Create-set endpoint adapter; orchestration lives in create_set_orchestrator."""
-    from .create.create_set_orchestrator import create_set_response
+    from ..create.create_set_orchestrator import create_set_response
     return create_set_response(_create_set_orchestrator_deps())
 
 
@@ -3762,7 +3764,7 @@ def _create_set_repairing_deps() -> dict:
 
 
 def _create_set_repairing_module():
-    from .create import create_set_repairing as csr
+    from ..create import create_set_repairing as csr
     csr.configure(_create_set_repairing_deps())
     return csr
 
@@ -3870,7 +3872,7 @@ def _spec_audit_deps() -> dict:
 
 def _configure_spec_audit():
     """Configure and return the campaign_spec_audit module (deps injection)."""
-    from . import campaign_spec_audit as csa
+    from .. import campaign_spec_audit as csa
     csa.configure(_spec_audit_deps())
     return csa
 
@@ -4284,7 +4286,7 @@ def _promo_from_slepok(agent: dict, ctx: dict, force_type: str | None = None,
     иначе детерминированно из пресета agent['promo'] + примеров стиля. → (promo, warnings).
     Описание проходит тот же _promo_validate (лимиты + гард типа сайта)."""
     import random
-    from . import ai_agents as A
+    from .. import ai_agents as A
     p = agent["promo"]
     site_type = (ctx.get("site_type") or "").strip()
     avoid_l = {str(a).strip().lower() for a in (avoid or [])}
@@ -4328,7 +4330,7 @@ def _seed_one_slepok_promo(slepok_key: str, site_type: str, m3_timeout: float = 
     This is the lightweight version used inside campaign creation: it does not seed
     campaign text banks and does not loop over all agents/site types.
     """
-    from . import ai_agents as A
+    from .. import ai_agents as A
     key = _slepok_key_from_text(slepok_key)
     st = (site_type or "").strip()
     agent = A.get_agent(key)
@@ -4386,8 +4388,8 @@ def _seed_one_slepok_promo(slepok_key: str, site_type: str, m3_timeout: float = 
 def _create_account_promo_from_slepok(client, login: str, token: str | None, ctx: dict,
                                       slepok_key: str, content_lines: list[str]) -> tuple[int | None, str]:
     """Create one promo in client's library, without attaching it yet."""
-    from . import ai_agents as A
-    from .promo import PromoClient
+    from .. import ai_agents as A
+    from ..promo import PromoClient
 
     key = _selected_slepok_key(slepok_key)
     agent_obj = A.get_agent(key)
@@ -4452,8 +4454,8 @@ def _create_account_promo_from_slepok(client, login: str, token: str | None, ctx
 
 
 
-from . import ai_agents as _ai_agents_routes  # noqa: E402
-from .promo import PromoClient as _PromoClientRoutes  # noqa: E402
+from .. import ai_agents as _ai_agents_routes  # noqa: E402
+from ..promo import PromoClient as _PromoClientRoutes  # noqa: E402
 
 
 

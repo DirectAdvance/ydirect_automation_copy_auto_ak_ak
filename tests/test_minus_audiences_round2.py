@@ -366,7 +366,7 @@ def test_orchestrator_passes_region_to_named_sets():
 # ── Minor 8: одна карта режимов минусов ─────────────────────────────────────────────────────
 
 def test_minus_mode_map_has_single_source():
-    from direct import automation_runtime as ar
+    from direct.core import automation_runtime as ar
 
     assert ar._SLEPOK_MINUS_MODE is csm._SLEPOK_MINUS_MODE
     # именно из-за расхождения kuderko был только в одной копии

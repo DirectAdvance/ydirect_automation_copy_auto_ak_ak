@@ -14,7 +14,7 @@
 import importlib.util
 import pathlib
 
-from direct import automation_runtime
+from direct.core import automation_runtime
 from direct.create import create_set_tp1_builders
 
 # Переиспользуем боевой стенд deps для `_build_tp1_adgroups` из соседнего модуля тестов,

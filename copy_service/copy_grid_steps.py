@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .. import campaign as cmc
+from ..core import campaign as cmc
 from ..clients import grid_finalize as gf
 
 from .copy_geo import _copy_target_href

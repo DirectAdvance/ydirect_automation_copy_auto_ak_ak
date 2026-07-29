@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from flask import Flask
 
-from direct import automation_runtime
+from direct.core import automation_runtime
 from direct.slepki_code import slepki_store
 from direct.create import create_set_plan
 

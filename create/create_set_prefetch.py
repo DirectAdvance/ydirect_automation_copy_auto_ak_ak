@@ -96,7 +96,7 @@ def _save_job_cache(job_id: str, kind: str, key_parts, payload) -> bool:
     if not job_id:
         return False
     try:
-        from ..direct_repository import victory_conn_rw  # noqa: PLC0415
+        from ..core.direct_repository import victory_conn_rw  # noqa: PLC0415
         conn = victory_conn_rw()
     except Exception:  # noqa: BLE001
         return False
@@ -130,7 +130,7 @@ def cleanup_job_cache(job_id: str) -> int:
     if not job_id:
         return 0
     try:
-        from ..direct_repository import victory_conn_rw  # noqa: PLC0415
+        from ..core.direct_repository import victory_conn_rw  # noqa: PLC0415
         conn = victory_conn_rw()
     except Exception:  # noqa: BLE001
         return 0
@@ -481,7 +481,7 @@ def _prepare_uac_assets(login: str, body: dict, site_type: str, ctx: dict,
     if not cookie:
         return {"items": len(uac_items), "uploaded": 0, "skipped": "cookie_missing"}
     try:
-        from .. import campaign as cmc  # noqa: PLC0415
+        from ..core import campaign as cmc  # noqa: PLC0415
         cli = cmc.UacClient(cookie, login)
     except Exception as exc:  # noqa: BLE001
         return {"items": len(uac_items), "uploaded": 0, "error": str(exc)[:200]}

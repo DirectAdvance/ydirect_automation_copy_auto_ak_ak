@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from direct import queue_server as qs
+from direct.core import queue_server as qs
 from direct.create import stage_timing as st
 
 

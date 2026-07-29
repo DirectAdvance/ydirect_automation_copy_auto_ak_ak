@@ -14,7 +14,7 @@ from flask import Blueprint
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from auth import _service_required_any  # noqa: E402
-from .. import automation_runtime as _runtime  # noqa: E402
+from ..core import automation_runtime as _runtime  # noqa: E402
 
 globals().update({
     name: getattr(_runtime, name)

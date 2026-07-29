@@ -7,7 +7,7 @@ import threading
 import time
 from flask import jsonify, request
 
-from . import campaign as cmc
+from .core import campaign as cmc
 from . import kontent_pack as kp
 
 

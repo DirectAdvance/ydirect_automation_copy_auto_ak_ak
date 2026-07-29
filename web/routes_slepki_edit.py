@@ -187,7 +187,7 @@ def _ex_tp67_actual_name_and_tgt(slepok: str, site_type: str, tp_code: str, it: 
     raw = raw or str(it.get("t") or "").strip()
     try:
         try:
-            from .. import automation_runtime as ar
+            from ..core import automation_runtime as ar
             cctx = ar._create_set_context_module()
         except Exception:  # noqa: BLE001
             from ..create import create_set_context as cctx
@@ -413,7 +413,7 @@ def register_slepki_edit_routes(
         )
         if tp in ("tp6", "tp7"):
             try:
-                from .. import automation_runtime as ar
+                from ..core import automation_runtime as ar
                 cctx = ar._create_set_context_module()
                 exp = cctx.tp67_struct_expectations(slepok, site_type, tp, ct, "", position or None, None)
                 aud_ids = [

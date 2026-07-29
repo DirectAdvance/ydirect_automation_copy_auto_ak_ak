@@ -13,12 +13,12 @@ import uuid
 
 from flask import session
 
-from .repair import repair_auto as rauto
-from .repair import repair_gate as rgate
-from .create import stage_timing as _stage_timing   # watchdog: отметки стадий = признак жизни джобы
-from .slepki_code import slepki_editor as _sed
+from ..repair import repair_auto as rauto
+from ..repair import repair_gate as rgate
+from ..create import stage_timing as _stage_timing   # watchdog: отметки стадий = признак жизни джобы
+from ..slepki_code import slepki_editor as _sed
 from . import write_gate as _write_gate
-from .copy_service.copy_engine import (
+from ..copy_service.copy_engine import (
     _copy_run_job, _copy_jobs_recover, _COPY_JOBS, _COPY_JOBS_LOCK,
 )
 from .direct_repository import (
@@ -36,10 +36,10 @@ from .job_repository import (
     _ready_login_remove,
     _next_units_reset_utc,
 )
-from .create.create_job_status import (
+from ..create.create_job_status import (
     terminal_status_for_job, terminal_status_for_parent_failed, annotate_job_issues,
 )
-from .clients.yandex_gateway import (
+from ..clients.yandex_gateway import (
     direct_tokens as _direct_tokens, token_for_login as _token_for_login,
     units_alive_for_login as _units_alive_for_login, grid_list_campaigns as _grid_list_campaigns,
 )
@@ -809,7 +809,7 @@ def _position_live_in_names(nm: str, names: set) -> bool:
     переименовывают фид-суффикс («…site/yandex.xml» → «…site — yandex»), поэтому полный
     item-name не матчится — пробуем без последнего « — сегмента» (только для tp6/tp7 с
     ≥2 сепараторами, иначе усечение до 'tp1_cpc_site' сматчило бы ЛЮБУЮ tp1)."""
-    from .create.create_set_resume import already_in_direct
+    from ..create.create_set_resume import already_in_direct
     nm = (nm or "").strip()
     if not nm:
         return True
@@ -1667,7 +1667,7 @@ def _deferred_pack_gap_note(body: dict) -> str:
     if not isinstance(body, dict) or body.get("_resume_via_token"):
         return ""
     try:
-        from .create.create_set_content_preflight import create_set_pack_gap_note
+        from ..create.create_set_content_preflight import create_set_pack_gap_note
     except Exception:  # noqa: BLE001
         return ""
     note = create_set_pack_gap_note(body)
@@ -1925,7 +1925,7 @@ def _copy_agent_retry_daemon_loop(app) -> None:
         try:
             with app.app_context():
                 try:
-                    from .agent_board_bridge import (
+                    from ..agent_board_bridge import (
                         copy_jobs_ready_for_agent_retry,
                         mark_copy_retry_started,
                     )
@@ -2223,7 +2223,7 @@ def _create_worker_loop(app):
                 _job_db_save(jid, _job_final, full=True)   # финальный статус + result в БД
                 if final_status == "error" and (body or {}).get("_kind") == "copy_campaigns":
                     try:
-                        from .agent_board_bridge import notify_copy_job_error
+                        from ..agent_board_bridge import notify_copy_job_error
                         task_id = notify_copy_job_error(_victory_conn_rw, jid)
                         if task_id:
                             print(f"[copy-agent-board] task #{task_id} created for {jid}", flush=True)
@@ -2329,7 +2329,7 @@ def _create_worker_loop(app):
                     pass
             if not _is_delete_drafts and not _is_edit_job and (body or {}).get("_kind") != "copy_campaigns":
                 try:
-                    from .create.create_set_prefetch import cleanup_job_cache as _cleanup_create_prepare_cache
+                    from ..create.create_set_prefetch import cleanup_job_cache as _cleanup_create_prepare_cache
                     _cleanup_create_prepare_cache(jid)
                 except Exception:  # noqa: BLE001
                     pass

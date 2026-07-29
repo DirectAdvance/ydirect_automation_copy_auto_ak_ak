@@ -77,7 +77,7 @@ import requests
 # символы через cmc.*. Re-export через явный импорт (не *) гарантирует, что
 # приватные символы (_dead_feed_ids, _UC_CHANNEL_MODES и др.) тоже в namespace.
 
-from .clients.direct_v501_client import (        # noqa: E402, F401
+from ..clients.direct_v501_client import (        # noqa: E402, F401
     V501_BASE,
     _UC_CHANNEL_MODES,
     UnifiedCampaignSpec,
@@ -89,7 +89,7 @@ from .clients.direct_v501_client import (        # noqa: E402, F401
 
 # ─── Re-export: UAC клиент ────────────────────────────────────────────────────
 
-from .clients.uac_client import (                # noqa: E402, F401
+from ..clients.uac_client import (                # noqa: E402, F401
     BASE,
     USER_AGENT,
     UAC_CLIENT_VERSION,
@@ -263,7 +263,7 @@ def load_cookie(account: str) -> str:
 def load_feeds_catalog(path: str | Path | None = None) -> dict:
     """Каталог товарных фидов (feeds_catalog.yaml) — для выпадающего списка и товарной РК."""
     import yaml
-    p = Path(path) if path else Path(__file__).resolve().parent / "feeds_catalog.yaml"
+    p = Path(path) if path else Path(__file__).resolve().parent.parent / "feeds_catalog.yaml"
     return yaml.safe_load(p.read_text(encoding="utf-8"))
 
 
@@ -312,7 +312,7 @@ def pick_working_cookie(ulogin: str, accounts: tuple[str, ...] = DEFAULT_COOKIE_
     (_pick_working_cookie_local). Рекурсии нет: gateway_client.gw_cookie фолбэчит в _local, не сюда."""
     if os.environ.get("DIRECT_GATEWAY_SELF") != "1":
         try:
-            from .clients import gateway_client as _gwc
+            from ..clients import gateway_client as _gwc
             ck = _gwc.gw_cookie(ulogin, accounts=accounts, force_refresh=force_refresh)
             if ck:
                 return ck

@@ -14,7 +14,7 @@ import json
 import sys
 import threading
 
-from .. import campaign as cmc  # _find_secret_dir (loader path)
+from ..core import campaign as cmc  # _find_secret_dir (loader path)
 
 
 # ── DI: инъектятся из blueprint (заглушки-callable падают громко, если configure не отработал) ──

@@ -55,7 +55,7 @@ from auth import _service_required_any  # noqa: E402
 # Domain wiring only: importing automation_runtime выполняет ВСЮ DI-проводку
 # (account_service.configure + blueprint_metrika + repository) — без direct.blueprint,
 # без основного Flask-app и без воркеров создания (роль 'web' выставлена выше).
-from direct import automation_runtime as _rt  # noqa: E402
+from direct.core import automation_runtime as _rt  # noqa: E402
 from direct.web.routes_accounts import register_account_routes  # noqa: E402
 from direct.web.routes_overview import register_overview_routes  # noqa: E402
 

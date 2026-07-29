@@ -133,7 +133,7 @@ def make_job_executor(*, victory_conn, token_for_login, direct_tokens, v5_call, 
         def _job_grid_client(login: str):
             if not job_agency:
                 return _grid_client(login)
-            from .. import campaign as cmc
+            from ..core import campaign as cmc
             from ..clients.grid_finalize import get_grid_client
 
             cookie = cmc.pick_working_cookie(

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from .. import campaign as cmc
+from ..core import campaign as cmc
 from ..ai_agents import extend_title_to_max
 from ..create.create_set_minus import _minus_char_budget as _cm_minus_char_budget  # единый бюджет 20 000 симв.
 from ..text_norm import _trim_clean

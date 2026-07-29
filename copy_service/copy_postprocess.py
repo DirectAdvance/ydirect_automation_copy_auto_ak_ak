@@ -6,7 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from pathlib import Path
 
-from .. import campaign as cmc
+from ..core import campaign as cmc
 from ..clients import grid_finalize as gf
 from ..repair import repair_auto as rauto
 from ..repair import repair_executor as rex

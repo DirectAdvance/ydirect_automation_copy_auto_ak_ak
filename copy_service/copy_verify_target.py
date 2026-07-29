@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .. import campaign as cmc
+from ..core import campaign as cmc
 from ..clients import grid_finalize as gf
 from ..clients import grid_read as gr
 from .copy_verify_utils import (

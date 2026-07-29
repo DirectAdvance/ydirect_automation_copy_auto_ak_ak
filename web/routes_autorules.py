@@ -269,7 +269,7 @@ def register_autorules_routes(
         cookie_error = None
         cookie_agency = None
         try:
-            from direct import campaign as cmc  # noqa: PLC0415
+            from direct.core import campaign as cmc  # noqa: PLC0415
             account = _home_account(login) if mode == "home" else None
             cookie_agency = (
                 (account or {}).get("agency_login")
@@ -326,7 +326,7 @@ def register_autorules_routes(
         return agency, cookie
 
     def _save_local_cookie(agency_login: str, cookie: str):
-        from direct import campaign as cmc  # noqa: PLC0415
+        from direct.core import campaign as cmc  # noqa: PLC0415
 
         secret_dir = cmc._find_secret_dir()
         cookie_path = secret_dir / "cookies.json"

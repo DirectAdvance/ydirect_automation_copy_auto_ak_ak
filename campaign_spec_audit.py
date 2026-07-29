@@ -1569,7 +1569,7 @@ def _builds_by_cid(results: list) -> dict[int, dict]:
     фидам и тег «х3» (одна позиция → несколько РК) сверку не ломают. UAC (tp6/tp7) исключены —
     их контент живёт не в Grid-группах.
     """
-    from .campaign_result import created_campaigns as _cc
+    from .core.campaign_result import created_campaigns as _cc
     out: dict[int, dict] = {}
     for c in _cc(results or []):
         cid = c.get("id")

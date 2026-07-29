@@ -24,7 +24,7 @@ from .llm_providers import (
 from .text_norm import _bad_ad_title, _bad_ad_text, _bad_ad_sitelink
 from .city_morph import _content_city, _RU_CITIES
 from .text_gen import _variant_norm_key, _display_brand
-from .campaign_naming import _title2_blocklist, _brand_from_coder, _brand_ct_from_coder
+from .core.campaign_naming import _title2_blocklist, _brand_from_coder, _brand_ct_from_coder
 
 
 # ── DI: инъектятся из blueprint (заглушки падают громко, если configure не отработал) ──

@@ -6,10 +6,10 @@ import threading
 import time
 from flask import current_app, jsonify, request, session
 
-from . import campaign as cmc
+from .core import campaign as cmc
 from .clients import grid_create as gc
 from .create.create_set_units import is_units_exhausted as _is_units_exhausted
-from .direct_repository import victory_conn as _victory_conn
+from .core.direct_repository import victory_conn as _victory_conn
 from .clients.yandex_gateway import (
     LIVE_V4_URL as _LIVE_V4, direct_tokens as _direct_tokens,
     token_for_login as _token_for_login, v5_get as _v5_get, v5_call as _v5_call,

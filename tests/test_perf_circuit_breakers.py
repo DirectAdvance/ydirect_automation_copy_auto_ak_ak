@@ -165,7 +165,7 @@ def test_link_check_cb_different_hosts_independent(monkeypatch):
 # PATCH 2 — write_gate circuit breaker
 # ─────────────────────────────────────────────────────────────
 
-from direct import write_gate
+from direct.core import write_gate
 
 
 def _reset_write_gate_cb():

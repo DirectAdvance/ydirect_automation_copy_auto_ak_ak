@@ -202,7 +202,7 @@ def read_content_grid(login: str, campaign_ids: list[int]) -> dict:
         import urllib3
         urllib3.disable_warnings()
         import requests
-        from direct import campaign as cmc  # type: ignore
+        from direct.core import campaign as cmc  # type: ignore
         cookie = cmc.pick_working_cookie(login)
         if not cookie:
             return out

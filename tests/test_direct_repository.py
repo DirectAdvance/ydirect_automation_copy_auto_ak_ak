@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from direct import direct_repository
+from direct.core import direct_repository
 
 
 class _FakeSemaphore:

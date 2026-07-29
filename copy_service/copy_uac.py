@@ -11,7 +11,7 @@ import base64
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from .. import campaign as cmc
+from ..core import campaign as cmc
 
 from .copy_geo import _COPY_R_CODE_RE, _copy_apply_geo_replacements, _copy_normalize_campaign_name, _copy_target_href
 

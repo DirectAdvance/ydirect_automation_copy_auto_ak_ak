@@ -91,7 +91,7 @@ def create_app() -> Flask:
     repository.ensure_schema()
 
     # ── Victory БД — для overview/sensors (read-only) ─────────────────────────
-    from direct.direct_repository import victory_conn as _victory_conn  # noqa: E402
+    from direct.core.direct_repository import victory_conn as _victory_conn  # noqa: E402
 
     # ── Direct API транспорт ───────────────────────────────────────────────────
     from direct.clients.yandex_gateway import (  # noqa: E402

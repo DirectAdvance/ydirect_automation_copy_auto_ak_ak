@@ -114,7 +114,7 @@ def gw_cookie(login: str, *, accounts=None, force_refresh: bool = False,
         pass
     # ⚠️ Фолбэк В _pick_working_cookie_local, НЕ в pick_working_cookie: иначе (обёртка → gw_cookie →
     # фолбэк → обёртка) бесконечная рекурсия. _local — прямая локальная логика без захода в брокер.
-    from direct import campaign as _cmc  # noqa: PLC0415
+    from direct.core import campaign as _cmc  # noqa: PLC0415
     accs = tuple(accounts) if accounts else _cmc.DEFAULT_COOKIE_ACCOUNTS
     return _cmc._pick_working_cookie_local(login, accs, force_refresh=force_refresh)
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from urllib.parse import urlsplit, urlunsplit
 
-from .. import campaign as cmc
+from ..core import campaign as cmc
 from . import create_set_context as _csctx  # _parse_targeting_modes (чистый хелпер, без configure)
 from .. import kontent_pack as kp
 from ..link_check import resolve_or_fallback_url as _resolve_url

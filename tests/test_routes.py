@@ -4,7 +4,7 @@ from direct.main import app
 from direct.content_main import app as content_app
 from direct.copy_main import app as copy_app
 from direct.slepki_main import app as slepki_app
-from direct import campaign
+from direct.core import campaign
 from direct.create import create_set_input
 from direct.clients import grid_finalize
 from direct.content import content_editor_helpers

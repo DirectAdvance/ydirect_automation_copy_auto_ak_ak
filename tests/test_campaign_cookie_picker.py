@@ -1,4 +1,4 @@
-from direct import campaign
+from direct.core import campaign
 from direct.clients import gateway_client
 
 

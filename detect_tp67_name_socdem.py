@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 
-from . import automation_runtime as ar
+from .core import automation_runtime as ar
 
 _AGE_RE = re.compile(r"_(ag001|ag011)_")
 # Допустимые пары (возраст в ИМЕНИ, socdem в БИЛДЕ). Всё остальное — рассинхрон.

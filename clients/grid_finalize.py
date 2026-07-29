@@ -24,7 +24,7 @@ import requests
 import urllib3
 
 try:                                    # пакетный контекст (blueprint: from . import …)
-    from .. import campaign as cmc       # USER_AGENT, pick_working_cookie, DirectV501Client
+    from ..core import campaign as cmc       # USER_AGENT, pick_working_cookie, DirectV501Client
 except ImportError:                     # плоский запуск (локальные тесты из direct/)
     import campaign as cmc
 

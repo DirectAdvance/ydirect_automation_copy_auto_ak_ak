@@ -44,8 +44,8 @@ os.environ.setdefault("DIRECT_ROLE", "worker")
 os.environ.setdefault("DIRECT_WORKER_SCOPE", "slepki")
 
 from loader import _get  # noqa: E402
-from direct import automation_runtime as _runtime  # noqa: E402,F401
-from direct import queue_server as _bp  # noqa: E402
+from direct.core import automation_runtime as _runtime  # noqa: E402,F401
+from direct.core import queue_server as _bp  # noqa: E402
 
 
 _STOP = {"on": False}

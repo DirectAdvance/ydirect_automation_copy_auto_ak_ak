@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .campaign_result import as_int, created_campaigns, result_name
+from .core.campaign_result import as_int, created_campaigns, result_name
 
 
 def _index_by_id(rows: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
@@ -235,7 +235,7 @@ def verify_live_create_set(*, login: str, results: list[dict[str, Any]],
             else:
                 issues.append({"severity": "warn", "code": "LIVE_CHECK_SKIPPED", "name": nm, "id": cid})
         if actual:
-            from .campaign_state_verifier import verify_campaign_state
+            from .core.campaign_state_verifier import verify_campaign_state
             state_issues, state_repair = verify_campaign_state(nm, int(cid), actual)
             issues.extend(state_issues)
             repair.extend(state_repair)

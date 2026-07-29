@@ -10,7 +10,7 @@ from direct.create import create_set_feed_builders
 from direct.create import create_set_input
 from direct.create import create_set_tp1_builders
 from direct.create import create_set_master_product
-from direct import queue_server
+from direct.core import queue_server
 from direct import llm_providers
 from direct.clients import uac_client
 from direct.create.create_content import run_gen_campaign_content
@@ -261,7 +261,7 @@ def test_first_campaign_watchdog_has_separate_fail_fast_budget():
 def test_common_sitelinks_do_not_call_ai_during_creation():
     feed_source = inspect.getsource(create_set_feed_builders._common_sitelinks_fast)
     tp1_source = inspect.getsource(create_set_tp1_builders)
-    runtime_source = (_DIRECT_DIR / "automation_runtime.py").read_text(encoding="utf-8")
+    runtime_source = (_DIRECT_DIR / "core" / "automation_runtime.py").read_text(encoding="utf-8")
 
     assert "_ai_common_sitelinks(" not in feed_source
     assert "DIRECT_CREATE_AI_COMMON_SITELINKS" in runtime_source

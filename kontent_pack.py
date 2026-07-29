@@ -1527,7 +1527,7 @@ def _ct_brand_word(ct: str, ct_models: dict | None = None, brand_hint: str = "")
     if brand_hint:
         return brand_hint.strip().split()[0].lower()
     try:
-        from .campaign_naming import _ag_part1_map
+        from .core.campaign_naming import _ag_part1_map
         ref_name = str(_ag_part1_map().get(ct) or "").strip()
         if ref_name:
             return ref_name.split()[0].lower()

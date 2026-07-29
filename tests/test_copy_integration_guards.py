@@ -4,7 +4,8 @@ import time
 
 from flask import Blueprint, Flask
 
-from direct import agent_board_bridge, queue_server
+from direct import agent_board_bridge
+from direct.core import queue_server
 from direct.clients import grid_read, grid_finalize
 from direct.create import create_set_feeds
 from direct.content import content_renames_routes

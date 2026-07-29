@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from . import campaign as cmc
-from .campaign_result import created_campaigns
+from .core import campaign as cmc
+from .core.campaign_result import created_campaigns
 from .live_verifier import verify_live_create_set
 
 
@@ -47,7 +47,7 @@ def _skipped_uac_ids(results: list[dict[str, Any]],
     """
     if not grid_rows:
         return []
-    from .campaign_result import as_int, result_name
+    from .core.campaign_result import as_int, result_name
     from .live_verifier import _grid_rows_by_prefix, _index_by_name, _skipped_struct_rows
 
     by_name = _index_by_name(grid_rows)

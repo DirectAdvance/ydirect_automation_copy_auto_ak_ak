@@ -341,7 +341,7 @@ def test_queue_server_calls_gate_outside_done_branch():
     import ast
     import pathlib
 
-    src_path = pathlib.Path(__file__).resolve().parents[1] / "queue_server.py"
+    src_path = pathlib.Path(__file__).resolve().parents[1] / "core" / "queue_server.py"
     tree = ast.parse(src_path.read_text(encoding="utf-8"))
 
     def _calls(node):

@@ -38,11 +38,11 @@ from loader import _get  # noqa: E402
 
 from auth import _service_required_any  # noqa: E402
 # Domain wiring only: no direct.blueprint, no main Flask app and no unrelated routes.
-from direct import automation_runtime as _runtime  # noqa: E402,F401
+from direct.core import automation_runtime as _runtime  # noqa: E402,F401
 from direct import account_service as accounts  # noqa: E402
 from direct.create import blueprint_metrika as metrika  # noqa: E402
 from direct.copy_service import copy_engine  # noqa: E402
-from direct import queue_server as queue  # noqa: E402
+from direct.core import queue_server as queue  # noqa: E402
 from direct.clients import yandex_gateway as yandex  # noqa: E402
 from direct.web.routes_copy import register_copy_routes  # noqa: E402
 from direct.copy_service.copy_api import copy_api_bp, register_copy_api  # noqa: E402
@@ -118,7 +118,7 @@ def _copy_repair_pending(job_id: str) -> bool:
     if not job_id:
         return False
     try:
-        from direct.direct_repository import victory_conn_rw
+        from direct.core.direct_repository import victory_conn_rw
         conn = victory_conn_rw()
         try:
             cur = conn.cursor()
@@ -143,7 +143,7 @@ def _copy_api_idempotency_lookup(idempotency_key: str) -> dict | None:
         return None
     try:
         import psycopg2.extras
-        from direct.direct_repository import victory_conn
+        from direct.core.direct_repository import victory_conn
 
         conn = victory_conn()
         try:
@@ -172,7 +172,7 @@ def _copy_queue_jobs() -> list[dict]:
     allowed_directologists = _copy_queue_allowed_directologists()
     try:
         import psycopg2.extras
-        from direct.direct_repository import victory_conn
+        from direct.core.direct_repository import victory_conn
 
         conn = victory_conn()
         try:

@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .. import campaign as cmc
+from ..core import campaign as cmc
 
 
 def _unwrap(data: Any) -> dict[str, Any]:

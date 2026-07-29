@@ -1237,7 +1237,7 @@ def _coder_brand_for_ct(ct: str) -> str:
     if not re.fullmatch(r"ct\d{4}", ctn) or ctn == "ct0000":
         return ""
     try:
-        from ..campaign_naming import _ag_part1_map, _coder_name_real_brand  # noqa: PLC0415
+        from ..core.campaign_naming import _ag_part1_map, _coder_name_real_brand  # noqa: PLC0415
     except ImportError:
         from campaign_naming import _ag_part1_map, _coder_name_real_brand  # type: ignore[no-redef]  # noqa: PLC0415
     try:

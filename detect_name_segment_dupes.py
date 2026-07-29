@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import argparse
 
-from . import automation_runtime as ar
+from .core import automation_runtime as ar
 
 # Префиксы кодов, как их строит план (create_set_plan): paycode берём cpc — на повтор
 # сегментов тип оплаты не влияет (он живёт в чанке кодов, а не в человеческом ярлыке).

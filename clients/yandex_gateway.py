@@ -11,9 +11,9 @@ import re
 import sys
 import time
 
-from .. import campaign as cmc
+from ..core import campaign as cmc
 from ..create.create_set_units import is_units_exhausted
-from ..direct_repository import victory_conn, victory_conn_rw
+from ..core.direct_repository import victory_conn, victory_conn_rw
 
 
 V5_URL = "https://api.direct.yandex.com/json/v5/"

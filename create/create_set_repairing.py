@@ -36,7 +36,7 @@ def _create_set_live_verification(login: str, results: list, *, agency: str = ""
         token, _ag = _token_for_login(_login, _agency, _direct_tokens())
         return token
 
-    from ..campaign_result import created_campaigns as _created_campaigns
+    from ..core.campaign_result import created_campaigns as _created_campaigns
     _created = _created_campaigns(results or [])
     # Сужаем Grid read-back до кампаний ЭТОГО набора: primary-ключ — numeric id (устойчив
     # к переименованию, в т.ч. UAC tp6/tp7). Name-fallback — только для ok-результатов
@@ -262,7 +262,7 @@ def _campaign_images_repair(login: str, campaign_id: int, ctx: dict) -> dict:
     4. _grid_update_adaptive_ads(RMW) проставляет imageHashes не трогая titles/bodies/adPrice
     """
     from ..clients import grid_finalize as _gf
-    from .. import campaign as _cmc
+    from ..core import campaign as _cmc
     from ..repair import repair_executor as _rex
     body = ctx.get("body") or {}
     acc = _account_ctx(login)
@@ -504,7 +504,7 @@ def _delete_uac_repair_campaigns(login: str, agency: str, replacements: list[dic
     Товарку (см. account_service.py) → удаляем ТОЛЬКО те, что реально в DRAFT. Классификация ДО
     любого удаления: если хоть одна не DRAFT / небезопасна / Grid недоступен — не удаляем НИЧЕГО.
     """
-    from .. import campaign as cmc          # cookie-клиент удаления (был NameError: cmc не импортирован)
+    from ..core import campaign as cmc          # cookie-клиент удаления (был NameError: cmc не импортирован)
     rows = []
     failed = []
     if not replacements:

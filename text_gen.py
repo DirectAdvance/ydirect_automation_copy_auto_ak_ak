@@ -54,7 +54,7 @@ strip_banned_content = _text_norm.strip_banned_content
 from .city_morph import (
     _city_locative, _content_city, _replace_foreign_city, _drop_foreign_city_keywords,
 )
-from .campaign_naming import _ag_part1_map, _title2_blocklist
+from .core.campaign_naming import _ag_part1_map, _title2_blocklist
 from . import kontent_pack as kp
 
 

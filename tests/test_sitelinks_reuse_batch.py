@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 from direct.clients.direct_v501_client import (
     DirectV501Client, DirectV501Error, _SITELINKS_SETS_BATCH_SIZE,
 )
-import direct.automation_runtime as ar
+import direct.core.automation_runtime as ar
 
 
 SL_A = [{"Title": "Кредит", "Href": "https://site.ru/lada#sl1", "Description": "от 9 000 ₽"}]

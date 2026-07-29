@@ -35,7 +35,7 @@ from loader import _get  # noqa: E402
 os.environ.setdefault("DIRECT_REGISTER_CONTENT_EDITOR", "0")
 from auth import _service_required_any  # noqa: E402
 from direct import account_service as accounts  # noqa: E402
-from direct import direct_repository as repository  # noqa: E402
+from direct.core import direct_repository as repository  # noqa: E402
 from direct.clients import yandex_gateway as yandex  # noqa: E402
 from direct.web.routes_content_editor import register_content_editor_routes  # noqa: E402
 

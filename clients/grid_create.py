@@ -18,7 +18,7 @@ from typing import Any
 
 import requests
 
-from .. import campaign as cmc
+from ..core import campaign as cmc
 from ..create import stage_timing as _timing   # STAGE_TIMING: пер-стадийный замер (только замер + лог)
 from ..text_norm import _trim_clean  # используется в add_shopping_content_to_existing (line ~878)
 from ..create.create_set_audiences import group_notes as _audience_notes

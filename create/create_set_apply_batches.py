@@ -25,7 +25,7 @@ import logging
 import re
 from typing import Any
 
-from .. import campaign as cmc
+from ..core import campaign as cmc
 from ..clients import grid_finalize as gf
 from ..repair.repair_executor import (
     RepairDeps,

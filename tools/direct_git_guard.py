@@ -21,14 +21,15 @@ DEFAULT_BRANCH = "ydirect_automation_copy_auto_ak_ak"
 MARKER_FILE = ".deploy_version.json"
 COPY_SCOPE_PREFIXES = (
     "copy",
+    "copy_service/",
     "COPY_",
     "tests/test_copy",
 )
 COPY_SCOPE_FILES = {
     ".gitignore",
     "CLAUDE.md",
-    "queue_server.py",
-    "job_repository.py",
+    "core/queue_server.py",
+    "core/job_repository.py",
     "agent_board_bridge.py",
     "tools/direct_git_guard.py",
 }

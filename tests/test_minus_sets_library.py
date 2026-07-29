@@ -299,11 +299,11 @@ def test_attach_merges_and_keeps_existing_library_ids(monkeypatch):
 def test_orchestrator_wiring_is_present():
     """Гейт от «правку откатили молча»: dep экспортирован, блок зовёт обе части и только tp2-tp5."""
     import pathlib
-    from direct import automation_runtime as ar
+    from direct.core import automation_runtime as ar
 
     assert "_ensure_named_minus_sets" in ar._create_set_orchestrator_deps()
 
-    src = (pathlib.Path(ar.__file__).parent / "create" / "create_set_orchestrator.py").read_text(encoding="utf-8")
+    src = (pathlib.Path(ar.__file__).resolve().parents[1] / "create" / "create_set_orchestrator.py").read_text(encoding="utf-8")
     assert "_select_ms_ids(_extract_created_ms(results), (2, 3, 4, 5))" in src, \
         "оркестратор должен отбирать ровно tp2-tp5 (tp1 — намеренно без минус-фраз)"
     assert "_apply_ms_batch(login, _ms_camp_ids, _repair_deps()" in src, \

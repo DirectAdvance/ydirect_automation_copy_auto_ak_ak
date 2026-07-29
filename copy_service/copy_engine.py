@@ -16,7 +16,7 @@ import threading
 import time
 from pathlib import Path
 
-from .. import campaign as cmc
+from ..core import campaign as cmc
 from ..clients import grid_create as gc
 from ..clients import grid_finalize as gf
 from ..repair import repair_auto as rauto

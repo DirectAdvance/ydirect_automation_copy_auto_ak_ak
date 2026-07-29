@@ -37,7 +37,7 @@ def test_service_entrypoints_do_not_import_web_composition_root():
 
 
 def test_runtime_has_no_route_registration_or_blueprint_object():
-    tree = ast.parse((DIRECT_DIR / "automation_runtime.py").read_text(encoding="utf-8"))
+    tree = ast.parse((DIRECT_DIR / "core" / "automation_runtime.py").read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             assert not (node.module or "").startswith("routes_"), node.module
