@@ -1111,8 +1111,10 @@ def test_tp1_all_feeds_group_relevance_match_follows_plan_flag():
     """Фаза 4a «Товарная галерея · <фид>» (tp1) создаётся Grid-ом с isActive == bool(autotarget).
 
     Раньше группа шла через v501 adgroups.add БЕЗ relevanceMatch → Директ ставил дефолт ACTIVE,
-    в том числе в кампании планового `aoff`. Детектор grid_read.py:356-362 её не видит (в имени
-    нет токена `_aon_`/`_aoff_`), поэтому дефект был невидим и для замера.
+    в том числе в кампании планового `aoff`. Имя группы несёт кодер-префикс
+    `ct0000_{aon|aoff}_n000_{r_code}_ct009_ag001_g00 — Товарная галерея · <фид>`
+    (TP1_ALL_FEEDS_GALLERY_GROUPS_NO_CODER, ERRORS_JOURNAL.md) — так детектор grid_read.py:356-362
+    видит isActive-токен `_aon_`/`_aoff_` и для этих групп.
     """
     for flag in (True, False):
         deps, grid_calls, _kw, _ads = _make_tp1_test_deps()
@@ -1130,11 +1132,15 @@ def test_tp1_all_feeds_group_relevance_match_follows_plan_flag():
             token="tok", login="porg-test", campaign_id=999, region_ids=[213],
             href="https://example.com", groups=groups, autotarget=flag,
             keep_keywords=False, tp_code="tp1", products_only=True,
-            all_feeds_list=[(555, "Основной фид")])
+            all_feeds_list=[(555, "Основной фид")], r_code="r0088")
 
         af_items = [it for call in grid_calls for it in call
-                    if str(it.get("name") or "").startswith("Товарная галерея")]
+                    if "Товарная галерея" in str(it.get("name") or "")]
         assert len(af_items) == 1, f"группа «все фиды» не создана Grid-ом: {grid_calls!r}"
+        _expect_aud = "aon" if flag else "aoff"
+        assert af_items[0]["name"] == (
+            f"ct0000_{_expect_aud}_n000_r0088_ct009_ag001_g00 — Товарная галерея · Основной фид"
+        ), f"кодер-префикс потерян: {af_items[0]['name']!r}"
         assert af_items[0]["relevanceMatch"]["isActive"] is flag, (
             f"autotarget={flag} → isActive должен быть {flag}, "
             f"получили {af_items[0]['relevanceMatch']['isActive']}")

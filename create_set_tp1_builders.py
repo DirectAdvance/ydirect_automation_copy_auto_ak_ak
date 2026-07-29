@@ -299,6 +299,7 @@ def _build_tp1_adgroups(
     site_type: str = "",
     campaign_is_new: bool = False,
     campaign_mode: str = "",
+    r_code: str = "r0000",
 ) -> dict:
     """Наполнить РСЯ (tp1 ЕПК) группами БАТЧЕМ через v501:
     adgroups.add (с TrackingParams и minus) → keywords.add → adimages.add → ads.add(TextAd+Image).
@@ -780,7 +781,13 @@ def _build_tp1_adgroups(
             _fnm = str(_feed_entry[1]) if len(_feed_entry) > 1 and _feed_entry[1] else ""
             if not _fid:
                 continue
-            _gn_af = f"Товарная галерея · {(_fnm or str(_fid))}"[:255]
+            # TP1_ALL_FEEDS_GALLERY_GROUPS_NO_CODER (ERRORS_JOURNAL.md): кодер-префикс как у
+            # ct009 tp3-галереи (create_set_feed_builders.py:1301) — иначе grid_read.py:356-362
+            # fail-safe пропускает группу без токена _aon_/_aoff_ в имени. tp5 всегда aon —
+            # автотаргет в поисковой кампании Директа выключить нельзя (_tp1_group_name докстринг).
+            _af_aud = "aon" if (tp_code == "tp5" or autotarget) else "aoff"
+            _gn_af = (f"ct0000_{_af_aud}_n000_{r_code}_ct009_ag001_g00 — Товарная галерея · "
+                      f"{(_fnm or str(_fid))}")[:255]
             _new_ag = None
             if tp_code == "tp5":
                 # tp5 (TEXT_CAMPAIGN): группа через GridClient с search-профилем (атомарно)
@@ -797,9 +804,9 @@ def _build_tp1_adgroups(
                 # tp1 ЕПК: группа через ТОТ ЖЕ Grid-транспорт, что и Фаза 1 — relevanceMatch
                 # выставляется АТОМАРНО при создании. v501 adgroups.add не умеет relevanceMatch:
                 # группа получала дефолт Директа (ACTIVE) даже в кампании планового `aoff` —
-                # ровно тот дефект, который для основных групп уже закрыт Фазой 1. Детектору
-                # grid_read.py:356-362 такая группа НЕ видна (нет токена `_aon_`/`_aoff_` в имени
-                # «Товарная галерея · <фид>»), поэтому чинить надо в источнике, а не в замере.
+                # ровно тот дефект, который для основных групп уже закрыт Фазой 1. `_gn_af` теперь
+                # несёт кодер-префикс с токеном `_aon_`/`_aoff_`, поэтому детектор grid_read.py:356-362
+                # видит и эти группы (TP1_ALL_FEEDS_GALLERY_GROUPS_NO_CODER, ERRORS_JOURNAL.md).
                 # UTM не теряется: build_adgroup кладёт trackingParams = cmc.UTM_TEMPLATE — тот же
                 # макрос, что и _UTM_TEMPLATE_TP1 на прежнем v501-пути.
                 try:
@@ -1288,7 +1295,7 @@ def _build_tp1_from_pack(
                                grid_cookie=grid_cookie, tp_code=tp_code,
                                all_feeds_list=all_feeds_list, site_type=site_type,
                                campaign_is_new=bool(campaign_is_new),
-                               campaign_mode=campaign_mode)
+                               campaign_mode=campaign_mode, r_code=r_code)
     rep["cts"] = len(pack)
     rep["groups_built"] = len(groups)
     rep["callouts_pool"] = len(co_pool)
