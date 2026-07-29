@@ -171,7 +171,7 @@ def verify_create_set_live(login: str, results: list[dict[str, Any]], *,
             if live_report["status"] == "pass":
                 live_report["status"] = "warn"
             try:
-                from .repair_planner import build_repair_plan
+                from .repair.repair_planner import build_repair_plan
                 live_report["repair_plan"] = build_repair_plan(live_report)
             except Exception:  # noqa: BLE001
                 pass

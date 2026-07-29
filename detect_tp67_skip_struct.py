@@ -54,7 +54,7 @@ DETAIL_MADE = {"status": "draft", "keywords": 10, "audiences": 0, "titles": 5, "
 
 def main():
     from direct import live_verifier as lv
-    from direct import repair_gate as rgate
+    from direct.repair import repair_gate as rgate
     from direct import verification_service as vs
 
     ok = True

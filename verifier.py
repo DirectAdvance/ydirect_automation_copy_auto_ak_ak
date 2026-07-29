@@ -471,7 +471,7 @@ def verify_create_set(*, login: str, items: list[dict[str, Any]], results: list[
         "repair_candidates": repair_candidates[:80],
     }
     try:
-        from .repair_planner import build_repair_plan
+        from .repair.repair_planner import build_repair_plan
         report["repair_plan"] = build_repair_plan(report)
     except Exception:  # noqa: BLE001
         report["repair_plan"] = {"status": "error"}
