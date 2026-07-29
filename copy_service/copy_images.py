@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import grid_finalize as gf
+from .. import grid_finalize as gf
 
 # ── DI (инъектится copy_engine.configure фан-аутом; None до инъекции) ──
 _direct_tokens = _resolve_agency_hint = _token_for_login = _v501_svc = None

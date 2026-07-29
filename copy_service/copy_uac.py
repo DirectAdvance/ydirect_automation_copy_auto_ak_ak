@@ -11,7 +11,7 @@ import base64
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import campaign as cmc
+from .. import campaign as cmc
 
 from .copy_geo import _COPY_R_CODE_RE, _copy_apply_geo_replacements, _copy_normalize_campaign_name, _copy_target_href
 
@@ -396,7 +396,7 @@ def _copy_uac_filter_list(value, *, target_login: str = "", target_feed_id: int 
         return rows
 
     try:
-        from . import create_set_feeds as _feeds
+        from .. import create_set_feeds as _feeds
         fields = set(_feeds._feed_filter_fields(target_login, int(target_feed_id)) or [])
         brand_field = _feeds._resolve_feed_field(target_login, int(target_feed_id), "brand") or "vendor"
         model_field = _feeds._resolve_feed_field(target_login, int(target_feed_id), "model") or "model"
@@ -478,7 +478,7 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
     if not rows:
         return rep
     try:
-        from .uac_read import UacReadClient
+        from ..uac_read import UacReadClient
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"uac init: {str(e)[:220]}")
         return rep
@@ -686,7 +686,7 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
             client = cmc.build_client(target_login, account=(target_agency or None))
             cid = client.create_master_campaign(spec, launch=False)
             try:
-                from .uac_read import _unwrap as _uac_unwrap
+                from ..uac_read import _unwrap as _uac_unwrap
             except Exception:  # noqa: BLE001
                 _uac_unwrap = lambda data: (data.get("result") if isinstance(data, dict) else {}) or data or {}
             live_errors: list[str] = []

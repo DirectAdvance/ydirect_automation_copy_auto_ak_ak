@@ -417,7 +417,7 @@ def _href_host_path(href: str) -> tuple[str, str]:
     (единый парсер хоста). path — суффикс: путь + query, без схемы и хоста."""
     from urllib.parse import urlsplit
 
-    from .copy_engine import _copy_domain_from_href
+    from .copy_service.copy_engine import _copy_domain_from_href
 
     host = _copy_domain_from_href(href)
     s = urlsplit(href if "://" in href else "https://" + str(href or ""))

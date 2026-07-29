@@ -112,9 +112,9 @@ from .ai_content import (              # ре-экспорт: deps-словар�
     _slepok_content_get, _slepok_content_save, _gen_campaign_content, _seed_slepok_content,
     _account_content_get, _account_content_put,   # #16: account-level content reuse (в пределах прохода)
 )
-from . import copy_engine as _ce       # копирование кампаний 1:1 (вынесено; 28 DI инъектим ниже)
-from . import copy_verify as _cv       # сверка source↔target после копирования (report-only)
-from .copy_engine import (             # ре-экспорт: _create_worker_loop/_ensure_copy_worker/_wire_copy_routes
+from .copy_service import copy_engine as _ce       # копирование кампаний 1:1 (вынесено; 28 DI инъектим ниже)
+from .copy_service import copy_verify as _cv       # сверка source↔target после копирования (report-only)
+from .copy_service.copy_engine import (             # ре-экспорт: _create_worker_loop/_ensure_copy_worker/_wire_copy_routes
     _copy_run_job, _copy_job_upsert, _copy_feeds_preview, _copy_jobs_recover,
     _COPY_JOBS, _COPY_JOBS_LOCK, _COPY_DEFAULT_FEED_PATH,
 )

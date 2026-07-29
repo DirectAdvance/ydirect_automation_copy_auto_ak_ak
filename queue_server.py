@@ -18,7 +18,7 @@ from . import repair_gate as rgate
 from . import stage_timing as _stage_timing   # watchdog: отметки стадий = признак жизни джобы
 from . import slepki_editor as _sed
 from . import write_gate as _write_gate
-from .copy_engine import (
+from .copy_service.copy_engine import (
     _copy_run_job, _copy_jobs_recover, _COPY_JOBS, _COPY_JOBS_LOCK,
 )
 from .direct_repository import (

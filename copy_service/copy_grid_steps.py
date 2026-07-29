@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import campaign as cmc
-from . import grid_finalize as gf
+from .. import campaign as cmc
+from .. import grid_finalize as gf
 
 from .copy_geo import _copy_target_href
 from .copy_jobs import _copy_job_log
@@ -152,7 +152,7 @@ def _copy_grid_unified_steps(job_id: str, body: dict, target_login: str, target_
     ctx.video_upload_client = tgt_uac
     ctx.video_file_resolver = _copy_make_video_resolver(job_id, source_grid, maps, workdir)
     try:
-        from .promo import PromoClient
+        from ..promo import PromoClient
         ctx.promo_client = PromoClient(tgt_uac, target_login)
     except Exception:  # noqa: BLE001
         ctx.promo_client = None

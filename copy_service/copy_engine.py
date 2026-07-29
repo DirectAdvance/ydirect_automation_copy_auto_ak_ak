@@ -16,13 +16,13 @@ import threading
 import time
 from pathlib import Path
 
-from . import campaign as cmc
-from . import grid_create as gc
-from . import grid_finalize as gf
-from . import repair_auto as rauto
-from . import repair_gate as rgate
+from .. import campaign as cmc
+from .. import grid_create as gc
+from .. import grid_finalize as gf
+from .. import repair_auto as rauto
+from .. import repair_gate as rgate
 from .copy_request import parse_feed_map, parse_image_hashes
-from .llm_providers import _m3_complete, _m3_llm_probe
+from ..llm_providers import _m3_complete, _m3_llm_probe
 
 _HERE = Path(__file__).resolve().parent
 
@@ -65,7 +65,7 @@ def _direct_copy_module():
     global _DIRECT_COPY_MOD
     if _DIRECT_COPY_MOD is not None:
         return _DIRECT_COPY_MOD
-    mod_path = _HERE.parents[2] / "work" / "slepki_direktologov" / "scripts" / "direct_copy.py"
+    mod_path = _HERE.parents[3] / "work" / "slepki_direktologov" / "scripts" / "direct_copy.py"
     spec = importlib.util.spec_from_file_location("seoadvanced_direct_copy", mod_path)
     if not spec or not spec.loader:
         raise RuntimeError(f"не удалось загрузить direct_copy.py: {mod_path}")
@@ -94,7 +94,7 @@ def _copy_enrich_body_context(body: dict, source_login: str, target_login: str) 
         tgt_ctx = {}
     if not body.get("agent"):
         try:
-            from .pack_resolver import _slepok_key_from_text  # noqa: PLC0415
+            from ..pack_resolver import _slepok_key_from_text  # noqa: PLC0415
             body["agent"] = _slepok_key_from_text(src_ctx.get("directologist") or "")
         except Exception:  # noqa: BLE001
             body["agent"] = ""

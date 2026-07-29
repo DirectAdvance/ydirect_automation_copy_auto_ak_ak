@@ -6,7 +6,7 @@ from typing import Callable
 
 from flask import current_app, jsonify, render_template, request, session
 
-from .copy_request import default_geo_mode, parse_campaign_ids, validate_other_geo
+from .copy_service.copy_request import default_geo_mode, parse_campaign_ids, validate_other_geo
 
 
 # GeoRegionId России в справочнике GeoRegions Директа. Виджет выбора регионов
@@ -465,7 +465,7 @@ def register_copy_routes(
 
         ⚠️ Имя начинается с /api/copy_: nginx отдаёт на :5022 только ^~ /direct/api/copy_.
         """
-        from direct import copy_feed_upload as _cfu  # noqa: PLC0415 — lazy; модуль этой задачи
+        from direct.copy_service import copy_feed_upload as _cfu  # noqa: PLC0415 — lazy; модуль этой задачи
         body = request.json or {}
         source_login = (body.get("source_login") or "").strip()
         target_login = (body.get("target_login") or "").strip()

@@ -20,9 +20,9 @@ from direct import (
     grid_finalize,
     queue_server,
 )
-from direct.copy_api import register_copy_api
-from direct.copy_request import parse_feed_map, parse_image_hashes
-from direct.copy_verify_source import build_source_profile
+from direct.copy_service.copy_api import register_copy_api
+from direct.copy_service.copy_request import parse_feed_map, parse_image_hashes
+from direct.copy_service.copy_verify_source import build_source_profile
 
 
 def test_copy_target_feed_id_prefers_preseeded_id_maps(tmp_path, monkeypatch):

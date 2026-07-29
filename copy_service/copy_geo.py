@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 
-from .llm_providers import _m3_complete, _m3_llm_probe
+from ..llm_providers import _m3_complete, _m3_llm_probe
 
 # ── DI (инъектится copy_engine.configure фан-аутом; None до инъекции) ──
 _account_ctx = _geo_id = _resolve_region = None

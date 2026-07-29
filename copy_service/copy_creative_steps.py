@@ -64,7 +64,7 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
         return rep
 
     from . import copy_geo_morph as cgm
-    from .text_norm import _trim_clean
+    from ..text_norm import _trim_clean
     pairs = ctx.geo_pairs or []
     # image_mode=upload: v5 переносит на объявление только ОДИН AdImageHash, остальные 4 живут лишь в
     # Grid → доливаем картинки ЦЕЛЕВОГО аккаунта round-robin до 5 (максимум Директа). Пул пуст → не трогаем.

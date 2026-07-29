@@ -5,8 +5,8 @@ import json
 import re
 from pathlib import Path
 
-from . import grid_create as gc
-from . import grid_finalize as gf
+from .. import grid_create as gc
+from .. import grid_finalize as gf
 
 
 def _engine():
@@ -415,7 +415,7 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
                         _si = {"adgroup_id": int(new_gid), "feed_id": int(target_feed_id),
                                "vendor": group_vendor_by_gid.get(old_gid) or "Haval"}
                         try:
-                            from . import create_set_feeds as _csf_ff
+                            from .. import create_set_feeds as _csf_ff
                             _si["brand_field"] = _csf_ff._resolve_feed_field(target_login, int(target_feed_id), "brand") or "vendor"
                             _si["model_field"] = _csf_ff._resolve_feed_field(target_login, int(target_feed_id), "model") or "model"
                         except Exception:  # noqa: BLE001
@@ -445,7 +445,7 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
                             if not default_text:
                                 _brand0 = (group_specs[0].get("brand") if group_specs else "") or "Haval"
                                 default_text = f"{_brand0} в наличии. Успей купить по выгодной цене"
-                            from .text_norm import _trim_clean as _tc
+                            from ..text_norm import _trim_clean as _tc
                             default_text = _tc(default_text, 81)
                             filters_by_ad_id = {}
                             for _sid, _src in _shop_pairs:
@@ -457,7 +457,7 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
                                                   "operator": "CONTAINS_ANY",
                                                   "stringValue": json.dumps(_variants, ensure_ascii=False)})
                                 try:
-                                    from . import create_set_feeds as _csf_dt
+                                    from .. import create_set_feeds as _csf_dt
                                     conds.extend(_csf_dt._minus_marks_grid_conditions(
                                         brand_field=_src.get("brand_field") or "vendor",
                                         model_field=_src.get("model_field") or "model"))

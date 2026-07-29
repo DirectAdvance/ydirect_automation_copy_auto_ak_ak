@@ -6,9 +6,9 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from . import campaign as cmc
-from . import grid_finalize as gf
-from . import grid_read as gr
+from .. import campaign as cmc
+from .. import grid_finalize as gf
+from .. import grid_read as gr
 from .copy_verify_utils import (
     _OK, _MISMATCH, _MISSING, _UNREADABLE, _EXCLUDED,
     _feed_filter_signature, _nolog, _read_audience_signatures_grid,

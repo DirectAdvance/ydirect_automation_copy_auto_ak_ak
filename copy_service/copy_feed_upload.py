@@ -58,7 +58,7 @@ def upload_feed_to_target(
         RuntimeError: с кратким описанием ошибки (роут переводит в {error}).
     """
     # ── Ленивый DI: к моменту вызова copy_engine уже сконфигурирован ───────────
-    from direct import copy_engine as _ce  # noqa: PLC0415
+    from direct.copy_service import copy_engine as _ce  # noqa: PLC0415
 
     v5_call = _ce._v5_call
     grid_feeds = _ce._grid_feeds

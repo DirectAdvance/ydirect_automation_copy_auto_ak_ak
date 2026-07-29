@@ -6,11 +6,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from pathlib import Path
 
-from . import campaign as cmc
-from . import grid_finalize as gf
-from . import repair_auto as rauto
-from . import repair_executor as rex
-from . import repair_gate as rgate
+from .. import campaign as cmc
+from .. import grid_finalize as gf
+from .. import repair_auto as rauto
+from .. import repair_executor as rex
+from .. import repair_gate as rgate
 from .copy_step_utils import _invalidate_target_edit_rows, _source_edit_rows, _subset_rows
 
 
@@ -138,7 +138,7 @@ def _prefetch_copy_verify_grid_cache(target_login: str, target_agency: str, grid
         return gf.GridClient(target_login, cookie=base_cookie)
 
     def _counts():
-        from . import grid_read as gr  # lazy sibling import
+        from .. import grid_read as gr  # lazy sibling import
         return gr.GridReadClient(target_login, cookie=base_cookie).campaign_content_counts(camp_ids)
 
     def _edit_rows():
@@ -410,7 +410,7 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
     created_promo_ids = []
     if promotions or cstep_ctx.source_grid is not None:
         try:
-            from .promo import PromoClient
+            from ..promo import PromoClient
             pc = PromoClient(client, target_login)
             _src_dom = str(body.get("_copy_source_domain") or "")
             _tgt_dom = str(body.get("target_domain") or "")
@@ -524,7 +524,7 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
             elif op == "model" and args:
                 item["model"] = [str(x) for x in args]
         try:
-            from . import create_set_feeds as _csf_ff
+            from .. import create_set_feeds as _csf_ff
             item["brand_field"] = _csf_ff._resolve_feed_field(target_login, int(fid), "brand") or "vendor"
             item["model_field"] = _csf_ff._resolve_feed_field(target_login, int(fid), "model") or "model"
         except Exception:  # noqa: BLE001
