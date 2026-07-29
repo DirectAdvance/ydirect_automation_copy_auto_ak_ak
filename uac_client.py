@@ -535,7 +535,7 @@ class UacClient:
         status: 'DRAFT' | 'ACTIVE' | None (=все). dict с полями id, name, typename, status.
         """
         # lazy import: routes_content_editor → uac_read → campaign (иначе цикл на импорте).
-        from .routes_content_editor import _grid_tp67_campaigns
+        from .web.routes_content_editor import _grid_tp67_campaigns
 
         rows = _grid_tp67_campaigns(self.ulogin)
         if status:

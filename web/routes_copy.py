@@ -6,7 +6,7 @@ from typing import Callable
 
 from flask import current_app, jsonify, render_template, request, session
 
-from .copy_service.copy_request import default_geo_mode, parse_campaign_ids, validate_other_geo
+from ..copy_service.copy_request import default_geo_mode, parse_campaign_ids, validate_other_geo
 
 
 # GeoRegionId России в справочнике GeoRegions Директа. Виджет выбора регионов

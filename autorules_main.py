@@ -34,7 +34,7 @@ from flask import Blueprint, Flask, redirect, session  # noqa: E402
 from loader import _get, load_db  # noqa: E402
 from auth import _service_required_any  # noqa: E402
 from direct.autorules import repository  # noqa: E402
-from direct.routes_autorules import register_autorules_routes  # noqa: E402
+from direct.web.routes_autorules import register_autorules_routes  # noqa: E402
 
 
 def _inject_nav_context():

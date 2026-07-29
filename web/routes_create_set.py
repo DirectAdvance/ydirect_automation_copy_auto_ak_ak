@@ -82,7 +82,7 @@ def register_create_set_routes(
         plan = (live_report or {}).get("repair_plan")
         if not plan:
             try:
-                from .repair.repair_planner import build_repair_plan
+                from ..repair.repair_planner import build_repair_plan
                 plan = build_repair_plan(live_report)
             except Exception:  # noqa: BLE001
                 plan = {"status": "error"}

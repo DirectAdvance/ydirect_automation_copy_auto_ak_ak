@@ -138,7 +138,7 @@ def test_rsya_inventory_excludes_archived_campaigns(monkeypatch):
         return []
 
     monkeypatch.setattr(m, "_grid_ads_index", _ads_index)
-    from direct import routes_content_editor as rce
+    from direct.web import routes_content_editor as rce
     monkeypatch.setattr(rce, "_grid_client", lambda login: _Grid())
     monkeypatch.setattr(rce, "_v5_paginate", lambda *a, **k: ([], None))
 
@@ -235,7 +235,7 @@ def _run(monkeypatch, tmp_path, *, rsya_images, ads_by_id, ad_cid,
         def upload_image_file(self, path):
             return "c_new"
 
-    from direct import routes_content_editor as rce
+    from direct.web import routes_content_editor as rce
     monkeypatch.setattr(rce, "_uac_client", lambda login, factory=None: _Uac())
 
     f = tmp_path / "pic.jpg"

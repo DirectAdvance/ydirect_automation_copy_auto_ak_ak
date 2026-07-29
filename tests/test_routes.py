@@ -9,7 +9,7 @@ from direct import create_set_input
 from direct import grid_finalize
 from direct.content import content_editor_helpers
 from direct import link_check
-from direct import routes_content_editor as content_editor
+from direct.web import routes_content_editor as content_editor
 from direct.content import content_replace_routes
 
 

@@ -38,7 +38,7 @@ os.environ.setdefault("DIRECT_REGISTER_CONTENT_EDITOR", "0")
 
 from direct import direct_repository as repository  # noqa: E402
 from direct import yandex_gateway as yandex  # noqa: E402
-from direct import routes_content_editor as ce  # noqa: E402
+from direct.web import routes_content_editor as ce  # noqa: E402
 from direct.agent_board_bridge import notify_content_job_error, notify_unreported_content_errors  # noqa: E402
 
 WORKER_THREADS = int(os.environ.get("CE_WORKER_THREADS") or 4)

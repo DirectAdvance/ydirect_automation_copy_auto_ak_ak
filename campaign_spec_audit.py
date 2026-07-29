@@ -2096,7 +2096,7 @@ def fix_short_titles(login: str, ctx: dict, issues: list[dict]) -> dict:
                 "titles_extended": extended_total, "campaigns": fixed, "errors": errors,
                 "terminal": terminal}
     # PATCH-хелпер контент-редактора (лениво: routes_content_editor тянет flask на импорте)
-    from .routes_content_editor import _uac_patch_campaign_texts, _unwrap_uac_response
+    from .web.routes_content_editor import _uac_patch_campaign_texts, _unwrap_uac_response
     agency = ((ctx or {}).get("agency") or "").strip() or None
     try:
         client = ur.UacReadClient(login, agency=agency).client
@@ -2389,7 +2389,7 @@ def fix_feed_filters_uac(login: str, ctx: dict, issues: list[dict]) -> dict:
     if not ff_issues:
         return {"ok": True, "note": "нет FEED_FILTER_MISSING_UAC", "campaigns_fixed": 0}
     from . import create_set_feeds as csf   # configure()-модуль: blueprint конфигурирует на импорте
-    from .routes_content_editor import _unwrap_uac_response
+    from .web.routes_content_editor import _unwrap_uac_response
     _ag_part1 = _DEPS.get("_ag_part1_map")
     _valid_brand = _DEPS.get("_valid_pack_brand_name")
     ct_name = {}

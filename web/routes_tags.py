@@ -18,7 +18,7 @@ from flask import jsonify, request, session
 import psycopg2
 import psycopg2.extras
 
-from . import kontent_pack as _kp_tags  # base_site_type: split «Монобренд · Lada» → «Монобренд»
+from .. import kontent_pack as _kp_tags  # base_site_type: split «Монобренд · Lada» → «Монобренд»
 
 
 _TAG_REGISTRY = "direct_automation.tag_registry"

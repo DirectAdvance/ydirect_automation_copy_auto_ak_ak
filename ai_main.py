@@ -54,7 +54,7 @@ from auth import _service_required_any  # noqa: E402
 # Имена берём из _rt теми же алиасами, что и blueprint.py:342 (там они попадают в globals()
 # через globals().update(vars(automation_runtime))) — проводка сверяется с ним один-в-один.
 from direct import automation_runtime as _rt  # noqa: E402
-from direct.routes_ai import register_ai_routes  # noqa: E402
+from direct.web.routes_ai import register_ai_routes  # noqa: E402
 
 
 def _inject_nav_context():

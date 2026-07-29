@@ -41,21 +41,21 @@ from typing import Callable
 from flask import jsonify, render_template, request, session
 
 # ── Sub-module registration ────────────────────────────────────────────────────
-from .content.content_dashboard_routes import register_content_dashboards
-from .content.content_images_routes import register_image_routes
-from .content.content_price_check_routes import register_price_check_routes
-from .content.content_renames_routes import register_rename_routes
-from .content.content_jobs_routes import register_jobs_routes
-from .content.content_sitelinks_routes import register_sitelinks_routes
-from .content.content_callouts_routes import register_callouts_routes
-from .content.content_replace_routes import register_replace_routes
+from ..content.content_dashboard_routes import register_content_dashboards
+from ..content.content_images_routes import register_image_routes
+from ..content.content_price_check_routes import register_price_check_routes
+from ..content.content_renames_routes import register_rename_routes
+from ..content.content_jobs_routes import register_jobs_routes
+from ..content.content_sitelinks_routes import register_sitelinks_routes
+from ..content.content_callouts_routes import register_callouts_routes
+from ..content.content_replace_routes import register_replace_routes
 
 # ── Backward-compat re-exports (test_routes.py monkeypatches these names on this module) ──
 # IMPORTANT: these names MUST stay at module level here because:
 #   1. test_routes.py patches ``content_editor.<name>`` and calls make_job_executor();
 #   2. the executor's closures look up names in this module's namespace at call time;
 #   3. content_images_routes.py lazy-imports this module and accesses rce._v5_paginate etc.
-from .content.content_editor_helpers import (  # noqa: F401
+from ..content.content_editor_helpers import (  # noqa: F401
     _result,
     _v5_paginate,
     _v5_paginate_campaign_batches,
@@ -104,9 +104,9 @@ from .content.content_editor_helpers import (  # noqa: F401
     _grid_clear_responsive_ads_overrides,
     _clear_ad_level_asset_overrides,
 )
-from .content.content_editor_helpers import ensure_content_job_agent_column  # noqa: F401
-from .content.content_sitelinks_routes import _validate_permutation  # noqa: F401  (monkeypatched)
-from .content.content_replace_routes import _do_replace  # noqa: F401  (monkeypatched)
+from ..content.content_editor_helpers import ensure_content_job_agent_column  # noqa: F401
+from ..content.content_sitelinks_routes import _validate_permutation  # noqa: F401  (monkeypatched)
+from ..content.content_replace_routes import _do_replace  # noqa: F401  (monkeypatched)
 
 
 # ── make_job_executor — MUST stay here ────────────────────────────────────────
@@ -133,8 +133,8 @@ def make_job_executor(*, victory_conn, token_for_login, direct_tokens, v5_call, 
         def _job_grid_client(login: str):
             if not job_agency:
                 return _grid_client(login)
-            from . import campaign as cmc
-            from .grid_finalize import get_grid_client
+            from .. import campaign as cmc
+            from ..grid_finalize import get_grid_client
 
             cookie = cmc.pick_working_cookie(
                 login,

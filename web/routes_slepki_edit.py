@@ -187,10 +187,10 @@ def _ex_tp67_actual_name_and_tgt(slepok: str, site_type: str, tp_code: str, it: 
     raw = raw or str(it.get("t") or "").strip()
     try:
         try:
-            from . import automation_runtime as ar
+            from .. import automation_runtime as ar
             cctx = ar._create_set_context_module()
         except Exception:  # noqa: BLE001
-            from . import create_set_context as cctx
+            from .. import create_set_context as cctx
 
         ct = _ex_first_ct(it.get("gc") or it.get("c") or "") or "ct0000"
         groups = [str(it.get("gk") or "").strip()]
@@ -253,8 +253,8 @@ def _ascii_slug(s: str) -> str:
 def _build_export_rows(slepki_editor, slepok: str, site_type: str) -> list:
     """Строки экспорта структуры слепка × типа сайта. Группировка кампаний = как в UI
     (index.html _campaignize / slepkiTpTree). Возвращает список списков (7 колонок)."""
-    from . import blueprint_targeting as _btg  # ct→сегмент (leaf-модуль, без цикла)
-    from .create_set_structure import (
+    from .. import blueprint_targeting as _btg  # ct→сегмент (leaf-модуль, без цикла)
+    from ..create_set_structure import (
         canonical_campaign_name as _canonical_campaign_name,
         duplicate_group_base as _dup_group_base,
         filtered_camp_names_for_group as _filtered_camp_names,
@@ -413,7 +413,7 @@ def register_slepki_edit_routes(
         )
         if tp in ("tp6", "tp7"):
             try:
-                from . import automation_runtime as ar
+                from .. import automation_runtime as ar
                 cctx = ar._create_set_context_module()
                 exp = cctx.tp67_struct_expectations(slepok, site_type, tp, ct, "", position or None, None)
                 aud_ids = [

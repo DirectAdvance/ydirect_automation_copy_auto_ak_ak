@@ -61,7 +61,7 @@ def register_account_routes(
         """Аккаунты из local_gsheet_sites (direction='Авто') с фильтром статуса и поиском."""
         import psycopg2.extras
 
-        from .account_filters import base_account_where
+        from ..account_filters import base_account_where
         status = (request.args.get("status") or default_status).strip()
         q = (request.args.get("q") or "").strip()
         cache_key = status if not q else ""
