@@ -4,6 +4,80 @@
 > метод решения → **помогло или нет** (проверено живым прогоном). Перед фиксом любой ошибки —
 > СНАЧАЛА искать её здесь: возможно, решение уже известно или уже пробовали и не помогло.
 
+### MONOBRAND_SPLIT_PACK_NOT_NORMALIZED — создание на витринной вкладке «Монобренд · Марка» падает content-gap (2026-07-29) 🟡 ИСПРАВЛЕНО, ждёт live-прогона
+- Симптом: job `3b70da8321ea` (porg-pl6iavd5, `scherbakova`/«Монобренд · Lada», variants `search_test`,
+  `n:false`) — **created=0, failed=4**, все 4 позиции с ошибкой:
+  `tp2(куки): content-gap — локальное зеркало/M3-источник доступны, но нет групп/ключей для
+  scherbakova/Монобренд · Lada; ct=[ct0183, ct0186, ct0184, ct0189, ct0188]; gk=[lada_niva_legend,
+  lada_iskra, lada_granta, lada_niva_travel, lada_vesta]`.
+- Root-cause: разбивка монобренда на витринные вкладки (`Монобренд · Lada`, применена 2026-07-29,
+  `_PROPOSAL_monobrand_split_20260729.md`) НЕ проведена в резолвер контент-пака.
+  `kontent_pack.gather` / `_gather_once` (`kontent_pack.py:1938`) уходят в пак **сырым** именем
+  вкладки, минуя уже существующую `kontent_pack.base_site_type` (`kontent_pack.py:1090`, корректно
+  даёт `«Монобренд · Lada» → «Монобренд»`). Папки `Монобренд · Lada` в паке нет → пусто → content-gap.
+- Доказательство (LXC101, read-only): `gather("scherbakova","Монобренд · Lada","tp1")` → **0 ct**;
+  `gather("scherbakova","Монобренд","tp1")` → **200 ct**, и все нужные Lada-коды на месте
+  (`ct0181/ct0183/ct0184/ct0186/ct0188/ct0189` присутствуют). То есть контент есть, не находится путь.
+- Масштаб: **49 витринных вкладок у 11 слепков** (chepelev 6, karavaev 6, scherbakova 5, gordeeva 5,
+  piterkina 5, terehov 5, zubakin 5, pavlov 4, tumashenko 4, kryuchkova 3, salamahin 1).
+  Выборка `chepelev/terehov/karavaev/zubakin` (Монобренд · Lada) и `scherbakova/Монобренд · Haval` —
+  у ВСЕХ вкладка=0 при непустом базовом типе (49/184/51/35/200). Создание на монобренде сломано целиком.
+- Показательно: соседний резолвер бюджета `create_set_plan._rule_sets` сплит **нормализует**
+  (`create_set_plan.py:185`, с явным комментарием про «Монобренд · Lada»). Пропущен именно пак.
+- Где чинить: нормализовать `segment` через `base_site_type()` в `kontent_pack.gather`/`_gather_once`.
+- Фикс (2026-07-29): `kontent_pack._gather_once` — добавлен `segment = base_site_type(segment)` в
+  первой строке тела. Все функции на основе `_ct_dir`/`_remote_ct_dir`/`_pack_entry` уже нормализуют,
+  пропущен был только subprocess-путь. Одна строка, один файл: `kontent_pack.py:1943`.
+- Верификация (LXC101): `gather("scherbakova","Монобренд · Lada","tp1")` → 200 ct (=база), tp2 → 200;
+  chepelev → 49, terehov → 184, zubakin → 35; ALL_MATCH=True. Anti-регресс Мультибренд/С пробегом — без изменений.
+- Статус: 🟡 ждёт live-прогона создания РК (created>0 для витринной вкладки Монобренд · Lada).
+- НЕ помогло ранее: — (первая фиксация сигнатуры).
+
+### TP1_ALL_FEEDS_GALLERY_GROUPS_NO_CODER — группы «Товарная галерея · <фид>» создаются без кодера в имени (2026-07-29) 🟡
+- Симптом: job `0f73707364ff` (porg-pl6iavd5, `scherbakova`/«Мультибренд», тег «все фиды»,
+  `single_feed:false`) — кампания `713140728` содержит 17 групп, из них **9 групп
+  `Товарная галерея · newautos-193.site — <фид>` БЕЗ кодер-префикса**. Остальные 8 тематических
+  групп кодер имеют (`ct0001_aoff_n000_r0088_ct001_ag011_g00 — Buynew` и т.д.).
+- Нарушает правило «кодер первый» (CODER.md). Класс тот же, что `TP5_CODER_MISSING_MULTI_BRANCH` /
+  `MULTI_GROUP_NO_CODER_NAME`, но для all_feeds-ветки tp1.
+- Где: `create_set_tp1_builders.py:762-804` (Фаза 4a) — группа на каждый фид из `all_feeds_list`
+  именуется `Товарная галерея · <feed_name>` напрямую, минуя `_tp1_group_name`.
+- Функционально кампания корректна: 9 групп = 9 разных `feed_id`, по 2 объявления (ShoppingAd +
+  ListingAd), фильтр пуст — сегмент «Общие» (не марка), пустой фильтр там by design.
+- Статус: 🟡 зафиксировано, НЕ исправлено (сессия проверочная).
+- НЕ помогло ранее: — (первая фиксация сигнатуры).
+
+### CONTENT_EDITOR_V5_PREMATURE_READ_RETRY — transient `Response ended prematurely` валил `ad_href` до записи (2026-07-29)
+- Симптом: Agent Board #59 / `content_jobs.job_id=ce_66bef8d78a88` (`scherbakova`,
+  `porg-zcwl4fn2`, `ad_href`, `/auto/changan/cs75-plus/i/suv-5d` →
+  `/auto/changan/cs75-plus/iv/suv-5d`) упала на чтении снимка:
+  `adgroups.get: Response ended prematurely`.
+- Root-cause: `yandex_gateway.bounded_post` упаковывал локальный обрыв ответа в top-level
+  `error`, но `is_transient()` не считал `prematurely` повторяемым. `_v5_paginate` поэтому
+  возвращал ошибку сразу, до каких-либо Grid/write действий.
+- Решение: в transient markers добавлен `premature`; `_v5_paginate` получил короткий retry
+  для transient v5 `get`-ошибок, не затрагивая ошибки валидации Direct и не повторяя `add`.
+- Проверено: targeted pytest — `6 passed` (`content-editor` batching/retry + `ad_href` Grid RMW);
+  исходный job вручную выполнен тем же executor: `replaced=16`, `confirmed=16`, `errors=[]`.
+  Live Direct read-back по `porg-zcwl4fn2`: old path = 0, new path = 16. `direct-content` и
+  `direct-content-worker` перезапущены и active; row `ce_66bef8d78a88` = `done/replaced=16`.
+
+### COPY_UAC_VIDEO_EXTENSION_NOT_FOUND — source video content id уходил в target UAC create (2026-07-29)
+- Симптом: copy job `b91c78cdc083` (`porg-vrr6oy6r` → `porg-otuyzzyc`, campaign `713139330`)
+  падала на tp7 create: `BannerDefectIds.Gen.VIDEO_EXTENSION_NOT_FOUND`, path `contentIds`,
+  value `1163658513`.
+- Root-cause: UAC video-дополнение account-local. Код уже отбрасывал `contents[].type=video`,
+  но live detail источника держал `1163658513` в `contents[4].meta.creative_id/meta.vast`; при
+  нестандартном/пустом type такой item мог считаться переиспользуемым content id.
+- Решение: `copy_uac._copy_uac_is_video_content` распознаёт video item по type/contentType,
+  `meta.creative_id`, `meta.video_meta_id`, VAST/video mp4 и URL-расширению; `_copy_uac_content_ids`
+  и `_copy_uac_image_hashes` такие items пропускают. Видео остаётся в `video_urls` и загружается
+  уже в target-аккаунт.
+- Проверено: read-only UAC detail подтвердил `1163658513` в `contents[4].meta.creative_id`;
+  targeted pytest UAC subset `11 passed`; `py_compile` OK; ручной helper-прогон не включает video id
+  в `content_ids`; `direct-copy.service` перезапущен и active. Дополнительно похожий retry `2fe87b2edd0f`
+  уже завершился `done`, created campaign `713140706`.
+
 ### CONTENT_EDITOR_BLOCKED_ACCOUNT_PREFLIGHT_SKIP — blocked Direct account больше не падает в Agent Board (2026-07-29)
 - Симптом: content-editor мог ставить `ad_href`/ad text job по аккаунту, который читается через
   OAuth, но заблокирован для записи. Worker доходил до Grid/API write, получал
@@ -61,6 +135,37 @@
   href/images; cookie postprocess проверял только минимальное число картинок, не identity/order.
   Первый фикс через `contents[].source_url` починил href, но не гарантировал картинки: для model
   `get-uac/.../thumb|s4x3` Direct выдавал новые hash.
+
+### COPY_UAC_GEO_NOT_APPLIED — UAC-копия не меняла r-код и гео в ключах (2026-07-29)
+- Симптом: после repair job `5dc4ca62df05` (`porg-qrriv2wt` → `porg-63s3kxux`,
+  `geelybase-196.ru`) live UAC read-back показал, что все 12 target DRAFT-кампаний остались с
+  `r0088` в `display_name`; 5 кампаний с ключами сохранили `Краснодар/краснодар`; целевого
+  `r0121/Екатеринбург` не было.
+- Root-cause: `copy_engine._copy_run_job` строил `rewrite_meta.pairs` и ремапил `r` только для v5
+  snapshot. UAC-only branch создавал `MasterCampaignSpec` вручную и передавал в `copy_uac` только
+  href/feed/region ids, без `geo_pairs` и `target_r_code`; поэтому `display_name`, `titles` и
+  `keywords` копировались из source как есть.
+- Решение: `copy_engine.py` теперь передаёт в `_copy_uac_campaigns(...)` `geo_pairs` из
+  `rewrite_meta` и `target_r_code` (`r0121` для Екатеринбурга). `copy_uac.py` применяет гео к
+  `display_name`, `titles`, `texts`, `sitelinks`, `keywords`, `minus_keywords`; перед созданием
+  срабатывает `uac geo guard`: если в имени остался чужой `r####` или в UAC-текстах остались
+  старые geo-формы из pairs, кампания не создаётся и job получает ошибку вместо тихой плохой копии.
+  Дополнительно добавлен post-create live guard: после `create_master_campaign` UAC detail
+  перечитывается и сверяется с фактически ожидаемыми `display_name`, `href`,
+  `titles/texts/keywords`, а при source `content_ids` — ещё и с source `image_hashes`.
+- Repair существующих 12 (без пересоздания ID): через UAC full PATCH обновлены текущие target DRAFT
+  `713139080, 713139079, 713139089, 713139122, 713139140, 713139139, 713139152, 713139094,
+  713139101, 713139153, 713139108, 713139120`. Менялись `display_name` у 12/12, `keywords` у 5/12,
+  `titles` у 2/12. Read-only verifier после первого repair поймал live-остатки: `713139080`
+  всё ещё отдавал `display_name` с `r0088`, `713139080/713139079` имели href `/auto` вместо
+  source-root, а `713139120` имела 2/5 чужих UAC thumb image hashes. Финальными PATCH исправлены
+  `713139080` (`display_name+href`), `713139079` (`href`) и `713139120` (source ordered
+  `content_ids`). Mapping и verified-сводка записаны в
+  `direct_automation_jobs.result.manual_uac_geo_repair_20260729`.
+- Проверено: LXC101 `py_compile copy_uac.py copy_engine.py` OK; targeted pytest UAC subset —
+  `11 passed`; `direct-copy.service` перезапущен и active. Финальный live read-back после второго
+  PATCH: 12/12 `all_name_r0121=True`, `all_name_no_r0088=True`, `all_no_krasnodar=True`,
+  `all_href_strict_ok=True`, `all_image_hashes_ok=True`.
 
 ### CONTENT_EDITOR_AD_HREF_COOKIE_RIGHTS_MASKED — `ad_href` падал с ложным последним `401 No rights` (2026-07-29)
 - Симптом: Agent Board #50 / `content_jobs.job_id=ce_39f8cdd30779` (`gordeeva`,
@@ -586,7 +691,7 @@
 - Было: `age_lower="age_35"` (35+, исключало ОБА брекета 18-24 И 25-34), установлено DoD §3.6 / 2026-07-09.
 - Стало: `age_lower="age_25"` (25+, исключает только 18-24). Автотаргет (`age_18`) и tp7 (`age_18`) не тронуты.
 - Файлы: `create_set_master_product.py` (age_lower payload), `detect_tp67_name_socdem.py` (эталон _CONSISTENT + _age_lower_of_build), `create_set_plan.py` (комментарий ag011), `DOD.md` (таблица §3.6 + блок возраст-ограничение).
-- Статус: 🟡 фикс на Mac, py_compile OK, ждёт деплоя + прогона. Верификация: live socdem tp6-ручной = «25 и старше».
+- Статус: ✅ ПОДТВЕРЖДЕНО живым прогоном 2026-07-29 (job `181e13d043f9`, porg-pl6iavd5, pavlov/«С пробегом»). UAC `campaign_detail`: ручная tp6 `713141779` (`..._ct001_ag011_g00`, «КС + аудитории») → `socdem.age_lower="age_25"`; автотаргет tp6 `713141782` (`..._ct001_ag001_g00`) → `"age_18"`. Кодер↔socdem согласованы по эталону. `detect_tp67_name_socdem` по 255 tp6/tp7-позициям: рассинхрон = 0.
 - НЕ помогло ранее: —
 
 ### TP67_LIVE_TEXTS_COMPRESSED_AFTER_UAC — live tp6/tp7 терял 3-й текст после UAC-фильтров (2026-07-21)
@@ -3771,7 +3876,7 @@
 - Root-cause: `rs` = глобальные правила из `public.direct_automation_rules` по (site_type, city), ключи `{cpa, budget, cpc_cpa, cpc_budget}` (`_rule_sets`, :90-119). Контракт (:315 `cpa, budget = rs["cpa"], rs["budget"]`; `resolved_budget=budget` :858, read-only справка формы): для CPA бюджет = `rs["budget"]`. Но `_bud` в CPA-ветке возвращал `rs["cpa"] * 10`, а не `rs["budget"]` → глоб. правило бюджета игнорировалось, подставлялось cpa×10 (с дефолтами: 20000 вместо 5000). CPC-ветка (`rs["cpc_budget"]`) корректна. Downstream-фолбэки `create_set_text.py:56` и `create_set_master_product.py:589,652` (`... else rs["budget"]`) — мёртвый код: primary `it["budget"]` уже заполнен неверно, фолбэк не срабатывает.
 - Решение: `create_set_plan.py:318` — `rs["cpa"] * 10` → `rs["budget"]` (один пойнт, минимальная правка). Downstream-фолбэки НЕ тронуты (не нужны после фикса, но не мешают). 2026-07-13.
 - Проверено (офлайн): `python3 -m py_compile create_set_plan.py` OK; трейс `_bud("cpa")` → `rs["budget"]` (дефолт 5000, DB 8000 — match контракта), `_bud("tcpa")` → `rs["cpc_budget"]` не изменилось.
-- Статус: 🟡 код готов, НЕ задеплоено (ждёт синка на LXC101 + рестарта direct-create/-worker + живого прогона CPA-кампании).
+- Статус: ✅ ПОДТВЕРЖДЕНО живым прогоном 2026-07-29 (job `6de63d4ebc99`, porg-pl6iavd5, `n:false`). v5 `campaigns.get`: `tp2_cpa_site` → `Search.PAY_FOR_CONVERSION{Cpa=2000₽, GoalId=586850590, WeeklySpendLimit=20000₽}`, `tp2_cpc_site` → `Search.AVERAGE_CPA{AverageCpa=2000₽, WeeklySpendLimit=5000₽}`. Недельный бюджет CPA взят из правила БД (`direct_automation_rules` Мультибренд/* → budget=20000, cpc_budget=5000), а НЕ из формулы `cpa*10` — сверено с таблицей напрямую. `CounterIds=[110881350]` на обеих.
 - НЕ помогло ранее: — (первая правка; сигнатура была 🔴 в триаже, root-cause найден отдельным агентом).
 
 #### 4. NAME_FEED_NOT_IN_CAMPAIGN — в названии кампании фид, которого в кампании нет

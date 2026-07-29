@@ -1936,6 +1936,11 @@ print(json.dumps(out, ensure_ascii=False))
 
 
 def _gather_once(slepok: str, segment: str, tp: str, timeout: float = 40.0) -> dict:
+    # Витринный сплит: «Монобренд · Lada» / «· Haval» / … → «Монобренд».
+    # Папки «Монобренд · *» в паке не существуют — контент лежит в «Монобренд/».
+    # _ct_dir/_remote_ct_dir/_pack_entry нормализуют сами, но _GATHER_PY передаётся
+    # как subprocess-аргумент и строит путь напрямую → нормализуем здесь.
+    segment = base_site_type(segment)
     # С 2026-07-12: при активном локальном зеркале (NEURO_PACK_MOUNT) читаем тем же _GATHER_PY
     # ЛОКАЛЬНО (как refresh_index), а не по ssh к M3. Иначе gather уходил на СТАРЫЙ M3-pack
     # (ct0001–34), тогда как свежий кодер (ct0800+) задеплоен только в зеркало 101 → cts не
