@@ -87,12 +87,29 @@
 
 Код на Mac → Mutagen → LXC101 `/opt/scripts/home/seoadvanced/direct/`. Сервис `direct-create.service` (:5020) + `direct-create-worker.service`.
 
-## 🔐 Git-guard для copy-сервиса / Agent Board
+## 🔐 Git: три зоны — куда что коммитить (правило Семёна 2026-07-29)
 
-Источник правды для правок **только copy-сервиса** (`/direct/automation/copy` и API-вкладка
-`/direct/automation/content?section=copy`) — nested git `home/seoadvanced/direct/.git`, рабочая
-ветка `ydirect_automation_copy_auto_ak_ak`. Остальные части Direct (`content`, `create`, `slepki`,
-accounts и т.д.) в этот git-контракт не включать.
+⚠️ `home/seoadvanced/direct/` — **отдельный nested git**, родительский репо его не видит
+(`home/.gitignore:56`). Все git-команды выполнять ИЗ каталога `direct/`.
+
+**Определяй зону ПО ВКЛАДКЕ, которую правишь, а не по имени файла:**
+
+| Зона | Что входит | Куда коммитить |
+|---|---|---|
+| **Создание** | всё, кроме двух вкладок ниже: создание РК, слепки, автоправила, accounts, gateway, ai, посевы | репо **`neurodirectologist`** (`origin`) |
+| **Контент** | `/direct/automation/content` **без** copy-части | репо **`yandex_direct_content_redactor`** |
+| **Копирование** | `/direct/automation/copy` + API-вкладка `/direct/automation/content?section=copy` | ветка **`ydirect_automation_copy_auto_ak_ak`** |
+
+Репозитории:
+- `https://github.com/DirectAdvance/neurodirectologist.git`
+- `https://github.com/DirectAdvance/yandex_direct_content_redactor.git`
+
+⛔ **Не смешивать зоны в одном коммите.** Правка задела две зоны — два коммита по явному
+pathspec, каждый в свою зону. `git add -A` / `git add .` запрещены: в папке бывает
+параллельная сессия, и чужие файлы утягиваются в коммит (реальный инцидент 2026-07-29).
+
+⚠️ **Осторожно с `reset --soft`**: он сносит и чужие коммиты, сделанные поверх. 2026-07-29
+так был потерян коммит другой сессии — содержимое уцелело только в индексе.
 
 Перед любой правкой copy-файлов агент или локальная сессия запускает:
 
