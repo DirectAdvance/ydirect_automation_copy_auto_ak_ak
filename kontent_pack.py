@@ -899,7 +899,7 @@ def _struct_slepok_names() -> dict:
     совпадали с дропдауном, а не жили в отдельном хардкод-словаре."""
     out: dict = {}
     try:
-        from . import slepki_store as _ss
+        from .slepki_code import slepki_store as _ss
         for d in _ss.assemble().get("directologists", []):
             k = str(d.get("key") or "").strip().lower()
             nm = str(d.get("name") or "").strip()

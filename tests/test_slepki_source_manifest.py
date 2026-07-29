@@ -3,7 +3,7 @@ from pathlib import Path
 
 from flask import Flask
 
-from direct import slepki_store
+from direct.slepki_code import slepki_store
 from direct.create import blueprint, create_set_plan
 from direct.scripts.slepki_preflight import _source_manifest_errors
 

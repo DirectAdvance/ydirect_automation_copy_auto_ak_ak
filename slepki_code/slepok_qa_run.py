@@ -262,7 +262,7 @@ def main():
 
     global GOAL
     if GOAL is None:
-        from .create.blueprint_metrika import _goal_vse_formy
+        from ..create.blueprint_metrika import _goal_vse_formy
         with app.app_context():
             gid, gname = _goal_vse_formy(COUNTER)
         if not gid:

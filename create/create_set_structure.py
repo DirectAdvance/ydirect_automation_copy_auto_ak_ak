@@ -159,7 +159,7 @@ def _slepok_key(slepok: str) -> str:
 def _load_struct() -> dict:
     # Структура разбита на per-slepok файлы (direct/slepki/) — собираем через slepki_store
     # (у него свой кэш по сигнатуре mtime+size частей, ~16.5k items не перечитываются зря).
-    from .. import slepki_store as _ss
+    from ..slepki_code import slepki_store as _ss
     try:
         return _ss.assemble()
     except Exception:  # noqa: BLE001

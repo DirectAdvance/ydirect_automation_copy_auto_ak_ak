@@ -42,13 +42,15 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import kontent_pack as kp
-from .geo_strip import normalize_geo_lines
+from .. import kontent_pack as kp
+from ..geo_strip import normalize_geo_lines
 
 # preflight — из scripts/ (тот же корень пакета)
 import importlib.util as _ilu
 
-_HERE = Path(__file__).resolve().parent
+# Пакет slepki_code/ лежит на уровень глубже, а ресурсы (slepki/, targeting_profile.json,
+# scripts/, маркеры) остались в корне direct/ — поэтому база на родителя.
+_HERE = Path(__file__).resolve().parent.parent
 # slepki_structure.json больше не монолит — структура в direct/slepki/ (см. slepki_store),
 # читается _load_struct()→assemble(), пишется _write_struct()→write_directologists().
 _PROFILE_PATH = _HERE / "targeting_profile.json"
@@ -354,7 +356,7 @@ _M3_WRITE_MAP_PY = (
     "    os.replace(tmp,path)\n"
 )
 
-_PACK_CACHE_MARKER = Path(__file__).resolve().parent / "slepki_pack_cache.marker"
+_PACK_CACHE_MARKER = Path(__file__).resolve().parent.parent / "slepki_pack_cache.marker"
 
 
 def _touch_pack_cache_marker() -> None:

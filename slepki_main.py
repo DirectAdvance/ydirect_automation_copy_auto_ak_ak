@@ -53,7 +53,7 @@ from auth import _service_required_any  # noqa: E402
 # Domain wiring only: no direct.blueprint, no main Flask app and no unrelated routes.
 # automation_runtime на импорте делает _sed.configure({...}) — без него редактор без DI.
 from direct import automation_runtime as _runtime  # noqa: E402
-from direct import slepki_editor as _sed  # noqa: E402
+from direct.slepki_code import slepki_editor as _sed  # noqa: E402
 from direct.web.routes_slepki_edit import register_slepki_edit_routes  # noqa: E402
 from direct.web.routes_settings import save_global_minus_places_payload  # noqa: E402
 

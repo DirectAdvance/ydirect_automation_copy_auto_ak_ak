@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 from flask import Flask
 
-from direct import automation_runtime, slepki_store
+from direct import automation_runtime
+from direct.slepki_code import slepki_store
 from direct.create import create_set_plan
 
 DIRECT_DIR = Path(__file__).resolve().parents[1]

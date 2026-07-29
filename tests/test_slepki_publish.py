@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from direct import slepki_publish as sp
+from direct.slepki_code import slepki_publish as sp
 
 
 @pytest.fixture()

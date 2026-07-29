@@ -1,4 +1,4 @@
-from direct import slepki_editor
+from direct.slepki_code import slepki_editor
 
 
 def test_tp2_keyword_preview_falls_back_to_tp1_group(tmp_path, monkeypatch):

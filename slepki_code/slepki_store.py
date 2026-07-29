@@ -23,7 +23,9 @@ import threading
 import time
 from pathlib import Path
 
-_HERE = Path(__file__).resolve().parent
+# Пакет slepki_code/ лежит на уровень глубже, а ресурсы (slepki/, targeting_profile.json,
+# scripts/, маркеры) остались в корне direct/ — поэтому база на родителя.
+_HERE = Path(__file__).resolve().parent.parent
 SLEPKI_DIR = _HERE / "slepki"
 _ORDER_PATH = SLEPKI_DIR / "_order.json"
 

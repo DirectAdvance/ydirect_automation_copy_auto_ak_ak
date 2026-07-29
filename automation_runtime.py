@@ -123,7 +123,7 @@ from .repair import repair_executor as rex  # scoped repair executors (cookie/Gr
 from .repair import repair_auto as rauto  # repair orchestration without Flask/DB wiring
 from . import verification_service as vsvc  # live verification orchestration without Flask
 from .create import blueprint_targeting as _btg  # ct→сегмент классификатор + профиль таргетинга (DI ниже)
-from . import slepki_editor as _sed  # редактор структуры/ключей слепков (edit-джобы очереди, DI ниже)
+from .slepki_code import slepki_editor as _sed  # редактор структуры/ключей слепков (edit-джобы очереди, DI ниже)
 from .create.blueprint_targeting import (         # ре-экспорт: внутр. вызовы + внешний from direct.create.blueprint import _ct_segment
     _gc_ct, _ct_is_model_map, _ct_segment_map, _ct_segment, _seg_canon, _model_cts,
     _segment_donor, _targeting_profile, _slepok_tp_modes, _slepok_profile_excludes_tp,
@@ -241,7 +241,7 @@ def _json(name: str):
     инъектированный _json (== этот), поэтому call-sites НЕ меняются.
     """
     if name == "slepki_structure.json":
-        from . import slepki_store as _sstore  # noqa: PLC0415
+        from .slepki_code import slepki_store as _sstore  # noqa: PLC0415
         return _sstore.assemble()
     path = _HERE / name
     stat = path.stat()
@@ -682,7 +682,7 @@ def _donor_tp4_models_map_for_light_ui() -> dict:
 
 def _ui_structure_payload(*, selected_slepok: str = "", light: bool = False) -> dict:
     """Heavy structure data loaded only by UI panels that actually need it."""
-    from . import slepki_store as _sstore  # noqa: PLC0415
+    from .slepki_code import slepki_store as _sstore  # noqa: PLC0415
     struct = (_sstore.assemble_light_for_selected(selected_slepok)
               if light else _json("slepki_structure.json"))
     # Структура слепков живёт в per-slepok файлах (direct/slepki/*.json) — монолита
