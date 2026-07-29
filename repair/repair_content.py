@@ -40,7 +40,7 @@ def execute_promo_repair(login: str, ctx: dict, campaign_ids: list[int], deps: R
     )
     if not pid:
         return {"error": note or "промо не создано", "uses_direct_units": False}, 422
-    from .promo import PromoClient
+    from ..promo import PromoClient
     attach = PromoClient(client, login).attach(pid, campaign_ids)
     errors = (((attach.get("data") or {}).get("updateCampaignsPromoExtension") or {})
               .get("validationResult") or {}).get("errors") or attach.get("errors")
@@ -209,7 +209,7 @@ def _attach_group_shortfall(row: dict[str, Any], rep: dict[str, Any]) -> list[di
     в failed увёл бы кампанию в пересоздание — та же ошибка, что «расхождение в rep['errors']»
     (ERRORS_JOURNAL: GRID_CREATE_RETRY_DUPLICATES_ADGROUPS, «НЕ помогло ранее»).
     """
-    from .local_result_verifier import verify_local_result
+    from ..local_result_verifier import verify_local_result
 
     row["groups_expected"] = rep.get("groups_expected")
     if rep.get("groups_shortfall"):

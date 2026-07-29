@@ -8,9 +8,9 @@ from pathlib import Path
 
 from .. import campaign as cmc
 from .. import grid_finalize as gf
-from .. import repair_auto as rauto
-from .. import repair_executor as rex
-from .. import repair_gate as rgate
+from ..repair import repair_auto as rauto
+from ..repair import repair_executor as rex
+from ..repair import repair_gate as rgate
 from .copy_step_utils import _invalidate_target_edit_rows, _source_edit_rows, _subset_rows
 
 

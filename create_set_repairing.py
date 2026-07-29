@@ -263,7 +263,7 @@ def _campaign_images_repair(login: str, campaign_id: int, ctx: dict) -> dict:
     """
     from . import grid_finalize as _gf
     from . import campaign as _cmc
-    from . import repair_executor as _rex
+    from .repair import repair_executor as _rex
     body = ctx.get("body") or {}
     acc = _account_ctx(login)
     if not acc:

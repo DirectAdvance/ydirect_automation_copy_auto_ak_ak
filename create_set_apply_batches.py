@@ -27,7 +27,7 @@ from typing import Any
 
 from . import campaign as cmc
 from . import grid_finalize as gf
-from .repair_executor import (
+from .repair.repair_executor import (
     RepairDeps,
     execute_callouts_repair,
     execute_promo_repair,

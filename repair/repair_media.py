@@ -180,7 +180,7 @@ _ADS_FOR_IMG_CLEAR_Q = (
 
 def _get_ads_with_images(login: str, cookie: str, campaign_id: int) -> list[int]:
     """Возвращает ad_id объявлений с непустыми imageHashes в поисковой кампании."""
-    from . import grid_read as _gr
+    from .. import grid_read as _gr
     rc = _gr.GridReadClient(login, cookie=cookie)
     rc._bootstrap_csrf()
     inp = {
@@ -267,7 +267,7 @@ def execute_images_forbidden_repair(login: str, ctx: dict, campaign_ids: list[in
             # Ревью 03.07 #13: creativeIds проносим (иначе full-replace стирал видео), сырую
             # bannerPrice нормализуем (decimal-строку Grid молча сбрасывал), объявления без
             # прочитанного состояния пропускаем (пустой payload затёр бы контент).
-            from .create_set_feeds import _norm_read_ad_price
+            from ..create_set_feeds import _norm_read_ad_price
             upd_items: list[dict] = []
             for aid in with_images:
                 st = full_state.get(aid) or {}

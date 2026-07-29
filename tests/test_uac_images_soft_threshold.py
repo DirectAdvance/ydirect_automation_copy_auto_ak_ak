@@ -13,7 +13,8 @@
 """
 from pathlib import Path
 
-from direct import repair_auto, repair_gate, repair_planner, uac_verifier
+from direct import uac_verifier
+from direct.repair import repair_auto, repair_gate, repair_planner
 
 
 def _detail(images: int, *, videos: int = 0) -> dict:

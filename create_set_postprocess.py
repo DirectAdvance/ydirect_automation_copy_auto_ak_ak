@@ -6,8 +6,8 @@ import threading
 import time
 from typing import Any, Callable
 
-from . import repair_auto as rauto
-from . import repair_gate as rgate
+from .repair import repair_auto as rauto
+from .repair import repair_gate as rgate
 from .verifier import verify_create_set
 
 

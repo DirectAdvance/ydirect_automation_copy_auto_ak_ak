@@ -54,7 +54,7 @@ from typing import Any
 from . import grid_finalize as gf
 from . import grid_read as gr
 from . import uac_read as ur
-from . import repair_executor as rex
+from .repair import repair_executor as rex
 
 _DEPS: dict = {}
 
@@ -1805,7 +1805,7 @@ def audit_account_jobs(login: str, job_result: dict) -> dict:
         "counts": _count_by_code(all_issues),
     }
     try:
-        from . import repair_planner as rp
+        from .repair import repair_planner as rp
         report["repair_plan"] = rp.build_repair_plan(report)
     except Exception:  # noqa: BLE001
         pass

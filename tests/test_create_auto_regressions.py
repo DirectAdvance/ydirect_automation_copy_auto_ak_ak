@@ -17,8 +17,8 @@ from direct import city_morph
 from direct import grid_content_verifier
 from direct import kontent_pack
 from direct import link_check
-from direct import repair_gate
-from direct import repair_planner
+from direct.repair import repair_gate
+from direct.repair import repair_planner
 from direct import text_gen
 from direct import uac_read
 from direct import uac_verifier

@@ -13,8 +13,8 @@ import uuid
 
 from flask import session
 
-from . import repair_auto as rauto
-from . import repair_gate as rgate
+from .repair import repair_auto as rauto
+from .repair import repair_gate as rgate
 from . import stage_timing as _stage_timing   # watchdog: отметки стадий = признак жизни джобы
 from . import slepki_editor as _sed
 from . import write_gate as _write_gate

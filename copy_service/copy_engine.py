@@ -19,8 +19,8 @@ from pathlib import Path
 from .. import campaign as cmc
 from .. import grid_create as gc
 from .. import grid_finalize as gf
-from .. import repair_auto as rauto
-from .. import repair_gate as rgate
+from ..repair import repair_auto as rauto
+from ..repair import repair_gate as rgate
 from .copy_request import parse_feed_map, parse_image_hashes
 from ..llm_providers import _m3_complete, _m3_llm_probe
 

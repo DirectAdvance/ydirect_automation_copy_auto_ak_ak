@@ -118,9 +118,9 @@ from .copy_service.copy_engine import (             # ре-экспорт: _crea
     _copy_run_job, _copy_job_upsert, _copy_feeds_preview, _copy_jobs_recover,
     _COPY_JOBS, _COPY_JOBS_LOCK, _COPY_DEFAULT_FEED_PATH,
 )
-from . import repair_gate as rgate  # read-only repair-gate helpers
-from . import repair_executor as rex  # scoped repair executors (cookie/Grid-first)
-from . import repair_auto as rauto  # repair orchestration without Flask/DB wiring
+from .repair import repair_gate as rgate  # read-only repair-gate helpers
+from .repair import repair_executor as rex  # scoped repair executors (cookie/Grid-first)
+from .repair import repair_auto as rauto  # repair orchestration without Flask/DB wiring
 from . import verification_service as vsvc  # live verification orchestration without Flask
 from . import blueprint_targeting as _btg  # ct→сегмент классификатор + профиль таргетинга (DI ниже)
 from . import slepki_editor as _sed  # редактор структуры/ключей слепков (edit-джобы очереди, DI ниже)

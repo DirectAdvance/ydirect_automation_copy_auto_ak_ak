@@ -572,7 +572,7 @@ def test_cookie_shopping_build_carries_group_shortfall(monkeypatch):
 
 
 def _repair_deps(text_ctx=None, shop_ctx=None):
-    from direct.repair_common import RepairDeps
+    from direct.repair.repair_common import RepairDeps
 
     return RepairDeps(
         account_ctx=lambda login: {},
@@ -588,7 +588,7 @@ def _repair_deps(text_ctx=None, shop_ctx=None):
 def test_repair_text_path_reports_group_shortfall(monkeypatch):
     """Путь 2 — repair-добивка текстовых групп: «добито 13 из 14» больше не проходит молча,
     но кампанию НЕ роняет (ok остаётся True — 13 рабочих групп подлежат добивке)."""
-    from direct import repair_content as rc
+    from direct.repair import repair_content as rc
 
     rep = {"campaign_id": 713102313, "groups": 13, "ads": 13, "keywords": 500,
            "ad_ids": [11], "adgroup_ids": [11], "errors": []}
@@ -611,7 +611,7 @@ def test_repair_text_path_reports_group_shortfall(monkeypatch):
 
 def test_repair_shopping_path_reports_group_shortfall(monkeypatch):
     """Тот же путь для товарного репейра (add_shopping_content_to_existing)."""
-    from direct import repair_content as rc
+    from direct.repair import repair_content as rc
 
     rep = {"campaign_id": 713102313, "groups": 3, "shopping_ads": 3, "listing_ads": 3,
            "adgroup_ids": [1, 2, 3], "shopping_ad_ids": [7], "errors": []}
@@ -632,7 +632,7 @@ def test_repair_shopping_path_reports_group_shortfall(monkeypatch):
 
 def test_repair_silent_when_all_groups_created(monkeypatch):
     """Обратная сторона: расхождения нет → верификатор молчит (гейт не шумит на норме)."""
-    from direct import repair_content as rc
+    from direct.repair import repair_content as rc
 
     rep = {"campaign_id": 713102313, "groups": 14, "ads": 14, "keywords": 500,
            "ad_ids": [], "adgroup_ids": [], "errors": []}
