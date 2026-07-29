@@ -5,6 +5,50 @@
 
 > Архив сессий старше 3 дней — **STATE_ARCHIVE.md** (ротация 2026-07-19 (2): перенесены сессии 07-16 и старше). Правило ротации — см. CLAUDE.md.
 
+## Сессия 2026-07-29 — Content Editor: заблокированные Direct-аккаунты пропускаются до мутации
+
+**До:** content job на заблокированном для записи аккаунте могла падать в `error` и создавать
+Agent Board-задачу, хотя это не кодовая авария: аккаунт читается, но Direct на write отвечает
+`3000 / Аккаунт пользователя блокирован`.
+
+**После:** в `content_replace_routes.py` добавлен best-effort no-op `ads.update` preflight по первой
+target-записи до Grid/UAC мутации. Skip срабатывает только на явный текст
+`Аккаунт пользователя блокирован`; generic `Нет доступа к API` без этой фразы не блокирует Grid-path.
+`content_worker._finish` для `blocked_account=True` пишет очередь как `done`, `replaced=0`,
+`errors=[]`, а в `error/result.message` — `аккаунт ... заблокирован..., задача пропущена`; Agent Board
+не создаётся.
+
+**Проверено:** LXC101 targeted pytest — 9 passed; services `direct-content`/`direct-content-worker`
+перезапущены и active. Live dry-run executor на `e-20074375` вернул `blocked_account=True`,
+`targets=8` до Grid-cookie. Временная queue smoke job `ce_smoke_blocked_preflight_20260729`
+завершилась `done/replaced=0/errors=[]/agent_board_task_id=NULL` с текстом про заблокированный
+аккаунт; smoke row удалён, Agent Board open tasks = `[]`.
+
+## Сессия 2026-07-29 — Agent Board #54-#56: свежие `ad_href` задачи закрыты как rights-blocked
+
+**До:** на странице `/services/agent-board/` висели `running/queued` задачи #54-#56 по
+`content_jobs` `ce_020d3d412b29`, `ce_6942d74be5c8`, `ce_cb225c130610`. Все три пытались заменить
+path `/auto/changan/uni-s-cs55plus/i-restyling/suv-5d` →
+`/auto/changan/uni-s-cs55plus/1-rest/suv-5d` и исходно упали generic-ошибкой
+`ни одна кука не подошла ... HTTP 401 No rights`.
+
+**После:** выполнен полный live-перебор всех доступных cookie (`6 default` + `skuderko1`):
+рабочей web/Grid-cookie нет. Для `e-20074375` и `e-20074377` управляющая
+`victorylotsofads1` fresh/local даёт `403 Нет прав`, остальные cookie — `401 No rights`; для
+`porg-tbtotml3` управляющая `victoryagency-direct1618440` fresh/local даёт `403 Нет прав`,
+остальные — `401 No rights`. Official no-op `ads.update` по sample ad_id на всех трёх аккаунтах
+возвращает `3000 Нет доступа к API / Аккаунт пользователя блокирован`. Rows
+`direct_automation.content_jobs.error/result` обновлены на точный
+`cookie_rights_full_bruteforce_and_api_write_blocked`; Agent Board #54-#56 переведены в
+terminal `blocked`.
+
+**Проверено/ограничение:** live `_load_account` read-back: `e-20074375` old=8/new=0
+(`ad_id=17497077822`, campaign `705858905`), `e-20074377` old=8/new=0 (`ad_id=17495443853`,
+campaign `705837936`), `porg-tbtotml3` old=6/new=0 (`ad_id=17281287927`, campaign `703196375`).
+Код менять не потребовалось: текущий executor уже scoped по `job.agency`. Операции не добиты
+мутацией Direct: нужен web/Grid-доступ к этим аккаунтам или отдельное решение Семёна по способу
+правки.
+
 ## Сессия 2026-07-29 — Agent Board #53: `ce_72ffaeb95c6d` заблокирована web/Grid-правами
 
 **До:** job `ad_href` (`gordeeva`, `porg-whs6d5n5`, agency `victorylotsofads1`) падала как

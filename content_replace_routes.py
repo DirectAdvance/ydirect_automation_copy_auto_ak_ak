@@ -36,6 +36,7 @@ from .content_editor_helpers import (
     _uac_cids_from_targets,
     _v5_paginate,
     _AD_FIELD,
+    _AD_API_FIELD,
     _SITELINK_TYPES,
     _SITELINK_FIELD,
     _match_targets,
@@ -55,6 +56,71 @@ from .content_sitelinks_routes import (
     _replace_sitelink_text_grid,
     _replace_uac_sitelinks,
 )
+
+
+_ACCOUNT_BLOCKED_MARKERS = (
+    "аккаунт пользователя блокирован",
+)
+
+
+def _direct_account_blocked_reason(resp: dict) -> str:
+    """Return a human reason when Direct refuses writes because the account is blocked."""
+    if not isinstance(resp, dict):
+        return ""
+    err = resp.get("error")
+    if not isinstance(err, dict):
+        return ""
+    text = " ".join(
+        str(err.get(key) or "")
+        for key in ("error_string", "error_detail", "message")
+    ).strip()
+    low = text.lower()
+    code = err.get("error_code")
+    if code == 3000 and any(marker in low for marker in _ACCOUNT_BLOCKED_MARKERS):
+        return text or "Аккаунт пользователя блокирован"
+    if "аккаунт пользователя блокирован" in low:
+        return text or "Аккаунт пользователя блокирован"
+    return ""
+
+
+def _blocked_account_skip(login: str, reason: str, *, probe: str = "") -> dict:
+    msg = f"аккаунт {login} заблокирован для записи в Direct, задача пропущена"
+    if reason:
+        msg += f": {reason}"
+    return {
+        "replaced": 0,
+        "errors": [],
+        "blocked_account": True,
+        "skipped": [msg],
+        "message": msg,
+        "blocked_reason": "direct_account_blocked",
+        "preflight": probe or "direct_write_noop",
+    }
+
+
+def _ad_noop_write_blocked(
+    v5_call: Callable,
+    token: str,
+    login: str,
+    ad_id: int,
+    field: str,
+    values: dict,
+) -> dict | None:
+    """Probe a no-op ads.update before cookie/Grid mutation.
+
+    The probe is only a blocked-account detector. Any non-blocked response is
+    ignored, so Grid-only flows are not held hostage by v5 validation quirks.
+    """
+    if not ad_id or not field or not values:
+        return None
+    try:
+        resp = v5_call("ads", "update", token, login, {"Ads": [{"Id": int(ad_id), field: values}]})
+    except Exception:  # noqa: BLE001 - failed probe must not block the proven Grid writer
+        return None
+    reason = _direct_account_blocked_reason(resp)
+    if reason:
+        return _blocked_account_skip(login, reason, probe="ads.update noop")
+    return None
 
 
 def _normalize_ad_content_values(values, *, limit: int, max_len: int) -> list[str]:
@@ -366,6 +432,21 @@ def _replace_ad_href(token: str, login: str, old_path: str, new_path: str,
     if not seen_ids:
         return {"replaced": 0, "errors": ["объявлений с таким путём не найдено"], "skipped": skipped}
 
+    probe_row = (by_subtype["TextAd"] or by_subtype["ResponsiveAd"] or [None])[0]
+    if probe_row:
+        blocked = _ad_noop_write_blocked(
+            v5_call,
+            token,
+            login,
+            int(probe_row["id"]),
+            "TextAd",
+            {"Href": str(probe_row.get("href") or "")},
+        )
+        if blocked:
+            blocked["targets"] = len(seen_ids)
+            blocked["skipped"] = list(blocked.get("skipped") or []) + skipped
+            return blocked
+
     replaced = 0
     # skipped (нередактируемые типы) — НЕ ошибки: возвращаем отдельным полем,
     # иначе воркер берёт errors[0] как провал задания даже при успешной замене.
@@ -577,6 +658,21 @@ def _h_ad_field(ctx: dict) -> dict:
         return {"replaced": 0, "errors": ["объявление с таким текстом не найдено"]}
     non_uac = [t for t in targets if t.get("source") != "uac"]
     uac_targets = [t for t in targets if t.get("source") == "uac"]
+    if non_uac:
+        probe = next((t for t in non_uac if int(t.get("ad_id") or 0) > 0), None)
+        if probe:
+            value = str(probe.get("before") or old)
+            blocked = _ad_noop_write_blocked(
+                ctx["v5_call"],
+                ctx["token"],
+                ctx["login"],
+                int(probe["ad_id"]),
+                "TextAd",
+                {_AD_API_FIELD[typ]: value},
+            )
+            if blocked:
+                blocked["targets"] = len(targets)
+                return blocked
     replaced = 0
     errors: list[str] = []
     result: dict = {}

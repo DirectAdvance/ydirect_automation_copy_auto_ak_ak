@@ -699,18 +699,18 @@ class UacClient:
                 except UacApiError:
                     pass
                 time.sleep(0.3)
-            for u in spec.video_urls:                       # видео по URL
-                try:
-                    content_ids.append(self.upload_content(u, "video", spec.adv_type))
-                except UacApiError:
-                    pass
-                time.sleep(0.3)
-            for path in spec.video_files[:2]:               # ЛОКАЛЬНЫЕ видео (multipart, лимит 2)
-                try:
-                    content_ids.append(self.upload_video_file(path, spec.adv_type))
-                except UacApiError:
-                    pass
-                time.sleep(0.3)
+        for u in spec.video_urls:                           # видео по URL
+            try:
+                content_ids.append(self.upload_content(u, "video", spec.adv_type))
+            except UacApiError:
+                pass
+            time.sleep(0.3)
+        for path in spec.video_files[:2]:                   # ЛОКАЛЬНЫЕ видео (multipart, лимит 2)
+            try:
+                content_ids.append(self.upload_video_file(path, spec.adv_type))
+            except UacApiError:
+                pass
+            time.sleep(0.3)
 
         # 3. создание черновика
         payload = self.build_payload(spec, content_ids)

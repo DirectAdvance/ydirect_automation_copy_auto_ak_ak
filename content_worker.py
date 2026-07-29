@@ -142,8 +142,12 @@ def _finish(job_id: str, out: dict) -> None:
         return
     errors = out.get("errors") or []
     replaced = int(out.get("replaced") or 0)
-    status = "done" if (not errors or replaced) else "error"
-    error = "" if status == "done" else (errors or ["замена не выполнена"])[0]
+    if out.get("blocked_account"):
+        status = "done"
+        error = out.get("message") or out.get("blocked_reason") or "аккаунт заблокирован, задача пропущена"
+    else:
+        status = "done" if (not errors or replaced) else "error"
+        error = "" if status == "done" else (errors or ["замена не выполнена"])[0]
     ce._jobs_exec(
         f"UPDATE {T} SET status=%s, done=1, replaced=%s, errors=%s::jsonb, "
         "result=%s::jsonb, error=%s, finished_at=now() WHERE job_id=%s",

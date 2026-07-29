@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import campaign as cmc
 
-from .copy_geo import _copy_target_href
+from .copy_geo import _COPY_R_CODE_RE, _copy_apply_geo_replacements, _copy_normalize_campaign_name, _copy_target_href
 
 # ── DI (инъектится copy_engine.configure фан-аутом; None до инъекции) ──
 _direct_tokens = _resolve_agency_hint = _token_for_login = _v501_svc = None
@@ -60,18 +60,61 @@ def _copy_uac_strings(value, *keys: str, limit: int = 8) -> list[str]:
     return vals
 
 
-def _copy_uac_sitelinks(value, *, source_domain: str, target_domain: str) -> list[dict]:
+def _copy_uac_geo_text(text: str | None, geo_pairs: list[tuple[str, str]] | None) -> str:
+    return _copy_apply_geo_replacements(text, list(geo_pairs or [])).strip()
+
+
+def _copy_uac_geo_strings(values: list[str], geo_pairs: list[tuple[str, str]] | None) -> list[str]:
+    out: list[str] = []
+    for val in values or []:
+        text = _copy_uac_geo_text(val, geo_pairs)
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def _copy_uac_sitelinks(value, *, source_domain: str, target_domain: str,
+                        geo_pairs: list[tuple[str, str]] | None = None) -> list[dict]:
     out = []
     for item in (value or []):
         if not isinstance(item, dict):
             continue
-        title = str(item.get("title") or item.get("Title") or item.get("text") or "").strip()
+        title = _copy_uac_geo_text(item.get("title") or item.get("Title") or item.get("text") or "", geo_pairs)
         href = str(item.get("href") or item.get("Href") or item.get("url") or "").strip()
-        desc = str(item.get("description") or item.get("Description") or "").strip()
+        desc = _copy_uac_geo_text(item.get("description") or item.get("Description") or "", geo_pairs)
         if not title:
             continue
         out.append({"title": title, "href": _copy_target_href(href, source_domain, target_domain), "description": desc})
     return out
+
+
+def _copy_uac_geo_guard(name: str, text_fields: list[str], geo_pairs: list[tuple[str, str]] | None,
+                        target_r_code: str = "") -> list[str]:
+    """Fail before creating UAC if geo/r-code normalization did not actually land."""
+    errors: list[str] = []
+    target_r_code = str(target_r_code or "").strip()
+    if target_r_code:
+        bad_codes = sorted({m.group(0) for m in _COPY_R_CODE_RE.finditer(str(name or ""))
+                            if m.group(0) != target_r_code})
+        if bad_codes:
+            errors.append(f"name содержит чужой r-код {bad_codes[0]} вместо {target_r_code}")
+
+    source_terms: list[str] = []
+    for old, new in geo_pairs or []:
+        old_s = str(old or "").strip()
+        new_s = str(new or "").strip()
+        if old_s and old_s.casefold() != new_s.casefold() and old_s not in source_terms:
+            source_terms.append(old_s)
+    if not source_terms:
+        return errors
+
+    haystack = "\n".join([str(name or "")] + [str(x or "") for x in text_fields or []])
+    hay_low = haystack.casefold()
+    for term in source_terms:
+        if term.casefold() in hay_low:
+            errors.append(f"осталось исходное гео {term!r}")
+            break
+    return errors
 
 
 def _copy_uac_media_urls(row: dict, *, want: str) -> list[str]:
@@ -169,9 +212,17 @@ def _copy_uac_campaign_href(row: dict, *, fallback_href: str, source_domain: str
 
 
 def _copy_uac_content_ids(row: dict) -> list[str]:
+    """Source UAC content ids that are safe to reuse in target create payload.
+
+    Video content ids are account-local UAC extensions. Reusing a source video id
+    in the target account makes create fail with VIDEO_EXTENSION_NOT_FOUND, so
+    videos must go through ``video_urls`` and be uploaded by the target client.
+    """
     ids: list[str] = []
     for item in (row.get("contents") or []):
         if not isinstance(item, dict):
+            continue
+        if "video" in str(item.get("type") or item.get("content_type") or "").strip().lower():
             continue
         cid = str(item.get("id") or "").strip()
         if cid and cid not in ids:
@@ -365,7 +416,9 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
                         selected_grid_rows: list[dict], body: dict, *,
                         target_href: str, region_ids: list[int], counter_id: int,
                         goal_id: int, target_feed_id: int | None,
-                        feed_map: dict | None = None) -> dict:
+                        feed_map: dict | None = None,
+                        geo_pairs: list[tuple[str, str]] | None = None,
+                        target_r_code: str = "") -> dict:
     """Recreate selected UAC/tp6/tp7 campaigns from source detail into target account."""
     rep = {"created": 0, "results": [], "errors": [], "uses_direct_units": False}
     rows = [r for r in selected_grid_rows if _copy_is_uac_grid_row(r)]
@@ -439,7 +492,8 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
             src_id = int(row.get("id") or 0)
         except (TypeError, ValueError):
             src_id = 0
-        name = str(row.get("name") or "").strip() or f"copy-uac-{src_id}"
+        raw_name = str(row.get("name") or "").strip() or f"copy-uac-{src_id}"
+        name = _copy_normalize_campaign_name(raw_name, list(geo_pairs or []), target_r_code)
         if src_id <= 0:
             continue
         try:
@@ -450,12 +504,13 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
                 raise RuntimeError("uac detail пуст")
             source_domain = str(body.get("_copy_source_domain") or "").strip()
             target_domain = str(body.get("target_domain") or "").strip()
-            titles = _copy_uac_strings(d, "titles", "title_items", limit=5)
-            texts = _copy_uac_strings(d, "texts", "text_items", limit=3)
+            titles = _copy_uac_geo_strings(_copy_uac_strings(d, "titles", "title_items", limit=5), geo_pairs)
+            texts = _copy_uac_geo_strings(_copy_uac_strings(d, "texts", "text_items", limit=3), geo_pairs)
             sitelinks = _copy_uac_sitelinks(_copy_uac_value(d, "sitelinks", default=[]) or [],
-                                            source_domain=source_domain, target_domain=target_domain)
-            keywords = _copy_uac_strings(d, "keywords", limit=200)
-            minus_keywords = _copy_uac_strings(d, "minus_keywords", limit=200)
+                                            source_domain=source_domain, target_domain=target_domain,
+                                            geo_pairs=geo_pairs)
+            keywords = _copy_uac_geo_strings(_copy_uac_strings(d, "keywords", limit=200), geo_pairs)
+            minus_keywords = _copy_uac_geo_strings(_copy_uac_strings(d, "minus_keywords", limit=200), geo_pairs)
             audiences = _copy_uac_value(d, "audiences", "interest_ids", default=[]) or []
             pricing = str(_copy_uac_value(d, "pricing", "payment_type", "paymentType", default="PER_CLICK") or "PER_CLICK")
             week_limit = _copy_uac_value(d, "week_limit", "weekly_budget", "weekBudget", default=default_budget)
@@ -467,6 +522,16 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
                 titles = ["Автомобили в наличии", "Выгода на авто", "Официальный дилер"]
             if not texts:
                 texts = ["Подберите автомобиль с выгодой. Оставьте заявку на сайте."]
+            geo_guard_errors = _copy_uac_geo_guard(
+                name,
+                titles + texts + keywords + minus_keywords
+                + [str(s.get("title") or "") for s in sitelinks if isinstance(s, dict)]
+                + [str(s.get("description") or "") for s in sitelinks if isinstance(s, dict)],
+                geo_pairs,
+                target_r_code,
+            )
+            if geo_guard_errors:
+                raise RuntimeError("uac geo guard: " + "; ".join(geo_guard_errors[:3]))
             src_feed_raw = _copy_uac_value(d, "feed_id", "listings_feed_id")
             is_product = name.lower().startswith("tp7_") or bool(src_feed_raw)
             # Пофидовая замена: если исходный фид кампании есть в feed_map — берём целевой из карты,

@@ -4,6 +4,31 @@
 > метод решения → **помогло или нет** (проверено живым прогоном). Перед фиксом любой ошибки —
 > СНАЧАЛА искать её здесь: возможно, решение уже известно или уже пробовали и не помогло.
 
+### CONTENT_EDITOR_BLOCKED_ACCOUNT_PREFLIGHT_SKIP — blocked Direct account больше не падает в Agent Board (2026-07-29)
+- Симптом: content-editor мог ставить `ad_href`/ad text job по аккаунту, который читается через
+  OAuth, но заблокирован для записи. Worker доходил до Grid/API write, получал
+  `Аккаунт пользователя блокирован` или cookie-rights ошибку, переводил job в `error`, а
+  `agent_board_bridge` создавал задачу на `/services/agent-board/`.
+- Root-cause: до мутации не было write-preflight на явную блокировку Direct-аккаунта. Проверка
+  cookie отвечает на вопрос web/Grid-прав, но не отличает “нет прав на cookie” от
+  “сам клиентский аккаунт заблокирован для записи”.
+- Решение: `content_replace_routes._ad_noop_write_blocked` делает best-effort no-op
+  `ads.update` по первой найденной target-записи до Grid/UAC мутации и блокирует только точный
+  ответ Direct `error_code=3000` с текстом `Аккаунт пользователя блокирован`. Generic
+  `Нет доступа к API` без этой фразы не считается блокировкой и не ломает Grid-only путь.
+  `content_worker._finish` для `blocked_account=True` пишет job как `status='done'`,
+  `replaced=0`, `errors=[]`, `error='аккаунт ... заблокирован..., задача пропущена'`, не вызывает
+  Agent Board.
+- Проверено: targeted pytest на LXC101 — 9 passed (`test_content_ad_href_grid.py`,
+  `test_content_worker_blocked_skip.py`, `test_campaign_cookie_picker.py`,
+  `test_make_job_executor_scopes_grid_cookie_to_job_agency`). Live dry-run executor по
+  `e-20074375` вернул `blocked_account=True`, `targets=8` до Grid-cookie. Queue smoke
+  `ce_smoke_blocked_preflight_20260729` завершился `done/replaced=0/errors=[]`,
+  `agent_board_task_id=NULL`, comment/error содержит `аккаунт e-20074375 заблокирован...`;
+  smoke row удалён, Agent Board open tasks = `[]`.
+- Не делать: не считать один только `Нет доступа к API` достаточным для skip, иначе можно
+  случайно пропустить аккаунты, где official API write закрыт, но cookie/Grid writer работает.
+
 ### COPY_UAC_HREF_IMAGES_NOT_1TO1 — UAC-копия теряла paths и порядок картинок (2026-07-29)
 - Симптом: copy job `5dc4ca62df05` (`porg-qrriv2wt` → `porg-63s3kxux`, target
   `geelybase-196.ru`) создала 12/12 tp6/tp7 кампаний, но ссылки `/quiz` и модельные URL частично
@@ -92,6 +117,22 @@
   находятся в архивных кампаниях и не трогались. Row `content_jobs.error/result` обновлён на
   точную terminal-причину; добивка невозможна до возврата web/Grid-прав к `porg-whs6d5n5` или
   отдельного решения Семёна по способу правки.
+- Повторы #54-#56 (`ce_020d3d412b29`, `ce_6942d74be5c8`, `ce_cb225c130610`, `gordeeva`):
+  исходно упали тем же generic `ни одна кука не подошла ... HTTP 401 No rights` при замене
+  `/auto/changan/uni-s-cs55plus/i-restyling/suv-5d` →
+  `/auto/changan/uni-s-cs55plus/1-rest/suv-5d`. Full cookie brute-force 2026-07-29 по всем
+  доступным cookie (`victoryagency-direct1618440`, `victorylotsofads1`, `victoryagency14`,
+  `y-direct-victory`, `victoryagencydirect`, `useful-call-agency`, `skuderko1`) рабочую
+  web/Grid-cookie не нашёл: для `e-20074375` и `e-20074377` управляющая `victorylotsofads1`
+  fresh/local возвращает `403 Нет прав`, остальные — `401 No rights`; для `porg-tbtotml3`
+  управляющая `victoryagency-direct1618440` fresh/local возвращает `403 Нет прав`, остальные —
+  `401 No rights`. Official no-op `ads.update` по sample ad_id тоже заблокирован `3000
+  Нет доступа к API / Аккаунт пользователя блокирован`. Live read-back через штатный
+  `_load_account`: `e-20074375` old=8/new=0 (`ad_id=17497077822`, campaign `705858905`),
+  `e-20074377` old=8/new=0 (`ad_id=17495443853`, campaign `705837936`), `porg-tbtotml3`
+  old=6/new=0 (`ad_id=17281287927`, campaign `703196375`). Rows `content_jobs.error/result`
+  и Agent Board #54-#56 обновлены на terminal blocked с точной причиной. Добивка невозможна до
+  возврата web/Grid-прав или отдельного решения Семёна по разрешённому способу правки.
 
 ### CONTENT_EDITOR_AD_HREF_API_WRITE_BLOCKED — `ad_href` падал на `ads.update: Нет доступа к API` (2026-07-29)
 - Симптом (Agent Board #47, job `ce_2eb3812dd1c7`, `porg-qv22znqh`): смена

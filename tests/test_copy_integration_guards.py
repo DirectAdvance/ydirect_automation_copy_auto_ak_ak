@@ -687,8 +687,41 @@ def test_copy_uac_extracts_source_content_ids_and_image_hashes_in_order():
         ]
     }
 
-    assert copy_uac._copy_uac_content_ids(row) == ["c1", "c2", "c3"]
+    assert copy_uac._copy_uac_content_ids(row) == ["c1", "c3"]
     assert copy_uac._copy_uac_image_hashes(row) == ["h1", "h3"]
+
+
+def test_uac_client_uploads_video_urls_when_image_content_ids_are_preseeded(monkeypatch):
+    from direct import uac_client
+
+    spec = uac_client.MasterCampaignSpec(
+        href="https://example.ru",
+        titles=["Title"],
+        texts=["Text"],
+        region_ids=[172],
+        counter_id=1,
+        goal_id=2,
+        cpa=100,
+        week_budget=1000,
+        content_ids=["image-content-id"],
+        video_urls=["https://cdn.example.ru/video.mp4"],
+    )
+    client = object.__new__(uac_client.UacClient)
+    calls = []
+
+    client.link_info = lambda href: calls.append(("link", href))
+    client.upload_content = lambda url, typ, adv_type: calls.append((url, typ, adv_type)) or "video-content-id"
+    client.upload_video_file = lambda path, adv_type: "unused"
+    client.build_payload = lambda _spec, ids: {"content_ids": ids}
+    client.create_campaign = lambda payload: calls.append(("create", payload)) or "123"
+    client.launch_campaign = lambda cid: None
+    monkeypatch.setattr(uac_client.time, "sleep", lambda _seconds: None)
+
+    cid = client.create_master_campaign(spec, launch=False)
+
+    assert cid == "123"
+    assert ("https://cdn.example.ru/video.mp4", "video", "text") in calls
+    assert ("create", {"content_ids": ["image-content-id", "video-content-id"]}) in calls
 
 
 def test_parse_feed_map_keeps_numeric_mapping_only():
