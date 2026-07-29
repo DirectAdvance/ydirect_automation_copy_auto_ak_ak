@@ -54,8 +54,8 @@ def _ct_of(name: str) -> str:
 
 
 def _get_infra(login: str):
-    from direct import campaign as cmc
-    from direct import blueprint as bp
+    from direct.core import campaign as cmc
+    from direct.create import blueprint as bp
     tokens = bp._direct_tokens()
     token, _ = bp._token_for_login(login, "", tokens)
     cookie = cmc.pick_working_cookie(login)
@@ -81,7 +81,7 @@ def _v5_search_camp_ids(token: str, login: str) -> list[int]:
 
 def _grid_groups(login: str, camp_ids: list[int]) -> list[dict]:
     """Grid groups_for_edit для указанных кампаний."""
-    from direct import grid_finalize as gf
+    from direct.clients import grid_finalize as gf
     gc = gf.GridClient(login)
     gc._bootstrap_csrf()
     return gc.groups_for_edit(camp_ids) or []
@@ -148,7 +148,7 @@ def run(dry_run: bool = False) -> None:
     from direct.text_gen import _foreign_model_discriminators as fmd, _model_subtokens as mst
 
     # Импорт ct_name маппинга через blueprint (оно уже проинициализировано при импорте)
-    from direct import blueprint as bp
+    from direct.create import blueprint as bp
     # blueprint не экспортирует эти функции как глобальные — используем kontent_pack напрямую
     ct_name: dict = {}
     ct_model: dict = {}
@@ -196,7 +196,7 @@ def run(dry_run: bool = False) -> None:
         ct = _ct_of(g.get("adgroup_name") or "")
         # Используем ct_segment из blueprint если доступен
         try:
-            from direct.blueprint import _ct_segment
+            from direct.create.blueprint import _ct_segment
             seg = _ct_segment(ct)
         except Exception:
             # fallback: ct0000 → Общее, иначе Модели (упрощённо)

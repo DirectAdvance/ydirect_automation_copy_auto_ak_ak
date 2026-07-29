@@ -337,7 +337,7 @@ def build_staging(
         _seo = Path(__file__).resolve().parents[2]   # …/seoadvanced (в ней пакет direct)
         if str(_seo) not in sys.path:
             sys.path.insert(0, str(_seo))
-        from direct import slepki_store as _ss
+        from direct.slepki_code import slepki_store as _ss
         data = _ss.assemble()
     else:
         print(f"[build_staging] Загружаем {slepki_path}...", file=sys.stderr)

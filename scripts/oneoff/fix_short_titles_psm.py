@@ -39,8 +39,8 @@ _TITLE_MAX = 56   # лимит Директа
 
 def _get_infra(login: str):
     """(token, cookie) для логина через существующую инфраструктуру."""
-    from direct import campaign as cmc
-    from direct import blueprint as bp
+    from direct.core import campaign as cmc
+    from direct.create import blueprint as bp
     tokens = bp._direct_tokens()
     token, _ = bp._token_for_login(login, "", tokens)
     cookie = cmc.pick_working_cookie(login)
@@ -103,7 +103,7 @@ def _grid_update_responsive_direct(login: str,
     """Один CSRF-сеанс: RMW-чтение + UpdateAdaptiveTextAds в рамках одного GridClient.
     Избегаем двойного _bootstrap_csrf (CSRF-конфликт при двух независимых gc в одном процессе).
     items: [{id, titles}] — id как int, titles как список строк."""
-    from direct import grid_finalize as gf
+    from direct.clients import grid_finalize as gf
     gc = gf.GridClient(login)
     gc._bootstrap_csrf()
 

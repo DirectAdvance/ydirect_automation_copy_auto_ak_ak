@@ -180,7 +180,7 @@ def check(struct_path: Path | None, profile_path: Path | None = None) -> int:
         # структура разбита на per-slepok файлы — собираем через slepki_store (HERE = direct/)
         if str(HERE.parent) not in sys.path:
             sys.path.insert(0, str(HERE.parent))
-        from direct import slepki_store as _ss
+        from direct.slepki_code import slepki_store as _ss
         st = _ss.assemble()
     else:
         st = json.loads(struct_path.read_text(encoding="utf-8"))

@@ -44,8 +44,8 @@ _POOL_CAP = 20        # максимум id в пуле
 
 def _get_infra(login: str):
     """(token, cookie, ctx) для логина."""
-    from direct import campaign as cmc
-    from direct import blueprint as bp
+    from direct.core import campaign as cmc
+    from direct.create import blueprint as bp
     tokens = bp._direct_tokens()
     token, _ = bp._token_for_login(login, "", tokens)
     cookie = cmc.pick_working_cookie(login)
@@ -245,7 +245,7 @@ def main():
         print("  ERROR: нет кампаний или куки — выход")
         sys.exit(1)
 
-    from direct.grid_finalize import GridClient
+    from direct.clients.grid_finalize import GridClient
     gc = GridClient(LOGIN, cookie=cookie)
 
     # ── ДО ─────────────────────────────────────────────────────────────────

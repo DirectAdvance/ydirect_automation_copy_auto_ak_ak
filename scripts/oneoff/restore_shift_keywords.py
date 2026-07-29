@@ -62,8 +62,8 @@ _ADD_KEYWORDS_Q = (
 def _get_token_and_cookie(login: str) -> tuple[str | None, str | None]:
     """Получить (oauth_token, cookie) для login через project infrastructure."""
     try:
-        from direct import campaign as cmc
-        from direct import blueprint as bp  # type: ignore[attr-defined]
+        from direct.core import campaign as cmc
+        from direct.create import blueprint as bp  # type: ignore[attr-defined]
         tokens = bp._direct_tokens()
         token, _ = bp._token_for_login(login, "", tokens)
         cookie = cmc.pick_working_cookie(login)
@@ -82,7 +82,7 @@ def _grid_post(cookie: str, op: str, query: str, variables: dict) -> dict:
     login = variables.get("login") or ""
     gc = _GC_CACHE.get(login)
     if gc is None:
-        from direct import grid_finalize as gf
+        from direct.clients import grid_finalize as gf
         gc = gf.GridClient(login)
         gc._bootstrap_csrf()
         _GC_CACHE[login] = gc
@@ -185,7 +185,7 @@ def _grid_add_keywords(cookie: str, login: str, kw_items: list[dict]) -> list[di
 def _group_keywords_from_pack(login: str, campaign_name: str, adgroup_name: str) -> list[str]:
     """Вычислить правильные ключи из пака через group_keywords_context."""
     try:
-        from direct import blueprint as bp  # type: ignore[attr-defined]
+        from direct.create import blueprint as bp  # type: ignore[attr-defined]
         ctx: dict = {}
         meta = {
             "campaign_id": 0,
@@ -237,7 +237,7 @@ def run(login: str, campaign_id: int, dry_run: bool = False) -> None:
     # ── Шаг 2: читаем live-группы через groups_for_edit ──
     print(f"\n[2] Читаем группы через groups_for_edit…")
     try:
-        from direct import grid_finalize as gf
+        from direct.clients import grid_finalize as gf
         grid_cl = gf.GridClient(login, cookie=cookie)
         groups = grid_cl.groups_for_edit(campaign_id)
     except Exception as e:

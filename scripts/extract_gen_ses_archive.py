@@ -95,7 +95,7 @@ def _current_group_map(structure_path: Path | None) -> dict[str, dict]:
         _seo = Path(__file__).resolve().parents[2]   # …/seoadvanced (в ней пакет direct)
         if str(_seo) not in _sys.path:
             _sys.path.insert(0, str(_seo))
-        from direct import slepki_store as _ss
+        from direct.slepki_code import slepki_store as _ss
         struct = _ss.assemble()
     else:
         struct = json.loads(structure_path.read_text(encoding="utf-8"))
