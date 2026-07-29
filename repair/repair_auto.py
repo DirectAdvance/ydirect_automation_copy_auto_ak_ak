@@ -54,7 +54,9 @@ def execute_next_in_place(login: str, ctx: dict, plan: dict[str, Any], deps: rex
             unsupported=content_unsupported,
         ), status
 
-    # keywords_repair: заливаем через Grid AddKeywords (НЕ UpdateUnifiedAdGroups — тот no-op для ключей).
+    # keywords_repair: заливаем через Grid AddKeywords (аддитивно). UpdateUnifiedAdGroups для ключей
+    # НЕ no-op (опровергнуто 2026-07-30, инцидент 713155623) — он перезаписывает объект целиком,
+    # поэтому туда round-trip'ятся реально прочитанные фразы, см. repair_keywords.py:174.
     # Для NO_KEYWORDS_LIVE пробуем дозалить ключи in-place; recreate только если не помогло.
     keyword_ids, keyword_actions, keyword_unsupported = rgate.executable_keywords_repairs(plan or {})
     if keyword_ids and keyword_actions:

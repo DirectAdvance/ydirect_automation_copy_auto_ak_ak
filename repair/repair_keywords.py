@@ -195,8 +195,8 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
                             "keywords_written": len(final_kw),
                             "_kw_list": final_kw if (need_kw and recomputed) else []}
 
-    # Заливаем ключи через Grid AddKeywords (addKeywords — рабочий, в отличие от
-    # UpdateUnifiedAdGroups который подтверждён no-op для keywords).
+    # Заливаем ключи через Grid AddKeywords — аддитивная мутация, ничего не стирает.
+    # (UpdateUnifiedAdGroups для ключей НЕ no-op — см. разбор на строке 174.)
     # ключ adgroup_id (snake) — GridClient.add_keywords НЕ понимает camel adGroupId (молча пропустит).
     flat_kw_items = [
         {"adgroup_id": gid, "keyword": str(k)}
@@ -217,7 +217,8 @@ def execute_keywords_repair(login: str, ctx: dict, campaign_ids: list[int],
             failed.append({"error": f"Grid AddKeywords упал: {str(e)[:200]}"})
 
     # Обновляем relevanceMatch через UpdateUnifiedAdGroups для групп с need_at=True.
-    # UpdateUnifiedAdGroups no-op для keywords → безопасно для NO_KEYWORDS_LIVE-only групп.
+    # Безопасно для NO_KEYWORDS_LIVE-only групп не потому, что «no-op для keywords» (это опровергнуто,
+    # строка 174), а потому что write_items несут round-trip реальных фраз группы, а не пустой список.
     # Пишем ПО ОДНОЙ КАМПАНИИ (per-cid): валидационная ошибка одной группы рубит только её
     # кампанию (~8 групп), а не весь батч из 68 групп — остальные кампании всё равно сужаются.
     at_gids = {gid for gid, intent in intents.items() if intent.get("fixed_autotarget")}

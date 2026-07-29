@@ -1299,6 +1299,27 @@ def _has_real_positive(lines: list) -> bool:
     return any(str(x or "").strip() and str(x or "").strip().lower() != "---autotargeting" for x in (lines or []))
 
 
+def _read_all_group_keywords(kd: str, slepok: str) -> tuple[list, list]:
+    """Объединение per-group ключей ВСЕХ групп ct: ``{slepok}__{slug}.txt`` (+ ``…_minus.txt``).
+
+    Нужно для позиций структуры без gk («весь ct»), когда легаси ``{slepok}.txt`` отсутствует.
+    Обход каталога — через listdir_bounded (под sshfs слепой os.listdir подвешивает процесс).
+    Порядок файлов сортируется, чтобы состав ключей не зависел от порядка выдачи ФС.
+    """
+    names = sorted(str(n) for n in (listdir_bounded(kd) or []))
+    pref = f"{slepok}__"
+    pos: list = []
+    neg: list = []
+    for name in names:
+        if not name.startswith(pref) or not name.endswith(".txt"):
+            continue
+        if name.endswith("_minus.txt"):
+            neg += _read_lines(os.path.join(kd, name))
+        else:
+            pos += _read_lines(os.path.join(kd, name))
+    return pos, neg
+
+
 def _read_keywords_exact(segment: str, tp: str, ct: str, slepok: str, group: str = "") -> dict:
     kd = os.path.join(_ct_dir(segment, tp, ct), "keywords")
     slug = _group_slug(group)
@@ -1314,6 +1335,17 @@ def _read_keywords_exact(segment: str, tp: str, ct: str, slepok: str, group: str
         pos = _read_lines(os.path.join(kd, f"{slepok}.txt"))
         neg = (_read_lines(os.path.join(kd, f"{slepok}_minus.txt"))
                + _read_lines(os.path.join(kd, f"{slepok}_minus_shared.txt")))
+        if not _has_real_positive(pos):
+            # Позиция БЕЗ gk = «весь ct», но ключи пака могут лежать ТОЛЬКО в per-group файлах
+            # ``{slepok}__{slug}.txt`` (легаси ``{slepok}.txt`` при этом отсутствует). Читать
+            # один легаси-файл значило бы «ключей нет» при живом контенте рядом: 2026-07-30
+            # так на content-gap preflight встали 3 аккаунта, хотя salamahin/ct0051 имел 604
+            # фразы в ``salamahin__chery_tiggo.txt``. Для gk-less позиции собираем ОБЪЕДИНЕНИЕ
+            # всех групп этого ct — данные не выдумываются, берётся ровно то, что в паке.
+            # Только когда легаси пуст: непустой легаси-файл остаётся точным ответом.
+            pg_pos, pg_neg = _read_all_group_keywords(kd, slepok)
+            if pg_pos:
+                pos, neg = pg_pos, neg + pg_neg
     return {"positive": _dedup(_normalize_geo_lines(pos, dedup=False)), "minus": _dedup(neg)}
 
 
