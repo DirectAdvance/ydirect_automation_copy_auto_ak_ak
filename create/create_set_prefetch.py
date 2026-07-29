@@ -547,7 +547,7 @@ def _prepare_post_images(login: str, body: dict, grid_cookie: str | None,
     if not post_items:
         return {"items": 0, "uploaded": 0}
     try:
-        from .. import grid_finalize as gf  # noqa: PLC0415
+        from ..clients import grid_finalize as gf  # noqa: PLC0415
         from .create_set_tp8_10 import _posevy_images_for_ct, _resolve_img_ct, POST_IMAGE_LIMIT
         cli = gf.get_grid_client(login, cookie=grid_cookie)
         cli._bootstrap_csrf()

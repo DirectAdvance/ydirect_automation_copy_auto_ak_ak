@@ -134,7 +134,7 @@ def make_job_executor(*, victory_conn, token_for_login, direct_tokens, v5_call, 
             if not job_agency:
                 return _grid_client(login)
             from .. import campaign as cmc
-            from ..grid_finalize import get_grid_client
+            from ..clients.grid_finalize import get_grid_client
 
             cookie = cmc.pick_working_cookie(
                 login,

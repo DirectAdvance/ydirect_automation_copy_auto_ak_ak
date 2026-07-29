@@ -140,7 +140,7 @@ def read_content_v5(login: str, agency: str, campaign_ids: list[int]) -> dict:
     token_for_login может «залипнуть» на токене с пустым доступом (empty-not-error), поэтому
     перебираем все токены и берём тот, что реально отдаёт объявления для наших кампаний.
     """
-    from direct.yandex_gateway import direct_tokens, v5_get  # type: ignore
+    from direct.clients.yandex_gateway import direct_tokens, v5_get  # type: ignore
     tokens = direct_tokens()
     # порядок: агентство из джобы первым, дальше остальные
     order = [agency] if agency and agency in tokens else []

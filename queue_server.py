@@ -39,7 +39,7 @@ from .job_repository import (
 from .create.create_job_status import (
     terminal_status_for_job, terminal_status_for_parent_failed, annotate_job_issues,
 )
-from .yandex_gateway import (
+from .clients.yandex_gateway import (
     direct_tokens as _direct_tokens, token_for_login as _token_for_login,
     units_alive_for_login as _units_alive_for_login, grid_list_campaigns as _grid_list_campaigns,
 )

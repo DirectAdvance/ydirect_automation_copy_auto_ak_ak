@@ -245,7 +245,7 @@ def register_autorules_routes(
                 else:
                     token_error = probe.get("error") or "баланс не получен"
             else:
-                from direct.yandex_gateway import v5_get, v5_err  # noqa: PLC0415
+                from direct.clients.yandex_gateway import v5_get, v5_err  # noqa: PLC0415
                 tok, token_agency = _resolve_token_for_mode(login, mode, agency)
                 if not tok:
                     token_error = "нет токена"

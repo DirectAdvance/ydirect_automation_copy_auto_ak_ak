@@ -51,9 +51,9 @@ from typing import Any
 
 # These sibling modules are Flask-free and safe to import directly (they build their
 # own cookie clients via ``campaign.build_client`` / ``pick_working_cookie``).
-from . import grid_finalize as gf
-from . import grid_read as gr
-from . import uac_read as ur
+from .clients import grid_finalize as gf
+from .clients import grid_read as gr
+from .clients import uac_read as ur
 from .repair import repair_executor as rex
 
 _DEPS: dict = {}
@@ -2798,7 +2798,7 @@ def fix_generic_fallback_group(login: str, ctx: dict, issues: list[dict]) -> dic
         return {"ok": False, "error": f"grid_list DRAFT: {str(_e)[:160]}",
                 "campaigns_fixed": 0, "deferred_ids": [], "skipped": [], "errors": []}
 
-    from . import grid_create as _gc_mod  # Flask-free, лениво
+    from .clients import grid_create as _gc_mod  # Flask-free, лениво
 
     fixed: list[dict] = []
     deferred_ids: list[str] = []

@@ -61,7 +61,7 @@ os.environ["DIRECT_GATEWAY_SELF"] = "1"
 # Сами обёрнутые функции берём напрямую из campaign / yandex_gateway (готовые реализации).
 from direct import automation_runtime as _rt  # noqa: E402,F401  (import triggers DI configure)
 from direct import campaign as _cmc  # noqa: E402
-from direct import yandex_gateway as _yg  # noqa: E402
+from direct.clients import yandex_gateway as _yg  # noqa: E402
 
 
 def _truthy(val: str | None) -> bool:

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from .. import grid_finalize as gf
+from ..clients import grid_finalize as gf
 from .copy_verify_state import configure
 from .copy_verify_utils import (
     _OK, _MISMATCH, _MISSING, _UNREADABLE, _EXCLUDED,

@@ -15,7 +15,7 @@ Manual/ct0300 физически содержит 4 креатива (Trade-in /
 проверяется ЛОГИКА пула, а не сам DCT.
 """
 import direct.automation_runtime as ar
-import direct.uac_client as uac
+import direct.clients.uac_client as uac
 
 
 # «Визуальные» идентификаторы: разные файлы с одним id = один и тот же креатив.

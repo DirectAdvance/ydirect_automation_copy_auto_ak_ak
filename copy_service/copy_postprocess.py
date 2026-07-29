@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from pathlib import Path
 
 from .. import campaign as cmc
-from .. import grid_finalize as gf
+from ..clients import grid_finalize as gf
 from ..repair import repair_auto as rauto
 from ..repair import repair_executor as rex
 from ..repair import repair_gate as rgate
@@ -138,7 +138,7 @@ def _prefetch_copy_verify_grid_cache(target_login: str, target_agency: str, grid
         return gf.GridClient(target_login, cookie=base_cookie)
 
     def _counts():
-        from .. import grid_read as gr  # lazy sibling import
+        from ..clients import grid_read as gr  # lazy sibling import
         return gr.GridReadClient(target_login, cookie=base_cookie).campaign_content_counts(camp_ids)
 
     def _edit_rows():

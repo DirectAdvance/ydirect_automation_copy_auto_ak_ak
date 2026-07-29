@@ -143,7 +143,7 @@ def upload_feed_to_target(
 
     if resp.get("error"):
         try:
-            from direct import yandex_gateway as _yg  # noqa: PLC0415
+            from direct.clients import yandex_gateway as _yg  # noqa: PLC0415
             err_str = _yg.v5_err(resp)
         except Exception:  # noqa: BLE001
             err_str = str(resp["error"])[:300]

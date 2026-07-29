@@ -1572,7 +1572,7 @@ def _feed_filter_fields(login: str, feed_id: int) -> frozenset:
     try:
         _gf = globals().get("gf")
         if _gf is None:
-            from .. import grid_finalize as _gf  # noqa: F811
+            from ..clients import grid_finalize as _gf  # noqa: F811
         _gcl = _gf.get_grid_client(login)
         _gcl._bootstrap_csrf()   # CSRF обязателен; без него первый _post → 403 → пустой rowset
         _r = _gcl._post("FeedsFields", _FEED_FIELDS_QUERY,

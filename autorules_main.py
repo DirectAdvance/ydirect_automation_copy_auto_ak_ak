@@ -94,7 +94,7 @@ def create_app() -> Flask:
     from direct.direct_repository import victory_conn as _victory_conn  # noqa: E402
 
     # ── Direct API транспорт ───────────────────────────────────────────────────
-    from direct.yandex_gateway import (  # noqa: E402
+    from direct.clients.yandex_gateway import (  # noqa: E402
         direct_tokens as _direct_tokens,
         token_for_login as _token_for_login,
         LIVE_V4_URL as _LIVE_V4_URL,

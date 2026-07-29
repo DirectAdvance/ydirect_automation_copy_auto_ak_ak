@@ -397,7 +397,7 @@ class UacClient:
         # 2026-07-18: сам read() по FUSE тоже висит вечно (таймаута нет by design) — читаем
         # с пределом времени, как в grid_finalize.upload_image.
         try:                                  # пакетный контекст / standalone
-            from . import kontent_pack as _kpf
+            from .. import kontent_pack as _kpf
         except ImportError:
             import kontent_pack as _kpf       # type: ignore[no-redef]
         _file_bytes = _kpf.read_bytes_bounded(str(p))
@@ -535,7 +535,7 @@ class UacClient:
         status: 'DRAFT' | 'ACTIVE' | None (=все). dict с полями id, name, typename, status.
         """
         # lazy import: routes_content_editor → uac_read → campaign (иначе цикл на импорте).
-        from .web.routes_content_editor import _grid_tp67_campaigns
+        from ..web.routes_content_editor import _grid_tp67_campaigns
 
         rows = _grid_tp67_campaigns(self.ulogin)
         if status:

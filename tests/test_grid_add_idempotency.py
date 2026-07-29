@@ -11,7 +11,7 @@
 import pytest
 import requests
 
-from direct import grid_create as gc
+from direct.clients import grid_create as gc
 from direct.create import create_set_feed_builders as csfb
 from direct.local_result_verifier import verify_local_result
 

@@ -172,7 +172,7 @@ class TestNestedGridPostNotDoubleCounted:
     """
 
     def _client(self, monkeypatch, responses):
-        from direct import grid_finalize as gf
+        from direct.clients import grid_finalize as gf
         cli = gf.GridClient("porg-test", cookie="Session_id=x")   # явная кука → без сети в __init__
         seq = list(responses)
         monkeypatch.setattr(cli.sess, "post", lambda *a, **k: seq.pop(0))

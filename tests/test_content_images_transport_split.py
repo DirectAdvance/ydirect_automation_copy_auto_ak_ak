@@ -7,7 +7,7 @@
 обслужить → замена молча не выполнялась.
 """
 from direct.content import content_images_routes as m
-from direct import grid_finalize as gf
+from direct.clients import grid_finalize as gf
 
 
 # ───────────────────────────── _uac_owned_cids ──────────────────────────────

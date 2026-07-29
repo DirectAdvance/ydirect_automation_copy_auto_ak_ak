@@ -13,7 +13,7 @@
 import pytest
 
 from direct.create import create_set_minus as csm
-from direct.grid_create import _gate_groups_created
+from direct.clients.grid_create import _gate_groups_created
 from direct.local_result_verifier import verify_local_result
 
 

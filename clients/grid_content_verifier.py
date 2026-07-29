@@ -143,7 +143,7 @@ def verify_grid_content(name: str, campaign_id: int | None,
     # дедупа, которым имя собирается (create_set_context.dedup_name_segments) — разошлись,
     # значит какой-то сегмент приклеился дважды. 0 запросов, чистая строка.
     try:
-        from .create.create_set_context import dedup_name_segments as _dedup_nm
+        from ..create.create_set_context import dedup_name_segments as _dedup_nm
         _nm_clean = _dedup_nm(str(nm or ""))
     except Exception:  # noqa: BLE001
         _nm_clean = str(nm or "")

@@ -9,7 +9,7 @@
 import pytest
 
 from direct.create import create_set_audiences as csa
-from direct import grid_create_payloads as gcp
+from direct.clients import grid_create_payloads as gcp
 
 
 @pytest.fixture(autouse=True)
@@ -143,7 +143,7 @@ def test_all_adgroup_call_sites_pass_audiences():
     """build_adgroup зовут 3 боевых пути tp1/tp2/tp4/tp5 — каждый обязан прокинуть аудитории."""
     import inspect
 
-    from direct import grid_create
+    from direct.clients import grid_create
     from direct.create import create_set_text_builders, create_set_tp1_builders
 
     src_tp1 = inspect.getsource(create_set_tp1_builders._build_tp1_adgroups)
@@ -178,7 +178,7 @@ def test_update_item_defaults_to_empty_lists():
     """RMW-апдейт по умолчанию НЕ ставит аудитории (иначе затрёт), но умеет принять явные."""
     import inspect
 
-    from direct import grid_finalize
+    from direct.clients import grid_finalize
 
     sig = inspect.signature(grid_finalize.GridClient.build_update_item)
     assert sig.parameters["retargeting_ids"].default is None

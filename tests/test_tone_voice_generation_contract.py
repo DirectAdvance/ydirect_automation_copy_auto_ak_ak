@@ -12,7 +12,7 @@ from direct.create import create_set_tp1_builders
 from direct.create import create_set_master_product
 from direct import queue_server
 from direct import llm_providers
-from direct import uac_client
+from direct.clients import uac_client
 from direct.create.create_content import run_gen_campaign_content
 
 _DIRECT_DIR = Path(__file__).resolve().parents[1]

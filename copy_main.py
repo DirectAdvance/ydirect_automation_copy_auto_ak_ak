@@ -43,7 +43,7 @@ from direct import account_service as accounts  # noqa: E402
 from direct.create import blueprint_metrika as metrika  # noqa: E402
 from direct.copy_service import copy_engine  # noqa: E402
 from direct import queue_server as queue  # noqa: E402
-from direct import yandex_gateway as yandex  # noqa: E402
+from direct.clients import yandex_gateway as yandex  # noqa: E402
 from direct.web.routes_copy import register_copy_routes  # noqa: E402
 from direct.copy_service.copy_api import copy_api_bp, register_copy_api  # noqa: E402
 

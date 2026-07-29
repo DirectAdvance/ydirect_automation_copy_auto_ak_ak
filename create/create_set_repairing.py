@@ -261,7 +261,7 @@ def _campaign_images_repair(login: str, campaign_id: int, ctx: dict) -> dict:
     3. Для каждого ct: _creative_images_for_ct → пути → _cached_upload_image → imageHash
     4. _grid_update_adaptive_ads(RMW) проставляет imageHashes не трогая titles/bodies/adPrice
     """
-    from .. import grid_finalize as _gf
+    from ..clients import grid_finalize as _gf
     from .. import campaign as _cmc
     from ..repair import repair_executor as _rex
     body = ctx.get("body") or {}
@@ -297,7 +297,7 @@ def _campaign_images_repair(login: str, campaign_id: int, ctx: dict) -> dict:
 
     # Читаем объявления кампании с images{imageHash} и adGroupId
     try:
-        from .. import grid_read as _gr
+        from ..clients import grid_read as _gr
         rc = _gr.GridReadClient(login, cookie=cookie)
         rc._bootstrap_csrf()
         q = ("query AdsRepairImg($login:String!,$inp:GdAdsContainerInput!){"

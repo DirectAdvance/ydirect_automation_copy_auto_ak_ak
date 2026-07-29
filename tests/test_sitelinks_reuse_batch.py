@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 from unittest.mock import MagicMock
 
-from direct.direct_v501_client import (
+from direct.clients.direct_v501_client import (
     DirectV501Client, DirectV501Error, _SITELINKS_SETS_BATCH_SIZE,
 )
 import direct.automation_runtime as ar

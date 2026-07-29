@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 import requests
 import urllib3
 
-from . import campaign as cmc
+from .. import campaign as cmc
 from .grid_finalize import GRID_URL
 
 urllib3.disable_warnings()

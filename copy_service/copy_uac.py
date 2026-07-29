@@ -478,7 +478,7 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
     if not rows:
         return rep
     try:
-        from ..uac_read import UacReadClient
+        from ..clients.uac_read import UacReadClient
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"uac init: {str(e)[:220]}")
         return rep
@@ -686,7 +686,7 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
             client = cmc.build_client(target_login, account=(target_agency or None))
             cid = client.create_master_campaign(spec, launch=False)
             try:
-                from ..uac_read import _unwrap as _uac_unwrap
+                from ..clients.uac_read import _unwrap as _uac_unwrap
             except Exception:  # noqa: BLE001
                 _uac_unwrap = lambda data: (data.get("result") if isinstance(data, dict) else {}) or data or {}
             live_errors: list[str] = []

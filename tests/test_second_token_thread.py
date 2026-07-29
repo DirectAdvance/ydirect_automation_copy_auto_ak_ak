@@ -321,7 +321,7 @@ class TestV501RateLimiter:
 
     def test_single_thread_no_delay_first_call(self):
         """First acquire() should not sleep (no previous call to space from)."""
-        from direct.direct_v501_client import _V501RateLimiter
+        from direct.clients.direct_v501_client import _V501RateLimiter
         limiter = _V501RateLimiter(max_rate=1000.0)  # 1ms interval
         t0 = time.monotonic()
         limiter.acquire()
@@ -330,7 +330,7 @@ class TestV501RateLimiter:
 
     def test_two_rapid_calls_are_throttled(self):
         """Two rapid acquire() calls must be separated by ≥ min_interval."""
-        from direct.direct_v501_client import _V501RateLimiter
+        from direct.clients.direct_v501_client import _V501RateLimiter
         max_rate = 20.0  # 50ms interval — fast enough for CI, slow enough to measure
         limiter = _V501RateLimiter(max_rate=max_rate)
         limiter.acquire()   # 1st call
@@ -343,7 +343,7 @@ class TestV501RateLimiter:
 
     def test_two_threads_combined_rate_below_limit(self):
         """Two concurrent threads must not exceed max_rate together."""
-        from direct.direct_v501_client import _V501RateLimiter
+        from direct.clients.direct_v501_client import _V501RateLimiter
         max_rate = 20.0   # 50ms interval
         n_calls_each = 5
         limiter = _V501RateLimiter(max_rate=max_rate)
@@ -371,7 +371,7 @@ class TestV501RateLimiter:
 
     def test_per_token_isolation(self):
         """Different tokens get independent limiters — no cross-token throttle."""
-        from direct.direct_v501_client import _get_v501_limiter
+        from direct.clients.direct_v501_client import _get_v501_limiter
         import uuid
         tok_a = f"test-token-{uuid.uuid4()}"
         tok_b = f"test-token-{uuid.uuid4()}"
@@ -383,7 +383,7 @@ class TestV501RateLimiter:
 
     def test_single_thread_no_extra_delay_between_spaced_calls(self):
         """At DIRECT_TOKEN_THREADS=1, calls are naturally spaced — no synthetic delay."""
-        from direct.direct_v501_client import _V501RateLimiter
+        from direct.clients.direct_v501_client import _V501RateLimiter
         max_rate = 4.5   # production default
         min_interval = 1.0 / max_rate   # ≈0.222s
         limiter = _V501RateLimiter(max_rate=max_rate)

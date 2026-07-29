@@ -5,7 +5,7 @@ from __future__ import annotations
 from . import create_set_audiences as _cs_aud
 from ..text_norm import _trim_clean
 from ..text_gen import _fill_title
-from ..grid_create import unique_keyword_ids as _unique_keyword_ids
+from ..clients.grid_create import unique_keyword_ids as _unique_keyword_ids
 from ..link_check import resolve_or_fallback_url as _resolve_url, resolve_urls_batch as _resolve_urls_batch
 from ..model_urls import _is_degenerate_feed_url
 

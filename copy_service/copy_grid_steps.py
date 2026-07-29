@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .. import campaign as cmc
-from .. import grid_finalize as gf
+from ..clients import grid_finalize as gf
 
 from .copy_geo import _copy_target_href
 from .copy_jobs import _copy_job_log

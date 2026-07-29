@@ -68,7 +68,7 @@ def test_spec_wins_over_mode_and_tp():
 
 def test_tp5_audiences_land_in_search_retargetings():
     """Сквозной payload: канал tp5 = поиск → searchRetargetings, сетевое поле пустое."""
-    from direct import grid_create_payloads as gcp
+    from direct.clients import grid_create_payloads as gcp
 
     on_search = csa.is_search_channel(mode="search", tp_code="tp5")
     item = gcp.build_adgroup(campaign_id=1, name="g", region_ids=[225], keywords=[],
@@ -78,7 +78,7 @@ def test_tp5_audiences_land_in_search_retargetings():
 
 
 def test_tp1_audiences_stay_in_network_retargetings():
-    from direct import grid_create_payloads as gcp
+    from direct.clients import grid_create_payloads as gcp
 
     on_search = csa.is_search_channel(mode="network_cpa", tp_code="tp1")
     item = gcp.build_adgroup(campaign_id=1, name="g", region_ids=[225], keywords=[],

@@ -308,7 +308,7 @@ def _v5_keywords_delete(token: str, login: str, keyword_ids: list[int]) -> int:
 
 def _grid_show_condition_ids(login: str, cookie: str, campaign_ids: list[int]) -> dict[int, list[int]]:
     """Grid showConditions → {adgroup_id: [v5 keyword_id, ...]} для кампаний."""
-    from .. import grid_read as _gr
+    from ..clients import grid_read as _gr
     rc = _gr.GridReadClient(login, cookie=cookie)
     rc._bootstrap_csrf()
     out: dict[int, list[int]] = {}

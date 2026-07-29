@@ -26,7 +26,7 @@ import re
 from typing import Any
 
 from .. import campaign as cmc
-from .. import grid_finalize as gf
+from ..clients import grid_finalize as gf
 from ..repair.repair_executor import (
     RepairDeps,
     execute_callouts_repair,

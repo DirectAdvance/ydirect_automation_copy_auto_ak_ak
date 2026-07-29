@@ -1,5 +1,5 @@
 from direct import campaign
-from direct import gateway_client
+from direct.clients import gateway_client
 
 
 def test_pick_cookie_preserves_managing_agency_rights_error(monkeypatch):

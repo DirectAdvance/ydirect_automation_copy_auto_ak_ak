@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 from unittest.mock import MagicMock, patch, call
 
-from direct.direct_v501_client import DirectV501Client, DirectV501Error, _FEED_ADS_BATCH_SIZE
+from direct.clients.direct_v501_client import DirectV501Client, DirectV501Error, _FEED_ADS_BATCH_SIZE
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────

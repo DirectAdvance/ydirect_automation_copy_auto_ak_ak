@@ -391,7 +391,7 @@ def _build_tp1_adgroups(
         # `build["groups_expected"]`, обоих ключей тут не было — потеря групп уходила МОЛЧА
         # (ни GROUPS_CREATED_LESS_THAN_SENT, ни NO_ADGROUPS_REPORTED не срабатывали).
         # `groups` выставляем ДО гейта: он считает созданное именно из него.
-        from ..grid_create import _gate_groups_created as _gate_groups
+        from ..clients.grid_create import _gate_groups_created as _gate_groups
         rep["groups"] = rep["adgroups"]
         _gate_groups(rep, len(groups))
     except gc.GridCreateError as _ge:

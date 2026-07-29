@@ -4,12 +4,8 @@ import time
 
 from flask import Blueprint, Flask
 
-from direct import (
-    agent_board_bridge,
-    grid_read,
-    grid_finalize,
-    queue_server,
-)
+from direct import agent_board_bridge, queue_server
+from direct.clients import grid_read, grid_finalize
 from direct.create import create_set_feeds
 from direct.content import content_renames_routes
 from direct.copy_service import (
@@ -808,7 +804,7 @@ def test_copy_uac_create_live_guard_rejects_persisted_mismatch():
 
 
 def test_uac_client_uploads_video_urls_when_image_content_ids_are_preseeded(monkeypatch):
-    from direct import uac_client
+    from direct.clients import uac_client
 
     spec = uac_client.MasterCampaignSpec(
         href="https://example.ru",

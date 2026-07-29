@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
-from .. import grid_create as gc
+from ..clients import grid_create as gc
 
 from .copy_jobs import _copy_job_log
 from .copy_uac import _copy_is_uac_grid_row

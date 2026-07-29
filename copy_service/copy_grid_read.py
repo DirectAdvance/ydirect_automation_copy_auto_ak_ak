@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 import re
 import time
 
-from .. import grid_finalize as gf
+from ..clients import grid_finalize as gf
 
 # ── DI (инъектится copy_engine.configure фан-аутом; None до инъекции) ──
 _grid_list_campaigns = None
@@ -49,7 +49,7 @@ def _copy_selected_grid_campaigns(login: str, selected_ids: set[int]) -> list[di
 
 def _copy_grid_read_selected(login: str, selected_ids: set[int]) -> dict:
     """Read selected Unified campaigns with Grid cookies, without Direct API units."""
-    from ..grid_read import GridReadClient
+    from ..clients.grid_read import GridReadClient
 
     ids = [int(x) for x in selected_ids if int(x) > 0]
     if not ids:

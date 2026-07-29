@@ -36,7 +36,7 @@ def _v5_error_message(e) -> str:
 def _v5_error_is_transient(j: dict) -> bool:
     """True for transport/temporary v5 failures that are safe to repeat for get."""
     try:
-        from ..yandex_gateway import is_transient
+        from ..clients.yandex_gateway import is_transient
 
         return is_transient(j)
     except Exception:  # noqa: BLE001 - keep content editor helpers usable in tests
@@ -138,7 +138,7 @@ def _strip_campaign_subfield_names(params: dict) -> dict:
 # ─────────────────────────── Grid read/write helpers ─────────────────────────
 
 def _grid_client(login: str):
-    from ..grid_finalize import GridClient
+    from ..clients.grid_finalize import GridClient
 
     return GridClient(login)
 
@@ -728,7 +728,7 @@ def _uac_read_client(login: str, factory: Callable | None):
 
     ``factory`` (тест-инъекция) возвращает такую же обёртку целиком."""
     if factory is None:
-        from ..uac_read import UacReadClient
+        from ..clients.uac_read import UacReadClient
 
         return UacReadClient(login)
     return factory(login)
@@ -739,7 +739,7 @@ def _uac_client(login: str, factory: Callable | None):
 
     ``factory`` (тест-инъекция) возвращает уже сам клиент, а не обёртку."""
     if factory is None:
-        from ..uac_read import UacReadClient
+        from ..clients.uac_read import UacReadClient
 
         return UacReadClient(login).client
     return factory(login)

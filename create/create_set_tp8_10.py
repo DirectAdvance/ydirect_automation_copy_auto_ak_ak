@@ -1551,7 +1551,7 @@ def run_create_set_post(
     N = число найденных картинок (1-3), минимум 1 группа даже при 0 картинок.
     """
     try:
-        from .. import grid_finalize as gf  # noqa: PLC0415
+        from ..clients import grid_finalize as gf  # noqa: PLC0415
     except ImportError:
         import grid_finalize as gf  # type: ignore[no-redef]  # noqa: PLC0415
 

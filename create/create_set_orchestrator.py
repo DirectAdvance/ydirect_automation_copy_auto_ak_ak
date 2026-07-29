@@ -10,7 +10,7 @@ import time
 from flask import jsonify, request
 
 from .. import campaign as cmc
-from .. import grid_finalize as gf
+from ..clients import grid_finalize as gf
 from . import stage_timing as _timing
 
 

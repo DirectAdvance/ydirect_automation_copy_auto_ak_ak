@@ -180,7 +180,7 @@ _ADS_FOR_IMG_CLEAR_Q = (
 
 def _get_ads_with_images(login: str, cookie: str, campaign_id: int) -> list[int]:
     """Возвращает ad_id объявлений с непустыми imageHashes в поисковой кампании."""
-    from .. import grid_read as _gr
+    from ..clients import grid_read as _gr
     rc = _gr.GridReadClient(login, cookie=cookie)
     rc._bootstrap_csrf()
     inp = {

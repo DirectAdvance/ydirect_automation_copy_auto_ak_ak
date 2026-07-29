@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from .. import campaign as cmc  # noqa: F401 — re-exported to domain modules
-from .. import grid_create as gc  # noqa: F401 — re-exported to domain modules
-from .. import grid_finalize as gf  # noqa: F401 — re-exported to domain modules
+from ..clients import grid_create as gc  # noqa: F401 — re-exported to domain modules
+from ..clients import grid_finalize as gf  # noqa: F401 — re-exported to domain modules
 
 
 # Порог идемпотентности: группа с ≥ этого числа ключей И корректным автотаргетом не трогается.

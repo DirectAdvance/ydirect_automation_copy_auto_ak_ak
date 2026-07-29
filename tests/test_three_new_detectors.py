@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from direct.uac_read import _filter_summary
+from direct.clients.uac_read import _filter_summary
 from direct.uac_verifier import verify_uac_detail
-from direct.grid_content_verifier import verify_grid_content
+from direct.clients.grid_content_verifier import verify_grid_content
 from direct.verifier import verify_create_set
 from direct.live_verifier import verify_live_create_set
 

@@ -77,7 +77,7 @@ import requests
 # символы через cmc.*. Re-export через явный импорт (не *) гарантирует, что
 # приватные символы (_dead_feed_ids, _UC_CHANNEL_MODES и др.) тоже в namespace.
 
-from .direct_v501_client import (        # noqa: E402, F401
+from .clients.direct_v501_client import (        # noqa: E402, F401
     V501_BASE,
     _UC_CHANNEL_MODES,
     UnifiedCampaignSpec,
@@ -89,7 +89,7 @@ from .direct_v501_client import (        # noqa: E402, F401
 
 # ─── Re-export: UAC клиент ────────────────────────────────────────────────────
 
-from .uac_client import (                # noqa: E402, F401
+from .clients.uac_client import (                # noqa: E402, F401
     BASE,
     USER_AGENT,
     UAC_CLIENT_VERSION,
@@ -312,7 +312,7 @@ def pick_working_cookie(ulogin: str, accounts: tuple[str, ...] = DEFAULT_COOKIE_
     (_pick_working_cookie_local). Рекурсии нет: gateway_client.gw_cookie фолбэчит в _local, не сюда."""
     if os.environ.get("DIRECT_GATEWAY_SELF") != "1":
         try:
-            from . import gateway_client as _gwc
+            from .clients import gateway_client as _gwc
             ck = _gwc.gw_cookie(ulogin, accounts=accounts, force_refresh=force_refresh)
             if ck:
                 return ck

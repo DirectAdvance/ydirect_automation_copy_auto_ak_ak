@@ -6,7 +6,7 @@ from direct.copy_main import app as copy_app
 from direct.slepki_main import app as slepki_app
 from direct import campaign
 from direct.create import create_set_input
-from direct import grid_finalize
+from direct.clients import grid_finalize
 from direct.content import content_editor_helpers
 from direct import link_check
 from direct.web import routes_content_editor as content_editor

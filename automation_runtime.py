@@ -57,8 +57,8 @@ def _kp_base_site_type(site_type: str) -> str:
 # нет danger-гранта → разрушительные операции доступны только админу.
 
 from . import campaign as cmc  # vendored движок
-from . import grid_finalize as gf  # Grid-докрутка ЕПК (tp1-tp5): места показа/ассеты/инварианты
-from . import grid_create as gc  # Куки-движок создания/удаления (Grid web-api, без баллов v5)
+from .clients import grid_finalize as gf  # Grid-докрутка ЕПК (tp1-tp5): места показа/ассеты/инварианты
+from .clients import grid_create as gc  # Куки-движок создания/удаления (Grid web-api, без баллов v5)
 from . import kontent_pack as kp  # чтение контент-пака с M3 (/opt/neuro_kontent)
 from . import llm_providers as _llmp   # M3/OpenRouter (вынесено из blueprint; heartbeat инъектим ниже)
 from .llm_providers import (           # ре-экспорт: внутренние вызовы + deps-словари модулей
@@ -144,7 +144,7 @@ from .create.blueprint_content_rules import (     # ре-экспорт: вну�
     _explicit_content_assets_for, _ahash_distance, _dedupe_content_assets_for_ui, _CONTENT_RULES_CACHE,
 )
 from .direct_repository import victory_conn as _victory_conn, victory_conn_rw as _victory_conn_rw
-from .yandex_gateway import (
+from .clients.yandex_gateway import (
     LIVE_V4_URL as _LIVE_V4, V5_URL as _V5, V501_URL as _V501,
     GRID_URL as _GRID_URL, UNITS_PER_CAMPAIGN as _UNITS_PER_CAMPAIGN,
     direct_tokens as _direct_tokens, v5_get as _v5_get, v5_units as _v5_units,
@@ -162,7 +162,7 @@ from .yandex_gateway import (
 # yandex_gateway.*), плюс self-guard (в самом брокере HTTP не делается). Перецеливаем _-алиасы,
 # которые ниже раздаются по DI во все под-модули → потребители переключаются прозрачно.
 # Инкремент 1: ТОЛЬКО units_alive (2 потребителя, не горячий путь) — остальные алиасы пока локальны.
-from . import gateway_client as _gwc  # noqa: E402
+from .clients import gateway_client as _gwc  # noqa: E402
 _units_alive_for_login = _gwc.gw_units_alive
 from . import pack_resolver as _pack_resolver
 from .pack_resolver import (
@@ -3037,7 +3037,7 @@ def _image_ct_for_content(ct: str) -> str:
 def _image_identity_key(path: str) -> str:
     """Идентификатор КАРТИНКИ (не файла): «p:<pHash>» → «m:<md5>» → «x:<путь>»."""
     try:
-        from .uac_client import _image_phash as _ph   # локальный импорт: без цикла и без старт-цены
+        from .clients.uac_client import _image_phash as _ph   # локальный импорт: без цикла и без старт-цены
         _v = _ph(path)                                # кэш по пути внутри uac_client
     except Exception:  # noqa: BLE001 — нет Pillow/numpy → визуальный уровень пропускаем
         _v = None

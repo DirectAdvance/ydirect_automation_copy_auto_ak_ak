@@ -17,8 +17,8 @@ import time
 from pathlib import Path
 
 from .. import campaign as cmc
-from .. import grid_create as gc
-from .. import grid_finalize as gf
+from ..clients import grid_create as gc
+from ..clients import grid_finalize as gf
 from ..repair import repair_auto as rauto
 from ..repair import repair_gate as rgate
 from .copy_request import parse_feed_map, parse_image_hashes

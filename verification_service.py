@@ -98,7 +98,7 @@ def verify_create_set_live(login: str, results: list[dict[str, Any]], *,
     try:
         ids = _created_ids(results or [])
         if ids:
-            from .grid_read import GridReadClient
+            from .clients.grid_read import GridReadClient
             grid_content_counts = GridReadClient(login).campaign_content_counts(ids)
         else:
             grid_content_counts = {}
@@ -108,7 +108,7 @@ def verify_create_set_live(login: str, results: list[dict[str, Any]], *,
     try:
         uac_ids = _created_ids(results or [], kind="uac")
         if uac_ids:
-            from .uac_read import UacReadClient, summarize_uac_detail
+            from .clients.uac_read import UacReadClient, summarize_uac_detail
             raw_details = UacReadClient(login, agency=agency).campaign_details(uac_ids)
             uac_details = {cid: summarize_uac_detail(row) for cid, row in raw_details.items()}
         else:
@@ -127,7 +127,7 @@ def verify_create_set_live(login: str, results: list[dict[str, Any]], *,
             skip_ids = [i for i in _skipped_uac_ids(results or [], grid_rows)
                         if i not in uac_details]
             if skip_ids:
-                from .uac_read import UacReadClient, summarize_uac_detail
+                from .clients.uac_read import UacReadClient, summarize_uac_detail
                 raw_skip = UacReadClient(login, agency=agency).campaign_details(skip_ids)
                 uac_details.update({cid: summarize_uac_detail(row)
                                     for cid, row in raw_skip.items()})

@@ -29,7 +29,7 @@ os.environ.setdefault("DIRECT_REGISTER_CONTENT_EDITOR", "0")
 
 from direct import account_service as accounts  # noqa: E402
 from direct import direct_repository as repository  # noqa: E402
-from direct import yandex_gateway as yandex  # noqa: E402
+from direct.clients import yandex_gateway as yandex  # noqa: E402
 from direct import price_check as pc  # noqa: E402
 
 

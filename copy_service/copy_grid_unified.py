@@ -5,8 +5,8 @@ import json
 import re
 from pathlib import Path
 
-from .. import grid_create as gc
-from .. import grid_finalize as gf
+from ..clients import grid_create as gc
+from ..clients import grid_finalize as gf
 
 
 def _engine():

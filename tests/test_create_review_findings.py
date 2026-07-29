@@ -1,4 +1,4 @@
-from direct import grid_finalize
+from direct.clients import grid_finalize
 from direct.create.create_job_status import terminal_status_for_job, terminal_status_for_parent_failed
 from direct.create.create_set_deferred_status import parent_deferred_status_after_resume
 from direct.create.create_set_feed_result import (

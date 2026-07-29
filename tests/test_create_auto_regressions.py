@@ -14,13 +14,13 @@ from direct.create import create_set_structure
 from direct.create import create_set_content_preflight
 from direct import campaign_spec_audit
 from direct import city_morph
-from direct import grid_content_verifier
+from direct.clients import grid_content_verifier
 from direct import kontent_pack
 from direct import link_check
 from direct.repair import repair_gate
 from direct.repair import repair_planner
 from direct import text_gen
-from direct import uac_read
+from direct.clients import uac_read
 from direct import uac_verifier
 from direct import verifier
 
@@ -766,7 +766,7 @@ def _make_tp1_test_deps(responsive: bool = False):
     add_adgroups пишет отправленные items в grid_calls[], add_keywords — в kw_calls[].
     responsive=True → `_responsive_ad` отдаёт словарь (Фаза 3 доходит до ads.add), иначе None.
     """
-    from direct import grid_create as _real_gc
+    from direct.clients import grid_create as _real_gc
 
     grid_calls = []
     kw_calls = []
@@ -929,7 +929,7 @@ def test_tp1_grid_adgroups_failure_leaves_zero_adgroups():
     Раньше эту роль играл rep['error'] от Phase 1.5; теперь автотаргет неотделим от создания:
     группы нет → и неверного isActive быть не может.
     """
-    from direct import grid_create as _real_gc
+    from direct.clients import grid_create as _real_gc
 
     deps, _grid_calls, _kw_calls, _ads = _make_tp1_test_deps()
 
@@ -1052,7 +1052,7 @@ def _run_tp1_with_silent_zero_keywords(tp_code: str):
     grid_create.add_keywords:246-254 при validationResult.errors НЕ бросает — печатает в stderr
     и возвращает []. Раньше это давало rep['keywords']=0 при ПУСТОМ rep['errors'].
     """
-    from direct import grid_create as _real_gc
+    from direct.clients import grid_create as _real_gc
 
     deps, _grid_calls, kw_calls, _ads = _make_tp1_test_deps()
 

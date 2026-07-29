@@ -246,7 +246,7 @@ def verify_live_create_set(*, login: str, results: list[dict[str, Any]],
             # тег «х3» (одна позиция плана → несколько РК) сверку не ломают.
             _row = c.get("result") or {}
             _build = (_row.get("build") or _row.get("tp1_build") or _row.get("tp5_build") or {})
-            from .grid_content_verifier import verify_grid_content
+            from .clients.grid_content_verifier import verify_grid_content
             # root_href_ok намеренно НЕ передаётся: доступного контекста для автодетекта нет.
             # _build (tp1_build/tp5_build) содержит только счётчики (adgroups/ads/keywords),
             # но не href отдельных групп — различить «баг» и «заглушку без модельных страниц»

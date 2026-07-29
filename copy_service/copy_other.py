@@ -17,7 +17,7 @@ import json
 import re
 from pathlib import Path
 
-from .. import grid_finalize as gf
+from ..clients import grid_finalize as gf
 
 
 # ── Константы ────────────────────────────────────────────────────────────────
