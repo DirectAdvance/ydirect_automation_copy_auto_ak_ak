@@ -594,6 +594,34 @@ def start_tp1_image_preupload(login: str, body: dict, *, site_type: str = "",
     return fut
 
 
+def start_uac_asset_preupload(login: str, body: dict, *, site_type: str = "",
+                              ctx: dict | None = None, grid_cookie: str | None = None,
+                              is_cancelled: Callable[[], bool] | None = None):
+    """Предзагрузка контента/картинок/видео tp6-tp7 в ФОНЕ (конвейер, решение Семёна 2026-07-29).
+
+    Раньше `_prepare_uac_assets` шёл блокирующе внутри `prepare_job`: на наборе из 82 позиций
+    (товарка ×9 фидов) заливка ассетов занимала больше 15 минут, и watchdog
+    «ни одной кампании за 15 мин» валил джобу ДО первой кампании
+    (`WATCHDOG_FIRST_CAMPAIGN_FALSE_POSITIVE_ON_BIG_SET`).
+
+    Теперь ассеты грузятся параллельно созданию: tp1/tp2/tp4/tp5 создаются сразу, а к моменту
+    первого tp6/tp7 их `preloaded_content_ids` обычно уже готовы. Ждать future НЕ обязательно —
+    `uac_client` при пустом `content_ids` грузит сам (есть img-cache, повтор дёшев).
+    Executor принадлежит future и гасится done-callback'ом — как в start_tp1_image_preupload.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix="direct-uac-preupload")
+    fut = ex.submit(_prepare_uac_assets, login, body, site_type, ctx or {}, grid_cookie,
+                    is_cancelled or (lambda: False))
+
+    def _shutdown(_fut) -> None:
+        ex.shutdown(wait=False)
+
+    fut.add_done_callback(_shutdown)
+    return fut
+
+
 def prepare_job(login: str, body: dict, *, ctx: dict | None = None,
                 site_type: str = "", city: str = "", href: str = "",
                 grid_cookie: str | None = None, job: dict | None = None,
@@ -601,7 +629,8 @@ def prepare_job(login: str, body: dict, *, ctx: dict | None = None,
                 add_job_err: Callable[[dict | None, str], None] | None = None,
                 is_cancelled: Callable[[], bool] = lambda: False,
                 prepare_regular_content: bool = True,
-                preupload_tp1: bool = True) -> dict:
+                preupload_tp1: bool = True,
+                preupload_uac: bool = True) -> dict:
     """Blocking create-set prepare stage. It runs before the first campaign is created.
 
     For live create jobs the orchestrator passes prepare_regular_content=False and
@@ -635,7 +664,10 @@ def prepare_job(login: str, body: dict, *, ctx: dict | None = None,
                     _prepare_tp1_images(login, body, site_type, body.get("agent") or "", grid_cookie)
                     if preupload_tp1 else {"ok": True, "skipped": "background_tp1"}
                 ),
-                "uac": _prepare_uac_assets(login, body, site_type, ctx or {}, grid_cookie, is_cancelled),
+                "uac": (
+                    _prepare_uac_assets(login, body, site_type, ctx or {}, grid_cookie, is_cancelled)
+                    if preupload_uac else {"ok": True, "skipped": "background_uac"}
+                ),
                 "post": _prepare_post_images(login, body, grid_cookie, is_cancelled),
             }
 

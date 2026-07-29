@@ -42,6 +42,10 @@ _API_FIRST_FLIP_STREAK = 2
 # Пауза перед ПОВТОРОМ привязки наборов минус-фраз тем же payload. Ретраим только транспортные
 # отказы (кука/сеть/Grid), и мгновенный повтор попадал бы ровно в то же окно сбоя.
 _MS_RETRY_BACKOFF_SEC = 3.0
+# Конвейер tp6/tp7 (Семён 2026-07-29): сколько ждать фоновую предзагрузку ассетов перед первой
+# UAC-кампанией. НЕ блокирующее ожидание «до победного» — по истечении создание идёт дальше,
+# uac_client догрузит недостающее сам. Переопределяется env DIRECT_UAC_ASSETS_WAIT_SEC.
+_UAC_ASSETS_WAIT_SEC = float(os.environ.get("DIRECT_UAC_ASSETS_WAIT_SEC", "180"))
 
 
 class _ASharedCookieState:
@@ -655,6 +659,7 @@ def create_set_response(deps: dict):
             }), 503
         prepare_report = None
         _tp1_image_future = None
+        _uac_asset_future = None
         try:
             from .. import ai_agents as _A_prepare
             from ..core import campaign as _cmc_prepare
@@ -690,7 +695,25 @@ def create_set_response(deps: dict):
                 is_cancelled=lambda: bool(_job and _job.get("cancel")),
                 prepare_regular_content=False,
                 preupload_tp1=False,
+                preupload_uac=False,      # конвейер: UAC-ассеты грузятся фоном (см. ниже)
             )
+            try:
+                # Конвейер (Семён 2026-07-29): ассеты tp6/tp7 грузятся ПАРАЛЛЕЛЬНО созданию,
+                # а не блокируют его. На наборе 82 позиции блокирующая загрузка занимала >15 мин
+                # и watchdog «ни одной кампании за 15 мин» валил джобу до первой кампании.
+                if any((it.get("type") or "") in ("master_campaign", "product_campaign")
+                       or str(it.get("tp") or "") in ("tp6", "tp7") for it in items):
+                    _uac_asset_future = _prepare.start_uac_asset_preupload(
+                        login,
+                        body,
+                        site_type=eff_site,
+                        ctx=ctx,
+                        grid_cookie=_pf.get("cookie"),
+                        is_cancelled=lambda: bool(_job and _job.get("cancel")),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                if prepare_report is not None:
+                    prepare_report["uac_preupload_start_error"] = str(exc)[:200]
             try:
                 if _preupload_tp1_images and any((it.get("type") or "") == "tp1_rsy" for it in items):
                     _tp1_image_future = _prepare.start_tp1_image_preupload(
@@ -864,6 +887,30 @@ def create_set_response(deps: dict):
                 [],
                 True,
             )
+
+        def _wait_uac_assets() -> None:
+            """Ограниченное ожидание фоновой предзагрузки ассетов tp6/tp7.
+
+            Ждём НЕ до победного: если ассеты ещё не готовы, uac_client догрузит сам
+            (при пустом content_ids), а img-cache делает повтор дешёвым. Смысл ожидания —
+            использовать уже готовое и не плодить дубли загрузок, а не блокировать создание.
+            """
+            nonlocal prepare_report, _uac_asset_future
+            fut = _uac_asset_future
+            if fut is None:
+                return
+            _uac_asset_future = None          # ждём один раз на набор
+            try:
+                rep = fut.result(timeout=_UAC_ASSETS_WAIT_SEC)
+                if isinstance(prepare_report, dict):
+                    prepare_report["assets_uac"] = rep
+            except Exception as exc:  # noqa: BLE001 — таймаут/сбой не блокируют создание
+                if isinstance(prepare_report, dict):
+                    prepare_report["assets_uac"] = {
+                        "ok": False, "waited_sec": _UAC_ASSETS_WAIT_SEC,
+                        "note": "продолжаем без предзагрузки — uac_client догрузит сам",
+                        "error": str(exc)[:200],
+                    }
 
         def _wait_tp1_images() -> None:
             nonlocal prepare_report
@@ -1383,6 +1430,8 @@ def create_set_response(deps: dict):
                         _posevy_avoid.append(_t)
                 return
 
+            with _timing.stage("wait_uac_assets"):   # конвейер: ассеты tp6/tp7 грузились фоном
+                _wait_uac_assets()
             _prod_results, ch.tp7_mf = _run_master_product_item(
                 it=it, name=name, href=href, region_ids=region_ids, counter_id=counter_id,
                 goal_id=goal_id, cpa=cpa, launch=launch, client=client, agent=agent,
