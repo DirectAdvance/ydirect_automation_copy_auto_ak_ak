@@ -57,7 +57,7 @@ from .content_sitelinks_routes import (
     _replace_sitelink_text_grid,
     _replace_uac_sitelinks,
 )
-from .link_check import url_status_batch
+from ..link_check import url_status_batch
 
 
 _ACCOUNT_BLOCKED_MARKERS = (

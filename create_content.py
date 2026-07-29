@@ -1038,7 +1038,7 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
     if (not fast_mode and not fallback and not item.get("skip_utp_judge")
             and _titles_now and _texts_now):
         try:
-            from . import content_quality as CQ
+            from .content import content_quality as CQ
             provider = str(item.get("llm_provider") or "openrouter")
             site_ctx = {"domain": ctx.get("domain") or "", "site_type": st,
                         "city": ctx.get("city") or "", "brand": brand}

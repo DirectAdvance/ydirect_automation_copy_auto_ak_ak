@@ -38,7 +38,7 @@ def run_rename(login: str, payload: dict, *,
     Намеренно НЕ импортирует из routes_content_editor (циклическая зависимость):
     используем grid_client_factory или строим GridClient напрямую.
     """
-    from . import grid_finalize as gf
+    from .. import grid_finalize as gf
 
     # ── Разбор payload ────────────────────────────────────────────────────────
     campaign_renames: dict[int, str] = {}

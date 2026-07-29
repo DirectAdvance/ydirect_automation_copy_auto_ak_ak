@@ -1197,7 +1197,7 @@ def _audit_brand_not_first(rc: gr.GridReadClient, login: str, campaign_id: int,
     except Exception:  # noqa: BLE001
         return []
     rows = ((((data.get("data") or {}).get("client") or {}).get("ads") or {}).get("rowset") or [])
-    from .content_quality import brand_head_ok
+    from .content.content_quality import brand_head_ok
     bad: list[dict] = []   # [{ad_id, brand}]
     for r in rows:
         brand = agid_to_brand.get(str(r.get("adGroupId") or ""))
@@ -2016,7 +2016,7 @@ def fix_short_titles(login: str, ctx: dict, issues: list[dict]) -> dict:
     short_issues = [it for it in (issues or []) if it.get("code") == "SHORT_TITLES"]
     if not short_issues:
         return {"ok": True, "note": "нет SHORT_TITLES", "campaigns_fixed": 0}
-    from . import content_quality as CQ  # Flask-free
+    from .content import content_quality as CQ  # Flask-free
     agent, gen_ctx, provider = _regen_ctx(login, ctx)
     _min_len = _TITLE_SHORT_LEN + 1   # валидный минимум = 48 (audit флагает ≤47)
     fixed, extended_total = [], 0
@@ -2180,7 +2180,7 @@ def fix_texts_low(login: str, ctx: dict, issues: list[dict]) -> dict:
                  and it.get("transport") == "grid"]
     if not tl_issues:
         return {"ok": True, "note": "нет CONTENT_TEXTS_LOW (grid)", "campaigns_fixed": 0}
-    from . import content_quality as CQ  # Flask-free
+    from .content import content_quality as CQ  # Flask-free
     from . import create_set_feeds as csf
     agent, gen_ctx, provider = _regen_ctx(login, ctx)
     if agent is None:
@@ -2269,7 +2269,7 @@ def fix_brand_not_first(login: str, ctx: dict, issues: list[dict]) -> dict:
     bn_issues = [it for it in (issues or []) if it.get("code") == "BRAND_NOT_FIRST"]
     if not bn_issues:
         return {"ok": True, "note": "нет BRAND_NOT_FIRST", "campaigns_fixed": 0}
-    from . import content_quality as CQ  # Flask-free
+    from .content import content_quality as CQ  # Flask-free
     from . import create_set_feeds as csf
     agent, gen_ctx, provider = _regen_ctx(login, ctx)
     fixed, errors, terminal = [], [], []

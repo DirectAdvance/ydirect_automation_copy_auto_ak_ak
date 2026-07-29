@@ -12,7 +12,7 @@ from typing import Callable
 
 from flask import jsonify, request, session
 
-from . import price_check as pc
+from .. import price_check as pc
 
 
 def register_price_check_routes(

@@ -6,7 +6,7 @@
 (архивные МК, tp7-товарка). Такие кампании Grid пропускал, а UAC не мог
 обслужить → замена молча не выполнялась.
 """
-from direct import content_images_routes as m
+from direct.content import content_images_routes as m
 from direct import grid_finalize as gf
 
 

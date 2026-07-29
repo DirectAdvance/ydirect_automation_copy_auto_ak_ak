@@ -36,7 +36,7 @@ _MIN_TITLE_LEN = 48
 # ── LLM I/O ──────────────────────────────────────────────────────────────────────
 def _llm_url_for(provider: str):
     """(complete_url, m3_url, timeout) для провайдера — пара с двусторонним фолбэком."""
-    from .llm_providers import _llm_pair_for, _M3_LLM_URLS_14B, _M3_LLM_REPAIR_TIMEOUT
+    from ..llm_providers import _llm_pair_for, _M3_LLM_URLS_14B, _M3_LLM_REPAIR_TIMEOUT
     _url, _ = _llm_pair_for(str(provider or "openrouter"))
     m3url = _M3_LLM_URLS_14B[0] if _M3_LLM_URLS_14B else "http://127.0.0.1:8086"
     return _url, m3url, _M3_LLM_REPAIR_TIMEOUT
@@ -143,7 +143,7 @@ def brand_head_ok(title: str, brand: str) -> bool:
     """Марка/модель присутствует ДО первой точки и не стоит отдельной фразой ``Brand.``."""
     if not brand:
         return True
-    from .text_gen import _brand_in_text, _brand_isolated_first_phrase
+    from ..text_gen import _brand_in_text, _brand_isolated_first_phrase
     head = str(title or "").split(".")[0]
     return _brand_in_text(head, brand) and not _brand_isolated_first_phrase(title, brand)
 
@@ -157,8 +157,8 @@ def regen_titles(agent: dict, ctx: dict, *, brand: str = "", old_titles=None,
     """Перегенерировать набор из ``n`` заголовков, удовлетворяющий: длине
     (``min_len..TITLE_MAX``), опц. brand-first, без смысловых дублей. Тот же LLM (repair-промпт).
     Возврат :func:`retry_regen` (``value`` = list[str] при ``ok``)."""
-    from . import ai_agents as A
-    from .text_gen import _variant_norm_key
+    from .. import ai_agents as A
+    from ..text_gen import _variant_norm_key
     n = int(n or A.TITLES_N)
     old_titles = list(old_titles or [])
     extra_reasons = [str(r) for r in (extra_reasons or []) if str(r or "").strip()]
@@ -204,7 +204,7 @@ def _regen_texts(agent: dict, ctx: dict, *, brand: str = "", old_texts=None,
                  issues=None, n: int | None = None, provider: str = "openrouter",
                  max_attempts: int = 1) -> dict:
     """Перегенерация текстов (для механизма C). Приёмка: количество + длина ≤ TEXT_MAX."""
-    from . import ai_agents as A
+    from .. import ai_agents as A
     n = int(n or A.TEXTS_N)
     old_texts = list(old_texts or [])
     issues = [str(x) for x in (issues or []) if str(x or "").strip()]
@@ -236,7 +236,7 @@ def judge_utp(titles, texts, site_ctx: dict, *, provider: str = "openrouter") ->
     """ОДИН LLM-запрос-судья: дубли УТП + релевантность сайту. Возврат
     ``{ok:bool, issues:list, judged:bool, error?}``. При сбое инфраструктуры/парсинга —
     ``judged=False`` (**fail-open**: не роняем набор из-за недоступности судьи)."""
-    from . import ai_agents as A
+    from .. import ai_agents as A
     msgs = A.build_utp_judge_messages(list(titles or []), list(texts or []), site_ctx or {})
     obj, err = _llm_json(provider, msgs, max_tokens=400, temperature=0.2)
     if obj is None:
@@ -258,7 +258,7 @@ def audit_and_regen_utp(agent: dict, ctx: dict, *, brand: str = "", titles=None,
       (вызывающая сторона заводит ``UTP_RELEVANCE_FAILED``). ``titles/texts`` = лучший из
       полученных (для диагностики).
     """
-    from . import ai_agents as A
+    from .. import ai_agents as A
     titles = list(titles or [])
     texts = list(texts or [])
     site_ctx = dict(site_ctx or {})

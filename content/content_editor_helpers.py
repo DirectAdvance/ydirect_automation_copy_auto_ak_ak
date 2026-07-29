@@ -17,7 +17,7 @@ import time
 from typing import Callable
 
 # Re-export so callers that do ``from .agent_board_bridge import ...`` stay unchanged.
-from .agent_board_bridge import ensure_content_job_agent_column  # noqa: F401
+from ..agent_board_bridge import ensure_content_job_agent_column  # noqa: F401
 
 
 # ─────────────────────────── v5 low-level helpers ────────────────────────────
@@ -36,7 +36,7 @@ def _v5_error_message(e) -> str:
 def _v5_error_is_transient(j: dict) -> bool:
     """True for transport/temporary v5 failures that are safe to repeat for get."""
     try:
-        from .yandex_gateway import is_transient
+        from ..yandex_gateway import is_transient
 
         return is_transient(j)
     except Exception:  # noqa: BLE001 - keep content editor helpers usable in tests
@@ -138,7 +138,7 @@ def _strip_campaign_subfield_names(params: dict) -> dict:
 # ─────────────────────────── Grid read/write helpers ─────────────────────────
 
 def _grid_client(login: str):
-    from .grid_finalize import GridClient
+    from ..grid_finalize import GridClient
 
     return GridClient(login)
 
@@ -417,7 +417,7 @@ def _href_host_path(href: str) -> tuple[str, str]:
     (единый парсер хоста). path — суффикс: путь + query, без схемы и хоста."""
     from urllib.parse import urlsplit
 
-    from .copy_service.copy_engine import _copy_domain_from_href
+    from ..copy_service.copy_engine import _copy_domain_from_href
 
     host = _copy_domain_from_href(href)
     s = urlsplit(href if "://" in href else "https://" + str(href or ""))
@@ -728,7 +728,7 @@ def _uac_read_client(login: str, factory: Callable | None):
 
     ``factory`` (тест-инъекция) возвращает такую же обёртку целиком."""
     if factory is None:
-        from .uac_read import UacReadClient
+        from ..uac_read import UacReadClient
 
         return UacReadClient(login)
     return factory(login)
@@ -739,7 +739,7 @@ def _uac_client(login: str, factory: Callable | None):
 
     ``factory`` (тест-инъекция) возвращает уже сам клиент, а не обёртку."""
     if factory is None:
-        from .uac_read import UacReadClient
+        from ..uac_read import UacReadClient
 
         return UacReadClient(login).client
     return factory(login)

@@ -1,8 +1,8 @@
 from flask import Blueprint, Flask, jsonify
 
-from direct.content_dashboard_routes import register_content_dashboards
-from direct.content_images_routes import register_image_routes
-from direct.content_renames_routes import register_rename_routes
+from direct.content.content_dashboard_routes import register_content_dashboards
+from direct.content.content_images_routes import register_image_routes
+from direct.content.content_renames_routes import register_rename_routes
 
 
 def _access(fn):

@@ -7,10 +7,10 @@ from direct.slepki_main import app as slepki_app
 from direct import campaign
 from direct import create_set_input
 from direct import grid_finalize
-from direct import content_editor_helpers
+from direct.content import content_editor_helpers
 from direct import link_check
 from direct import routes_content_editor as content_editor
-from direct import content_replace_routes
+from direct.content import content_replace_routes
 
 
 def _route(rule: str, method: str = "GET"):

@@ -1,4 +1,4 @@
-from direct import content_replace_routes as repl
+from direct.content import content_replace_routes as repl
 
 
 def test_ad_href_textad_uses_grid_rmw_not_v5_update():

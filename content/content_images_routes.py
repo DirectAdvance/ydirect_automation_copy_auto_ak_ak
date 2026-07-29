@@ -308,7 +308,7 @@ def _rsya_inventory(token: str, login: str, v5_call: Callable,
     v5 ``campaigns.get`` остаётся только КРОСС-ЧЕКОМ полноты: кампании, которые
     он видит, а Grid не отдал, попадают в ``skipped``, а не теряются молча.
     """
-    from . import routes_content_editor as rce
+    from .. import routes_content_editor as rce
 
     grid = (grid_client_factory or rce._grid_client)(login)
     grid._bootstrap_csrf()
@@ -485,7 +485,7 @@ def _uac_inventory(login: str, campaign_ids: list[int], *,
     ``contents[]`` детали кампании уже содержит и миниатюру (``thumb``), и
     ``direct_image_hash`` — отдельный запрос за картинками (и баллы) не нужен.
     """
-    from . import routes_content_editor as rce
+    from .. import routes_content_editor as rce
 
     reader = rce._uac_read_client(login, uac_read_client_factory)
     cids: list[int] = []
@@ -704,7 +704,7 @@ def _verify_uac_mirror(login: str, old_hashes_by_cid: dict[int, set[str]],
     ``no_adaptive`` показывает, сколько кампаний прошло мимо проверки, чтобы
     ``checked: 0`` не читалось как «всё чисто».
     """
-    from . import routes_content_editor as rce
+    from .. import routes_content_editor as rce
 
     cids = sorted({int(c) for c, hs in (old_hashes_by_cid or {}).items() if hs})
     out: dict = {"checked": 0, "ok": 0, "stale": [], "errors": [],
@@ -798,7 +798,7 @@ def _replace_rsya_images(login: str, pairs_hashes: dict[str, str],
     не попадают: две записи в одну кампанию двумя транспортами запрещены.
     Сколько объявлений отдано UAC-легу — видно в ``ads_left_to_uac``.
     """
-    from . import routes_content_editor as rce
+    from .. import routes_content_editor as rce
 
     skip_cids = {int(c) for c in (skip_cids or set())}
     items: list[dict] = []
@@ -883,7 +883,7 @@ def _replace_uac_images(login: str, pairs_content: dict[int, dict[str, str]],
     full-payload билдер уже деривирует ``content_ids`` из ``contents``, а
     переданные values ставятся ПОСЛЕ него и не затираются.
     """
-    from . import routes_content_editor as rce
+    from .. import routes_content_editor as rce
 
     if not pairs_content:
         return {"replaced": 0, "errors": [], "campaigns_touched": 0}
@@ -935,7 +935,7 @@ def run_image_replace(token: str, login: str, payload: dict, v5_call: Callable,
     "tmp_path", "filename"}]}``. Возвращает реальное число изменённых объектов
     и список ошибок (инвариант CONTENT_EDITOR.md).
     """
-    from . import routes_content_editor as rce
+    from .. import routes_content_editor as rce
 
     campaign_ids = _parse_campaign_ids(payload.get("campaign_ids"))
     pairs = [p for p in (payload.get("pairs") or []) if isinstance(p, dict)]

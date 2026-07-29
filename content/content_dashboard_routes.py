@@ -283,7 +283,7 @@ def register_content_dashboards(
     def ce_accounts():
         import psycopg2.extras
 
-        from .account_filters import base_account_where
+        from ..account_filters import base_account_where
         status = (request.args.get("status") or default_status).strip()
         q = (request.args.get("q") or "").strip()
         where = list(base_account_where())
@@ -325,7 +325,7 @@ def register_content_dashboards(
         """Полный список аккаунтов для copy-вкладки у допущенных content-user."""
         import psycopg2.extras
 
-        from .account_filters import base_account_where
+        from ..account_filters import base_account_where
         if not _content_tools_allowed():
             return jsonify({"error": "Forbidden"}), 403
         status = (request.args.get("status") or default_status).strip()
