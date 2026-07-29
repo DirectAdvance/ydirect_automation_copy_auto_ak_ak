@@ -3,7 +3,310 @@
 > Читать ПЕРВЫМ в начале каждой сессии. Обновлять ПОСЛЕДНИМ перед выходом.
 > Ошибки создания РК: сигнатуры/решения/что-помогло — **ERRORS_JOURNAL.md** (обязателен к заполнению при фиксах).
 
-> Архив сессий старше 3 дней — **STATE_ARCHIVE.md** (ротация 2026-07-19 (2): перенесены сессии 07-16 и старше). Правило ротации — см. CLAUDE.md.
+> Архив сессий старше 3 дней — **docs/archive/STATE_ARCHIVE.md** (ротация 2026-07-19 (2): перенесены сессии 07-16 и старше). Правило ротации — см. CLAUDE.md.
+
+## Сессия 2026-07-29 — Content Editor four404: статус кампании в сводной
+
+**До:** на `/direct/automation/content?section=four404` таблица показывала `UTM-кампания`,
+`№ кампании`, `№ группы`, но не показывала live-статус самой РК; статус приходилось смотреть отдельно
+в `public.campaign_status` по campaign id.
+
+**После:** `_load_four404_rows()` делает `LEFT JOIN public.campaign_status` по
+`cs."CampaignId"::text = btrim(e."№ кампании"::text)` и отдаёт `campaign_status`. В UI добавлен
+столбец `Статус кампании` сразу после `UTM-кампания`; поле участвует в клиентском и backend-поиске,
+попадает в XLSX между `UTM-кампания` и `№ кампании`. Пустой статус отображается как `—`.
+
+**Проверено:** schema `public.campaign_status` (`CampaignId` unique 22445/22445); SQL count до/после
+join = `7849 → 7849`; local+LXC `py_compile content_dashboard_routes.py`, `node --check
+content_editor.js`, `git diff --check` OK. LXC `direct-content.service` перезапущен, active
+PID `3963720`; Flask test client `/four404` = 200, rows 7849, `campaign_status` есть
+(`Активна` sample); XLSX export = 200, 14 headers, порядок `UTM-кампания → Статус кампании →
+№ кампании`; journal без Traceback/ERROR. `ui_verifier` read-only принял; browser screenshot не снят
+из-за недоступного browser plugin.
+
+**Доработка цвета:** статус кампании теперь красится по тексту: `актив/active` → зелёный,
+`останов/stop` → красный, `архив/archive` → серый. Обновлены CSS/JS cache-busters
+`20260729_f404_campaign_status_colors_v1`. Проверено local+LXC `node --check`, live page 200
+с новыми cache-busters, API `/four404` = 200/7849, `direct-content.service` active PID `3974738`,
+journal без Traceback/ERROR; `ui_verifier` и `direct_neyrodirektolog` приняли.
+
+## Сессия 2026-07-29 — Agent Board #64: `ce_8e8ea0dd2982` добита
+
+**До:** job `ad_href` (`scherbakova`, `porg-yovv4zdk`, agency `victoryagency14`) упала
+`read-back не подтвердил новый путь у 9 объявл.`, `targets=10/replaced=0/confirmed=1`.
+Root-cause тот же, что в #63: задача была исполнена старым worker до рестарта; первое объявление
+изменил мутирующий probe, а остальные 9 `TextAd` имели `rmw_unsafe="мультикарточки"` и Grid
+full-replace их silently skip-ал.
+
+**После:** нового кода не потребовалось: уже задеплоенный фикс `ad_href` шлёт no-op probe со
+старым href и добивает `rmw_unsafe` TextAd через v5 href-only fallback. Live repair обновил 9
+оставшихся объявлений; row `direct_automation.content_jobs` записан как `done/replaced=10`,
+`result.confirmed=10`, `errors=[]`.
+
+**Проверено:** `py_compile` OK; `PYTHONPATH=. pytest -q direct/tests/test_content_ad_href_grid.py` —
+5 passed. Direct read-back по 10 исходным id: old=0/new=10; сервисный `_load_account`:
+old path = 0, new path = 12. `direct-content.service` и `direct-content-worker.service` active.
+
+## Сессия 2026-07-29 — Agent Board: Git-контекст в описаниях задач
+
+**До:** runner добавлял git-правила в prompt перед запуском, но в самой карточке Agent Board
+описания авто-задач content/copy/pricecheck не показывали, какой git-контракт будет использован.
+Из-за этого до старта задачи было неочевидно: copy-git или content-redactor git.
+
+**После:** добавлен общий `agent_board/git_context.py` для ручных задач и prompt-routing; авто-задачи
+Direct (`content-editor`, `copy_campaigns`, `pricecheck`) дополняются `Git-контекст` в
+`direct/agent_board_bridge.py`. Уже созданные неархивные задачи #63/#64 обновлены в БД: description
+содержит `Git-контекст`; статусы не менялись. Для смешанных маркеров приоритет остаётся у copy guard.
+
+**Проверено:** локально `py_compile` и targeted pytest `3 passed`; LXC `py_compile` и prompt-routing
+OK; `agent-board.service` и `direct-content-worker.service` перезапущены и active, healthz OK;
+`direct-copy.service` перезапущен после copy-scope commit `b26e8be1`, marker записан; copy guard Mac/LXC
+OK (`dirty_count=0`). После завершения #63/#64 и освобождения очереди перезапущен
+`agent-board-runner.service`; prompt-routing на LXC проверен: accounts → content guard, copy → copy guard,
+pricecheck → content guard.
+
+## Сессия 2026-07-29 — Content Editor links: кликабельное превью и HTTP-отклик
+
+**До:** `ceLinksPreview()` показывал новый URL как обычный `<code>` без клика и без проверки
+доступности; админ видел строку «стало», но не знал, отдаёт ли она 200/404/timeout.
+
+**После:** новые URL в превью стали кликабельными (`target=_blank`, `rel=noopener noreferrer`) и
+сразу получают статус через `POST /direct/api/content-editor/links/check`. Backend проверяет точный
+URL без 404-fallback, лимитирует пачку до 300 URL, блокирует non-global/private hosts до HTTP-запроса,
+не следует redirect и коннектится к уже проверенному IP. JS cache-busting:
+`20260729_links_preview_status_v2`.
+
+**Проверено:** `node --check static/direct/content_editor.js`, `python3 -m py_compile` для
+`link_check.py`/`content_replace_routes.py`/`tests/test_routes.py`, JS preview model, isolated Flask
+route smoke (`200/400/400`), private-host guard, `ui_verifier` ✅, `direct_neyrodirektolog` ✅.
+Полный pytest через `content_app` не выполнен: локально нет Postgres role `bi_user`. Деплой/push не делались.
+
+**Live-fix после жалобы «ошибка проверки»:** на LXC101 файлы были синхронизированы в 17:26, но
+`direct-content.service` работал старым PID `3859795` с 16:33 и `POST /links/check` отдавал 404.
+Перезапущен только `direct-content.service` в 17:38:03, новый PID `3941818`. После restart endpoint
+без cookie отдаёт `401 {"error":"Unauthorized"}` вместо 404, значит route зарегистрирован; логи без
+Traceback/Error, read-only `direct_neyrodirektolog` принял live-проверку.
+
+## Сессия 2026-07-29 — Git для content/accounts вынесен в yandex_direct_content_redactor
+
+**До:** git-контракт был настроен только для copy (`ydirect_automation_copy_auto_ak_ak`), а
+`/direct/automation/content?section=accounts` и `/direct/automation/accounts` жили между `direct/`,
+`templates/direct/` и `static/direct/`; agent-board не мог сверять свежесть и пушить эти правки в
+отдельный источник правды.
+
+**После:** добавлен scoped-export guard `direct/tools/content_redactor_git.py`: перед правками
+`cd /opt/scripts/home/seoadvanced && python3 direct/tools/content_redactor_git.py preflight`, после
+проверенной правки `export --commit-message "..."`. Экспорт пушится в
+`https://github.com/DirectAdvance/yandex_direct_content_redactor` (`main`) и запрещает copy-файлы.
+`agent_board/runner.py` теперь даёт этот контракт content/accounts задачам, а `content?section=copy`
+по-прежнему получает только старый copy guard. Home commit: `74c799f`; content-redactor export:
+проверяется через `git ls-remote ... refs/heads/main`.
+Уточнение 2026-07-29: agent-board не читает оба git-а для одной обычной задачи. Copy-маркеры
+выбирают только copy guard, content/accounts-маркеры — только content-redactor guard; если в тексте
+задачи случайно есть оба набора маркеров, приоритет остаётся у copy guard, чтобы не смешать scope.
+
+**Проверено:** Mac и LXC `py_compile` guard+runner OK; Mac/LXC `content_redactor_git.py preflight`
+OK (`source_drift_count=0`); LXC `git push --dry-run origin main` через `GIT_TOKEN` из `.secret/.env`
+OK; Agent Board prompt: accounts/content → content guard, copy → copy guard; `agent-board-runner`,
+`agent-board`, `direct-content`, `direct-content-worker`, `direct-accounts` active; очередь Agent Board:
+queued/running = 0.
+
+## Сессия 2026-07-29 — Content Editor links: выбор аккаунтов сворачивается после загрузки
+
+**До:** на `/direct/automation/content?section=links` сценарий «выбрать аккаунт прямо на вкладке →
+Показать» шёл через `ceLinksLoad()` мимо `ceLinksTabOpen()`, поэтому `#ce-account-results` оставался
+развёрнутым после чтения ссылок и занимал экран.
+
+**После:** в `home/seoadvanced/static/direct/content_editor.js` добавлен общий
+`ceLinksCollapseAccounts()` и вызов из `ceLinksLoad()` при `CE.section === "links" && okCnt > 0`;
+`LNK_ACC_RESTORE` по-прежнему разворачивает блок при уходе с вкладки. В
+`templates/direct/content_editor.html` обновлён cache-busting до `20260729_links_collapse_v1`.
+
+**Проверено:** `node --check seoadvanced/static/direct/content_editor.js`, локальная JS-модель helper-а,
+read-only `ui_verifier` — принято. Коммит в `home`: `2c9e948`. Деплой/push не выполнялись;
+визуальный live-прогон в браузере не делался.
+
+## Сессия 2026-07-29 — Git-guard для Agent Board copy-задач
+
+**До:** Direct фактически был nested git на Mac (`home/seoadvanced/direct/.git`), но на LXC101
+`/opt/scripts/home/seoadvanced/direct` не видел этот git и поднимался до старого `/opt/scripts`.
+Agent Board поэтому мог править/деплоить copy-файлы, но не мог надёжно сверить свежесть через commit и
+не оставлял git-след на ветке для copy-сервиса.
+
+**После:** заведён рабочий контракт ветки `ydirect_automation_copy_auto_ak_ak` **только для
+copy-сервиса** (`/direct/automation/copy` и `/direct/automation/content?section=copy`): перед правками
+`python3 tools/direct_git_guard.py --branch ydirect_automation_copy_auto_ak_ak preflight --scope copy`,
+после проверенной правки — commit только copy-scope файлов + push, deploy на LXC101 и
+`.deploy_version.json` marker с commit, sha256 целевых файлов и перезапущенными services.
+`agent_board/runner.py` добавляет эти правила только для задач с `Direct copy`/`copy_campaigns`/
+`content?section=copy`; content/create/slepki в этот git-контракт не входят.
+
+**Проверить перед «готово»:** nested repo Mac и LXC должны быть на одном commit этой ветки;
+`direct_git_guard.py preflight --scope copy` должен проходить; marker должен указывать текущий commit.
+
+## Сессия 2026-07-29 — Agent Board #62: `ce_2f2bef2c5ddf` добита после transient `ads.get`
+
+**До:** content job `ce_2f2bef2c5ddf` (`scherbakova`, `stavropol-cartrade-512126-vvwz`,
+agency `victoryagency14`, `ad_href`) была создана старым worker и упала до записи на чтении
+снимка: `ads.get: Response ended prematurely`. Live read-only текущим кодом перед записью:
+старый path `/auto/changan/cs75-plus/i/suv-5d` = 51, новый
+`/auto/changan/cs75-plus/iv/suv-5d` = 0.
+
+**После:** нового кода не потребовалось: уже задеплоенный hardening
+`CONTENT_EDITOR_V5_PREMATURE_READ_RETRY` ретраит transient `ads.get`, а `ad_href` не читает
+лишние `adgroups`/UAC. Штатный executor заменил 39/51 через Grid RMW; оставшиеся 12
+неархивных `TextAd`, которые Grid не вернул, добиты точечно через разрешённый v5 `ads.update`.
+Row `direct_automation.content_jobs` записан как `done/replaced=51`, `result.confirmed=51`,
+`errors=[]`; Agent Board #62 переведён в `done`.
+
+**Проверено:** targeted pytest — `6 passed`; live Direct read-back:
+`old_count=0`, `new_count=51` среди 7531 links. `direct-content.service`,
+`direct-content-worker.service`, `direct-gateway.service` active.
+
+## Сессия 2026-07-29 — Agent Board #61: `ce_9e38c5c189d1` добита после transient `ads.get`
+
+**До:** content job `ce_9e38c5c189d1` (`scherbakova`, `porg-5dtpywo5`, agency `victorylotsofads1`,
+`ad_href`) была создана старым worker и упала до записи на чтении снимка:
+`ads.get: Response ended prematurely`. Live read-only текущим кодом перед записью:
+старый path `/auto/changan/cs75-plus/i/suv-5d` = 12, новый
+`/auto/changan/cs75-plus/iv/suv-5d` = 0.
+
+**После:** нового кода не потребовалось: уже задеплоенный hardening `CONTENT_EDITOR_V5_PREMATURE_READ_RETRY`
+покрывает `ads.get` так же, как предыдущие `adgroups.get`, а `ad_href` не читает лишние сущности.
+Исходная операция выполнена текущим executor и записана в `direct_automation.content_jobs` как
+`done/replaced=12`, `result.confirmed=12`, `errors=[]`; Agent Board #61 переведён в `done`.
+
+**Проверено:** targeted pytest — `5 passed`; live Direct read-back:
+`old_count=0`, `new_count=12` среди 1342 links. `direct-content.service`,
+`direct-content-worker.service`, `direct-gateway.service` active.
+
+## Сессия 2026-07-29 — Agent Board #60: `ce_96a807cea47a` добита, `ad_href` больше не зависит от `adgroups.get`
+
+**До:** content job `ce_96a807cea47a` (`scherbakova`, `porg-ew3kvnkh`, agency `y-direct-victory`,
+`ad_href`) была создана старым worker до рестарта и упала на чтении снимка:
+`adgroups.get: Response ended prematurely`. Live read-only перед записью через текущий код:
+старый path `/auto/changan/cs75-plus/i/suv-5d` = 17, новый
+`/auto/changan/cs75-plus/iv/suv-5d` = 0.
+
+**После:** дополнительно hardened `ad_href`: `_load_account` получил `include_adgroups`, а
+`make_job_executor` для `ad_href` передаёт `False`, потому что замене Href нужны только campaign/ad ids
+из `campaigns.get` + `ads.get`; `adgroups.get` больше не может валить link-job до записи.
+Исходная операция выполнена текущим executor и записана в `direct_automation.content_jobs` как
+`done/replaced=17`, `result.confirmed=17`, `errors=[]`; Agent Board #60 переведён в `done`.
+
+**Проверено/деплой:** `py_compile` OK; targeted pytest — `7 passed`; live Direct read-back:
+`old_count=0`, `new_count=17` среди 2003 links. `direct-content.service` и
+`direct-content-worker.service` перезапущены и active.
+
+## Сессия 2026-07-29 — QA-прогон создания РК по 6 пунктам (porg-pl6iavd5) — 5 из 6 ✅, монобренд 🔴
+
+**Сделано:** 6 узких контрольных прогонов на тест-аккаунте `porg-pl6iavd5` (counter 110881350,
+goal 586850590), 17 черновиков `DRAFT/OFF` вместо полного набора 26+. Джобы: R1 `17db1729e537`
+(тег х3, 3/3), R2 `0f73707364ff` (все фиды, 1/1), R3 `3b70da8321ea` (Монобренд · Lada, **0/4 FAIL**),
+R4 `5f4a591390cd` (tp7 Haval × 9 фидов, 9/9), R5 `181e13d043f9` (tp6 возраст, 2/2),
+R6 `6de63d4ebc99` (CPA, 2/2). Код НЕ правился — сессия проверочная.
+
+**Подтверждено фактом:**
+- **тег «х3» — верно.** Три РК из одной логической: `КС` = 4075 ключей + автотаргет `SUSPENDED` 31/31;
+  `Автотаргетинг` = 0 ключей + `ON` 31/31; `КС + Автотаргетинг` = 4075 ключей + `ON` 31/31.
+  Сверено ДВУМЯ источниками: v5 `keywords.get` (State псевдоключа `---autotargeting`) и Grid
+  `relevanceMatch.isActive` — сходятся. Кодеры `_aoff_`/`_aon_`, групп без кодера 0.
+- **тег «все фиды» — верно.** ОДНА кампания, внутри 9 групп «Товарная галерея» по 9 РАЗНЫМ `feed_id`
+  (не фан-аут в 9 РК), по 2 объявления (ShoppingAd+ListingAd).
+- **фильтр фида tp1 — верно.** У каждой брендовой группы свой `name CONTAINS_ANY ["haval"|"kia"|…]`.
+- **фильтр фида tp7 — верно** (пункт был «не проверено» 2 сессии подряд). По всем 9 фидам:
+  товарный `mark_id`/`vendor CONTAINS ["Haval","haval"]` (поле резолвится под тип фида) +
+  каталожный `collectionId EQUALS ["mark_6"]/["6"]`, `catalog_filter_has_values=True` на 9/9.
+- **возраст tp6 — верно.** Ручная (`ag011`) → `socdem.age_lower="age_25"`, автотаргет (`ag001`) →
+  `"age_18"`. Закрывает `TP6_MANUAL_AGE_THRESHOLD_35_TO_25`.
+- **CPA — верно.** `tp2_cpa_site` → `Search.PAY_FOR_CONVERSION{Cpa=2000₽, GoalId=586850590}`,
+  `tp2_cpc_site` → `AVERAGE_CPA`. Недельный бюджет 20000/5000 сверен с `direct_automation_rules`
+  (правило БД, не формула `cpa*10`). Закрывает `CPA_BUDGET_RULES_IGNORED`.
+- **кодер** — по 17 РК: tp7 `ct0111_aon_n000_r0088_ct010_ag001_g00`, tp6 `..._ct001_ag011/ag001_g00`,
+  tp1/tp2 кодер на группах. `detect_tp67_name_socdem`: 255 позиций, рассинхрон **0**.
+
+**СЛОМАНО:** 🔴 `MONOBRAND_SPLIT_PACK_NOT_NORMALIZED` — создание на ЛЮБОЙ витринной вкладке
+«Монобренд · Марка» падает content-gap: `kontent_pack.gather`/`_gather_once` (`kontent_pack.py:1938`)
+идут в пак сырым именем вкладки мимо готовой `base_site_type` (`kontent_pack.py:1090`).
+Затронуты **49 вкладок у 11 слепков**. Соседний `_rule_sets` сплит нормализует
+(`create_set_plan.py:185`) — пропущен именно пак. Подробности в ERRORS_JOURNAL.
+
+**ПОЧИНЕНО в этой же сессии:** `kontent_pack._gather_once` (`kontent_pack.py:1943`) — добавлен
+`segment = base_site_type(segment)` (одна строка; `_ct_dir`/`_remote_ct_dir`/`_pack_entry` уже
+нормализовали, пропущен был только subprocess-путь `_GATHER_PY`). Рестарт `direct-create`/`-worker`
+16:33:45, md5 Mac==LXC101. Перепрогон того же payload — job `f014d47eba0b`: **created=4, failed=0,
+live_verification=pass** (было 0/4). Ошибка не повторяется. Коммит `375a34ca` в nested-репо
+`direct/.git`, ветка `ydirect_automation_copy_auto_ak_ak` — НЕ запушен (remote-ветки нет).
+
+**Осталось:** `TP1_ALL_FEEDS_GALLERY_GROUPS_NO_CODER` 🟡
+(9 групп «Товарная галерея» без кодер-префикса, `create_set_tp1_builders.py:762-804`).
+Наблюдение вне скоупа: `detect_tp67_skip_struct` даёт «ЕСТЬ ПРОВАЛ» при всех печатаемых критериях
+«ожидалось = получено» — фикстурный self-test про RESUME-SKIP, разбирать отдельно.
+Warn `BUILD_LIVE_UNDERCOUNT` (62 vs 31) — ложный: измерение «группы» суммирует ДВА build-ключа
+`groups`+`adgroups` (`grid_content_verifier.py:480`), v5 подтвердил реальные 31 группу и 4075 ключей.
+17 черновиков оставлены в кабинете для просмотра.
+
+## Сессия 2026-07-29 — Agent Board #59: `ce_66bef8d78a88` добита после retry-фикса
+
+**До:** content job `ce_66bef8d78a88` (`scherbakova`, `porg-zcwl4fn2`, `ad_href`) падала до записи
+на v5-снимке: `adgroups.get: Response ended prematurely`. Старый path:
+`/auto/changan/cs75-plus/i/suv-5d`, новый path: `/auto/changan/cs75-plus/iv/suv-5d`.
+
+**После:** `yandex_gateway.is_transient()` считает `premature` временным сбоем, а
+`content_editor_helpers._v5_paginate` коротко ретраит transient v5 `get`-ошибки. Исходная операция
+выполнена тем же executor вручную и записана в `direct_automation.content_jobs` как
+`done/replaced=16`, `result.confirmed=16`, `errors=[]`.
+
+**Проверено/деплой:** targeted pytest — `6 passed`; live Direct read-back по `porg-zcwl4fn2`:
+`old_count=0`, `new_count=16` среди 1929 links. `direct-content.service` и
+`direct-content-worker.service` перезапущены и active.
+
+## Сессия 2026-07-29 — Agent Board #58: copy UAC VIDEO_EXTENSION_NOT_FOUND
+
+**До:** failed copy job `b91c78cdc083` (`porg-vrr6oy6r` → `porg-otuyzzyc`, `713139330`) падала
+на UAC tp7 create: `contentIds` содержал source-local video extension `1163658513`.
+Read-only detail источника показал этот id в `contents[4].meta.creative_id/meta.vast`, а не как
+явный `type=video` id.
+
+**После:** `copy_uac.py` распознаёт UAC video content item по `type/contentType`,
+`meta.creative_id`, `meta.video_meta_id`, VAST/video mp4 и mp4/mov/webm URL; такие items больше
+не попадают в переиспользуемые `content_ids`/image preseed. Видео остаётся путём `video_urls`
+и загружается в target-аккаунт.
+
+**Проверено/деплой:** targeted pytest UAC subset — `11 passed`; `py_compile` OK; ручной helper-прогон
+вернул `content_ids=['image-content-id']` без video id; `direct-copy.service` restart → active,
+listener `127.0.0.1:5022`. Похожий auto-retry `2fe87b2edd0f` уже завершился `done`, created
+campaign `713140706`; отдельный UI/auto job `d86bec5217e8` был прерван рестартом.
+
+## Сессия 2026-07-29 — Copy UAC porg-qrriv2wt→porg-63s3kxux: гео в именах/ключах исправлено и защищено
+
+**До:** после ремонта href/images у 12 новых DRAFT-кампаний job `5dc4ca62df05` всё ещё имела
+source-гео в UAC: live read-back показал `r0088` в `display_name` у 12/12 и
+`Краснодар/краснодар` в ключах у 5/12. Причина — UAC-only branch не получал `rewrite_meta.pairs`
+и `target_r_code`, поэтому вручную собранный `MasterCampaignSpec` копировал name/titles/keywords
+как есть, в обход v5 snapshot geo-rewrite.
+
+**После в коде:** `copy_engine.py` передаёт в `_copy_uac_campaigns` `geo_pairs` и целевой r-код;
+`copy_uac.py` применяет их к `display_name`, `titles`, `texts`, `sitelinks`, `keywords`,
+`minus_keywords`. Добавлены два guard: pre-create (`uac geo guard`) валит spec, если в нём остался
+чужой `r####` или старые geo-формы из pairs; post-create перечитывает созданную UAC-кампанию и
+сверяет, что Яндекс реально сохранил `display_name`, `href`, `titles/texts/keywords` и source
+image hashes.
+
+**Repair существующих 12:** без пересоздания ID через UAC full PATCH обновлены target DRAFT:
+`713139080, 713139079, 713139089, 713139122, 713139140, 713139139, 713139152, 713139094,
+713139101, 713139153, 713139108, 713139120`. Менялись `display_name` 12/12, `keywords` 5/12,
+`titles` 2/12. Read-only verifier затем поймал остатки: у `713139080` live `display_name` всё ещё
+был `r0088`, href у `713139080/713139079` был `/auto` вместо source-root, а у `713139120` 2/5
+image hashes заменились на UAC thumb-хэши. Финальные PATCH: `713139080` → `display_name+href`,
+`713139079` → `href`, `713139120` → source ordered `content_ids`. Mapping и финальная
+verified-сводка записаны в `direct_automation_jobs.result.manual_uac_geo_repair_20260729`.
+
+**Проверено/деплой:** LXC101 sha256 Mac==LXC по `copy_uac.py`, `copy_engine.py`,
+`test_copy_integration_guards.py`; `py_compile` OK; targeted pytest UAC subset — `11 passed`;
+`direct-copy.service` перезапущен и active. Финальный live read-back после второго PATCH: 12/12
+`all_name_r0121=True`, `all_name_no_r0088=True`, `all_no_krasnodar=True`,
+`all_href_strict_ok=True`, `all_image_hashes_ok=True`.
 
 ## Сессия 2026-07-29 — Content Editor: заблокированные Direct-аккаунты пропускаются до мутации
 
@@ -265,6 +568,20 @@ live `ads.get` по 12 целевым `TextAd` (`17495459782`–`17495459793`) �
 `direct-gateway` для `e-20074377` отдаёт 502/`need_reset`, фолбэк `glavpotok.ru` зависает на
 SOCKS/SSL timeout. v5 read-back после попытки: 12 old / 0 new; job остаётся terminal `error` до
 обновления агентской cookie.
+
+## Сессия 2026-07-29 — Agent Board #63: content-editor job `ce_df02ddf1e06a` добита
+
+**До:** job `ad_href` (`scherbakova`, `porg-gtva7uoc`) упала
+`read-back не подтвердил новый путь у 7 объявл.`, `targets=8/replaced=0/confirmed=1`.
+Root-cause: probe `_ad_noop_write_blocked` для `ad_href` был не no-op и слал новый `Href`,
+а оставшиеся `TextAd` имели `rmw_unsafe="мультикарточки"`; Grid full-replace их silently skip-ал.
+
+**После:** probe шлёт текущий `old_href`; `ad_href` для `TextAd` с `rmw_unsafe` использует v5
+href-only fallback, обычные TextAd/ResponsiveAd остаются на Grid RMW. Live repair обновил 7
+оставшихся объявлений, job обновлена `done/replaced=8/errors=[]`.
+
+**Проверено:** `direct/tests/test_content_ad_href_grid.py` — 5 passed, `py_compile` OK.
+Direct read-back по 7 id: old=0/new=7; сервисный `_load_account`: old path = 0, new path = 12.
 
 ## Сессия 2026-07-29 — Agent Board #48: content-editor job `ce_b27147271334` заблокирована cookie
 

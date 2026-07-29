@@ -30,10 +30,27 @@
   пропущен был только subprocess-путь. Одна строка, один файл: `kontent_pack.py:1943`.
 - Верификация (LXC101): `gather("scherbakova","Монобренд · Lada","tp1")` → 200 ct (=база), tp2 → 200;
   chepelev → 49, terehov → 184, zubakin → 35; ALL_MATCH=True. Anti-регресс Мультибренд/С пробегом — без изменений.
-- Статус: 🟡 ждёт live-прогона создания РК (created>0 для витринной вкладки Монобренд · Lada).
+- Статус: ✅ ПОДТВЕРЖДЕНО живым прогоном 2026-07-29 после рестарта `direct-create`/`-worker` (16:33:45).
+  Job `f014d47eba0b` — тот же payload, что падал (`scherbakova`/«Монобренд · Lada», `search_test`,
+  `n:false`): **created=4, failed=0, live_verification=pass, issues=0** (было `created=0, failed=4`).
+  Созданы `713142484`/`713142509` (Марки, cpc+cpa) и `713142442`/`713142468` (Модели, cpc+cpa), у всех
+  «Lada» в имени. Группы несут ровно те ct, которых не хватало в ошибке content-gap:
+  `ct0181 — Lada` (125 ключей) и `ct0183/ct0186/ct0184/ct0189/ct0188` (Granta/Niva Legend/Iskra/
+  Vesta/Niva Travel, 458 ключей). Групп без кодера — 0. md5 `kontent_pack.py` Mac==LXC101
+  (`9f0c519421b9772193094167a8dc8652`).
+  Антирегресс (не-витринные типы, числа те же до и после): scherbakova/Мультибренд tp1=202, tp2=209;
+  pavlov/«С пробегом» tp1=191. Дополнительно вкладки, которых не касался исполнитель:
+  gordeeva=33, piterkina=41, karavaev=51 — все равны своему базовому паку.
+  ⚠️ ЛОВУШКА ЗАМЕРА: ad-hoc `gather()` без `NEURO_PACK_MOUNT=/opt/neuro_content_local` уходит
+  ssh-фолбэком на M3 и может вернуть **0 ct** на здоровом паке (так проверяющий получил ложный
+  «Мультибренд tp1 = 0»). Мерить пак ТОЛЬКО с этой переменной — сервис её задаёт сам.
+  Коммит: `375a34ca` в NESTED-репо `home/seoadvanced/direct/.git`, ветка
+  `ydirect_automation_copy_auto_ak_ak`. Родительский репо и `home` его не видят — `direct/` у них
+  в `.gitignore` (`home/.gitignore:56`), это отдельный репозиторий. ⚠️ НЕ запушен: remote-ветки
+  `origin/ydirect_automation_copy_auto_ak_ak` нет.
 - НЕ помогло ранее: — (первая фиксация сигнатуры).
 
-### TP1_ALL_FEEDS_GALLERY_GROUPS_NO_CODER — группы «Товарная галерея · <фид>» создаются без кодера в имени (2026-07-29) 🟡
+### TP1_ALL_FEEDS_GALLERY_GROUPS_NO_CODER — группы «Товарная галерея · <фид>» создаются без кодера в имени (2026-07-29) 🟡 ИСПРАВЛЕНО, ждёт живого прогона
 - Симптом: job `0f73707364ff` (porg-pl6iavd5, `scherbakova`/«Мультибренд», тег «все фиды»,
   `single_feed:false`) — кампания `713140728` содержит 17 групп, из них **9 групп
   `Товарная галерея · newautos-193.site — <фид>` БЕЗ кодер-префикса**. Остальные 8 тематических
@@ -44,7 +61,33 @@
   именуется `Товарная галерея · <feed_name>` напрямую, минуя `_tp1_group_name`.
 - Функционально кампания корректна: 9 групп = 9 разных `feed_id`, по 2 объявления (ShoppingAd +
   ListingAd), фильтр пуст — сегмент «Общие» (не марка), пустой фильтр там by design.
-- Статус: 🟡 зафиксировано, НЕ исправлено (сессия проверочная).
+- Последствие (мотив фикса): без токена `_aon_`/`_aoff_` в имени детектор автотаргета
+  `grid_read.py:356-362` fail-safe пропускает такие группы (9 из 17 невидимы для проверки).
+- Фикс (2026-07-29): формат по прецеденту tp3-галереи (`create_set_feed_builders.py:1301`,
+  ct009 = «Товарное/Фид», ShoppingAd+ListingAd без TextAd), с сохранением имени фида для
+  уникальности внутри кампании:
+  `ct0000_{aon|aoff}_n000_{r_code}_ct009_ag001_g00 — Товарная галерея · {фид}`.
+  Токен aud = `aon`, если `tp_code=="tp5"` ИЛИ `autotarget`, иначе `aoff` (tp5 всегда `aon` —
+  автотаргет в поисковой кампании Директа выключить нельзя, `_tp1_group_name` докстринг).
+  `r_code` добавлен параметром в `_build_tp1_adgroups` (`create_set_tp1_builders.py:281`,
+  default `"r0000"`) и прокинут с единственного реального вызова в `_build_tp1_from_pack`
+  (`create_set_tp1_builders.py:1282`). `_gn_af` собирается в Фазе 4a
+  (`create_set_tp1_builders.py:783-789`).
+- Проверено: py_compile Mac + LXC101 (`/root/venv/bin/python3 -m py_compile`) — OK; targeted pytest
+  `test_create_auto_regressions.py -k tp1` — 20 passed на Mac и на LXC101 (тест
+  `test_tp1_all_feeds_group_relevance_match_follows_plan_flag` обновлён под новое имя с кодером).
+  Офлайн-формула для (tp1, r0088, `newautos-193.site — yandex`) →
+  `ct0000_aoff_n000_r0088_ct009_ag001_g00 — Товарная галерея · newautos-193.site — yandex` (86 симв.);
+  для (tp5, autotarget=False) →
+  `ct0000_aon_n000_r0088_ct009_ag001_g00 — Товарная галерея · newautos-193.site — yandex` (85 симв.).
+  Регресс по имени: `campaign_spec_audit.py:653-666` (`_audit_generic_fallback_group`) требует
+  ровно 1 группу + `_ct_of_name==ct0000` + подстроку «Товарная галерея» — новое имя оба условия
+  сохраняет (ct0000-префикс, подстрока не тронута). Остальные упоминания «Товарная галерея» в
+  проекте — либо docstring/комментарии, либо код tp3/tp5-галереи в `create_set_feed_builders.py`/
+  `create_set_gallery.py`/`grid_create.py` (другая ветка, уже несла кодер до этого фикса) — не пересекаются
+  с Фазой 4a `create_set_tp1_builders.py`.
+- Статус: 🟡 код исправлен и проверен py_compile+pytest, ждёт живого прогона создания РК
+  (тег «все фиды» tp1/tp5) для факта на реальном аккаунте.
 - НЕ помогло ранее: — (первая фиксация сигнатуры).
 
 ### CONTENT_EDITOR_V5_PREMATURE_READ_RETRY — transient `Response ended prematurely` валил `ad_href` до записи (2026-07-29)
@@ -61,6 +104,28 @@
   исходный job вручную выполнен тем же executor: `replaced=16`, `confirmed=16`, `errors=[]`.
   Live Direct read-back по `porg-zcwl4fn2`: old path = 0, new path = 16. `direct-content` и
   `direct-content-worker` перезапущены и active; row `ce_66bef8d78a88` = `done/replaced=16`.
+- Повтор Agent Board #60 / `ce_96a807cea47a` (`porg-ew3kvnkh`) был создан старым worker до рестарта:
+  та же сигнатура `adgroups.get: Response ended prematurely`. Доп. hardening: для queued `ad_href`
+  `_load_account(..., include_adgroups=False)` — замене Href нужны `campaigns.get` + `ads.get`,
+  а имена групп не используются write-path. Проверено: targeted pytest — `7 passed`; live executor
+  добил job: `replaced=17`, `confirmed=17`, `errors=[]`; Direct read-back old path = 0, new path = 17.
+- Повтор Agent Board #61 / `ce_9e38c5c189d1` (`porg-5dtpywo5`) подтвердил тот же класс уже на
+  `ads.get: Response ended prematurely`: old worker упал до записи, текущий `_v5_paginate` с transient
+  retry и scoped `ad_href`-снимком прочитал аккаунт и добил job. Проверено: targeted pytest — `5 passed`;
+  live executor `replaced=12`, `confirmed=12`, `errors=[]`; Direct read-back old path = 0, new path = 12
+  среди 1342 links; row `ce_9e38c5c189d1` = `done/replaced=12/error=""`.
+- Повтор Agent Board #62 / `ce_2f2bef2c5ddf` (`stavropol-cartrade-512126-vvwz`, agency
+  `victoryagency14`) был той же сигнатурой `ads.get: Response ended prematurely` до записи.
+  Live read-only перед добивкой: old path = 51, new path = 0 среди 7531 links. Текущий executor
+  с retry прочитал аккаунт и заменил 39/51 через Grid RMW; оставшиеся 12 неархивных `TextAd`,
+  которые Grid не вернул, добиты точечно через v5 `ads.update` (на этом аккаунте write API
+  разрешён, errors=[]). Финальный Direct read-back: old path = 0, new path = 51; row
+  `ce_2f2bef2c5ddf` = `done/replaced=51/error=""`, Agent Board #62 = `done`.
+- Детект-запрос: для конкретного failed content job до добивки — live `_load_account(...,
+  include_adgroups=False, include_uac_campaigns=False)` и подсчёт `links.path == old_text/new_text`;
+  дефект есть, если `status='error'`, `error ILIKE '%Response ended prematurely%'` и `old_count > 0`.
+  После добивки ожидается `status='done'`, `errors=[]`, `old_count=0`, `new_count=targets`.
+- Статус: ✅ подтверждено живыми добивками #59/#60/#61/#62 2026-07-29.
 
 ### COPY_UAC_VIDEO_EXTENSION_NOT_FOUND — source video content id уходил в target UAC create (2026-07-29)
 - Симптом: copy job `b91c78cdc083` (`porg-vrr6oy6r` → `porg-otuyzzyc`, campaign `713139330`)
@@ -285,6 +350,27 @@
   невозможна сейчас: `direct-gateway` для `e-20074377` отдаёт 502/`need_reset`, фолбэк
   `glavpotok.ru` висит на SOCKS/SSL timeout; операция не применена, job оставлена terminal `error`
   до перелогина агентской cookie.
+- Повтор #63 / мультикарточки (`ce_df02ddf1e06a`, `scherbakova`, `porg-gtva7uoc`):
+  job падала `read-back не подтвердил новый путь у 7 объявл.`, при этом `result` был
+  `targets=8, replaced=0, confirmed=1`. Repro: текущий worker уже не stale; live
+  `text_ads_for_update` по оставшимся 7 id вернул `rmw_unsafe="мультикарточки"` для каждого,
+  а `update_text_ads` silently skip-ал unsafe-снимки без `last_ad_update_errors`. Отдельный
+  дефект: `_ad_noop_write_blocked` для `ad_href` получал уже новый `Href`, поэтому probe был
+  мутирующим и изменил первое объявление через v5, дав `confirmed=1`.
+  Решение: probe теперь шлёт текущий `old_href`; `TextAd` с `rmw_unsafe` в `ad_href` добиваются
+  через официальный v5 href-only fallback (`TextAd.Href`), потому что Grid full-replace для
+  мультикарточек запрещён именно во избежание потери настроек. Live repair: оставшиеся 7 id
+  обновлены, `_replace_ad_href` вернул `replaced=7, confirmed=7, errors=[]`; row job обновлена
+  `done/replaced=8/errors=[]`. Проверка `_load_account`: old path = 0, new path = 12.
+- Повтор #64 / мультикарточки (`ce_8e8ea0dd2982`, `scherbakova`, `porg-yovv4zdk`,
+  agency `victoryagency14`) был создан тем же старым worker до рестарта:
+  `targets=10, replaced=0, confirmed=1`, 9 id остались на старом пути. Repro 2026-07-29:
+  прямой v5 read-back показал `17768402622` уже на новом path, а остальные 9 на старом;
+  Grid `text_ads_for_update` по этим 9 вернул `rmw_unsafe="мультикарточки"` для всех, без
+  `last_ad_update_errors`. Текущий `ad_href` fallback добил 9 через v5 href-only:
+  `replaced=9, confirmed=9, errors=[]`. Row `content_jobs` обновлён как
+  `done/replaced=10/result.confirmed=10/errors=[]`. Финальный v5 read-back по 10 исходным id:
+  old=0/new=10; сервисный `_load_account`: old path = 0, new path = 12.
 - НЕ помогло ранее: v5/v501 `ads.update` для Href (работало на части аккаунтов, но падает на
   аккаунтах с заблокированным official write API).
 
@@ -6133,7 +6219,7 @@ cookie-enrichment на `direct778` подвисал. Проверено `py_comp
 
 ---
 
-## Решённые ранее и история прогонов → [ERRORS_JOURNAL_ARCHIVE.md](ERRORS_JOURNAL_ARCHIVE.md)
+## Решённые ранее и история прогонов → [docs/archive/ERRORS_JOURNAL_ARCHIVE.md](docs/archive/ERRORS_JOURNAL_ARCHIVE.md)
 
 Компактная таблица ✅-закрытых сигнатур (`DUPLICATE_SITELINK_DESCS`, `IMAGE_NOT_FOUND`,
 `FEED_NOT_EXIST`, `UAC_400_sitelinks`, ложный `UAC_PRODUCT_MODEL_FILTER_MISSING`,

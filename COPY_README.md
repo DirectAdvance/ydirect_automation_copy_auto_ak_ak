@@ -1,7 +1,7 @@
 # Сервис копирования кампаний Яндекс.Директа
 
 > Навигация: `COPY_INDEX.md` — плотный индекс функций/измерений. `STATE_COPY_OTHER.md` — история
-> инцидентов и осталось. `ARCHITECTURE.md:124` — позиция в слоях пакета. `ERRORS_JOURNAL.md` — root-cause.
+> инцидентов и осталось. `docs/ARCHITECTURE.md:124` — позиция в слоях пакета. `ERRORS_JOURNAL.md` — root-cause.
 
 ---
 

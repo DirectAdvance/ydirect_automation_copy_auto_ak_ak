@@ -1,7 +1,7 @@
 # COPY_INDEX — карта сервиса копирования кампаний (для ИИ)
 
 > Навигационный индекс. Механика — в `COPY_README.md`. Грабли/инциденты — в `STATE_COPY_OTHER.md`.
-> Смежные доки: `ARCHITECTURE.md` (слои всего пакета), `README.md` (create-flow), `ERRORS_JOURNAL.md`.
+> Смежные доки: `docs/ARCHITECTURE.md` (слои всего пакета), `README.md` (create-flow), `ERRORS_JOURNAL.md`.
 
 ---
 
@@ -148,7 +148,7 @@
 
 ## Смежные доки (не дублируются, только ссылки)
 
-- `ARCHITECTURE.md` — слои всего пакета, граф импортов, copy-кластер
+- `docs/ARCHITECTURE.md` — слои всего пакета, граф импортов, copy-кластер
 - `README.md` — create-flow (tp1–tp10: основные tp1–tp7 + Посевы tp8–tp10), Grid/v5, куки главпотока
 - `STATE_COPY_OTHER.md` — история инцидентов «Прочих сфер», баги 1–7, что осталось
 - `ERRORS_JOURNAL.md` — root-cause всех инцидентов, «не помогло ранее»

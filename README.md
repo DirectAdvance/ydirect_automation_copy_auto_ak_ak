@@ -3,7 +3,7 @@
 Веб-модуль для seoadvanced.ru: создание кампаний в Яндекс.Директе и **ИИ-генерация
 промоакций в стиле реальных директологов** (через локальную LLM на M3).
 
-> 🗺 **Карта пакета — [`ARCHITECTURE.md`](ARCHITECTURE.md):** слои, инвентарь модулей,
+> 🗺 **Карта пакета — [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md):** слои, инвентарь модулей,
 > граф импортов, план разбиения `blueprint.py`. Смотреть ПЕРЕД правкой незнакомого места
 > и для impact-анализа.
 
@@ -585,7 +585,7 @@ token-типы создаются по куке агентства через Gr
 
 
 > Архив: описание миграции TextAd→ResponsiveAd (06-24), 3 фикса комбинаторного РСЯ,
-> Имитация-прогон Павлова (porg-ozge4ntu), правило черновиков → [README_ARCHIVE.md](README_ARCHIVE.md)
+> Имитация-прогон Павлова (porg-ozge4ntu), правило черновиков → [docs/archive/README_ARCHIVE.md](docs/archive/README_ARCHIVE.md)
 
 
 ### TODO
