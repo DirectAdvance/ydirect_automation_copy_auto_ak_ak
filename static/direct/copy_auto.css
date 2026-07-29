@@ -1,0 +1,22 @@
+/* ============================================================================
+   copy_auto.css — ТОЛЬКО вкладка «Авто» (templates/direct/copy.html).
+   Карточка «Замена фидов»: пофидовое сопоставление исходный → целевой.
+   Общее (шапка, «Источник», статус, очередь) — copy_common.css.
+   ============================================================================ */
+
+.copy-feed-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; align-items:start; padding:9px 0; border-bottom:1px solid rgba(255,255,255,.05); font-size:13px; color:var(--text-secondary); }
+.copy-feed-head { font-size:11px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.04em; }
+.copy-feed-row b { color:var(--text-primary); }
+/* Обёртка правой ячейки — кнопка 1:1 + дропдаун */
+.copy-feed-actions { display:flex; gap:8px; align-items:center; }
+.copy-feed-actions .copy-feed-sel { flex:1; }
+.copy-feed-sel { width:100%; box-sizing:border-box; background:var(--bg,#0e1016); color:var(--text-primary); border:1px solid var(--border); border-radius:8px; padding:8px 10px; font-size:13px; font-family:inherit; }
+.copy-11-btn { padding:5px 10px; font-size:11px; font-weight:600; background:#252b3a; border:1px solid var(--border); border-radius:6px; color:var(--text-secondary); cursor:pointer; white-space:nowrap; flex-shrink:0; }
+.copy-11-btn:hover { background:#2e3548; color:var(--text-primary); border-color:var(--violet-400,#8b7cff); }
+/* «Фид отсутствует в цели»: правый блок занимает полную ширину строки */
+.cf-missing-row { grid-template-columns: 1fr; }
+.cf-missing-row > div:first-child { border-bottom: 1px solid rgba(255,255,255,.06); padding-bottom:6px; margin-bottom:4px; }
+
+@media (max-width: 900px){
+  .copy-feed-row { grid-template-columns: 1fr; gap: 6px; }
+}

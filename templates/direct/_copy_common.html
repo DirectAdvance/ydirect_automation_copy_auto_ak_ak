@@ -1,0 +1,44 @@
+{# ============================================================================
+   _copy_common.html — ОБЩАЯ разметка обеих вкладок /direct/automation/copy.
+
+   Карточка «Источник» (старый аккаунт + выбор кампаний) физически одна: список
+   COPY_CAMPAIGNS и выбор COPY_SELECTED общие для «Авто» (copy.html) и
+   «Прочих сфер» (copy_other.html) — при переключении вкладки выбор не теряется.
+
+   JS этой карточки — static/direct/copy_common.js (loadCopySourceCampaigns,
+   renderCopySourceCampaigns, copyToggleAllVisible). Дублировать разметку в
+   вкладочные шаблоны НЕЛЬЗЯ: тогда id перестанут быть уникальными.
+
+   Подключается: {% include 'direct/_copy_common.html' %} внутри .copy-grid.
+   ============================================================================ #}
+<div class="da-card">
+  <h2>Источник</h2>
+  <div class="da-row" style="grid-template-columns:1fr auto">
+    <div class="da-field">
+      <label for="copy-source-login">Старый аккаунт</label>
+      <div class="ulogin-wrap">
+        <input id="copy-source-login" placeholder="porg-xxxxxxx" autocomplete="off"
+               oninput="copySourceSuggest()" onfocus="copySourceSuggest()" onkeydown="copySourceKey(event)" onblur="setTimeout(copySourceHide,160)">
+        <div id="copy-source-dd" class="ulogin-dd"></div>
+      </div>
+      <div class="da-hint" id="copy-source-note">Можно ввести любой логин вручную: источник не обязан быть в списке аккаунтов.</div>
+    </div>
+    <div class="da-field">
+      <label>&nbsp;</label>
+      <button class="da-btn ghost" onclick="loadCopySourceCampaigns()">⟳ Обновить</button>
+    </div>
+  </div>
+  <div class="copy-toolbar">
+    {# Видимого label нет by design тулбара (внешний вид не меняем) → доступное имя даёт aria-label #}
+    <input id="copy-campaign-search" class="search" aria-label="Умный поиск по названиям кампаний"
+           placeholder="Умный поиск по названиям кампаний" oninput="renderCopySourceCampaigns()">
+    <button class="da-btn da-btn-sm" type="button" onclick="copyToggleAllVisible(true)">✓ Все видимые</button>
+    <button class="da-btn da-btn-sm" type="button" onclick="copyToggleAllVisible(false)">✕ Снять видимые</button>
+    <span class="copy-note" id="copy-selected-note">Выбрано: 0</span>
+  </div>
+  <div class="copy-list-wrap">
+    <div class="copy-camps" id="copy-campaigns-box">
+      <div class="copy-note" style="padding:12px">Сначала выберите источник и нажмите «Обновить».</div>
+    </div>
+  </div>
+</div>

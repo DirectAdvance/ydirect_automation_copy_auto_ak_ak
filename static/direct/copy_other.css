@@ -1,0 +1,119 @@
+/* ============================================================================
+   copy_other.css — ТОЛЬКО вкладка «Прочие сферы» (templates/direct/copy_other.html).
+   Гео-сегментконтрол + гео-дерево, загрузка картинок, таблица проверки фидов,
+   очистка целевого аккаунта. Общее — copy_common.css.
+   ============================================================================ */
+
+/* ── Гео / картинки / очистка — сегмент-контрол ──────────────────────
+   Разметка остаётся radio group (взаимоисключаемость — браузерная,
+   input[name="other-geo-mode"]:checked продолжает резолвиться в JS).
+   Сами input'ы визуально скрыты (не display:none — фокус и a11y живы),
+   стилизуются обёртки-label через :has(input:checked). */
+/* Заметка режима картинок — на СВОЮ строку. .geo-radio-row = inline-flex (общий класс,
+   его не трогаем), поэтому идущий следом inline-span иначе прилипает к строке с кнопками. */
+#other-img-mode-note { display:block; margin-top:6px; }
+.geo-radio-row { display:inline-flex; align-items:stretch; flex-wrap:wrap; gap:4px;
+  max-width:100%; box-sizing:border-box; margin-bottom:10px; padding:3px;
+  border:1px solid var(--border); border-radius:var(--r-md, 12px);
+  background:var(--bg-surface, rgba(255,255,255,.03)); }
+.geo-radio-row label { position:relative; display:inline-flex; align-items:center; justify-content:center;
+  padding:7px 14px; border:1px solid transparent; border-radius:var(--r-sm, 8px);
+  font-family:inherit; font-size:12.5px; font-weight:500; line-height:1.2; white-space:nowrap;
+  color:var(--text-secondary); cursor:pointer;
+  transition:background .18s ease, color .18s ease, border-color .18s ease; }
+.geo-radio-row input[type=radio] { position:absolute; opacity:0; pointer-events:none;
+  width:1px; height:1px; margin:0; }
+.geo-radio-row label:hover { background:var(--bg-hover, rgba(255,255,255,.07)); color:var(--text-primary); }
+.geo-radio-row label:active { transform:translateY(1px); }
+.geo-radio-row label:has(input[type=radio]:checked) {
+  background:linear-gradient(180deg, var(--violet-500,#8b5cf6), var(--violet-600,#7c3aed));
+  border-color:var(--violet-400,#a78bfa); color:var(--text-primary); font-weight:600;
+  box-shadow:0 4px 12px -4px var(--violet-glow, rgba(139,92,246,.35)); }
+.geo-radio-row label:has(input[type=radio]:focus-visible) {
+  outline:2px solid var(--violet-400,#a78bfa); outline-offset:2px; }
+/* Очистка цели: недоступный вариант — задизабленная кнопка сегмент-контрола */
+.geo-radio-row label.cleanup-disabled { opacity: 0.38; pointer-events: none; cursor: not-allowed; }
+
+/* ── Гео-дерево (кастомный дропдаун) ────────────── */
+.geo-tree-dropdown { position: relative; }
+.geo-tree-trigger {
+  display: flex; align-items: center; justify-content: space-between;
+  width: 100%; box-sizing: border-box;
+  background: var(--bg, #0e1016); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 9px 11px; font-size: 13px; font-family: inherit;
+  cursor: pointer; user-select: none; }
+.geo-tree-trigger:hover { border-color: var(--violet-400, #8b7cff); }
+.geo-tree-trigger.open { border-color: var(--violet-400, #8b7cff); }
+.geo-tree-arrow { color: var(--text-muted); font-size: 11px; transition: transform .18s; flex-shrink: 0; }
+.geo-tree-trigger.open .geo-tree-arrow { transform: rotate(180deg); }
+.geo-tree-panel {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 200;
+  background: var(--surface, #1a1d27);
+  border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.5);
+  max-height: 400px; display: flex; flex-direction: column; overflow: hidden; }
+.geo-tree-search-wrap { padding: 8px; border-bottom: 1px solid rgba(255,255,255,.06); flex-shrink: 0; }
+.geo-tree-search {
+  width: 100%; box-sizing: border-box;
+  background: var(--bg, #0e1016); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 10px; font-size: 13px; font-family: inherit; }
+.geo-tree-body { flex: 1; overflow-y: auto; padding: 4px 0; min-height: 0; }
+.geo-node {
+  display: flex; align-items: center; gap: 3px;
+  padding: 4px 8px; cursor: default; font-size: 13px; color: var(--text-secondary); }
+.geo-node:hover { background: rgba(255,255,255,.04); }
+.geo-expander {
+  width: 16px; min-width: 16px; text-align: center; font-size: 10px;
+  color: var(--text-muted); cursor: pointer; padding: 2px; border-radius: 3px; }
+.geo-expander:hover { color: var(--text-primary); background: rgba(255,255,255,.07); }
+.geo-expander-empty { cursor: default; pointer-events: none; }
+.geo-cb { width: 18px; min-width: 18px; text-align: center; cursor: pointer; font-size: 14px; }
+.geo-cb-empty { color: var(--text-muted); }
+.geo-cb-checked { color: var(--violet-400, #8b7cff); }
+.geo-cb-excluded { color: #ff7b72; }
+.geo-cb-indet { color: #e3b341; }
+.geo-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.geo-label:hover { color: var(--text-primary); }
+.geo-path { display: block; font-size: 10px; color: var(--text-muted); }
+.geo-search-empty { padding: 12px 8px; color: var(--text-muted); font-size: 12px; }
+/* Chips */
+.geo-chips-row { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; min-height: 0; }
+.geo-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: rgba(139,92,246,.15); border: 1px solid rgba(139,92,246,.3);
+  border-radius: 6px; padding: 2px 8px; font-size: 12px; color: var(--text-primary); }
+.geo-chip-minus { background: rgba(255,123,114,.12); border-color: rgba(255,123,114,.3); color: #ff9090; }
+.geo-chip-x {
+  background: none; border: none; color: var(--text-muted); cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 0 0 0 2px; }
+.geo-chip-x:hover { color: var(--text-primary); }
+
+/* ── Загрузка изображений ───────────────────────── */
+.img-drop-zone { border:2px dashed var(--border); border-radius:10px; padding:22px 16px; text-align:center;
+  color:var(--text-muted); font-size:13px; cursor:pointer; transition:border-color .2s; }
+.img-drop-zone.drag-over { border-color:var(--violet-400,#8b7cff); color:var(--text-primary); }
+.img-upload-list { margin-top:10px; max-height:120px; overflow:auto; }
+.img-upload-row { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-secondary);
+  padding:4px 0; border-bottom:1px solid rgba(255,255,255,.05); }
+.img-upload-row .iname { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.img-upload-row .ihash { font-family:monospace; color:#3fb950; font-size:11px; }
+.img-upload-row .ierr { color:#ff7b72; font-size:11px; }
+.img-upload-row .iprog { color:var(--text-muted); font-size:11px; }
+
+/* ── Таблица проверки фидов ─────────────────────── */
+.feed-check-table { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; }
+.feed-check-table th { font-size:10.5px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.04em; text-align:left; padding:5px 6px; border-bottom:1px solid var(--border); }
+.feed-check-table td { padding:5px 6px; border-bottom:1px solid rgba(255,255,255,.05); color:var(--text-secondary); vertical-align:top; }
+.feed-check-table .fct-ok { color:#3fb950; }
+.feed-check-table .fct-miss { color:#ff7b72; }
+.feed-check-table .fct-rule { font-size:10px; background:rgba(255,255,255,.06); border-radius:4px; padding:1px 5px; }
+.feed-check-summary { font-size:12px; color:var(--text-secondary); margin-bottom:6px; }
+.feed-check-summary b { color:var(--text-primary); }
+
+@media (max-width: 900px){
+  .geo-radio-row { display:flex; }
+  .geo-radio-row label { flex: 1 1 auto; white-space: normal; text-align: center; }
+  .feed-check-table { display: block; overflow-x: auto; }
+}

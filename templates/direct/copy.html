@@ -1,0 +1,131 @@
+{# ============================================================================
+   copy.html — ВКЛАДКА «АВТО» страницы /direct/automation/copy
+               (+ хост-документ: у direct-copy.service единственный роут,
+                routes_copy.py:360 → render_template('direct/copy.html')).
+
+   Раскладка файлов после разрезания одного 1400-строчного шаблона:
+     templates/direct/copy.html         — этот файл: документ + вкладка «Авто»
+     templates/direct/copy_other.html   — вкладка «Прочие сферы» (фрагмент)
+     templates/direct/_copy_common.html — общая карточка «Источник»
+     static/direct/copy_common.{css,js} — общее: стили, «Источник», поллинг, ОЧЕРЕДЬ
+     static/direct/copy_auto.{css,js}   — только «Авто»: замена фидов, copy_start
+     static/direct/copy_other.{css,js}  — только «Прочие сферы»: гео, картинки, copy_other_start
+
+   ⚠️ Поллинг джоб и рендер статуса существуют в ЕДИНСТВЕННОМ экземпляре
+   (copy_common.js: _cqTick/_cqUpdateCard). Не заводить вторую копию под вкладку.
+   ⚠️ Статус копирования показывает ТОЛЬКО очередь #copy-job-stack (прогресс, лог,
+   пропущенные кампании). Отдельной панели статуса в карточках «Цель» нет — не возвращать.
+
+   ⚠️ Обе вкладки рендерятся в один документ: nginx отдаёт на :5022 только
+   `^~ /direct/automation/copy` и `^~ /direct/api/copy_`, отдельного URL под
+   «Прочие сферы» нет → переключение клиентское (_switchTab в copy_common.js).
+   ============================================================================ #}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Копирование кампаний · Direct</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/direct/copy_common.css">
+<link rel="stylesheet" href="/static/direct/copy_auto.css">
+<link rel="stylesheet" href="/static/direct/copy_other.css">
+</head>
+<body>
+  <div class="cp-wrap">
+    <div class="cp-head">
+      <a class="cp-back" href="/direct/automation">← К автоматизации</a>
+      <div>
+        <h1>⧉ Копирование кампаний</h1>
+        <div class="cp-sub">Отдельный сервис · рестарт не влияет на очередь создания РК</div>
+      </div>
+    </div>
+
+    <!-- Очередь копирования (общая для вкладок; рендер — copy_common.js).
+         ЕДИНСТВЕННОЕ место показа статуса: прогресс, лог и пропущенные кампании — здесь. -->
+
+    <div id="copy-job-stack"></div>
+
+    <!-- Вкладки -->
+    <div class="tab-nav">
+      <button class="tab-btn active" data-tab="auto" onclick="_switchTab('auto')">Авто</button>
+      <button class="tab-btn" data-tab="other" onclick="_switchTab('other')">Прочие сферы</button>
+    </div>
+
+    <div class="copy-grid">
+      {# Источник — общий для обеих вкладок #}
+      {% include 'direct/_copy_common.html' %}
+
+      <!-- Правая колонка «Авто» -->
+      <div class="da-card" id="auto-right-card" style="display:flex;flex-direction:column">
+        <div class="cell-head">
+          <h2>Цель</h2>
+          <div class="copy-head-actions">
+            <button type="button" class="copy-check-btn" onclick="showCopyChanges()">✓ Что меняется</button>
+            <button type="button" class="copy-check-btn" onclick="showCopyChecklist()">✓ Что проверяется</button>
+          </div>
+        </div>
+        <div class="da-field">
+          <label for="copy-target-login">Новый аккаунт</label>
+          <div class="ulogin-wrap">
+            <input id="copy-target-login" placeholder="porg-yyyyyyy" autocomplete="off"
+                   oninput="copyTargetSuggest()" onfocus="copyTargetSuggest()" onkeydown="copyTargetKey(event)" onblur="setTimeout(copyTargetHide,160)" onchange="loadCopyTargetPrefill()">
+            <div id="copy-target-dd" class="ulogin-dd"></div>
+          </div>
+          <div class="da-hint" id="copy-target-note"></div>
+        </div>
+
+        <!-- Очистка целевого аккаунта перед копированием (перенос из вкладки «Прочие») -->
+        <div class="da-field">
+          <label>Существующие кампании в цели</label>
+          <div class="geo-radio-row">
+            <label><input type="radio" name="copy-cleanup" value="none" checked> ничего не делать</label>
+            <label id="copy-cleanup-del-label" class="cleanup-disabled"><input type="radio" name="copy-cleanup" value="delete_drafts" disabled> удалить черновики</label>
+            <label id="copy-cleanup-arc-label" class="cleanup-disabled"><input type="radio" name="copy-cleanup" value="archive" disabled> в архив</label>
+          </div>
+          <div class="da-hint" id="copy-cleanup-info">Укажите целевой аккаунт для загрузки статистики.</div>
+        </div>
+
+        <div class="da-row">
+          <div class="da-field"><label for="copy-target-domain">Домен</label><input id="copy-target-domain" placeholder="site.ru"></div>
+          <div class="da-field"><label for="copy-target-city">Город</label><input id="copy-target-city" placeholder="из БД или вручную"></div>
+        </div>
+        <div class="da-field"><label for="copy-target-region">Регион</label><input id="copy-target-region" placeholder="из БД или вручную"></div>
+        <div class="da-row">
+          <div class="da-field"><label for="copy-counter">Счётчик Метрики</label><input id="copy-counter" placeholder="обязателен" onchange="copyResolveGoal()"></div>
+          <div class="da-field"><label for="copy-goal">Цель «Все формы»</label><input id="copy-goal" placeholder="подставится по счётчику"></div>
+        </div>
+        {# Кнопка — на месте бывшей инструкции. Статус-панели здесь БОЛЬШЕ НЕТ (2026-07-17):
+           прогресс, лог и пропущенные кампании показывает карточка очереди #copy-job-stack
+           (copy_common.js → _cqUpdateCard). Не возвращать сюда вторую точку показа статуса. #}
+        <div class="da-actions da-actions-primary">
+          <button class="da-btn da-btn-lg" id="copy-start-btn" onclick="startCopyCampaigns()">Копировать РК</button>
+        </div>
+      </div>
+
+      {# Правая колонка «Прочие сферы» — свой шаблон, свой роут запуска #}
+      {% include 'direct/copy_other.html' %}
+    </div>
+
+    <!-- Замена фидов — только вкладка «Авто» -->
+    <div class="da-card" id="copy-feeds-card">
+      <h2>Замена фидов <span class="copy-note" style="text-transform:none;letter-spacing:0">(опционально)</span></h2>
+      <div class="copy-toolbar">
+        <button class="da-btn da-btn-sm" type="button" onclick="loadCopyFeeds()">⟳ Показать фиды</button>
+        <span class="copy-note" id="copy-feeds-note">Укажите старый и новый аккаунт, затем «Показать фиды». Для каждого исходного фида выберите фид нового аккаунта. Пустой выбор = фид не меняется (как раньше).</span>
+      </div>
+      <div id="copy-feeds-box"></div>
+    </div>
+  </div>
+
+<!-- Порядок важен: copy_common.js объявляет esc/COPY_SELECTED/_cqRegister, которыми пользуются оба вкладочных файла -->
+<script src="/static/direct/copy_common.js?v=20260720_copy_filter_verify"></script>
+<script src="/static/direct/copy_auto.js"></script>
+<!-- Самодостаточные куски «Прочих», вынесены из copy_other.js — грузить ПЕРЕД ним (глобальный scope) -->
+<script src="/static/direct/copy_geo_widget.js"></script>
+<script src="/static/direct/copy_images_ui.js"></script>
+<script src="/static/direct/copy_other.js"></script>
+</body>
+</html>
