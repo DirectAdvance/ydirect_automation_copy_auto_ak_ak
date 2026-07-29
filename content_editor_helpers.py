@@ -26,6 +26,29 @@ def _result(j: dict) -> dict:
     return j.get("result") or {}
 
 
+def _v5_error_message(e) -> str:
+    msg = e.get("error_string") if isinstance(e, dict) else str(e)
+    if isinstance(e, dict) and e.get("error_detail"):
+        msg = f"{msg}: {e['error_detail']}"
+    return str(msg)
+
+
+def _v5_error_is_transient(j: dict) -> bool:
+    """True for transport/temporary v5 failures that are safe to repeat for get."""
+    try:
+        from .yandex_gateway import is_transient
+
+        return is_transient(j)
+    except Exception:  # noqa: BLE001 - keep content editor helpers usable in tests
+        msg = _v5_error_message((j or {}).get("error")).lower()
+        return any(marker in msg for marker in (
+            "timeout", "timed out", "connection", "premature", "temporar",
+            "429", "503", "502", "unavailable", "gateway",
+            "временно недоступ", "сервис недоступен", "сервер недоступен",
+            "повторите", "попробуйте позже", "сервер занят",
+        ))
+
+
 def _v5_paginate(v5_call: Callable, svc: str, token: str, login: str,
                  params: dict, collection: str) -> tuple[list, str | None]:
     """GET всех объектов сервиса v5 с пагинацией по ``LimitedBy``.
@@ -42,13 +65,16 @@ def _v5_paginate(v5_call: Callable, svc: str, token: str, login: str,
         if offset:
             page["Offset"] = offset
         p["Page"] = page
-        j = v5_call(svc, "get", token, login, p)
+        j: dict = {}
+        for attempt in range(3):
+            j = v5_call(svc, "get", token, login, p)
+            if not (j.get("error") and _v5_error_is_transient(j)):
+                break
+            if attempt < 2:
+                time.sleep((1, 3)[min(attempt, 1)])
         if j.get("error"):
             e = j["error"]
-            msg = e.get("error_string") if isinstance(e, dict) else str(e)
-            if isinstance(e, dict) and e.get("error_detail"):
-                msg = f"{msg}: {e['error_detail']}"
-            return rows, str(msg)
+            return rows, _v5_error_message(e)
         res = _result(j)
         rows.extend(res.get(collection) or [])
         limited_by = res.get("LimitedBy")
@@ -745,6 +771,7 @@ def _load_account(
     *,
     grid_client_factory: Callable | None = None,
     uac_read_client_factory: Callable | None = None,
+    include_adgroups: bool = True,
     include_campaign_sitelinks: bool = True,
     include_uac_campaigns: bool = True,
     include_callouts: bool = True,
@@ -824,14 +851,17 @@ def _load_account(
     campaign_callout_ids: dict[int, list[int]] = {}
 
     # 2) Группы: имя + принадлежность кампании.
-    groups, err = _v5_paginate_campaign_batches(
-        v5_call, "adgroups", token, login,
-        {"FieldNames": ["Id", "Name", "CampaignId"]},
-        "AdGroups",
-        v5_campaign_ids,
-    )
-    if err:
-        return {"error": f"adgroups.get: {err}"}
+    if include_adgroups:
+        groups, err = _v5_paginate_campaign_batches(
+            v5_call, "adgroups", token, login,
+            {"FieldNames": ["Id", "Name", "CampaignId"]},
+            "AdGroups",
+            v5_campaign_ids,
+        )
+        if err:
+            return {"error": f"adgroups.get: {err}"}
+    else:
+        groups = []
     ag_info: dict[int, dict] = {
         int(g.get("Id") or 0): {"name": g.get("Name") or "",
                                 "campaign_id": int(g.get("CampaignId") or 0)}

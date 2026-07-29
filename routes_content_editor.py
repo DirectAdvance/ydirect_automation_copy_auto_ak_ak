@@ -157,6 +157,7 @@ def make_job_executor(*, victory_conn, token_for_login, direct_tokens, v5_call, 
         _need_cl_sitelinks = (job.get("type") or "") in _SITELINK_JOB_TYPES
         content = _load_account(
             token, job["login"], v5_call,
+            include_adgroups=(job.get("type") or "") != "ad_href",
             include_campaign_sitelinks=_need_cl_sitelinks,
             include_uac_campaigns=(job.get("type") or "") != "ad_href",
             include_callouts=(job.get("type") or "") == "callout",

@@ -24,7 +24,7 @@ UNITS_PER_CAMPAIGN = 2500
 HTTP_HARD_TIMEOUT = 90
 _HTTP_EXECUTOR = _cf.ThreadPoolExecutor(max_workers=32, thread_name_prefix="v5http")
 _TRANSIENT_MARKERS = (
-    "timeout", "timed out", "connection", "temporar", "rate limit",
+    "timeout", "timed out", "connection", "premature", "temporar", "rate limit",
     "too many request", "429", "503", "502", "unavailable", "gateway",
     # РУССКИЕ формулировки Директа (Accept-Language: ru) — без них «Сервис временно недоступен»
     # не считался транзиентным и позиция падала целиком (ads.add одним чанком на 96 групп).

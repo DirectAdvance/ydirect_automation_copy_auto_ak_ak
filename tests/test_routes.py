@@ -7,7 +7,10 @@ from direct.slepki_main import app as slepki_app
 from direct import campaign
 from direct import create_set_input
 from direct import grid_finalize
+from direct import content_editor_helpers
+from direct import link_check
 from direct import routes_content_editor as content_editor
+from direct import content_replace_routes
 
 
 def _route(rule: str, method: str = "GET"):
@@ -261,6 +264,98 @@ def test_content_editor_standalone_app_owns_only_content_routes():
     assert not any(r.rule == "/direct/automation" for r in content_app.url_map.iter_rules())
 
 
+def test_content_editor_links_check_route_returns_url_statuses(monkeypatch):
+    route = _route_in(content_app, "/direct/api/content-editor/links/check", "POST")
+    assert route.endpoint == "direct.ce_links_check"
+
+    calls = []
+
+    def fake_status_batch(urls, *, timeout, max_workers):
+        calls.append((list(urls), timeout, max_workers))
+        return {
+            "https://example.com/ok": {
+                "url": "https://example.com/ok",
+                "status": 200,
+                "ok": True,
+            },
+            "https://example.com/missing": {
+                "url": "https://example.com/missing",
+                "status": 404,
+                "ok": False,
+            },
+        }
+
+    monkeypatch.setattr(content_replace_routes, "url_status_batch", fake_status_batch)
+
+    content_app.testing = True
+    client = content_app.test_client()
+    with client.session_transaction() as session:
+        session["logged_in"] = True
+        session["is_admin"] = True
+        session["username"] = "route-smoke"
+
+    response = client.post("/direct/api/content-editor/links/check", json={
+        "urls": ["https://example.com/ok", "https://example.com/missing"],
+    })
+
+    assert response.status_code == 200
+    assert calls == [(["https://example.com/ok", "https://example.com/missing"], 2.0, 8)]
+    data = response.get_json()
+    assert data["items"] == [
+        {"url": "https://example.com/ok", "status": 200, "ok": True},
+        {"url": "https://example.com/missing", "status": 404, "ok": False},
+    ]
+
+
+def test_link_preview_status_blocks_private_hosts(monkeypatch):
+    calls = []
+    monkeypatch.setattr(link_check, "_http_status", lambda *a, **k: calls.append(a) or 200)
+
+    out = link_check.url_status("http://127.0.0.1:5020/direct")
+
+    assert out == {
+        "url": "http://127.0.0.1:5020/direct",
+        "status": None,
+        "ok": False,
+        "error": "private_host",
+    }
+    assert calls == []
+
+
+def test_link_preview_status_uses_checked_ip_and_does_not_follow_redirect(monkeypatch):
+    connect_calls = []
+
+    class FakeSock:
+        def __init__(self):
+            self.data = b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:5020/\r\n\r\n"
+
+        def settimeout(self, _timeout):
+            pass
+
+        def sendall(self, _payload):
+            pass
+
+        def recv(self, _n):
+            if not self.data:
+                return b""
+            out, self.data = self.data[:1], self.data[1:]
+            return out
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(link_check.socket, "getaddrinfo", lambda *a, **k: [
+        (link_check.socket.AF_INET, link_check.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80)),
+    ])
+    monkeypatch.setattr(link_check.socket, "create_connection",
+                        lambda addr, timeout: connect_calls.append((addr, timeout)) or FakeSock())
+
+    out = link_check.url_status("http://public.example/redirect", timeout=1.0)
+
+    assert out == {"url": "http://public.example/redirect", "status": 302, "ok": True}
+    assert connect_calls == [(("93.184.216.34", 80), 1.0)]
+
+
 def test_content_editor_campaigns_get_uses_only_valid_top_level_fields():
     calls = []
 
@@ -381,6 +476,106 @@ def test_content_editor_batches_campaign_ids_for_adgroups_and_ads():
     ]
     assert adgroup_batches == [list(range(1, 11)), [11, 12]]
     assert ad_batches == [list(range(1, 11)), [11, 12]]
+
+
+def test_content_editor_retries_premature_adgroups_response(monkeypatch):
+    calls = []
+
+    class NoGrid:
+        def __init__(self, login):
+            self.login = login
+
+        def _bootstrap_csrf(self):
+            raise RuntimeError("grid disabled in unit test")
+
+    class NoUac:
+        def __init__(self, login):
+            self.client = self
+
+        def list_campaigns(self):
+            return []
+
+    monkeypatch.setattr(content_editor_helpers.time, "sleep", lambda _seconds: None)
+
+    def fake_v5_call(svc, method, token, login, params):
+        calls.append((svc, method, params))
+        if svc == "campaigns":
+            return {"result": {"Campaigns": [{"Id": 1, "Name": "camp 1", "Type": "TEXT_CAMPAIGN"}]}}
+        if svc == "adgroups":
+            adgroup_calls = [c for c in calls if c[0] == "adgroups"]
+            if len(adgroup_calls) == 1:
+                return {"error": {"error_string": "Response ended prematurely"}}
+            return {"result": {"AdGroups": []}}
+        if svc == "ads":
+            return {"result": {"Ads": []}}
+        if svc == "adextensions":
+            return {"result": {"AdExtensions": []}}
+        raise AssertionError(svc)
+
+    out = content_editor._load_account(
+        "token", "login", fake_v5_call,
+        grid_client_factory=NoGrid,
+        uac_read_client_factory=NoUac,
+    )
+
+    assert "error" not in out
+    assert len([c for c in calls if c[0] == "adgroups"]) == 2
+
+
+def test_content_editor_ad_href_executor_skips_adgroups_snapshot(monkeypatch):
+    calls = []
+    conn = _FakeScopeConn({"directologist": "Иванов"})
+
+    class NoGrid:
+        def __init__(self, login):
+            self.login = login
+
+        def _bootstrap_csrf(self):
+            raise RuntimeError("grid disabled in unit test")
+
+    class NoUac:
+        def __init__(self, login):
+            self.client = self
+
+        def list_campaigns(self):
+            return []
+
+    def fake_v5_call(svc, method, token, login, params):
+        calls.append((svc, method, params))
+        if svc == "campaigns":
+            return {"result": {"Campaigns": [{"Id": 1, "Name": "camp 1", "Type": "TEXT_CAMPAIGN"}]}}
+        if svc == "adgroups":
+            raise AssertionError("ad_href snapshot must not call adgroups.get")
+        if svc == "ads":
+            return {"result": {"Ads": []}}
+        if svc == "adextensions":
+            return {"result": {"AdExtensions": []}}
+        raise AssertionError(svc)
+
+    monkeypatch.setattr(content_editor, "_grid_client", NoGrid)
+    monkeypatch.setattr(content_editor_helpers, "_uac_read_client", lambda login, factory=None: NoUac(login))
+    monkeypatch.setattr(content_editor, "_do_replace", lambda *a, **k: {"replaced": 0, "errors": []})
+
+    execute = content_editor.make_job_executor(
+        victory_conn=lambda: conn,
+        token_for_login=lambda *a, **k: ("tok", "agency"),
+        direct_tokens=lambda: {"agency": "tok"},
+        v5_call=fake_v5_call,
+        v501_svc=lambda *a, **k: None,
+    )
+
+    out = execute({
+        "login": "acc-login",
+        "agency": "agency",
+        "access_directologists": ["Иванов"],
+        "type": "ad_href",
+        "old_text": "/old",
+        "new_text": "/new",
+        "mode": "link",
+    })
+
+    assert out == {"replaced": 0, "errors": []}
+    assert [c[0] for c in calls] == ["campaigns", "ads"]
 
 
 def test_content_editor_load_includes_cookie_only_uac_campaigns():

@@ -3,7 +3,7 @@
 > Сгенерировано `scripts/gen_project_index.py`. Руками не править — перегенерировать.
 > Назначение: найти нужный файл БЕЗ обхода дерева грепом.
 
-Файлов в индексе: **346**
+Файлов в индексе: **355**
 
 ## корень проекта
 
@@ -13,7 +13,7 @@
 | `ARCHITECTURE_AUDIT_2026-07-12.md` | 4 | Direct automation: audit of the current split (2026-07-12) |  |
 | `BLUEPRINT_SPLIT_PLAN.md` | 4 | План распила blueprint.py (8522 строки, 398 def/class) |  |
 | `CAMPAIGN_INVARIANTS.md` | 14 | Инварианты создания кампаний (нейродиректолог) |  |
-| `CLAUDE.md` | 10 | CLAUDE.md — Нейродиректолог (home/seoadvanced/direct) |  |
+| `CLAUDE.md` | 11 | CLAUDE.md — Нейродиректолог (home/seoadvanced/direct) |  |
 | `CODER.md` | 50 | Кодер — унифицированное имя кампании/группы |  |
 | `CONTENT_EDITOR.md` | 20 | Content Editor Service |  |
 | `CONTENT_EDITOR_COOKIE_GRID.md` | 4 | Content Editor Cookie/Grid Plan |  |
@@ -23,17 +23,18 @@
 | `CREATION_PROTECTED_RULES.md` | 10 | Защищённые правила создания РК (спец-логика «Структура слепков» → «Создание РК») |  |
 | `DOD.md` | 187 | DoD — Definition of Done (создание РК нейродиректолога) |  |
 | `DOD_ARCHIVE.md` | 12 | DOD_ARCHIVE — технические детали (перенесены из DOD.md 2026-07-16) |  |
-| `ERRORS_JOURNAL.md` | 966 | 📒 Журнал ошибок создания кампаний — нейродиректолог |  |
+| `ERRORS_JOURNAL.md` | 983 | 📒 Журнал ошибок создания кампаний — нейродиректолог |  |
 | `ERRORS_JOURNAL_ARCHIVE.md` | 16 | ERRORS_JOURNAL_ARCHIVE — старые записи (переведены из ERRORS_JOURNAL.md 2026-07-16) |  |
 | `EXTRACTION_PLAN.md` | 18 | EXTRACTION_PLAN.md — вынос `/direct/automation` в отдельный сервис |  |
-| `INDEX.md` | 55 | INDEX — direct |  |
+| `INDEX.md` | 56 | INDEX — direct |  |
 | `MEMORY.md` | 117 | ⚡ Дубль структуры = ТОЛЬКО внутри одного слепка И одного типа сайта (правило Семёна 2026-07-29) |  |
 | `POSEVY_AUTORULES_PLAN.md` | 11 | Оптимизация уже созданных посевов (tp8/tp9/tp10) в системе автоправил — план |  |
 | `README.md` | 60 | Автоматизация Директа — `direct/` |  |
 | `README_ARCHIVE.md` | 8 | README_ARCHIVE — исторические разделы (перенесены из README.md 2026-07-16) |  |
 | `SLEPKI_AUDIT_2026-07-12.md` | 4 | Slepki audit (2026-07-12) |  |
+| `SLEPKI_BOT_PLAN.md` | 9 | Бот «Слепки Мастер» — принятые решения (2026-07-29) |  |
 | `SLEPKI_REBUILD_PLAN.md` | 22 | Слепки — изменения 2026-07-14 + основа плана пересбора/дополнения |  |
-| `STATE.md` | 200 | Нейродиректолог — Состояние |  |
+| `STATE.md` | 216 | Нейродиректолог — Состояние |  |
 | `STATE_ARCHIVE.md` | 929 | Нейродиректолог — STATE.md архив (сессии старше 3 дней) |  |
 | `STATE_COPY_OTHER.md` | 31 | STATE — вкладка «Прочие сферы» сервиса копирования (/direct/automation/copy) |  |
 | `STRUCTURE_EXCLUSIONS.md` | 25 | STRUCTURE_EXCLUSIONS — реестр НАМЕРЕННЫХ решений по структуре слепков |  |
@@ -67,7 +68,7 @@
 | `city_morph.py` | 14 | Морфология и фильтрация городов в контенте объявлений — вынесено из blueprint.py. | configure |
 | `content_callouts_routes.py` | 15 | Content-editor callout helpers and routes. | register_callouts_routes |
 | `content_dashboard_routes.py` | 16 | Read-only дашборд-роуты редактора контента Директа. | register_content_dashboards |
-| `content_editor_helpers.py` | 66 | Shared helpers for the Direct content-editor modules. | ensure_jobs_table |
+| `content_editor_helpers.py` | 67 | Shared helpers for the Direct content-editor modules. | ensure_jobs_table |
 | `content_images_routes.py` | 72 | Роуты вкладки «Смена изображения» редактора контента Директа. | run_image_replace, register_image_routes |
 | `content_jobs.py` | 3 | Postgres queue helpers for the Direct content editor. | ensure_jobs_table |
 | `content_jobs_routes.py` | 3 | Content-editor job queue routes: /jobs /status /cancel. | register_jobs_routes |
@@ -104,7 +105,7 @@
 | `copy_snapshot.py` | 21 | Файловый слой поверх JSON-снапшота кабинета (0 DI): фильтр/переписывание/preflight. |  |
 | `copy_step_utils.py` | 2 | Общие мелкие helper'ы для copy_steps.*. |  |
 | `copy_steps.py` | 1 | Фасад шагов copy-постпроцесса. Реализация разнесена по copy_*_steps.py. |  |
-| `copy_uac.py` | 30 | UAC (Мастер кампаний / Товарные) копирование: чтение и сборка. | configure |
+| `copy_uac.py` | 33 | UAC (Мастер кампаний / Товарные) копирование: чтение и сборка. | configure |
 | `copy_verify.py` | 7 | copy_verify facade. Implementation is split into source/target/diff/geo/repair modules. | run_copy_verification |
 | `copy_verify_diff.py` | 25 | Profile diff logic for copy verification. | diff_profiles |
 | `copy_verify_geo.py` | 10 | Geo/keyword consistency checks for copy verification. | check_geo_kw_consistency |
@@ -210,8 +211,10 @@
 | `routes_slepki_edit.py` | 32 | Роуты редактора структуры/ключей слепков (вкладка «Структура слепков» → редактируемая). | register_slepki_edit_routes |
 | `routes_tags.py` | 12 | Роуты «редактируемые теги кампаний» (Вариант C — реестр в БД). | ensure_tags_tables, register_tags_routes |
 | `seed_slepok_content.py` | 1 | Разовый засев БД-библиотеки контента слепков (public.direct_slepok_content). | main |
+| `slepki_bot.py` | 17 | Telegram-бот «Слепки Мастер» — приём заданий на создание/обновление слепков. | Bot, db_init, job_new, jobs_recent, known_slepki, kb_source, kb_slepki, on_text, +4 |
 | `slepki_editor.py` | 76 | Редактор структуры слепков (вкладка «Структура слепков» → редактируемая). | configure, validate_scope, read_group_keywords, apply_edit_keywords, read_assets, apply_save_assets, read_minu |
 | `slepki_main.py` | 8 | Standalone Flask entrypoint for the Direct «Структура слепков» editor only. | create_app |
+| `slepki_publish.py` | 6 | Публикация слепка: контент и структура появляются ВМЕСТЕ. | publish, summary |
 | `slepki_store.py` | 9 | Хранилище структуры слепков ПО ФАЙЛАМ (разбиение монолита slepki_structure.json). | assemble, assemble_light_for_selected, invalidate, write_directologists |
 | `slepki_worker_main.py` | 4 | Worker entrypoint для очереди правок СЛЕПКОВ (Фаза 2 разделения). | create_worker_app, main |
 | `slepok_qa_report.md` | 1 | slepok-qa отчёт (2026-07-20 11:28) |  |
@@ -376,6 +379,15 @@
 | `extract_gen_ses_archive.py` | 10 | Build a deterministic gen_ses source manifest from Yandex Direct XLSX exports. | read_campaign, build_manifest, main |
 | `slepki_preflight.py` | 18 | Preflight-проверка slepki_structure.json перед деплоем. | preflight_dict, check |
 
+## `scripts/oneoff/`
+
+| файл | КБ | назначение | что внутри |
+|---|---|---|---|
+| `fix_callouts_psm.py` | 13 | Ремонт уточнений (callouts) для porg-psm5h7q6. | main |
+| `fix_foreign_model_kw_psm.py` | 12 | Чистка чужемодельных ключей в tp2/tp5 Модели-группах аккаунта porg-psm5h7q6. | run |
+| `fix_short_titles_psm.py` | 16 | Ремонт коротких заголовков (<48 симв.) TEXT_AD-объявлений аккаунта porg-psm5h7q6. | run |
+| `restore_shift_keywords.py` | 16 | Restore-скрипт: устранение сдвига ключей в tp2/tp4-кампаниях ночного прогона 2026-07-03. | run |
+
 ## `tests/`
 
 | файл | КБ | назначение | что внутри |
@@ -387,7 +399,7 @@
 | `test_content_editor_extra_tabs_access.py` | 6 |  | test_copy_accounts_is_not_scoped_by_directologist, test_copy_accounts_requires_extra_tab_access, test_rename_r |
 | `test_content_images_transport_split.py` | 21 | Разделение транспортов вкладки «Смена изображения» (tp6/tp7). | test_owned_only_from_uac_contents, test_tp6_by_name_outside_uac_is_not_owned, test_adaptive_in_uac_owned_is_bl |
 | `test_content_worker_blocked_skip.py` | 1 |  | test_finish_blocked_account_skip_is_done_without_agent_board |
-| `test_copy_integration_guards.py` | 51 |  | test_copy_target_feed_id_prefers_preseeded_id_maps, test_copy_terminal_status_is_error_when_campaign_failed, t |
+| `test_copy_integration_guards.py` | 53 |  | test_copy_target_feed_id_prefers_preseeded_id_maps, test_copy_terminal_status_is_error_when_campaign_failed, t |
 | `test_create_auto_regressions.py` | 65 |  | test_link_check_falls_back_from_single_segment_404_to_root, test_tp7_product_filters_are_positive_only, test_t |
 | `test_create_review_findings.py` | 9 |  | test_cookie_feed_success_requires_shopping_ad, test_cookie_feed_success_accepts_campaign_group_and_shopping_ad |
 | `test_direct_copy_transient_retry.py` | 1 |  | test_direct_call_retries_api_1000 |
@@ -408,10 +420,11 @@
 | `test_post_brand_offer_block.py` | 17 | Тесты детерминированного блока марочных оферов для посевов (tp8/tp9/tp10). | TestFmtPayment, TestBuildBrandOfferBlock, TestReplacePostModelList, TestBrandBlockIdempotency |
 | `test_retargeting_probe_status.py` | 3 | Пустая карта условий ретаргетинга — два РАЗНЫХ случая, и их нельзя путать. | v5, test_no_token_is_reported_as_no_token, test_empty_cabinet_is_ok_not_failure, test_missing_result_key_is_ok |
 | `test_review_fixes_20260728.py` | 5 | Две находки код-ревью 2026-07-28. | test_gate_reports_expected_and_shortfall, test_gate_silent_when_counts_match, test_verifier_now_sees_group_sho |
-| `test_routes.py` | 80 |  | test_create_set_route_points_to_api_create_set, test_create_set_authenticated_smoke_reaches_api_create_set, te |
+| `test_routes.py` | 83 |  | test_create_set_route_points_to_api_create_set, test_create_set_authenticated_smoke_reaches_api_create_set, te |
 | `test_second_token_thread.py` | 15 | Tests for second token thread (channel A sub-threads) and atomic 152-flip. | TestASharedCookieState, TestPartitionAIndices, TestBuildCreateSetResponseTimingFields, TestTokenThreadsEnvVar, |
 | `test_sitelinks_reuse_batch.py` | 13 | Реюз и батчинг наборов быстрых ссылок (sitelinks.add). | TestClientBatch, fake_v5, TestReuseByContent, TestBatchHelper |
 | `test_slepki_editor.py` | 3 |  | test_tp2_keyword_preview_falls_back_to_tp1_group, test_tp67_keyword_preview_uses_group_aware_creation_reader,  |
+| `test_slepki_publish.py` | 4 | Публикация слепка: контент и структура появляются вместе, и именно в этом порядке. | pack, store, test_content_and_structure_land_together, test_structure_not_written_when_content_fails, test_ver |
 | `test_slepki_source_manifest.py` | 4 |  | test_gen_ses_manifest_is_complete_and_matches_archive_shape, test_gen_ses_structure_references_manifest_instea |
 | `test_stage_timing.py` | 10 | Tests for STAGE_TIMING per-item per-stage timing helper (direct/stage_timing.py). | TestStageDuration, TestExceptionPropagation, TestItemContext, TestOnlyInItemGate, TestNestedGridPostNotDoubleC |
 | `test_struct_audiences_write_path.py` | 8 | Аудитории структуры (tp1/tp2/tp4/tp5) доезжают до payload группы Grid. | test_no_audiences_keeps_both_fields_empty, test_network_audiences_go_to_retargetings, test_search_audiences_go |
@@ -433,6 +446,7 @@
 | файл | КБ | назначение | что внутри |
 |---|---|---|---|
 | `__init__.py` | 1 |  |  |
+| `direct_git_guard.py` | 7 | Git/deploy guard for Direct automation tasks. | cmd_preflight, cmd_marker, cmd_status, build_parser, main |
 | `tone_baseline.py` | 14 | tone_baseline.py — офлайн-базовая-линия тон-войс для всех директолог-слепков. | generate_via_openrouter, corpus_content, run_baseline, print_table, main |
 | `tone_of_voice_watcher.py` | 8 | tone_of_voice_watcher.py — отвязанный watcher тон-войс проверки. | poll_once, main |
 

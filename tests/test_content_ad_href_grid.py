@@ -128,7 +128,7 @@ def test_ad_href_skips_blocked_account_before_grid_write():
 
     def v5_call(svc, method, token, login, params):
         assert (svc, method) == ("ads", "update")
-        assert params["Ads"][0]["TextAd"]["Href"] == "https://example.com/new"
+        assert params["Ads"][0]["TextAd"]["Href"] == "https://example.com/old"
         return {
             "error": {
                 "error_code": 3000,
@@ -224,3 +224,74 @@ def test_ad_href_generic_api_denied_does_not_skip_grid_write():
     assert "blocked_account" not in out
     assert calls[0] == ("ads", "update")
     assert calls[-1] == ("ads", "get")
+
+
+def test_ad_href_textad_rmw_unsafe_falls_back_to_v5_href_update():
+    class Grid:
+        last_ad_update_errors = []
+
+        def text_ads_for_update(self, campaign_ids, ad_ids):
+            assert campaign_ids == [703]
+            assert ad_ids == [173, 174]
+            return {
+                173: {
+                    "id": 173,
+                    "href": "https://example.com/old",
+                    "hrefParams": "",
+                    "title": "Title",
+                    "body": "Body",
+                    "imageHashes": ["hash"],
+                    "rmw_unsafe": "мультикарточки",
+                },
+                174: {
+                    "id": 174,
+                    "href": "https://example.com/old",
+                    "hrefParams": "",
+                    "title": "Title",
+                    "body": "Body",
+                    "imageHashes": ["hash"],
+                    "rmw_unsafe": "",
+                },
+            }
+
+        def update_text_ads(self, items, allow_empty_image_hashes=False):
+            assert [it["id"] for it in items] == [174]
+            assert items[0]["href"] == "https://example.com/new"
+            return 1
+
+    calls = []
+
+    def v5_call(svc, method, token, login, params):
+        calls.append((svc, method, params))
+        if method == "update" and len(calls) == 1:
+            assert params["Ads"][0]["TextAd"]["Href"] == "https://example.com/old"
+            return {"result": {"UpdateResults": [{"Id": 173}]}}
+        if method == "update":
+            assert params["Ads"] == [{"Id": 173, "TextAd": {"Href": "https://example.com/new"}}]
+            return {"result": {"UpdateResults": [{"Id": 173}]}}
+        return {"result": {"Ads": [
+            {"Id": 173, "Type": "TEXT_AD", "TextAd": {"Href": "https://example.com/new"}},
+            {"Id": 174, "Type": "TEXT_AD", "TextAd": {"Href": "https://example.com/new"}},
+        ]}}
+
+    out = repl._do_replace(
+        "token",
+        "login",
+        "ad_href",
+        "/old",
+        "/new",
+        {"links": [
+            {"ad_id": 173, "campaign_id": 703, "type": "TextAd",
+             "path": "/old", "href": "https://example.com/old"},
+            {"ad_id": 174, "campaign_id": 703, "type": "TextAd",
+             "path": "/old", "href": "https://example.com/old"},
+        ]},
+        v5_call,
+        lambda *a, **k: None,
+        mode="link",
+        grid_client_factory=lambda login: Grid(),
+    )
+
+    assert out["replaced"] == 2
+    assert out["confirmed"] == 2
+    assert out["errors"] == []

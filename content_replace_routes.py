@@ -11,6 +11,7 @@ Extracted from ``routes_content_editor.py`` (structural split). Functions:
 Routes registered via ``register_replace_routes``:
     POST /api/content-editor/load
     POST /api/content-editor/links
+    POST /api/content-editor/links/check
     POST /api/content-editor/preview
     POST /api/content-editor/replace
     POST /api/content-editor/replace_async
@@ -56,6 +57,7 @@ from .content_sitelinks_routes import (
     _replace_sitelink_text_grid,
     _replace_uac_sitelinks,
 )
+from .link_check import url_status_batch
 
 
 _ACCOUNT_BLOCKED_MARKERS = (
@@ -428,6 +430,7 @@ def _replace_ad_href(token: str, login: str, old_path: str, new_path: str,
             "id": aid,
             "campaign_id": rec.get("campaign_id"),
             "href": _href_with_new_path(rec.get("href"), new_p),
+            "old_href": rec.get("href") or "",
         })
     if not seen_ids:
         return {"replaced": 0, "errors": ["объявлений с таким путём не найдено"], "skipped": skipped}
@@ -440,7 +443,7 @@ def _replace_ad_href(token: str, login: str, old_path: str, new_path: str,
             login,
             int(probe_row["id"]),
             "TextAd",
-            {"Href": str(probe_row.get("href") or "")},
+            {"Href": str(probe_row.get("old_href") or probe_row.get("href") or "")},
         )
         if blocked:
             blocked["targets"] = len(seen_ids)
@@ -475,17 +478,30 @@ def _replace_ad_href(token: str, login: str, old_path: str, new_path: str,
         ids = _ad_ids(rows)
         current = grid.text_ads_for_update(cids, ids)
         payload: list[dict] = []
+        v5_fallback: list[dict] = []
         for row in rows:
             item = dict(current.get(int(row["id"])) or {})
             if not item:
                 errors.append(f"Grid RMW не вернул TextAd {row['id']}")
                 continue
+            if item.get("rmw_unsafe"):
+                v5_fallback.append(row)
+                continue
             item["href"] = row["href"]
             payload.append(item)
-        if not payload:
-            return
-        replaced += int(grid.update_text_ads(payload, allow_empty_image_hashes=True) or 0)
-        errors.extend(list(getattr(grid, "last_ad_update_errors", []) or []))
+        if payload:
+            replaced += int(grid.update_text_ads(payload, allow_empty_image_hashes=True) or 0)
+            errors.extend(list(getattr(grid, "last_ad_update_errors", []) or []))
+        if v5_fallback:
+            resp = v5_call("ads", "update", token, login, {
+                "Ads": [
+                    {"Id": int(row["id"]), "TextAd": {"Href": str(row.get("href") or "")}}
+                    for row in v5_fallback
+                ]
+            })
+            ok, v5_errors = _v5_update_results_errors(resp)
+            replaced += ok
+            errors.extend(v5_errors)
 
     def _flush_grid_responsive(rows: list[dict]):
         nonlocal replaced
@@ -909,6 +925,21 @@ def register_replace_routes(
             })
         out_groups.sort(key=lambda x: (-x["ads_count"], x["path"]))
         return jsonify({"logins": logins, "groups": out_groups, "errors": errors})
+
+    @bp.route("/api/content-editor/links/check", methods=["POST"])
+    @access
+    def ce_links_check():
+        body = request.json or {}
+        urls = body.get("urls") or []
+        if isinstance(urls, str):
+            urls = [urls]
+        urls = [str(u or "").strip() for u in urls if str(u or "").strip()]
+        if not urls:
+            return jsonify({"error": "urls обязателен"}), 400
+        if len(urls) > 300:
+            return jsonify({"error": "слишком много URL для одной проверки (максимум 300)"}), 400
+        checked = url_status_batch(urls, timeout=2.0, max_workers=8)
+        return jsonify({"items": [checked.get(u) or {"url": u, "status": None, "ok": False, "error": "not_checked"} for u in urls]})
 
     @bp.route("/api/content-editor/preview", methods=["POST"])
     @access

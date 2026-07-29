@@ -165,6 +165,7 @@ def register_content_dashboards(
                 e."№ кампании" AS campaign_no,
                 e.utm_content,
                 e."№ группы" AS group_no,
+                cs.campaign_status AS campaign_status,
                 s.directologist,
                 s.site_type,
                 s.city,
@@ -183,6 +184,8 @@ def register_content_dashboards(
                 ORDER BY lower(regexp_replace(domain, '^www\\.', ''))
             ) s ON lower(regexp_replace(s.domain, '^www\\.', ''))
                  = lower(regexp_replace(e.site, '^www\\.', ''))
+            LEFT JOIN public.campaign_status cs
+              ON cs."CampaignId"::text = btrim(e."№ кампании"::text)
             WHERE COALESCE(s.directologist, '') <> 'О-Лидер'
               AND COALESCE(btrim(e.utm_campaign), '') <> ''
             {scope_sql}
@@ -229,6 +232,7 @@ def register_content_dashboards(
                         row.get("salon"),
                         row.get("status"),
                         row.get("utm_campaign"),
+                        row.get("campaign_status"),
                         row.get("utm_content"),
                         row.get("campaign_no"),
                         row.get("group_no"),
@@ -371,7 +375,8 @@ def register_content_dashboards(
         rows = _filter_four404_rows(_load_four404_rows())
         headers = [
             "Сайт", "Битый URL", "Заголовок страницы", "Директолог", "Тип сайта", "Город",
-            "Салон", "Статус", "UTM-кампания", "№ кампании", "UTM-content", "№ группы", "Дата визита",
+            "Салон", "Статус", "UTM-кампания", "Статус кампании", "№ кампании", "UTM-content",
+            "№ группы", "Дата визита",
         ]
         data_rows = [[
             str(row.get("site") or ""),
@@ -383,6 +388,7 @@ def register_content_dashboards(
             str(row.get("salon") or ""),
             str(row.get("status") or ""),
             str(row.get("utm_campaign") or ""),
+            str(row.get("campaign_status") or ""),
             str(row.get("campaign_no") or ""),
             str(row.get("utm_content") or ""),
             str(row.get("group_no") or ""),

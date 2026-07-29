@@ -13,7 +13,10 @@
 """
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
+import ssl
 import threading
 import time
 import urllib.error
@@ -228,6 +231,114 @@ def resolve_urls_batch(urls: list[str], timeout: float = 3.0) -> dict[str, str]:
                     _URL_CHECK_CACHE[u] = (resolved, time.time())
 
     return result
+
+
+def url_status(url: str, *, timeout: float = 2.0) -> dict:
+    """Check exact URL availability for UI preview; no fallback or mutation.
+
+    This intentionally does not use resolve_or_fallback_url(): in the content
+    editor preview the operator needs to see the real response for the exact
+    new URL before queueing replacements.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return {"url": raw, "status": None, "ok": False, "error": "empty_url"}
+    p = urlsplit(raw)
+    if p.scheme not in ("http", "https") or not p.netloc:
+        return {"url": raw, "status": None, "ok": False, "error": "bad_url"}
+    blocked, addr = _preview_status_probe_addr(p)
+    if blocked:
+        return {"url": raw, "status": None, "ok": False, "error": blocked}
+    status = _http_status_preview_exact(raw, p, addr, timeout)
+    if status is None:
+        return {"url": raw, "status": None, "ok": False, "error": "timeout_or_network"}
+    return {"url": raw, "status": int(status), "ok": 200 <= int(status) < 400}
+
+
+def url_status_batch(urls: list[str], timeout: float = 2.0, max_workers: int = 8) -> dict[str, dict]:
+    """Parallel exact-status checks for UI preview, keyed by original URL."""
+    unique = list(dict.fromkeys(str(u or "").strip() for u in (urls or []) if str(u or "").strip()))
+    if not unique:
+        return {}
+    n_workers = min(len(unique), max(1, int(max_workers or 1)))
+    out: dict[str, dict] = {}
+    with _ThreadPoolExecutor(max_workers=n_workers) as ex:
+        fut_to_url = {ex.submit(url_status, u, timeout=timeout): u for u in unique}
+        for fut, u in fut_to_url.items():
+            try:
+                out[u] = fut.result()
+            except Exception as exc:  # noqa: BLE001 - UI preview must fail per-row, not as a whole
+                out[u] = {"url": u, "status": None, "ok": False, "error": str(exc)[:120]}
+    return out
+
+
+def _preview_status_probe_addr(parsed) -> tuple[str, str]:
+    """Return (block_reason, global_ip) for the UI preview status probe."""
+    host = (parsed.hostname or "").strip().rstrip(".").lower()
+    if not host:
+        return "bad_url", ""
+    if host in {"localhost", "localdomain"} or host.endswith(".localhost"):
+        return "private_host", ""
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        return ("", str(ip)) if ip.is_global else ("private_host", "")
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return "dns_error", ""
+    first_global = ""
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            return "private_host", ""
+        if not ip.is_global:
+            return "private_host", ""
+        if not first_global:
+            first_global = str(ip)
+    return ("", first_global) if first_global else ("dns_error", "")
+
+
+def _http_status_preview_exact(url: str, parsed, addr: str, timeout: float) -> int | None:
+    """HEAD exact URL through already-verified global IP, without following redirects."""
+    try:
+        host = parsed.hostname or ""
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        target = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+        host_header = host
+        if parsed.port and parsed.port not in (80, 443):
+            host_header = f"{host}:{parsed.port}"
+        sock = socket.create_connection((addr, port), timeout=timeout)
+        try:
+            if parsed.scheme == "https":
+                ctx = ssl.create_default_context()
+                sock = ctx.wrap_socket(sock, server_hostname=host)
+            sock.settimeout(timeout)
+            req = (
+                f"HEAD {target} HTTP/1.1\r\n"
+                f"Host: {host_header}\r\n"
+                "User-Agent: Mozilla/5.0 (compatible; NeyroDirectPreviewLinkCheck/1.0)\r\n"
+                "Accept: */*\r\n"
+                "Connection: close\r\n\r\n"
+            )
+            sock.sendall(req.encode("utf-8"))
+            line = b""
+            while b"\n" not in line and len(line) < 512:
+                chunk = sock.recv(1)
+                if not chunk:
+                    break
+                line += chunk
+            m = re.match(rb"^HTTP/\d(?:\.\d)?\s+(\d{3})\b", line.strip())
+            return int(m.group(1)) if m else None
+        finally:
+            sock.close()
+    except Exception:  # noqa: BLE001 - UI preview reports timeout/network per row
+        print(f"[link-check-preview] timeout/net-error for {url!r}", flush=True)
+        return None
 
 
 def _do_resolve(url: str, timeout: float) -> str:
