@@ -98,11 +98,15 @@
 |---|---|---|
 | **Создание** | всё, кроме двух вкладок ниже: создание РК, слепки, автоправила, accounts, gateway, ai, посевы | репо **`neurodirectologist`** (`origin`) |
 | **Контент** | `/direct/automation/content` **без** copy-части | репо **`yandex_direct_content_redactor`** |
-| **Копирование** | `/direct/automation/copy` + API-вкладка `/direct/automation/content?section=copy` | ветка **`ydirect_automation_copy_auto_ak_ak`** |
+| **Копирование** | `/direct/automation/copy` + API-вкладка `/direct/automation/content?section=copy` | отдельный репо **`ydirect_automation_copy_auto_ak_ak`** (`main`) + ветка **`ydirect_automation_copy_auto_ak_ak`** в `origin` |
 
 Репозитории:
 - `https://github.com/DirectAdvance/neurodirectologist.git`
 - `https://github.com/DirectAdvance/yandex_direct_content_redactor.git`
+- `https://github.com/DirectAdvance/ydirect_automation_copy_auto_ak_ak` — **свежая версия сервиса
+  копирования всегда здесь** (ветка `main`). Правим локально в `home/seoadvanced`, репо — зеркало-экспорт;
+  **любая локальная правка сразу отправляется в git**: `python3 tools/copy_service_git.py export`
+  (commit + push зоны copy). Не уехало в репо — правка не считается завершённой.
 
 ⛔ **Не смешивать зоны в одном коммите.** Правка задела две зоны — два коммита по явному
 pathspec, каждый в свою зону. `git add -A` / `git add .` запрещены: в папке бывает
