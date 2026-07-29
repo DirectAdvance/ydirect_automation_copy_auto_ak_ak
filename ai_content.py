@@ -457,7 +457,7 @@ def _gen_campaign_content(login: str, agent: dict, agent_key: str, item: dict,
     Тонкая обёртка: тело вынесено в `create_content.run_gen_campaign_content` (DI-модуль).
     → {ok, agent, login, item, brand, content:{titles,texts,sitelinks,title2?}, warnings, fallback}
       | {ok:False, error}."""
-    from .create_content import run_gen_campaign_content
+    from .create.create_content import run_gen_campaign_content
     # Провайдер из попапа создания (body.llm_provider → item.llm_provider): пара функций
     # с двусторонним фолбэком — «падение одного — переключение на другого» (Семён 03.07).
     # Дефолт БЕЗ провайдера → openrouter (не M3): вспомогательные ген-ы (сайтлинки/группы) без

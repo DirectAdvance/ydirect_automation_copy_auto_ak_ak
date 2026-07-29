@@ -520,7 +520,7 @@ def _kp_fs():
     """kontent_pack с ФС-операциями, ограниченными по времени (sshfs без таймаута вешает
     поток навсегда). Ленивый импорт — модуль DI-конфигурируемый, прямого импорта нет."""
     try:
-        from . import kontent_pack as _kp
+        from .. import kontent_pack as _kp
     except ImportError:                                    # standalone-запуск
         import kontent_pack as _kp                         # type: ignore[no-redef]
     return _kp
@@ -665,7 +665,7 @@ def _combo_button(href: str) -> dict | None:
     (GdBannerButton, HAR39). action=GET_DISCOUNT = предустановленный текст «Получить скидку».
     href = ссылка объявления (as-is, чтобы совпадала точь-в-точь). None если href пуст."""
     try:
-        from .link_check import strip_quiz_url as _strip_quiz_url
+        from ..link_check import strip_quiz_url as _strip_quiz_url
         h = _strip_quiz_url(href or "")
     except Exception:  # noqa: BLE001
         h = (href or "").strip()
@@ -1572,7 +1572,7 @@ def _feed_filter_fields(login: str, feed_id: int) -> frozenset:
     try:
         _gf = globals().get("gf")
         if _gf is None:
-            from . import grid_finalize as _gf  # noqa: F811
+            from .. import grid_finalize as _gf  # noqa: F811
         _gcl = _gf.get_grid_client(login)
         _gcl._bootstrap_csrf()   # CSRF обязателен; без него первый _post → 403 → пустой rowset
         _r = _gcl._post("FeedsFields", _FEED_FIELDS_QUERY,

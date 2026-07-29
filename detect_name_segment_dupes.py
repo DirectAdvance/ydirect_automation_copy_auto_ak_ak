@@ -61,7 +61,7 @@ def _collect(oblast: str) -> list[dict]:
     """
     csc = ar._create_set_context_module()   # DI: configure() ОБЯЗАТЕЛЕН (иначе NameError _SLEPOK_KEY)
     csp = ar._create_set_plan_module()
-    from .create_set_structure import structure_to_campaigns as _s2c
+    from .create.create_set_structure import structure_to_campaigns as _s2c
 
     obl_part = f" - {oblast}" if oblast else ""
     rows: list[dict] = []

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from .text_norm import _trim_clean
+from ..text_norm import _trim_clean
 from .create_set_minus import _MINUS_SET_NAME_MARKER
-from .model_urls import _strip_site_domain_label as _strip_dom_lbl
+from ..model_urls import _strip_site_domain_label as _strip_dom_lbl
 from . import create_set_context as _csctx  # dedup_name_segments (чистый хелпер, без configure)
 from .create_set_feed_result import ensure_shopping_cookie_error, shopping_cookie_success
 
@@ -74,7 +74,7 @@ def _common_sitelinks_fast(login, slepok, site_type, city, tp_code, href=""):
     аккаунта на creation-пути ИЛИ детерминированный резерв в fix_sitelinks_missing). НЕ подставляет
     статический резерв сам — иначе затенял бы реальные v5-сайтлинки (`_assets.get('sitelinks')`)."""
     try:
-        from .ai_content import _slepok_content_get
+        from ..ai_content import _slepok_content_get
         _db = _slepok_content_get(slepok, site_type, "campaign")
         _sl = (_db or {}).get("sitelinks") if isinstance(_db, dict) else None
         if _sl:
@@ -754,7 +754,7 @@ def _tp5_account_data(token: str, login: str, slepok: str, site_type: str, agenc
         minus_set = next((mid for mid, nm in msets if _MINUS_SET_NAME_MARKER in nm), None)
     sitelinks, default_text = [], ""
     try:
-        from . import kontent_pack as _kp_fb  # noqa: PLC0415 — локальный импорт, как в create_set_structure
+        from .. import kontent_pack as _kp_fb  # noqa: PLC0415 — локальный импорт, как в create_set_structure
         _st_norm = _kp_fb.base_site_type(site_type)  # split «Монобренд · Lada» → «Монобренд»
         conn = _victory_conn()
         cur = conn.cursor()

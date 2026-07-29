@@ -9,7 +9,7 @@
 
 import pytest
 
-from direct import create_set_corrections as csc
+from direct.create import create_set_corrections as csc
 
 
 @pytest.fixture()

@@ -415,7 +415,7 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
                         _si = {"adgroup_id": int(new_gid), "feed_id": int(target_feed_id),
                                "vendor": group_vendor_by_gid.get(old_gid) or "Haval"}
                         try:
-                            from .. import create_set_feeds as _csf_ff
+                            from ..create import create_set_feeds as _csf_ff
                             _si["brand_field"] = _csf_ff._resolve_feed_field(target_login, int(target_feed_id), "brand") or "vendor"
                             _si["model_field"] = _csf_ff._resolve_feed_field(target_login, int(target_feed_id), "model") or "model"
                         except Exception:  # noqa: BLE001
@@ -457,7 +457,7 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
                                                   "operator": "CONTAINS_ANY",
                                                   "stringValue": json.dumps(_variants, ensure_ascii=False)})
                                 try:
-                                    from .. import create_set_feeds as _csf_dt
+                                    from ..create import create_set_feeds as _csf_dt
                                     conds.extend(_csf_dt._minus_marks_grid_conditions(
                                         brand_field=_src.get("brand_field") or "vendor",
                                         model_field=_src.get("model_field") or "model"))

@@ -40,7 +40,7 @@ from auth import _service_required_any  # noqa: E402
 # Domain wiring only: no direct.blueprint, no main Flask app and no unrelated routes.
 from direct import automation_runtime as _runtime  # noqa: E402,F401
 from direct import account_service as accounts  # noqa: E402
-from direct import blueprint_metrika as metrika  # noqa: E402
+from direct.create import blueprint_metrika as metrika  # noqa: E402
 from direct.copy_service import copy_engine  # noqa: E402
 from direct import queue_server as queue  # noqa: E402
 from direct import yandex_gateway as yandex  # noqa: E402

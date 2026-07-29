@@ -15,12 +15,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from direct.create_set_orchestrator import (
+from direct.create.create_set_orchestrator import (
     _ASharedCookieState,
     _compute_token_threads,
     _partition_a_indices,
 )
-from direct.create_set_response import build_create_set_response
+from direct.create.create_set_response import build_create_set_response
 
 
 # ── _ASharedCookieState ──────────────────────────────────────────────────────

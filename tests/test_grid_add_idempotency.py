@@ -12,7 +12,7 @@ import pytest
 import requests
 
 from direct import grid_create as gc
-from direct import create_set_feed_builders as csfb
+from direct.create import create_set_feed_builders as csfb
 from direct.local_result_verifier import verify_local_result
 
 
@@ -538,7 +538,7 @@ def test_create_shopping_full_marks_group_count_mismatch(monkeypatch):
 def test_cookie_shopping_build_carries_group_shortfall(monkeypatch):
     """Путь 1 — товарка tp3/tp5 в create_set_feed_builders: build обязан донести расхождение
     до верификатора (раньше build собирал только groups/ads/shopping_ads/feed_id/errors)."""
-    from direct import create_set_tp1_builders as cstp1
+    from direct.create import create_set_tp1_builders as cstp1
 
     rep = {"campaign_id": 713102313, "groups": 13, "ads": 13,
            "shopping_ad_ids": [777], "errors": []}

@@ -12,7 +12,7 @@ import re
 
 from . import campaign as cmc
 from .ai_agents import extend_title_to_max
-from .create_set_minus import _minus_char_budget as _cm_minus_char_budget  # единый бюджет 20 000 симв.
+from .create.create_set_minus import _minus_char_budget as _cm_minus_char_budget  # единый бюджет 20 000 симв.
 from .text_norm import _trim_clean
 
 # ── Сборщики payload'ов (наш спек → формат Grid) ────────────────────────────
@@ -139,7 +139,7 @@ def build_adgroup(*, campaign_id: int, name: str, region_ids: list, keywords: li
     # Аудитории группы (условия ретаргетинга). Формат — дословно билдер интерфейса Директа
     # (HAR 73har, чанк b10fd987c1079081.chunk.js): {retCondId: <id условия>, id: <id связки|null>}.
     # Связка новая → id=None. Поиск (tp2/tp4) → searchRetargetings, сеть (tp1/tp5) → retargetings.
-    from .create_set_audiences import retargetings_payload as _rets_payload
+    from .create.create_set_audiences import retargetings_payload as _rets_payload
     _rets = _rets_payload(retargeting_ids)
 
     item = {
@@ -293,7 +293,7 @@ def build_shopping_ad(*, adgroup_id: int, feed_id: int, body: str = "", login: s
     }
     if login:
         try:
-            from . import create_set_feeds as _csf
+            from .create import create_set_feeds as _csf
             _bf = _csf._resolve_feed_field(login, feed_id, "brand") or "vendor"
             _mf = _csf._resolve_feed_field(login, feed_id, "model") or "model"
             conds = _csf._minus_marks_grid_conditions(brand_field=_bf, model_field=_mf)

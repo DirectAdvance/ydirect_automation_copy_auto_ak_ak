@@ -11,7 +11,7 @@
      отдельным предложением;
   В. не влезло в лимит — строка остаётся КОРОЧЕ, но осмысленной (не обрывок).
 """
-from direct.create_set_master_product import (
+from direct.create.create_set_master_product import (
     _attach_cta_hint,
     _attach_number_clause,
     _pavlov_multibrand_texts,

@@ -12,7 +12,7 @@ import time
 import pytest
 
 from direct import queue_server as qs
-from direct import stage_timing as st
+from direct.create import stage_timing as st
 
 
 @pytest.fixture()

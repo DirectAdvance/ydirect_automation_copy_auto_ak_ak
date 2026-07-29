@@ -6,7 +6,7 @@
 """
 import logging
 
-from direct import create_set_plan
+from direct.create import create_set_plan
 
 
 def _wire(monkeypatch, *, counters=None, table_goal=None, resolved_goal=None, owner=None):

@@ -34,7 +34,7 @@ except ImportError:                     # плоский запуск (лока�
     from text_norm import _strip_href_fragment
 
 try:                                    # STAGE_TIMING: пер-стадийный замер (только замер + лог)
-    from . import stage_timing as _timing
+    from .create import stage_timing as _timing
 except ImportError:                     # плоский запуск (локальные тесты из direct/)
     import stage_timing as _timing
 
@@ -2040,7 +2040,7 @@ class GridClient:
             # нужные used-car офферы из общего фида.
             if it.get("apply_global_minus", True) is not False:
                 try:
-                    from . import create_set_feeds as _csf
+                    from .create import create_set_feeds as _csf
                     conds.extend(_csf._minus_marks_grid_conditions(brand_field=_brand_fld, model_field=_model_fld))
                 except Exception:  # noqa: BLE001 — минус-марки best-effort
                     pass
@@ -2218,7 +2218,7 @@ class GridClient:
                 return _name_field_cache[_fid]
             _fld = "name"
             try:
-                from . import create_set_feeds as _csf_nf
+                from .create import create_set_feeds as _csf_nf
                 _fld = _csf_nf._resolve_feed_field(self.login, _fid, "name") or "name"
             except Exception:  # noqa: BLE001 — фолбэк на 'name' при сбое резолва
                 _fld = "name"
@@ -2264,7 +2264,7 @@ class GridClient:
         _first_fid = int((items[0] or {}).get("feed_id") or 0) if items else 0
         _alt_overrides: list = [None]
         try:
-            from . import create_set_feeds as _csf_af
+            from .create import create_set_feeds as _csf_af
             _avail_f = _csf_af._feed_filter_fields(self.login, _first_fid)
             for _cand in ("name", "model", "modification", "folder_id"):
                 if _cand in _avail_f and _cand not in _alt_overrides:
@@ -3437,7 +3437,7 @@ class GridClient:
         grid_finalize.py:1730), либо передавать сюда явный список аудиторий."""
         kw = [{"phrase": p} for p in dict.fromkeys(
             s for s in (str(k).strip() for k in (keywords or [])) if s)][:200]
-        from .create_set_audiences import retargetings_payload as _rets_payload
+        from .create.create_set_audiences import retargetings_payload as _rets_payload
         _rets = _rets_payload(retargeting_ids)
         item = {
             "adGroupId": str(grp["adgroup_id"]),

@@ -121,7 +121,7 @@ def _base_site_type(site_type: str) -> str:
     вкладки существуют только в структуре слепка и в UI. Без нормализации запрос вернёт
     пусто, а вызывающий код примет это за «шаблонов нет» и остановит создание РК.
     """
-    from . import kontent_pack as kp  # noqa: PLC0415 — локальный импорт, модуль тяжелее этого
+    from .. import kontent_pack as kp  # noqa: PLC0415 — локальный импорт, модуль тяжелее этого
     return kp.base_site_type(site_type)
 
 

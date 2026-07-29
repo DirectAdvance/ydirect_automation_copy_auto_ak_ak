@@ -8,7 +8,7 @@ from flask import current_app, jsonify, request, session
 
 from . import campaign as cmc
 from . import grid_create as gc
-from .create_set_units import is_units_exhausted as _is_units_exhausted
+from .create.create_set_units import is_units_exhausted as _is_units_exhausted
 from .direct_repository import victory_conn as _victory_conn
 from .yandex_gateway import (
     LIVE_V4_URL as _LIVE_V4, direct_tokens as _direct_tokens,

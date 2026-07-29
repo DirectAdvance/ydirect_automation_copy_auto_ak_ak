@@ -12,7 +12,7 @@ import sys
 import time
 
 from . import campaign as cmc
-from .create_set_units import is_units_exhausted
+from .create.create_set_units import is_units_exhausted
 from .direct_repository import victory_conn, victory_conn_rw
 
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import re
 
-from . import kontent_pack as kp  # чтение контент-пака (read_keywords/callouts/images/feeds)
+from .. import kontent_pack as kp  # чтение контент-пака (read_keywords/callouts/images/feeds)
 
 
 # ── DI: инъектятся из blueprint (заглушки-callable падают громко, если configure не отработал) ──
@@ -449,7 +449,7 @@ def _tp67_group_fact_with_real_library(
     try:
         if cctx is None:
             try:
-                from . import automation_runtime as ar  # lazy: gets the configured DI module in web services
+                from .. import automation_runtime as ar  # lazy: gets the configured DI module in web services
                 cctx = ar._create_set_context_module()
             except Exception:  # noqa: BLE001
                 from . import create_set_context as cctx
@@ -591,13 +591,13 @@ def _slepki_pack_facts(struct: dict) -> dict:
                             if code in ("tp6", "tp7"):
                                 if tp67_context is None:
                                     try:
-                                        from . import automation_runtime as ar
+                                        from .. import automation_runtime as ar
                                         tp67_context = ar._create_set_context_module()
                                     except Exception:  # noqa: BLE001
                                         from . import create_set_context as tp67_context
                                 if tp67_real_items is None:
                                     try:
-                                        from . import automation_runtime as ar
+                                        from .. import automation_runtime as ar
                                         raw_items = ar._json("tp67_real_keywords.json").get("items") or []
                                     except Exception:  # noqa: BLE001
                                         raw_items = []

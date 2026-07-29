@@ -9,9 +9,9 @@ Bug 2 Critical: Grid-схема bidModifierDemographics требует campaignI
 """
 
 # ── Импортируем только чистые хелперы (без I/O зависимостей) ─────────────────
-from direct import create_set_tp8_10 as post_module
+from direct.create import create_set_tp8_10 as post_module
 from direct import grid_finalize
-from direct.create_set_tp8_10 import (
+from direct.create.create_set_tp8_10 import (
     _dem_adjustments_for_corr,
     _ag_code_for_corr,
     _normalize_post_markup,

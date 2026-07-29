@@ -18,9 +18,9 @@ import types
 
 import pytest
 
-from direct import create_job_status as cjs
-from direct import create_set_minus as csm
-from direct import create_set_response as csr
+from direct.create import create_job_status as cjs
+from direct.create import create_set_minus as csm
+from direct.create import create_set_response as csr
 
 
 # ── Imp1: гейт has_issues видит потери ───────────────────────────────────────────────────────
@@ -110,7 +110,7 @@ def _orchestrator_src() -> str:
     модулей (configure на весь пакет) и протекает на другие файлы тестов в общем прогоне.
     """
     return (pathlib.Path(__file__).resolve().parent.parent
-            / "create_set_orchestrator.py").read_text(encoding="utf-8")
+            / "create/create_set_orchestrator.py").read_text(encoding="utf-8")
 
 
 def test_orchestrator_routes_known_losses_through_note_loss():

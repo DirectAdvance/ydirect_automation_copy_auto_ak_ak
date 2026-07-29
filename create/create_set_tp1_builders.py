@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from . import create_set_audiences as _cs_aud
-from .text_norm import _trim_clean
-from .link_check import resolve_or_fallback_url as _resolve_url, resolve_urls_batch as _resolve_urls_batch
-from .model_urls import _is_degenerate_feed_url
+from ..text_norm import _trim_clean
+from ..link_check import resolve_or_fallback_url as _resolve_url, resolve_urls_batch as _resolve_urls_batch
+from ..model_urls import _is_degenerate_feed_url
 
 import json
 import os
@@ -391,7 +391,7 @@ def _build_tp1_adgroups(
         # `build["groups_expected"]`, обоих ключей тут не было — потеря групп уходила МОЛЧА
         # (ни GROUPS_CREATED_LESS_THAN_SENT, ни NO_ADGROUPS_REPORTED не срабатывали).
         # `groups` выставляем ДО гейта: он считает созданное именно из него.
-        from .grid_create import _gate_groups_created as _gate_groups
+        from ..grid_create import _gate_groups_created as _gate_groups
         rep["groups"] = rep["adgroups"]
         _gate_groups(rep, len(groups))
     except gc.GridCreateError as _ge:
@@ -2046,7 +2046,7 @@ def _struct_ct_names(slepok: str, site_type: str) -> dict:
         return _STRUCT_CT_NAME_CACHE[ck]
     out: dict = {}
     try:
-        from . import slepki_store as _ss   # структура из per-slepok файлов (assemble)
+        from .. import slepki_store as _ss   # структура из per-slepok файлов (assemble)
         d = _ss.assemble()
         dl = next((x for x in d.get("directologists", []) if x.get("key") == key), None)
         if dl and dl.get("auto", True) is False:          # имя из структуры — ТОЛЬКО не-авто
@@ -2092,7 +2092,7 @@ def _struct_items(slepok: str, site_type: str, tp_code: str) -> list:
     item (``gk``) ИЛИ выведенное из ``gc`` через kp._group_slug. Формат splits (dmp) → []."""
     key = _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
     try:
-        from . import slepki_store as _ss   # структура из per-slepok файлов (assemble)
+        from .. import slepki_store as _ss   # структура из per-slepok файлов (assemble)
         d = _ss.assemble()
     except Exception:  # noqa: BLE001
         return []

@@ -1448,7 +1448,7 @@ def _audit_uac_feed_filters(login: str, campaign_id: int, campaign_name: str,
         # fieldsForUseAs) — такие пропускаем, positive-фильтр там не проставить никак.
         if feed_id:
             try:
-                from . import create_set_feeds as csf
+                from .create import create_set_feeds as csf
                 if csf._resolve_feed_field(login, feed_id, "brand") is None:
                     return []  # у фида нет поля фильтра → не флагаем
             except Exception:  # noqa: BLE001
@@ -1948,7 +1948,7 @@ def fix_sitelinks_missing(login: str, ctx: dict, issues: list[dict]) -> dict:
     domain = (acc.get("domain") or "").strip()
     href = ("https://" + domain) if domain else ""
     try:
-        from .create_set_feed_builders import _common_sitelinks_fast, _sitelinks_fallback_with_href
+        from .create.create_set_feed_builders import _common_sitelinks_fast, _sitelinks_fallback_with_href
         # _common_sitelinks_fast не подставляет статик-резерв сам (чтобы не затенять v5-ассеты на
         # creation-пути) → здесь, в самодобивке, резерв обязателен: БД-слепок → LLM → детерминированный.
         sitelinks = _common_sitelinks_fast(login, slepok, site_type, city, "tp5", href=href) \
@@ -2039,7 +2039,7 @@ def fix_short_titles(login: str, ctx: dict, issues: list[dict]) -> dict:
     # ── grid-ветка (tp1/tp2/tp4 адаптивные): регенерация → RMW UpdateAdaptiveTextAds ──
     grid_issues = [it for it in short_issues if it.get("transport") == "grid"]
     if grid_issues:
-        from . import create_set_feeds as csf  # самодостаточные Grid-хелперы
+        from .create import create_set_feeds as csf  # самодостаточные Grid-хелперы
         gcl = gf.GridClient(login)
         rcl = gr.GridReadClient(login)
         for it in grid_issues:
@@ -2181,7 +2181,7 @@ def fix_texts_low(login: str, ctx: dict, issues: list[dict]) -> dict:
     if not tl_issues:
         return {"ok": True, "note": "нет CONTENT_TEXTS_LOW (grid)", "campaigns_fixed": 0}
     from .content import content_quality as CQ  # Flask-free
-    from . import create_set_feeds as csf
+    from .create import create_set_feeds as csf
     agent, gen_ctx, provider = _regen_ctx(login, ctx)
     if agent is None:
         return {"ok": False, "campaigns_fixed": 0, "texts_added": 0, "campaigns": [],
@@ -2270,7 +2270,7 @@ def fix_brand_not_first(login: str, ctx: dict, issues: list[dict]) -> dict:
     if not bn_issues:
         return {"ok": True, "note": "нет BRAND_NOT_FIRST", "campaigns_fixed": 0}
     from .content import content_quality as CQ  # Flask-free
-    from . import create_set_feeds as csf
+    from .create import create_set_feeds as csf
     agent, gen_ctx, provider = _regen_ctx(login, ctx)
     fixed, errors, terminal = [], [], []
     _min_len = _TITLE_SHORT_LEN + 1
@@ -2349,7 +2349,7 @@ def fix_button_missing(login: str, ctx: dict, issues: list[dict]) -> dict:
     btn_issues = [it for it in (issues or []) if it.get("code") == "BUTTON_MISSING"]
     if not btn_issues:
         return {"ok": True, "note": "нет BUTTON_MISSING", "campaigns_fixed": 0}
-    from . import create_set_feeds as csf  # самодостаточные Grid-хелперы (без configure-глобалей)
+    from .create import create_set_feeds as csf  # самодостаточные Grid-хелперы (без configure-глобалей)
     rc = gr.GridReadClient(login)
     fixed, errors = [], []
     for it in btn_issues:
@@ -2388,7 +2388,7 @@ def fix_feed_filters_uac(login: str, ctx: dict, issues: list[dict]) -> dict:
     ff_issues = [it for it in (issues or []) if it.get("code") == "FEED_FILTER_MISSING_UAC"]
     if not ff_issues:
         return {"ok": True, "note": "нет FEED_FILTER_MISSING_UAC", "campaigns_fixed": 0}
-    from . import create_set_feeds as csf   # configure()-модуль: blueprint конфигурирует на импорте
+    from .create import create_set_feeds as csf   # configure()-модуль: blueprint конфигурирует на импорте
     from .web.routes_content_editor import _unwrap_uac_response
     _ag_part1 = _DEPS.get("_ag_part1_map")
     _valid_brand = _DEPS.get("_valid_pack_brand_name")
@@ -2597,7 +2597,7 @@ def fix_feed_filters_grid(login: str, ctx: dict, issues: list[dict]) -> dict:
         marks = []
     if not marks:
         return {"ok": True, "note": "минус-марки выключены", "campaigns_fixed": 0}
-    from . import create_set_feeds as _csf
+    from .create import create_set_feeds as _csf
     gcl = gf.GridClient(login)
     rc = gr.GridReadClient(login)
     fixed, errors = [], []
@@ -2688,7 +2688,7 @@ def fix_listing_positive_filter(login: str, ctx: dict, issues: list[dict]) -> di
     Переиспользует _listing_name_value (create_set_feeds:1189) + set_listing_name_filters
     (grid_finalize:1348) — те же функции что и create-путь (fix-2, HAR36).
     Пропускает записи без brand (парсинг из adgroup_name мог не найти марку)."""
-    from . import create_set_feeds as _csf
+    from .create import create_set_feeds as _csf
     lp_issues = [it for it in (issues or []) if it.get("code") == "LISTING_POSITIVE_FILTER_MISSING"]
     if not lp_issues:
         return {"ok": True, "note": "нет LISTING_POSITIVE_FILTER_MISSING", "campaigns_fixed": 0}
@@ -2953,7 +2953,7 @@ def _cli_bootstrap() -> None:
     _SCRIPTS = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     if _SCRIPTS not in sys.path:
         sys.path.insert(0, _SCRIPTS)
-    from direct import blueprint as bp  # type: ignore
+    from direct.create import blueprint as bp  # type: ignore
     bp._configure_spec_audit()
     configure(bp._spec_audit_deps())
 
@@ -2964,7 +2964,7 @@ def _recover_body(login: str, agent: str | None, site_type: str | None) -> dict:
     body: dict = {}
     if not agent:
         try:
-            from direct import blueprint as bp  # type: ignore
+            from direct.create import blueprint as bp  # type: ignore
             import psycopg2.extras
             conn = bp._victory_conn_rw()
             try:

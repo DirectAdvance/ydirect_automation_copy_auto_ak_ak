@@ -8,7 +8,7 @@
 
 import pytest
 
-from direct import create_set_audiences as csa
+from direct.create import create_set_audiences as csa
 from direct import grid_create_payloads as gcp
 
 
@@ -82,7 +82,7 @@ def test_struct_by_gk_reads_items(monkeypatch):
             {"gc": "ct0011_aon_n000_r0000_ct001_ag008_g00", "gk": "lada"},
         ]}]},
     ]}]}]}
-    monkeypatch.setattr("direct.create_set_structure._load_struct", lambda: struct)
+    monkeypatch.setattr("direct.create.create_set_structure._load_struct", lambda: struct)
     out = csa.struct_audiences_by_gk("kuderko", "С пробегом", "tp1")
     assert out == {"агрегаторы_d": [("36694733", "Все формы")]}
 
@@ -143,7 +143,8 @@ def test_all_adgroup_call_sites_pass_audiences():
     """build_adgroup зовут 3 боевых пути tp1/tp2/tp4/tp5 — каждый обязан прокинуть аудитории."""
     import inspect
 
-    from direct import create_set_text_builders, create_set_tp1_builders, grid_create
+    from direct import grid_create
+    from direct.create import create_set_text_builders, create_set_tp1_builders
 
     src_tp1 = inspect.getsource(create_set_tp1_builders._build_tp1_adgroups)
     assert 'retargeting_ids=g.get("audiences")' in src_tp1
@@ -164,8 +165,8 @@ def test_group_sources_attach_audiences():
     """Все три фабрики групп (куки, токен tp1/tp5, токен tp2/tp4) проставляют g["audiences"] по gk."""
     import inspect
 
-    from direct import create_set_text_builders as t
-    from direct import create_set_tp1_builders as b
+    from direct.create import create_set_text_builders as t
+    from direct.create import create_set_tp1_builders as b
 
     for fn in (b._tp1_pack_groups, b._build_tp1_from_pack, t._build_text_from_pack):
         src = inspect.getsource(fn)

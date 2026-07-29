@@ -505,7 +505,7 @@ class TestFeedBuilderBatchSemantics:
 
     def _patch_module(self, monkeypatch, fake_cl, feed_groups=None):
         """Монкипэтч create_set_feed_builders глобальных зависимостей."""
-        import direct.create_set_feed_builders as fb
+        import direct.create.create_set_feed_builders as fb
 
         # cmc.DirectV501Client → fake_cl, cmc.UTM_TEMPLATE → строка
         fake_cmc = MagicMock()
@@ -519,7 +519,7 @@ class TestFeedBuilderBatchSemantics:
 
     def test_shopping_ad_failure_skips_group_no_delete(self, monkeypatch):
         """ShoppingAd fail → группа пропускается, campaign НЕ удаляется, ok=False (нет _shops)."""
-        import direct.create_set_feed_builders as fb
+        import direct.create.create_set_feed_builders as fb
 
         cl = MagicMock()
         cl.create_unified_campaign.return_value = 999
@@ -552,7 +552,7 @@ class TestFeedBuilderBatchSemantics:
 
     def test_listing_ad_failure_deletes_campaign(self, monkeypatch):
         """ShoppingAd OK, ListingAd fail → campaign УДАЛЯЕТСЯ, ok=False, defer=True."""
-        import direct.create_set_feed_builders as fb
+        import direct.create.create_set_feed_builders as fb
 
         cl = MagicMock()
         cl.create_unified_campaign.return_value = 999
@@ -584,7 +584,7 @@ class TestFeedBuilderBatchSemantics:
 
     def test_both_ads_success_returns_ok(self, monkeypatch):
         """Оба объявления созданы → ok=True."""
-        import direct.create_set_feed_builders as fb
+        import direct.create.create_set_feed_builders as fb
 
         cl = MagicMock()
         cl.create_unified_campaign.return_value = 999
@@ -608,7 +608,7 @@ class TestFeedBuilderBatchSemantics:
 
     def test_batch_call_failure_deletes_and_defers(self, monkeypatch):
         """HTTP-ошибка add_feed_ads_batch → campaign удалена, defer=True."""
-        import direct.create_set_feed_builders as fb
+        import direct.create.create_set_feed_builders as fb
 
         cl = MagicMock()
         cl.create_unified_campaign.return_value = 999

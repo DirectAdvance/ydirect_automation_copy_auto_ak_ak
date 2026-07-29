@@ -189,7 +189,7 @@ def _verify_items_against_slepok_structure(items: list[dict[str, Any]],
         return
     expected_cache: dict[str, set[str]] = {}
     try:
-        from .create_set_structure import structure_to_campaigns
+        from .create.create_set_structure import structure_to_campaigns
     except Exception as e:  # noqa: BLE001
         issues.append({"severity": "warn", "code": "STRUCTURE_PARITY_SKIPPED",
                        "message": f"structure_to_campaigns import failed: {str(e)[:160]}"})

@@ -20,8 +20,8 @@ import types
 
 import pytest
 
-from direct import create_set_audiences as csa
-from direct import create_set_minus as csm
+from direct.create import create_set_audiences as csa
+from direct.create import create_set_minus as csm
 
 
 def _orchestrator_src() -> str:
@@ -31,7 +31,7 @@ def _orchestrator_src() -> str:
     на соседние файлы тестов в общем прогоне (падали brand-guard тесты auto_regressions).
     """
     return (pathlib.Path(__file__).resolve().parent.parent
-            / "create_set_orchestrator.py").read_text(encoding="utf-8")
+            / "create/create_set_orchestrator.py").read_text(encoding="utf-8")
 
 
 # ── Imp2: канал кампании ─────────────────────────────────────────────────────────────────────
@@ -89,8 +89,8 @@ def test_tp1_audiences_stay_in_network_retargetings():
 
 def test_token_paths_pass_campaign_mode_from_the_spec_they_created_with():
     """Каналы не угадываются в билдере: mode приходит от вызывающего, создавшего кампанию."""
-    from direct import create_set_feed_builders as fb
-    from direct import create_set_tp1_builders as tb
+    from direct.create import create_set_feed_builders as fb
+    from direct.create import create_set_tp1_builders as tb
 
     src_tp1 = inspect.getsource(tb._create_tp1_single)
     assert "campaign_mode=mode" in src_tp1, "tp1 обязан отдать mode СВОЕЙ спеки"
@@ -103,7 +103,7 @@ def test_token_paths_pass_campaign_mode_from_the_spec_they_created_with():
 
 def test_text_builder_attaches_audiences_by_gk(monkeypatch):
     """_build_text_from_pack обязан звать attach_to_group по gk — как token-путь tp1/tp5."""
-    from direct import create_set_text_builders as t
+    from direct.create import create_set_text_builders as t
 
     src = inspect.getsource(t._build_text_from_pack)
     assert "_aud_by_gk = _cs_aud.struct_audiences_by_gk(slepok, site_type, tp_code)" in src
@@ -113,7 +113,7 @@ def test_text_builder_attaches_audiences_by_gk(monkeypatch):
 
 
 def test_search_channel_flag_reaches_tp2_adgroups():
-    from direct import create_set_text_builders as t
+    from direct.create import create_set_text_builders as t
 
     sig = inspect.signature(t._build_tp2_adgroups)
     assert sig.parameters["search_channel"].default is True
@@ -400,7 +400,7 @@ class _FakeGrid:
 
 
 def _run_attach(monkeypatch, payload, ids=(701, 702)):
-    from direct import create_set_apply_batches as ab
+    from direct.create import create_set_apply_batches as ab
 
     grid = _FakeGrid(payload)
     monkeypatch.setattr(ab, "_build_grid", lambda login, agency="": (None, grid))
@@ -427,7 +427,7 @@ def test_transient_grid_failure_is_not_a_minus_set_verdict(monkeypatch):
 
 
 def test_partial_failure_keeps_ok_but_lists_failed_campaigns(monkeypatch):
-    from direct import create_set_apply_batches as ab
+    from direct.create import create_set_apply_batches as ab
 
     class _HalfGrid(_FakeGrid):
         def _post(self, name, q, variables):
@@ -490,7 +490,7 @@ def test_empty_ret_map_is_raised_into_job_errors():
 
 def test_structure_read_failure_is_logged(monkeypatch, capsys):
     """Раньше голый `out = {}` прятал сбой чтения структуры = тихую потерю всех аудиторий."""
-    import direct.create_set_structure as css
+    import direct.create.create_set_structure as css
 
     def _boom():
         raise RuntimeError("структура недоступна")

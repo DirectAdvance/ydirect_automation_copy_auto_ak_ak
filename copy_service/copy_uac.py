@@ -396,7 +396,7 @@ def _copy_uac_filter_list(value, *, target_login: str = "", target_feed_id: int 
         return rows
 
     try:
-        from .. import create_set_feeds as _feeds
+        from ..create import create_set_feeds as _feeds
         fields = set(_feeds._feed_filter_fields(target_login, int(target_feed_id)) or [])
         brand_field = _feeds._resolve_feed_field(target_login, int(target_feed_id), "brand") or "vendor"
         model_field = _feeds._resolve_feed_field(target_login, int(target_feed_id), "model") or "model"

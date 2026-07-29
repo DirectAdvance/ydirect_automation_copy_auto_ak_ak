@@ -150,7 +150,7 @@ def duplicate_group_base(name: str) -> str:
 def _slepok_key(slepok: str) -> str:
     """Слуг слепка → канонический key структуры (как в движках)."""
     try:
-        from .pack_resolver import _SLEPOK_KEY
+        from ..pack_resolver import _SLEPOK_KEY
     except Exception:  # noqa: BLE001
         _SLEPOK_KEY = {}
     return _SLEPOK_KEY.get((slepok or "").lower(), (slepok or "").lower())
@@ -159,7 +159,7 @@ def _slepok_key(slepok: str) -> str:
 def _load_struct() -> dict:
     # Структура разбита на per-slepok файлы (direct/slepki/) — собираем через slepki_store
     # (у него свой кэш по сигнатуре mtime+size частей, ~16.5k items не перечитываются зря).
-    from . import slepki_store as _ss
+    from .. import slepki_store as _ss
     try:
         return _ss.assemble()
     except Exception:  # noqa: BLE001
@@ -172,7 +172,7 @@ def _gk_of(it: dict) -> str:
     if gk:
         return gk
     try:
-        from . import kontent_pack as kp
+        from .. import kontent_pack as kp
         return kp._group_slug(it.get("gc") or "")
     except Exception:  # noqa: BLE001
         return ""
@@ -232,7 +232,7 @@ def _pack_targeting_for_group(slepok: str, site_type: str, tp_code: str, ct: str
                               fallback: str) -> str:
     """Targeting mode from actual keyword pack for tp1/tp2/tp4/tp5 campaign names."""
     try:
-        from . import kontent_pack as kp  # local import keeps module usable in scripts
+        from .. import kontent_pack as kp  # local import keeps module usable in scripts
         kw = kp.read_keywords(site_type, tp_code, ct, slepok, group=gk)
     except Exception:  # noqa: BLE001
         return fallback
@@ -504,7 +504,7 @@ _TAGS_TTL = 5.0  # сек
 def _tags_all_tp(slepok: str, site_type: str) -> dict[str, dict[str, set]]:
     """{tp → {camp_key → {labels}}} по (slepok, site_type), одним запросом. Сбой/нет таблицы → {}."""
     import time
-    from . import kontent_pack as kp  # noqa: PLC0415 — как в остальном модуле, ленивый импорт
+    from .. import kontent_pack as kp  # noqa: PLC0415 — как в остальном модуле, ленивый импорт
     # Теги («х3», «все фиды») заведены на БАЗОВЫЙ тип сайта; витринный сплит их бы не нашёл,
     # и состав создаваемого набора тихо поменялся бы. Нормализуем ДО ключа кэша.
     site_type = kp.base_site_type(site_type)

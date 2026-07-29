@@ -6,11 +6,11 @@ from flask import Blueprint, Flask
 
 from direct import (
     agent_board_bridge,
-    create_set_feeds,
     grid_read,
     grid_finalize,
     queue_server,
 )
+from direct.create import create_set_feeds
 from direct.content import content_renames_routes
 from direct.copy_service import (
     copy_api,

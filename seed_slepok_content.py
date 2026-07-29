@@ -13,7 +13,7 @@ M3-таймаут на попытку (быстрый фейл-фаст) мож�
 import json
 import sys
 
-from direct import blueprint as B
+from direct.create import blueprint as B
 
 
 def main() -> int:

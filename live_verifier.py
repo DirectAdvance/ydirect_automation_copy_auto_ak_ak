@@ -56,7 +56,7 @@ def _grid_rows_by_prefix(grid_by_name: dict[str, dict[str, Any]], nm: str) -> li
     ⚠️ Именно СПИСОК, а не первое совпадение: одна позиция разворачивается по фидам в НЕСКОЛЬКО
     РК («— feedA», «— feedB»), и при выборе одной потерянные ключи остальных не видны.
     Точное совпадение имени — первым (приоритет прежнего поведения)."""
-    from .create_set_resume import FANOUT_SEP, _VNN_RE
+    from .create.create_set_resume import FANOUT_SEP, _VNN_RE
     pref = nm + FANOUT_SEP
     exact: list[dict[str, Any]] = []
     out: list[dict[str, Any]] = []

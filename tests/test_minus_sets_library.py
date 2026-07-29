@@ -15,7 +15,7 @@ import types
 
 import pytest
 
-from direct import create_set_minus as csm
+from direct.create import create_set_minus as csm
 
 
 def _mk_deps(pack_root, *, existing=None, add_log=None, get_log=None):
@@ -247,7 +247,7 @@ def test_kuderko_minus_mode_is_explicit_group(tmp_path):
 # ── 7. Отбор кампаний tp2-tp5 и merge-привязка ───────────────────────────────────────────────
 
 def test_only_tp2_tp5_campaigns_are_selected():
-    from direct.create_set_apply_batches import select_campaign_ids_by_tp
+    from direct.create.create_set_apply_batches import select_campaign_ids_by_tp
     created = [
         {"id": 1, "name": "tp1_cpc_site_ct0146_aon_n000_r0002_ct001_ag011_g00 — Haval"},
         {"id": 2, "name": "tp2_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00 — Марки"},
@@ -262,7 +262,7 @@ def test_only_tp2_tp5_campaigns_are_selected():
 
 def test_attach_merges_and_keeps_existing_library_ids(monkeypatch):
     """Повторная привязка не затирает уже прикреплённые наборы и не плодит дублей в списке."""
-    from direct import create_set_apply_batches as ab
+    from direct.create import create_set_apply_batches as ab
 
     sent = {}
 
@@ -303,7 +303,7 @@ def test_orchestrator_wiring_is_present():
 
     assert "_ensure_named_minus_sets" in ar._create_set_orchestrator_deps()
 
-    src = pathlib.Path(ar.__file__).with_name("create_set_orchestrator.py").read_text(encoding="utf-8")
+    src = (pathlib.Path(ar.__file__).parent / "create" / "create_set_orchestrator.py").read_text(encoding="utf-8")
     assert "_select_ms_ids(_extract_created_ms(results), (2, 3, 4, 5))" in src, \
         "оркестратор должен отбирать ровно tp2-tp5 (tp1 — намеренно без минус-фраз)"
     assert "_apply_ms_batch(login, _ms_camp_ids, _repair_deps()" in src, \

@@ -6,7 +6,7 @@
 
 import pytest
 
-from direct.create_set_tp8_10 import (
+from direct.create.create_set_tp8_10 import (
     normalize_post_body_text,
     _normalize_post_body_line,
     _norm_apply_currency,

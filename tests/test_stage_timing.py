@@ -19,7 +19,7 @@ import time
 
 import pytest
 
-from direct import stage_timing as st
+from direct.create import stage_timing as st
 
 
 def _rows(capsys) -> list[dict]:
@@ -228,7 +228,7 @@ class TestSequentialChannelClearsItemContext:
     и постпроцесс/deferred repair писали бы строки с чужим item-контекстом."""
 
     def _seq_branch(self):
-        from direct import create_set_orchestrator as orch
+        from direct.create import create_set_orchestrator as orch
         src = textwrap.dedent(inspect.getsource(orch.create_set_response))
         node = _find_if_not_parallel(ast.parse(src))
         assert node is not None, "ветка `if not _PARALLEL:` не найдена"

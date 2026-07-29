@@ -9,7 +9,7 @@
 
 import pytest
 
-from direct.create_set_plan import _canon_camp_name, _match_camp_label
+from direct.create.create_set_plan import _canon_camp_name, _match_camp_label
 
 
 def test_no_selection_matches_everything():

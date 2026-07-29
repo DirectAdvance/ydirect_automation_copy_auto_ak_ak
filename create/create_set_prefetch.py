@@ -96,7 +96,7 @@ def _save_job_cache(job_id: str, kind: str, key_parts, payload) -> bool:
     if not job_id:
         return False
     try:
-        from .direct_repository import victory_conn_rw  # noqa: PLC0415
+        from ..direct_repository import victory_conn_rw  # noqa: PLC0415
         conn = victory_conn_rw()
     except Exception:  # noqa: BLE001
         return False
@@ -130,7 +130,7 @@ def cleanup_job_cache(job_id: str) -> int:
     if not job_id:
         return 0
     try:
-        from .direct_repository import victory_conn_rw  # noqa: PLC0415
+        from ..direct_repository import victory_conn_rw  # noqa: PLC0415
         conn = victory_conn_rw()
     except Exception:  # noqa: BLE001
         return 0
@@ -397,7 +397,7 @@ def _prepare_post_content(login: str, body: dict, site_type: str, href: str,
     generated = failed = 0
     avoid: list[str] = []
     try:
-        from .ai_content import generate_post_ad_content as gpac  # noqa: PLC0415
+        from ..ai_content import generate_post_ad_content as gpac  # noqa: PLC0415
         from .create_set_tp8_10 import (
             _post_allowed_models_from_feed, _post_feed_url_map, _post_href_for_label,
             _safe_post_brand_label,
@@ -481,7 +481,7 @@ def _prepare_uac_assets(login: str, body: dict, site_type: str, ctx: dict,
     if not cookie:
         return {"items": len(uac_items), "uploaded": 0, "skipped": "cookie_missing"}
     try:
-        from . import campaign as cmc  # noqa: PLC0415
+        from .. import campaign as cmc  # noqa: PLC0415
         cli = cmc.UacClient(cookie, login)
     except Exception as exc:  # noqa: BLE001
         return {"items": len(uac_items), "uploaded": 0, "error": str(exc)[:200]}
@@ -517,7 +517,7 @@ def _prepare_uac_assets(login: str, body: dict, site_type: str, ctx: dict,
             c_brand, c_ct = brand_ct(it)
             videos = []
             try:
-                from . import kontent_pack as kp  # noqa: PLC0415
+                from .. import kontent_pack as kp  # noqa: PLC0415
                 # slepok=skey: свой слепок → общий пул → чужой слепок (правило Семёна 2026-07-28).
                 videos = (kp.videos_for_ct(login, c_ct, brand_hint=(c_brand or ""), slepok=skey)
                           if c_ct else []) or kp.videos_for_login(login)
@@ -547,7 +547,7 @@ def _prepare_post_images(login: str, body: dict, grid_cookie: str | None,
     if not post_items:
         return {"items": 0, "uploaded": 0}
     try:
-        from . import grid_finalize as gf  # noqa: PLC0415
+        from .. import grid_finalize as gf  # noqa: PLC0415
         from .create_set_tp8_10 import _posevy_images_for_ct, _resolve_img_ct, POST_IMAGE_LIMIT
         cli = gf.get_grid_client(login, cookie=grid_cookie)
         cli._bootstrap_csrf()

@@ -27,7 +27,7 @@ except ImportError:                     # плоский запуск (лока�
     from text_norm import _strip_href_fragment
 
 try:                                    # STAGE_TIMING: пер-стадийный замер (только замер + лог)
-    from . import stage_timing as _timing
+    from .create import stage_timing as _timing
 except ImportError:                     # плоский запуск (локальные тесты из direct/)
     import stage_timing as _timing
 

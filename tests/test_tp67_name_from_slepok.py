@@ -13,7 +13,7 @@
 
 import pytest
 
-from direct.create_set_plan import _build_name
+from direct.create.create_set_plan import _build_name
 
 
 def _name(**kw):

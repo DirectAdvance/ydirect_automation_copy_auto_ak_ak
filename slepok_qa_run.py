@@ -29,7 +29,7 @@ import os, sys, json, time, argparse, subprocess
 
 os.environ.setdefault("DIRECT_ROLE", "web")
 from direct.main import create_app  # noqa: E402
-from direct import blueprint as B   # noqa: E402
+from direct.create import blueprint as B   # noqa: E402
 
 # --- тест-аккаунт по умолчанию (совпадает с историческим ручным прогоном) ---
 QA_LOGIN = os.environ.get("SLEPOK_QA_LOGIN", "porg-vfdnaolu")
@@ -262,7 +262,7 @@ def main():
 
     global GOAL
     if GOAL is None:
-        from .blueprint_metrika import _goal_vse_formy
+        from .create.blueprint_metrika import _goal_vse_formy
         with app.app_context():
             gid, gname = _goal_vse_formy(COUNTER)
         if not gid:

@@ -122,22 +122,22 @@ from .repair import repair_gate as rgate  # read-only repair-gate helpers
 from .repair import repair_executor as rex  # scoped repair executors (cookie/Grid-first)
 from .repair import repair_auto as rauto  # repair orchestration without Flask/DB wiring
 from . import verification_service as vsvc  # live verification orchestration without Flask
-from . import blueprint_targeting as _btg  # ct→сегмент классификатор + профиль таргетинга (DI ниже)
+from .create import blueprint_targeting as _btg  # ct→сегмент классификатор + профиль таргетинга (DI ниже)
 from . import slepki_editor as _sed  # редактор структуры/ключей слепков (edit-джобы очереди, DI ниже)
-from .blueprint_targeting import (         # ре-экспорт: внутр. вызовы + внешний from direct.blueprint import _ct_segment
+from .create.blueprint_targeting import (         # ре-экспорт: внутр. вызовы + внешний from direct.create.blueprint import _ct_segment
     _gc_ct, _ct_is_model_map, _ct_segment_map, _ct_segment, _seg_canon, _model_cts,
     _segment_donor, _targeting_profile, _slepok_tp_modes, _slepok_profile_excludes_tp,
     _slepki_structure_for_ui, _donor_tp4_models_map, _pack_for_item,
     _slepok_is_auto, _non_auto_slepki, _non_auto_site_types, _slepki_pack_facts,
     _slepki_pack_signature,
 )
-from . import blueprint_metrika as _bmt    # Метрика (счётчики/цели) + гео-справочник Директа (DI ниже)
-from .blueprint_metrika import (           # ре-экспорт: внутр. вызовы (routes/DI-словари)
+from .create import blueprint_metrika as _bmt    # Метрика (счётчики/цели) + гео-справочник Директа (DI ниже)
+from .create.blueprint_metrika import (           # ре-экспорт: внутр. вызовы (routes/DI-словари)
     _parse_counter_ids, _metrika_goals_for, _counter_foreign_owner,
     _geo_load, _geo_id, _geo_name_by_id, _geo_type_by_id, _metrika_token, _goal_vse_formy,
 )
-from . import blueprint_content_rules as _bcr  # правила вкладки «Контент» + фильтрация ассетов (DI ниже)
-from .blueprint_content_rules import (     # ре-экспорт: внутр. вызовы + route-registration (_CONTENT_RULES_CACHE)
+from .create import blueprint_content_rules as _bcr  # правила вкладки «Контент» + фильтрация ассетов (DI ниже)
+from .create.blueprint_content_rules import (     # ре-экспорт: внутр. вызовы + route-registration (_CONTENT_RULES_CACHE)
     _content_rules_ensure, _content_rules_map, _asset_key_from_local, _manual_rule_lookup_key,
     _content_rule_key, _ct_allowed_for, _content_allowed_list, _content_slepok_list,
     _slepok_allowed_for, _content_only_this_ct, _filter_content_assets, _prioritized_content_assets,
@@ -1485,7 +1485,7 @@ def _create_set_plan_deps() -> dict:
 
 
 def _create_set_plan_module():
-    from . import create_set_plan as csp
+    from .create import create_set_plan as csp
     csp.configure(_create_set_plan_deps())
     return csp
 
@@ -1615,7 +1615,7 @@ def _prefetch_start(login, body, *, is_cancelled=lambda: False):
         return
     try:
         from . import ai_agents as _A
-        from . import create_set_prefetch as _pf
+        from .create import create_set_prefetch as _pf
         from . import campaign as _cmc
         _pf.configure({
             "account_ctx": _account_ctx,
@@ -1654,7 +1654,7 @@ def _create_set_context_deps() -> dict:
 
 
 def _create_set_context_module():
-    from . import create_set_context as cctx
+    from .create import create_set_context as cctx
     cctx.configure(_create_set_context_deps())
     return cctx
 
@@ -1757,7 +1757,7 @@ def _create_set_feeds_deps() -> dict:
 
 
 def _create_set_feeds_module():
-    from . import create_set_feeds as csf
+    from .create import create_set_feeds as csf
     csf.configure(_create_set_feeds_deps())
     return csf
 
@@ -1909,7 +1909,7 @@ def _tp7_listings_minus_filters(*args, **kwargs):
 # в create_set_minus, а create_set_feed_builders берёт карту через deps ИМЕННО отсюда. Реэкспорт
 # вместо копии: `create_set_minus` ничего не импортирует из automation_runtime (только DI через
 # configure), поэтому цикла импорта нет.
-from .create_set_minus import _SLEPOK_MINUS_MODE  # noqa: E402  (единая карта режимов минусов)
+from .create.create_set_minus import _SLEPOK_MINUS_MODE  # noqa: E402  (единая карта режимов минусов)
 
 
 def _create_set_minus_deps() -> dict:
@@ -1924,7 +1924,7 @@ def _create_set_minus_deps() -> dict:
 
 
 def _create_set_minus_module():
-    from . import create_set_minus as csm
+    from .create import create_set_minus as csm
     csm.configure(_create_set_minus_deps())
     return csm
 
@@ -2174,7 +2174,7 @@ def _create_set_assets_deps() -> dict:
 
 
 def _create_set_assets_module():
-    from . import create_set_assets as csa
+    from .create import create_set_assets as csa
     csa.configure(_create_set_assets_deps())
     return csa
 
@@ -2305,7 +2305,7 @@ def _create_set_text_builder_deps() -> dict:
 
 
 def _create_set_text_builder_module():
-    from . import create_set_text_builders as cstb
+    from .create import create_set_text_builders as cstb
     cstb.configure(_create_set_text_builder_deps())
     return cstb
 
@@ -2456,7 +2456,7 @@ def _create_set_tp1_builder_deps() -> dict:
 
 
 def _create_set_tp1_builder_module():
-    from . import create_set_tp1_builders as cstp1
+    from .create import create_set_tp1_builders as cstp1
     cstp1.configure(_create_set_tp1_builder_deps())
     return cstp1
 
@@ -3370,7 +3370,7 @@ def _create_set_finalize_deps() -> dict:
 
 
 def _create_set_finalize_module():
-    from . import create_set_finalize as csfin
+    from .create import create_set_finalize as csfin
     csfin.configure(_create_set_finalize_deps())
     return csfin
 
@@ -3381,7 +3381,7 @@ _FINALIZE_QUEUE_CONFIGURED = {"done": False}
 def _finalize_queue_module():
     """Модуль async-финализации (Задача F). Конфигурируем один раз: REAL finalize-функции
     (без capture-обёртки — иначе replay в воркере снова захватился бы) + rw-conn."""
-    from . import create_set_finalize_queue as csfq
+    from .create import create_set_finalize_queue as csfq
     if not _FINALIZE_QUEUE_CONFIGURED["done"]:
         csfin = _create_set_finalize_module()
         csfq.configure({
@@ -3531,7 +3531,7 @@ def _create_set_feed_builder_deps() -> dict:
 
 
 def _create_set_feed_builder_module():
-    from . import create_set_feed_builders as csfb
+    from .create import create_set_feed_builders as csfb
     csfb.configure(_create_set_feed_builder_deps())
     return csfb
 
@@ -3577,7 +3577,7 @@ def _create_set_corrections_deps() -> dict:
 
 
 def _create_set_corrections_module():
-    from . import create_set_corrections as cscorr
+    from .create import create_set_corrections as cscorr
     cscorr.configure(_create_set_corrections_deps())
     return cscorr
 
@@ -3614,20 +3614,20 @@ def _apply_corrections(*args, **kwargs):
 # вызовы в наборе всё равно упадут — нет смысла долбить API, нужно остановиться и сказать «повтори завтра».
 def _is_units_exhausted(msg) -> bool:
     """True, если текст ошибки = исчерпание суточного лимита баллов Директа (error 152)."""
-    from .create_set_units import is_units_exhausted
+    from .create.create_set_units import is_units_exhausted
     return is_units_exhausted(msg)
 
 
 def _units_in_result(r) -> bool:
     """152 в результате пункта: и в top-level error, и в вложенных campaigns (tp1 кладёт сводку,
     tp3/tp5 — плоско; проверяем оба, чтобы не пропустить лимит ни в одном движке)."""
-    from .create_set_units import units_in_result
+    from .create.create_set_units import units_in_result
     return units_in_result(r)
 
 
 def _auth_error_in_result(r) -> bool:
     """53 (auth error) в результате пункта — переключаем на cookie-путь как при 152."""
-    from .create_set_units import auth_error_in_result
+    from .create.create_set_units import auth_error_in_result
     return auth_error_in_result(r)
 
 
@@ -3660,7 +3660,7 @@ def _run_master_product_item(*, it, name, href, region_ids, counter_id, goal_id,
                              tpl_titles, tpl_texts, tpl_sitelinks, rs, login,
                              _st_token, _w_agency, _stream_agent, _job, _tp7_mf):
     """tp6/tp7 item handler adapter; implementation lives in create_set_master_product."""
-    from .create_set_master_product import run_master_product_item
+    from .create.create_set_master_product import run_master_product_item
     return run_master_product_item(
         _master_product_deps(),
         it=it, name=name, href=href, region_ids=region_ids, counter_id=counter_id, goal_id=goal_id,
@@ -3706,7 +3706,7 @@ def _create_set_orchestrator_deps() -> dict:
 
 def _create_set_response():
     """Create-set endpoint adapter; orchestration lives in create_set_orchestrator."""
-    from .create_set_orchestrator import create_set_response
+    from .create.create_set_orchestrator import create_set_response
     return create_set_response(_create_set_orchestrator_deps())
 
 
@@ -3762,7 +3762,7 @@ def _create_set_repairing_deps() -> dict:
 
 
 def _create_set_repairing_module():
-    from . import create_set_repairing as csr
+    from .create import create_set_repairing as csr
     csr.configure(_create_set_repairing_deps())
     return csr
 

@@ -16,7 +16,7 @@ import re
 
 import pytest
 
-from direct import create_set_feed_builders as fb
+from direct.create import create_set_feed_builders as fb
 
 SRC = None
 

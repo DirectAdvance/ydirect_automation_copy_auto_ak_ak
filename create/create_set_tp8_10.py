@@ -27,7 +27,7 @@ from datetime import date
 
 # Константы лимитов формата — единый источник правды в ai_agents.py.
 # Импортируем здесь; повторно не объявляем, чтобы не разъехались при будущей правке.
-from .ai_agents import (  # noqa: E402
+from ..ai_agents import (  # noqa: E402
     POST_TITLE_MAX, POST_TITLE_WORD_MAX,
     POST_BODY_MAX, POST_BODY_WORD_MAX,
 )
@@ -211,7 +211,7 @@ def _post_href_for_label(login: str, base_href: str, label: str,
     if not label or str(label).lower() == "посевы":
         return base_href.rstrip("/")
     try:
-        from .model_urls import _brand_level_url, _is_degenerate_feed_url, _model_page_href  # noqa: PLC0415
+        from ..model_urls import _brand_level_url, _is_degenerate_feed_url, _model_page_href  # noqa: PLC0415
     except ImportError:
         from model_urls import (_brand_level_url, _is_degenerate_feed_url,  # type: ignore[no-redef]  # noqa: PLC0415
                                 _model_page_href)
@@ -444,7 +444,7 @@ def _replace_post_model_list(body: str, brand_block: str) -> str:
 def _extend_post_body_after_finalize(text: str, brand_label: str, href: str) -> str:
     """Fill remaining body space before CTA/phone with safe generic facts."""
     try:
-        from . import ai_agents as A  # noqa: PLC0415
+        from .. import ai_agents as A  # noqa: PLC0415
     except ImportError:
         import ai_agents as A  # type: ignore[no-redef]  # noqa: PLC0415
     body = _ensure_post_phone_last(_trim_post_body_preserve_phone(text, POST_BODY_MAX))
@@ -1237,7 +1237,7 @@ def _coder_brand_for_ct(ct: str) -> str:
     if not re.fullmatch(r"ct\d{4}", ctn) or ctn == "ct0000":
         return ""
     try:
-        from .campaign_naming import _ag_part1_map, _coder_name_real_brand  # noqa: PLC0415
+        from ..campaign_naming import _ag_part1_map, _coder_name_real_brand  # noqa: PLC0415
     except ImportError:
         from campaign_naming import _ag_part1_map, _coder_name_real_brand  # type: ignore[no-redef]  # noqa: PLC0415
     try:
@@ -1309,7 +1309,7 @@ def _sanitize_post_brand_content(title: str, body: str, brand_label: str) -> tup
     if not brand:
         return title, body
     try:
-        from .text_gen import _brand_in_text, _drop_foreign_brand_mentions  # noqa: PLC0415
+        from ..text_gen import _brand_in_text, _drop_foreign_brand_mentions  # noqa: PLC0415
     except ImportError:
         from text_gen import _brand_in_text, _drop_foreign_brand_mentions  # type: ignore[no-redef]  # noqa: PLC0415
     title_rows = _drop_foreign_brand_mentions([title], brand)
@@ -1443,7 +1443,7 @@ def _posevy_images_for_ct(img_ct: str, limit: int = POST_IMAGE_LIMIT) -> list[st
       4. 0 картинок — НЕ блокируем (API принимает multicards:[], SPEC §2.11 п.5)
     """
     try:
-        from . import kontent_pack as kp  # noqa: PLC0415
+        from .. import kontent_pack as kp  # noqa: PLC0415
     except ImportError:
         import kontent_pack as kp  # type: ignore[no-redef]  # noqa: PLC0415
 
@@ -1551,7 +1551,7 @@ def run_create_set_post(
     N = число найденных картинок (1-3), минимум 1 группа даже при 0 картинок.
     """
     try:
-        from . import grid_finalize as gf  # noqa: PLC0415
+        from .. import grid_finalize as gf  # noqa: PLC0415
     except ImportError:
         import grid_finalize as gf  # type: ignore[no-redef]  # noqa: PLC0415
 
@@ -1623,7 +1623,7 @@ def run_create_set_post(
 
     if not title_text or not body_text:
         try:
-            from .ai_content import generate_post_ad_content as _gpac  # noqa: PLC0415
+            from ..ai_content import generate_post_ad_content as _gpac  # noqa: PLC0415
         except ImportError:
             from ai_content import generate_post_ad_content as _gpac  # type: ignore[no-redef]  # noqa: PLC0415
         try:

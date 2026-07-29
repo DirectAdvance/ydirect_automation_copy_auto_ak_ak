@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 import time                                    # _v5_callout_pool троттлит adextensions.add (стр.687); без импорта — NameError, уточнения молча не привязывались
 
-from .text_norm import _trim_clean, _cap_first, _bad_ad_title as _text_norm_bad_title
-from .text_gen import (
+from ..text_norm import _trim_clean, _cap_first, _bad_ad_title as _text_norm_bad_title
+from ..text_gen import (
     _brand_first_reorder, _brand_isolated_first_phrase, _strip_installment_text,
     _NEUTRAL_CREDIT_TITLES, _NEUTRAL_CREDIT_TEXTS,
 )

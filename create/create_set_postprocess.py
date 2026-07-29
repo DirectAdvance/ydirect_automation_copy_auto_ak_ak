@@ -6,9 +6,9 @@ import threading
 import time
 from typing import Any, Callable
 
-from .repair import repair_auto as rauto
-from .repair import repair_gate as rgate
-from .verifier import verify_create_set
+from ..repair import repair_auto as rauto
+from ..repair import repair_gate as rgate
+from ..verifier import verify_create_set
 
 
 LiveVerification = Callable[[str, list[dict[str, Any]]], dict[str, Any]]

@@ -15,7 +15,7 @@ import importlib.util
 import pathlib
 
 from direct import automation_runtime
-from direct import create_set_tp1_builders
+from direct.create import create_set_tp1_builders
 
 # Переиспользуем боевой стенд deps для `_build_tp1_adgroups` из соседнего модуля тестов,
 # чтобы не дублировать ~85 строк моков Grid/v501.

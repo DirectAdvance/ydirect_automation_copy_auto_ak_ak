@@ -142,7 +142,7 @@ def test_recreate_happens_once_and_never_twice():
 
 def test_create_path_no_longer_blocks_on_short_pool():
     """Позиция больше не отбивается «Кампания не создана» из-за короткого пула."""
-    src = Path(__file__).resolve().parents[1].joinpath("create_set_master_product.py").read_text(
+    src = Path(__file__).resolve().parents[1].joinpath("create/create_set_master_product.py").read_text(
         encoding="utf-8")
     assert "CONTENT_GAP_IMAGES_LOW" not in src          # блокировка по «пул < 5» удалена
     assert '"images_pool": _pool_size' in src           # пул уезжает в результат для верификатора

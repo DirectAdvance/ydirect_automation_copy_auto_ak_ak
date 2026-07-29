@@ -39,7 +39,7 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
     """Генерация контента одной РК. Идентична бывшей `_gen_campaign_content`; поведение сохранено.
     → {ok, agent, login, item, brand, content:{titles,texts,sitelinks,title2?}, warnings, fallback}
       | {ok:False, error}."""
-    from . import ai_agents as A
+    from .. import ai_agents as A
     ctx = dict(ctx_override or {}) if isinstance(ctx_override, dict) else _promo_ctx(login)
     if not ctx:
         return {"ok": False, "error": f"аккаунт {login} не найден в БД (Авто)"}
@@ -1004,7 +1004,7 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
     # не было ни строки, и «шаблонность» годами читалась как «архитектура такая». Теперь каждое
     # падение именуется причиной (диагноз последнего LLM-отказа) и копится в per-run счётчике.
     try:
-        from .llm_providers import record_content_fallback as _rec_fb
+        from ..llm_providers import record_content_fallback as _rec_fb
         _rec_fb(fallback, fallback_reason if fallback else "")
     except Exception:  # noqa: BLE001  (телеметрия не должна ронять генерацию)
         pass
@@ -1038,7 +1038,7 @@ def run_gen_campaign_content(*, login: str, agent: dict, agent_key: str, item: d
     if (not fast_mode and not fallback and not item.get("skip_utp_judge")
             and _titles_now and _texts_now):
         try:
-            from .content import content_quality as CQ
+            from ..content import content_quality as CQ
             provider = str(item.get("llm_provider") or "openrouter")
             site_ctx = {"domain": ctx.get("domain") or "", "site_type": st,
                         "city": ctx.get("city") or "", "brand": brand}

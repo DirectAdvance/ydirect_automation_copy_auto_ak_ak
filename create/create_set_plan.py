@@ -8,8 +8,8 @@ import re
 from flask import jsonify, request
 
 from . import create_set_context as _csctx  # _parse_targeting_modes (чистый хелпер, без configure)
-from . import kontent_pack as _kp           # SiteTypeSet: `in` понимает «Монобренд · Lada»
-from .model_urls import _strip_site_domain_label as _strip_dom_plan
+from .. import kontent_pack as _kp           # SiteTypeSet: `in` понимает «Монобренд · Lada»
+from ..model_urls import _strip_site_domain_label as _strip_dom_plan
 
 _DEPS: dict = {}
 

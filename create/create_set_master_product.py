@@ -5,15 +5,15 @@ from __future__ import annotations
 import re
 from urllib.parse import urlsplit, urlunsplit
 
-from . import campaign as cmc
+from .. import campaign as cmc
 from . import create_set_context as _csctx  # _parse_targeting_modes (чистый хелпер, без configure)
-from . import kontent_pack as kp
-from .link_check import resolve_or_fallback_url as _resolve_url
-from .uac_verifier import UAC_IMAGES_MIN as _UAC_IMAGES_MIN
-from .uac_verifier import images_create_min as _uac_images_create_min
-from .model_urls import (_brand_level_url, _is_degenerate_feed_url, _model_page_href,
+from .. import kontent_pack as kp
+from ..link_check import resolve_or_fallback_url as _resolve_url
+from ..uac_verifier import UAC_IMAGES_MIN as _UAC_IMAGES_MIN
+from ..uac_verifier import images_create_min as _uac_images_create_min
+from ..model_urls import (_brand_level_url, _is_degenerate_feed_url, _model_page_href,
                          _strip_site_domain_label, _strip_url_query)
-from .text_norm import _cap_first
+from ..text_norm import _cap_first
 
 
 def _site_root_href(href: str) -> str:
@@ -602,7 +602,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             if len(it_sitelinks) >= 8:
                 break
     try:
-        from . import ai_agents as _A
+        from .. import ai_agents as _A
         it_titles, it_texts, _t2_unused, it_sitelinks, _utp_changed = _A.unify_utp_numbers(
             it_titles, it_texts, "", it_sitelinks
         )
@@ -613,7 +613,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     )
     if len(it_titles) < 5 or len(it_texts) < 3:
         try:
-            from . import ai_agents as _A
+            from .. import ai_agents as _A
             _regen_agent = _stream_agent or _A.get_agent(agent or "")
             if _regen_agent:
                 _rc = _cached_campaign_content(
@@ -711,7 +711,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     # комплекте 8 не отрабатывал = «UAC мимо дедупа». Порядок diversify→dedup — как на tp1/tp2/tp5.
     _pre_semantic_sitelinks = list(it_sitelinks or [])
     try:
-        from . import ai_agents as _A
+        from .. import ai_agents as _A
         _dl = _A._dedup_sitelinks(_A.diversify_sitelink_utp(it_sitelinks, 8), eff_site, 8)
         if _dl and ((not _live_generated_content) or len(_dl) >= 8):
             it_sitelinks = _dl
@@ -727,7 +727,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
                     and not (not _is_bu_site(eff_site) and _BU_RE.search(f"{_st} {_sd}"))):
                 _sl_candidates.append({"title": _st, "description": _sd})
         try:
-            from . import ai_agents as _A
+            from .. import ai_agents as _A
             it_sitelinks = _A._dedup_sitelinks(_sl_candidates, eff_site, 8)
         except Exception:  # noqa: BLE001
             it_sitelinks = _sl_candidates[:8]
@@ -736,7 +736,7 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
     # весь аккаунт (tp1/tp2/tp5/tp6/tp7). Сайтлинки эталона re-фильтруем per-item гардами
     # (pct/BU/лимит) — несовместимый эталон → остаёмся на своём наборе (brand-first/лимиты целы).
     try:
-        from . import ai_content as _AC
+        from .. import ai_content as _AC
         # FIX6/#4 (2026-07-10): АТОМАРНЫЙ get-or-put (тот же, что в orchestrator для tp1/tp2/tp5) —
         # устраняет гонку параллельных каналов при DIRECT_PARALLEL_CHANNELS=1. tp7 (UAC) участвует в
         # ЕДИНОМ эталоне: первый канал с полным набором сеет, tp6/tp7 берут ТОТ ЖЕ → один

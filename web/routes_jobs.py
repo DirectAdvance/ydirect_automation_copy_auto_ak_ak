@@ -179,7 +179,7 @@ def register_job_routes(
             }), 400
 
         try:
-            from ..create_set_content_preflight import create_set_pack_gap_note
+            from ..create.create_set_content_preflight import create_set_pack_gap_note
             _gap_note = create_set_pack_gap_note(body)
         except Exception:  # noqa: BLE001
             _gap_note = ""
@@ -569,7 +569,7 @@ def register_job_routes(
         new_body.pop("_resume_count", None)
         items_list = body.get("items") or []
         if body.get("single_feed") and items_list:
-            from ..create_set_input import first_feed_items
+            from ..create.create_set_input import first_feed_items
             items_list = first_feed_items(items_list, parse_number=parse_number)
         if 0 <= done_idx < len(items_list):
             partial_name = (items_list[done_idx].get("name") or "").strip()

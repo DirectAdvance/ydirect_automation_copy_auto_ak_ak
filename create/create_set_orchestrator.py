@@ -9,8 +9,8 @@ import time
 
 from flask import jsonify, request
 
-from . import campaign as cmc
-from . import grid_finalize as gf
+from .. import campaign as cmc
+from .. import grid_finalize as gf
 from . import stage_timing as _timing
 
 
@@ -219,7 +219,7 @@ def create_set_response(deps: dict):
         _slepok_for_callouts = _selected_slepok_key(agent or "")
         if _slepok_for_callouts:
             try:
-                from .direct_repository import victory_conn as _victory_conn_callouts
+                from ..direct_repository import victory_conn as _victory_conn_callouts
                 _cco_conn = _victory_conn_callouts()
                 try:
                     _cco_cur = _cco_conn.cursor()
@@ -267,7 +267,7 @@ def create_set_response(deps: dict):
     _stream_agent = None
     if stream_content:
         try:
-            from . import ai_agents as _A
+            from .. import ai_agents as _A
             _stream_agent = _A.get_agent(body.get("agent") or "")
         except Exception:  # noqa: BLE001
             _stream_agent = None
@@ -324,7 +324,7 @@ def create_set_response(deps: dict):
         # content_source=slepok_library → подставляем контент из direct_slepok_content (БД-слепок).
         # Если записи нет → честный фолбэк на шаблоны по типу сайта + пометка в ответе.
         try:
-            from . import ai_agents as _A
+            from .. import ai_agents as _A
             _unify_utp = _A.unify_utp_numbers
         except Exception:  # noqa: BLE001
             _unify_utp = None
@@ -353,7 +353,7 @@ def create_set_response(deps: dict):
         # принимает payload из body (async/retry/API), поэтому stale/ручной payload должен упасть ДО
         # precreate/LLM/Direct-мутаций.
         try:
-            from .verifier import structure_preflight_issues as _structure_preflight_issues
+            from ..verifier import structure_preflight_issues as _structure_preflight_issues
             _struct_body = dict(body)
             _struct_body["agent"] = agent
             _struct_body["site_type"] = eff_site
@@ -423,7 +423,7 @@ def create_set_response(deps: dict):
         # Anti-false-positive: M3 проверяется 3×3 с (≥1 OK → жив); OR — 2×5 с (≥1 OK → жив);
         # оба параллельно. Блокируем лишь при уверенно-мёртвых ОБОИХ (все попытки упали).
         if stream_content and _stream_agent:
-            from .llm_providers import (check_content_pipeline_health as _cphealth,
+            from ..llm_providers import (check_content_pipeline_health as _cphealth,
                                         arm_m3_breaker as _arm_m3_breaker,
                                         trip_or_breaker as _trip_or_breaker)
             _cp = _cphealth()
@@ -656,10 +656,10 @@ def create_set_response(deps: dict):
         prepare_report = None
         _tp1_image_future = None
         try:
-            from . import ai_agents as _A_prepare
-            from . import campaign as _cmc_prepare
+            from .. import ai_agents as _A_prepare
+            from .. import campaign as _cmc_prepare
             from . import create_set_prefetch as _prepare
-            from . import kontent_pack as _kp_prepare
+            from .. import kontent_pack as _kp_prepare
             _prepare.configure({
                 "account_ctx": _account_ctx,
                 "cached_campaign_content": _cached_campaign_content,
@@ -1190,7 +1190,7 @@ def create_set_response(deps: dict):
             # в create_set_master_product). Применяем к готовому контенту ПЕРЕД созданием.
             if it.get("titles") and it.get("texts"):
                 try:
-                    from . import ai_content as _AC
+                    from .. import ai_content as _AC
                     # FIX6/#4 (2026-07-10): АТОМАРНЫЙ get-or-put — устраняет гонку параллельных каналов
                     # (`DIRECT_PARALLEL_CHANNELS=1`): раньше get→генерация→put не атомарны, каждый канал
                     # видел пустой кэш → свой набор → разные inheritableSitelinkSet у tp1/tp2/tp5/tp7.
@@ -1200,7 +1200,7 @@ def create_set_response(deps: dict):
                     if _reuse_sl and len(_reuse_sl) >= 8 and it.get("sitelinks"):
                         # pct-safety: не подставляем эталон с «%», если заголовки item несут «%»
                         # (per-item инвариант «нет %-сайтлинка при %-заголовке»).
-                        from . import text_gen as _tg2
+                        from .. import text_gen as _tg2
                         _title_pct = bool(_tg2._discount_pcts(list(it.get("titles") or [])))
                         _reuse_has_pct = any(
                             "%" in f"{s.get('title','')} {s.get('description','')}"
@@ -1662,7 +1662,7 @@ def create_set_response(deps: dict):
         _batch_report: dict | None = None
         if _BATCH_MODE in ("dual", "only"):
             try:
-                from .campaign_result import created_campaigns as _extract_created
+                from ..campaign_result import created_campaigns as _extract_created
                 from .create_set_apply_batches import apply_campaign_aspects
                 _batch_created = _extract_created(results)
                 if _batch_created:
@@ -1737,7 +1737,7 @@ def create_set_response(deps: dict):
         # у shared_set-слепков, сохраняются). Повторный прогон дублей не создаёт.
         try:
             if callable(_ensure_named_minus_sets):
-                from .campaign_result import created_campaigns as _extract_created_ms
+                from ..campaign_result import created_campaigns as _extract_created_ms
                 from .create_set_apply_batches import (
                     apply_minus_sets_batch as _apply_ms_batch,
                     select_campaign_ids_by_tp as _select_ms_ids,
@@ -2037,7 +2037,7 @@ def create_set_response(deps: dict):
         # Сводка деградации контента за набор: сколько РК уехало на статический фолбэк и почему.
         # В finally — печатается и при аборте/исключении, иначе самый интересный случай теряется.
         try:
-            from .llm_providers import log_llm_degrade_summary as _log_degrade
+            from ..llm_providers import log_llm_degrade_summary as _log_degrade
             _log_degrade(f"createset:{login}")
         except Exception:  # noqa: BLE001  (телеметрия не должна ронять набор)
             pass

@@ -7,7 +7,7 @@ _BRAND_OFFER_DIVISOR из create_set_tp8_10.
 
 import re
 
-from direct.create_set_tp8_10 import (
+from direct.create.create_set_tp8_10 import (
     _build_brand_offer_block,
     _replace_post_model_list,
     _fmt_payment,
@@ -21,20 +21,20 @@ from direct.create_set_tp8_10 import (
 class _MockDeps:
     """Контекст-менеджер: временно подставляет DEPS-функции в create_set_tp8_10."""
     def __init__(self, deps: dict):
-        from direct import create_set_tp8_10 as m
+        from direct.create import create_set_tp8_10 as m
         self._module = m
         self._deps = deps
         self._orig = {}
 
     def __enter__(self):
-        from direct import create_set_tp8_10 as m
+        from direct.create import create_set_tp8_10 as m
         for k, v in self._deps.items():
             self._orig[k] = m._DEPS.get(k)
             m._DEPS[k] = v
         return self
 
     def __exit__(self, *_):
-        from direct import create_set_tp8_10 as m
+        from direct.create import create_set_tp8_10 as m
         for k, v in self._orig.items():
             if v is None:
                 m._DEPS.pop(k, None)
@@ -336,7 +336,7 @@ class TestBrandBlockIdempotency:
 
     def test_each_line_idempotent_with_normalize(self):
         """Строки блока проходят normalize_post_body_text без изменений."""
-        from direct.create_set_tp8_10 import _normalize_post_body_line
+        from direct.create.create_set_tp8_10 import _normalize_post_body_line
         for line in self.SAMPLE_LINES:
             result = _normalize_post_body_line(line)
             assert result == line, (
@@ -359,7 +359,7 @@ class TestBrandBlockIdempotency:
 
     def test_endash_not_treated_as_bullet(self):
         """En-dash в середине строки не путается с буллет-маркером."""
-        from direct.create_set_tp8_10 import _normalize_post_body_line
+        from direct.create.create_set_tp8_10 import _normalize_post_body_line
         # «–» в НАЧАЛЕ строки — буллет (правило 5), в СЕРЕДИНЕ — нет
         line = "Haval Jolion – от 10 428 ₽/мес"
         result = _normalize_post_body_line(line)

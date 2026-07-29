@@ -18,7 +18,7 @@ def _feed_name_label(f_name: str, href: str) -> str:
     фида идёт с доменом-ПРЕФИКСОМ («carsklad-126.site — yandex-catalog-model-…») → домен
     проезжал в имя кампании. Пусто на выходе = имя было только доменом → суффикс не добавлять.
     """
-    from .model_urls import _strip_site_domain_label
+    from ..model_urls import _strip_site_domain_label
     return _strip_site_domain_label(f_name, href)
 
 

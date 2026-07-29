@@ -25,9 +25,9 @@ import logging
 import re
 from typing import Any
 
-from . import campaign as cmc
-from . import grid_finalize as gf
-from .repair.repair_executor import (
+from .. import campaign as cmc
+from .. import grid_finalize as gf
+from ..repair.repair_executor import (
     RepairDeps,
     execute_callouts_repair,
     execute_promo_repair,
@@ -189,7 +189,7 @@ def apply_promo_batch(
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "applied": 0, "failed_campaigns": [],
                     "error": f"build_client: {str(e)[:160]}"}
-        from .promo import PromoClient
+        from ..promo import PromoClient
         attach = PromoClient(client, login).attach(promo_id, ids)
         errors = (((attach.get("data") or {}).get("updateCampaignsPromoExtension") or {})
                   .get("validationResult") or {}).get("errors") or attach.get("errors")

@@ -22,7 +22,7 @@ import random
 import re
 import time
 
-from . import kontent_pack as kp
+from .. import kontent_pack as kp
 from .blueprint_targeting import _gc_ct  # ct из кодера (чистый, без DI)
 
 
@@ -93,7 +93,7 @@ def _manual_rule_lookup_key(path: str, ct: str) -> tuple[str, str, str, str, str
     """
     try:
         import os as _os
-        from . import kontent_pack as _kp
+        from .. import kontent_pack as _kp
         p = str(path or "")
         # Manual-файл приходит из ДВУХ корней: sshfs-монт MANUAL_CREATIVES_DIR (легаси) и
         # ЛОКАЛЬНОЕ зеркало NEURO_PACK_MOUNT/_manual (с 2026-07-18 — основной, sshfs вешал

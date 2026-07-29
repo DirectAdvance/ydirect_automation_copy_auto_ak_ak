@@ -524,7 +524,7 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
             elif op == "model" and args:
                 item["model"] = [str(x) for x in args]
         try:
-            from .. import create_set_feeds as _csf_ff
+            from ..create import create_set_feeds as _csf_ff
             item["brand_field"] = _csf_ff._resolve_feed_field(target_login, int(fid), "brand") or "vendor"
             item["model_field"] = _csf_ff._resolve_feed_field(target_login, int(fid), "model") or "model"
         except Exception:  # noqa: BLE001

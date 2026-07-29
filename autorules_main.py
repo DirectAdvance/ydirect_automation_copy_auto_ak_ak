@@ -101,7 +101,7 @@ def create_app() -> Flask:
     )
 
     # ── blueprint_metrika (цели Метрики из metrika_goals) ─────────────────────
-    from direct import blueprint_metrika as _bm  # noqa: E402
+    from direct.create import blueprint_metrika as _bm  # noqa: E402
     _bm.configure({
         "_victory_conn": _victory_conn,
         "_direct_tokens": _direct_tokens,

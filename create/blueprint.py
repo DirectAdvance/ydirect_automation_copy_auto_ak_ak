@@ -14,7 +14,7 @@ from flask import Blueprint
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from auth import _service_required_any  # noqa: E402
-from . import automation_runtime as _runtime  # noqa: E402
+from .. import automation_runtime as _runtime  # noqa: E402
 
 globals().update({
     name: getattr(_runtime, name)
@@ -42,7 +42,7 @@ def init_direct() -> None:
 def __getattr__(name: str):
     return getattr(_runtime, name)
 
-from .web.routes_pages import register_page_routes
+from ..web.routes_pages import register_page_routes
 
 register_page_routes(
     bp,
@@ -51,37 +51,37 @@ register_page_routes(
     render_page=_render_page,
 )
 
-from .web.routes_reference import register_reference_routes
+from ..web.routes_reference import register_reference_routes
 
-from .web.routes_settings import register_settings_routes
+from ..web.routes_settings import register_settings_routes
 
-from .web.routes_accounts import register_account_routes
+from ..web.routes_accounts import register_account_routes
 
-from .web.routes_content import register_content_routes
+from ..web.routes_content import register_content_routes
 
-from .web.routes_content_editor import register_content_editor_routes
+from ..web.routes_content_editor import register_content_editor_routes
 
-from .web.routes_ai import register_ai_routes
+from ..web.routes_ai import register_ai_routes
 
-from .web.routes_copy import register_copy_routes
+from ..web.routes_copy import register_copy_routes
 
-from .web.routes_jobs import register_job_routes
+from ..web.routes_jobs import register_job_routes
 
-from .web.routes_create_set import register_create_set_routes
+from ..web.routes_create_set import register_create_set_routes
 
-from .web.routes_overview import register_overview_routes
+from ..web.routes_overview import register_overview_routes
 
-from .web.routes_deferred import register_deferred_routes
+from ..web.routes_deferred import register_deferred_routes
 
-from .web.routes_pack import register_pack_routes
+from ..web.routes_pack import register_pack_routes
 
-from .web.routes_campaigns import register_campaign_routes
+from ..web.routes_campaigns import register_campaign_routes
 
-from .web.routes_set_plan import register_set_plan_routes
+from ..web.routes_set_plan import register_set_plan_routes
 
-from .web.routes_ready_logins import register_ready_logins_routes
+from ..web.routes_ready_logins import register_ready_logins_routes
 
-from .web.routes_slepki_edit import register_slepki_edit_routes
+from ..web.routes_slepki_edit import register_slepki_edit_routes
 
 # Страница+API слепков живут в своём процессе direct-slepki.service (:5023, direct/slepki_main.py).
 # Флаг DIRECT_REGISTER_SLEPKI=0 (drop-in direct-create.service) снимает их с этого процесса,
@@ -96,7 +96,7 @@ if os.environ.get("DIRECT_REGISTER_SLEPKI", "1") != "0":
         ag_part1_map=_ag_part1_map,
     )
 
-from .web.routes_tags import register_tags_routes, ensure_tags_tables
+from ..web.routes_tags import register_tags_routes, ensure_tags_tables
 
 register_tags_routes(bp, _direct_access)
 try:

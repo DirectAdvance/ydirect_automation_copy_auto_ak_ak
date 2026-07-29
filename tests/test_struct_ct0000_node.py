@@ -9,8 +9,8 @@ ct0000 в `cts` (там перечисляются модель-ct), поэто�
 
 import inspect
 
-from direct import create_set_structure
-from direct import create_set_tp1_builders
+from direct.create import create_set_structure
+from direct.create import create_set_tp1_builders
 
 
 def _struct(tp_items):

@@ -29,7 +29,7 @@ for _p in Path(__file__).resolve().parents:
         break
 
 from loader import _get  # noqa: E402
-from direct.blueprint import bp as direct_bp, init_direct  # noqa: E402
+from direct.create.blueprint import bp as direct_bp, init_direct  # noqa: E402
 
 
 def create_app() -> Flask:

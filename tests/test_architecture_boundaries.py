@@ -32,7 +32,7 @@ def test_service_entrypoints_do_not_import_web_composition_root():
         "price_check_cron.py",
     ):
         imports = _imports(DIRECT_DIR / name)
-        assert "direct.blueprint" not in imports, name
+        assert "direct.create.blueprint" not in imports, name
         assert "direct.main" not in imports, name
 
 
@@ -46,7 +46,7 @@ def test_runtime_has_no_route_registration_or_blueprint_object():
 
 
 def test_blueprint_is_a_thin_composition_root():
-    path = DIRECT_DIR / "blueprint.py"
+    path = DIRECT_DIR / "create/blueprint.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     functions = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
     assert len(path.read_text(encoding="utf-8").splitlines()) < 500
@@ -58,7 +58,7 @@ def test_worker_and_copy_import_without_loading_blueprint():
 import sys
 import direct.copy_main
 import direct.worker_main
-assert 'direct.blueprint' not in sys.modules
+assert 'direct.create.blueprint' not in sys.modules
 assert 'direct.main' not in sys.modules
 """
     subprocess.run(

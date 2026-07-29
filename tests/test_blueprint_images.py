@@ -1,4 +1,4 @@
-from direct import blueprint
+from direct.create import blueprint
 
 
 def _patch_image_sources(monkeypatch, *, manual, slepok, explicit):

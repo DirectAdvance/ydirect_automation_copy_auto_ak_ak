@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from .promo import PromoClient
+from ..promo import PromoClient
 
 
 PROMO_FIELDS = ["Id", "Type", "Name", "Description", "Amount", "AmountPrefix", "AmountUnit", "Promocode"]

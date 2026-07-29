@@ -33,7 +33,7 @@ def create_set_pack_gap_note(body: dict[str, Any]) -> str:
     if not slepok or not site_type:
         return ""
     try:
-        from . import kontent_pack as kp
+        from .. import kontent_pack as kp
     except Exception:  # noqa: BLE001
         return ""
 

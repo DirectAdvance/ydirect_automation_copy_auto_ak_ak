@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re as _re
 
-from .text_norm import _trim_clean
-from .uac_verifier import UAC_IMAGES_MIN as _UAC_IMAGES_MIN
+from ..text_norm import _trim_clean
+from ..uac_verifier import UAC_IMAGES_MIN as _UAC_IMAGES_MIN
 
 _CT_FROM_NAME_RE = _re.compile(r"_ct(\d{4})(?:_|\b)", _re.I)
 
@@ -36,7 +36,7 @@ def _create_set_live_verification(login: str, results: list, *, agency: str = ""
         token, _ag = _token_for_login(_login, _agency, _direct_tokens())
         return token
 
-    from .campaign_result import created_campaigns as _created_campaigns
+    from ..campaign_result import created_campaigns as _created_campaigns
     _created = _created_campaigns(results or [])
     # Сужаем Grid read-back до кампаний ЭТОГО набора: primary-ключ — numeric id (устойчив
     # к переименованию, в т.ч. UAC tp6/tp7). Name-fallback — только для ok-результатов
@@ -261,9 +261,9 @@ def _campaign_images_repair(login: str, campaign_id: int, ctx: dict) -> dict:
     3. Для каждого ct: _creative_images_for_ct → пути → _cached_upload_image → imageHash
     4. _grid_update_adaptive_ads(RMW) проставляет imageHashes не трогая titles/bodies/adPrice
     """
-    from . import grid_finalize as _gf
-    from . import campaign as _cmc
-    from .repair import repair_executor as _rex
+    from .. import grid_finalize as _gf
+    from .. import campaign as _cmc
+    from ..repair import repair_executor as _rex
     body = ctx.get("body") or {}
     acc = _account_ctx(login)
     if not acc:
@@ -297,7 +297,7 @@ def _campaign_images_repair(login: str, campaign_id: int, ctx: dict) -> dict:
 
     # Читаем объявления кампании с images{imageHash} и adGroupId
     try:
-        from . import grid_read as _gr
+        from .. import grid_read as _gr
         rc = _gr.GridReadClient(login, cookie=cookie)
         rc._bootstrap_csrf()
         q = ("query AdsRepairImg($login:String!,$inp:GdAdsContainerInput!){"
@@ -504,7 +504,7 @@ def _delete_uac_repair_campaigns(login: str, agency: str, replacements: list[dic
     Товарку (см. account_service.py) → удаляем ТОЛЬКО те, что реально в DRAFT. Классификация ДО
     любого удаления: если хоть одна не DRAFT / небезопасна / Grid недоступен — не удаляем НИЧЕГО.
     """
-    from . import campaign as cmc          # cookie-клиент удаления (был NameError: cmc не импортирован)
+    from .. import campaign as cmc          # cookie-клиент удаления (был NameError: cmc не импортирован)
     rows = []
     failed = []
     if not replacements:

@@ -14,9 +14,9 @@ import ast
 import inspect
 import os
 
-from direct import create_set_feed_builders
-from direct import create_set_text
-from direct import create_set_text_builders
+from direct.create import create_set_feed_builders
+from direct.create import create_set_text
+from direct.create import create_set_text_builders
 
 
 def _caller_kwargs_keys() -> set[str]:

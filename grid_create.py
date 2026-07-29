@@ -19,9 +19,9 @@ from typing import Any
 import requests
 
 from . import campaign as cmc
-from . import stage_timing as _timing   # STAGE_TIMING: пер-стадийный замер (только замер + лог)
+from .create import stage_timing as _timing   # STAGE_TIMING: пер-стадийный замер (только замер + лог)
 from .text_norm import _trim_clean  # используется в add_shopping_content_to_existing (line ~878)
-from .create_set_audiences import group_notes as _audience_notes
+from .create.create_set_audiences import group_notes as _audience_notes
 from .grid_create_payloads import (   # ре-экспорт: gc.build_ad и др. остаются доступны для внешних импортёров
     _PLATFORMS_OFF, build_unified_campaign, build_adgroup,
     _campaign_minus_kw, _safe_old_price,
@@ -1311,7 +1311,7 @@ def add_shopping_content_to_existing(login: str, *, campaign_id: int, groups: li
                     conds.append({"field": "collectionId", "operator": "EQUALS_ANY",
                                   "stringValue": json.dumps([str(src["collection_id"])], ensure_ascii=False)})
                 try:                                     # глобальные минус-марки (фид): производитель/модель НЕ содержит
-                    from . import create_set_feeds as _csf
+                    from .create import create_set_feeds as _csf
                     # per-feed поля: yandex.xml = mark_id/folder_id, YML = vendor/model — дефолт 'vendor'/'model'
                     # на AUTO_RU-фиде 'vendor'/'model' давал UNKNOWN_FIELD и фильтр не вставал (ревью 03.07)
                     _bf = _csf._resolve_feed_field(login, fid, "brand") or "vendor"

@@ -1,5 +1,5 @@
 """Tests for job-status gate: has_issues breakdown and terminal_status_for_job."""
-from direct.create_job_status import (
+from direct.create.create_job_status import (
     annotate_job_issues,
     compute_job_issues_breakdown,
     has_verification_data,
