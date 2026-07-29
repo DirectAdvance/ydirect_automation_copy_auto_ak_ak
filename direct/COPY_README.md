@@ -3,6 +3,14 @@
 > Навигация: `COPY_INDEX.md` — плотный индекс функций/измерений. `STATE_COPY_OTHER.md` — история
 > инцидентов и осталось. `docs/ARCHITECTURE.md:124` — позиция в слоях пакета. `ERRORS_JOURNAL.md` — root-cause.
 
+> 📦 **Свежая версия сервиса всегда лежит в GitHub:**
+> **https://github.com/DirectAdvance/ydirect_automation_copy_auto_ak_ak** (ветка `main`).
+> Правим ЛОКАЛЬНО в `home/seoadvanced` (репо — зеркало-экспорт, в нём не править) — и **любую
+> локальную правку сразу отправляем в git**:
+> `cd home/seoadvanced/direct && python3 tools/copy_service_git.py export` (commit + push зоны copy).
+> Правка, не уехавшая в репозиторий, считается незавершённой: у следующей сессии/агента свежесть
+> сверяется по этому репо.
+
 ---
 
 ## Что делает сервис

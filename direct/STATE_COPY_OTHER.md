@@ -1,5 +1,10 @@
 # STATE — вкладка «Прочие сферы» сервиса копирования (/direct/automation/copy)
 
+> 📦 **Свежая версия сервиса всегда лежит в GitHub:**
+> **https://github.com/DirectAdvance/ydirect_automation_copy_auto_ak_ak** (ветка `main`).
+> Правим локально в `home/seoadvanced`, репо — зеркало-экспорт. **Любая локальная правка сразу
+> отправляется в git:** `python3 tools/copy_service_git.py export` (commit + push зоны copy).
+
 Сессии 2026-07-16 → 2026-07-17.
 
 ## ✅ РЕЗУЛЬТАТ: копия 1:1 достигнута ФАКТОМ (проверено v5 API + Grid)

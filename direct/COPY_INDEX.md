@@ -3,6 +3,11 @@
 > Навигационный индекс. Механика — в `COPY_README.md`. Грабли/инциденты — в `STATE_COPY_OTHER.md`.
 > Смежные доки: `docs/ARCHITECTURE.md` (слои всего пакета), `README.md` (create-flow), `ERRORS_JOURNAL.md`.
 
+> 📦 **Свежая версия сервиса всегда лежит в GitHub:**
+> **https://github.com/DirectAdvance/ydirect_automation_copy_auto_ak_ak** (ветка `main`).
+> Правим локально в `home/seoadvanced`, репо — зеркало-экспорт. **Любая локальная правка сразу
+> отправляется в git:** `python3 tools/copy_service_git.py export` (commit + push зоны copy).
+
 ---
 
 ## Точки входа
