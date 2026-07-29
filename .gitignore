@@ -79,6 +79,9 @@ slepki/_backup_*/
 slepki/_proposed_*
 
 # рантайм-состояние и кэши: пересоздаются, в гите только шумят
+.deploy_version.json
+deploy/.mlx_watchdog_state.json
+tools/.tone_watcher_cursor
 direct.db
 ct_segments_cache.json
 donor_tp4_models_cache.json

@@ -87,6 +87,26 @@
 
 Код на Mac → Mutagen → LXC101 `/opt/scripts/home/seoadvanced/direct/`. Сервис `direct-create.service` (:5020) + `direct-create-worker.service`.
 
+## 🔐 Git-guard для copy-сервиса / Agent Board
+
+Источник правды для правок **только copy-сервиса** (`/direct/automation/copy` и API-вкладка
+`/direct/automation/content?section=copy`) — nested git `home/seoadvanced/direct/.git`, рабочая
+ветка `ydirect_automation_copy_auto_ak_ak`. Остальные части Direct (`content`, `create`, `slepki`,
+accounts и т.д.) в этот git-контракт не включать.
+
+Перед любой правкой copy-файлов агент или локальная сессия запускает:
+
+`python3 tools/direct_git_guard.py --branch ydirect_automation_copy_auto_ak_ak preflight --scope copy`
+
+Если guard пишет `BLOCKED` — не править stale/dirty файлы; сначала подтянуть/разобрать изменения.
+После проверенной правки: commit **только copy-scope файлов** + push в
+`origin ydirect_automation_copy_auto_ak_ak`, затем deploy на LXC101 и marker:
+
+`python3 tools/direct_git_guard.py --branch ydirect_automation_copy_auto_ak_ak write-marker --file <file> --service <unit>`
+
+В `STATE.md` фиксировать commit hash, время, services и факт Mac↔LXC sha/marker. Дата/mtime —
+только вспомогательная подсказка; канон свежести — commit hash + `git fetch` + sha целевых файлов.
+
 **Правки слепков рестартуют СВОИ юниты, не `direct-create`:** `slepki_editor.py` / `routes_slepki_edit.py` / `slepki_main.py` / `slepki_ui.js` → `systemctl restart direct-slepki.service` (:5023); edit-джобы применяет `direct-slepki-worker.service` → его тоже. Одной командой:
 `ssh proxmox-ts "pct exec 101 -- systemctl restart direct-slepki.service direct-slepki-worker.service"`.
 

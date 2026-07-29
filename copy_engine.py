@@ -885,11 +885,13 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             else:
                 region_id_list = [int(tgt_region_id)] if tgt_region_id else [225]
             target_href = _copy_target_href(None, "", target_domain)
+            uac_target_r_code = _copy_target_region_code(target_city, target_region) if mode != "other" else ""
             _copy_job_log(job_id, f"uac copy: {len(selected_uac_rows)} → {target_login} (feed={target_feed_id or '—'})")
             uac_copy = _copy_uac_campaigns(
                 source_login, target_login, target_agency or "", selected_uac_rows, body,
                 target_href=target_href, region_ids=region_id_list, counter_id=counter_id,
                 goal_id=goal_id, target_feed_id=target_feed_id, feed_map=feed_map_valid,
+                geo_pairs=rewrite_meta.get("pairs") or [], target_r_code=uac_target_r_code,
             )
             body["_copy_uac_results"] = uac_copy.get("results") or []
             if uac_copy.get("errors"):

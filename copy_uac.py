@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 import base64
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from . import campaign as cmc
@@ -117,6 +118,34 @@ def _copy_uac_geo_guard(name: str, text_fields: list[str], geo_pairs: list[tuple
     return errors
 
 
+def _copy_uac_create_live_guard(source_detail: dict, target_detail: dict, spec) -> list[str]:
+    """Verify what UAC actually persisted after create, not only the pre-create spec."""
+    errors: list[str] = []
+    target_name = str(target_detail.get("display_name") or target_detail.get("name") or "").strip()
+    expected_name = str(getattr(spec, "display_name", "") or "").strip()
+    if expected_name and target_name != expected_name:
+        errors.append(f"display_name mismatch: {target_name!r} != {expected_name!r}")
+
+    target_href = str(target_detail.get("href") or "").strip()
+    expected_href = str(getattr(spec, "href", "") or "").strip()
+    if expected_href and target_href != expected_href:
+        errors.append(f"href mismatch: {target_href!r} != {expected_href!r}")
+
+    for key in ("titles", "texts", "keywords"):
+        expected = list(getattr(spec, key, None) or [])
+        if not expected:
+            continue
+        actual = _copy_uac_strings(target_detail, key, limit=max(200, len(expected)))
+        if actual != expected:
+            errors.append(f"{key} mismatch")
+
+    source_hashes = _copy_uac_image_hashes(source_detail)
+    target_hashes = _copy_uac_image_hashes(target_detail)
+    if source_hashes and getattr(spec, "content_ids", None) and target_hashes != source_hashes:
+        errors.append("image_hashes mismatch")
+    return errors
+
+
 def _copy_uac_media_urls(row: dict, *, want: str) -> list[str]:
     """Find reusable media URLs in unstable UAC detail payloads."""
     rx = re.compile(r"https?://[^\s\"'<>]+", re.I)
@@ -211,6 +240,28 @@ def _copy_uac_campaign_href(row: dict, *, fallback_href: str, source_domain: str
     return copied or fallback_href
 
 
+def _copy_uac_is_video_content(item: dict) -> bool:
+    if not isinstance(item, dict):
+        return False
+    type_text = " ".join(
+        str(item.get(k) or "").strip().lower()
+        for k in ("type", "content_type", "contentType", "media_type", "mediaType")
+    )
+    if "video" in type_text:
+        return True
+    meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+    if meta.get("creative_id") or meta.get("video_meta_id"):
+        return True
+    vast = str(meta.get("vast") or "")
+    if "<vast" in vast.lower() or "video/mp4" in vast.lower():
+        return True
+    for key in ("source_url", "sourceUrl", "original_url", "originalUrl", "download_url", "url", "thumb"):
+        url = str(item.get(key) or "").strip().lower().split("?", 1)[0]
+        if url.endswith((".mp4", ".mov", ".webm")):
+            return True
+    return False
+
+
 def _copy_uac_content_ids(row: dict) -> list[str]:
     """Source UAC content ids that are safe to reuse in target create payload.
 
@@ -222,7 +273,7 @@ def _copy_uac_content_ids(row: dict) -> list[str]:
     for item in (row.get("contents") or []):
         if not isinstance(item, dict):
             continue
-        if "video" in str(item.get("type") or item.get("content_type") or "").strip().lower():
+        if _copy_uac_is_video_content(item):
             continue
         cid = str(item.get("id") or "").strip()
         if cid and cid not in ids:
@@ -234,6 +285,8 @@ def _copy_uac_image_hashes(row: dict) -> list[str]:
     hashes: list[str] = []
     for item in (row.get("contents") or []):
         if not isinstance(item, dict):
+            continue
+        if _copy_uac_is_video_content(item):
             continue
         if str(item.get("type") or "").strip().lower() != "image":
             continue
@@ -632,6 +685,21 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
             # Отдельный UAC client на worker: не шарим session/csrf между потоками.
             client = cmc.build_client(target_login, account=(target_agency or None))
             cid = client.create_master_campaign(spec, launch=False)
+            try:
+                from .uac_read import _unwrap as _uac_unwrap
+            except Exception:  # noqa: BLE001
+                _uac_unwrap = lambda data: (data.get("result") if isinstance(data, dict) else {}) or data or {}
+            live_errors: list[str] = []
+            for attempt in range(3):
+                live = _uac_unwrap(client._request(
+                    "GET", f"/campaign/{int(cid)}", step=f"uac-copy-live-guard:{int(cid)}"))
+                live_errors = _copy_uac_create_live_guard(details_by_src.get(src_id) or {}, live, spec)
+                if not live_errors:
+                    break
+                if attempt < 2:
+                    time.sleep(2.0)
+            if live_errors:
+                raise RuntimeError("uac live guard: " + "; ".join(live_errors[:3]))
             return cidx, {
                 "ok": True,
                 "id": int(cid),

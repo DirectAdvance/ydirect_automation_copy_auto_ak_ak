@@ -691,6 +691,120 @@ def test_copy_uac_extracts_source_content_ids_and_image_hashes_in_order():
     assert copy_uac._copy_uac_image_hashes(row) == ["h1", "h3"]
 
 
+def test_copy_uac_rejects_video_extension_content_id_without_type():
+    row = {
+        "contents": [
+            {"id": "image-content-id", "type": "image", "direct_image_hash": "h1"},
+            {
+                "id": "video-content-id",
+                "meta": {
+                    "creative_id": 1163658513,
+                    "vast": '<VAST><MediaFile type="video/mp4">https://cdn.example.ru/car.mp4</MediaFile></VAST>',
+                },
+            },
+        ]
+    }
+
+    assert copy_uac._copy_uac_content_ids(row) == ["image-content-id"]
+    assert copy_uac._copy_uac_image_hashes(row) == ["h1"]
+    assert copy_uac._copy_uac_media_urls(row, want="video") == ["https://cdn.example.ru/car.mp4"]
+
+
+def test_copy_uac_geo_strings_and_sitelinks_use_target_geo():
+    pairs = [
+        ("Краснодарский край", "Свердловская область"),
+        ("Краснодаре", "Екатеринбурге"),
+        ("Краснодар", "Екатеринбург"),
+    ]
+
+    assert copy_uac._copy_uac_geo_strings(["geely monjaro краснодар"], pairs) == [
+        "geely monjaro екатеринбург",
+    ]
+    assert copy_uac._copy_uac_sitelinks(
+        [{"title": "Дилер в Краснодаре", "description": "Краснодарский край", "href": "https://src.ru/quiz"}],
+        source_domain="src.ru",
+        target_domain="dst.ru",
+        geo_pairs=pairs,
+    ) == [{
+        "title": "Дилер в Екатеринбурге",
+        "description": "Свердловская область",
+        "href": "https://dst.ru/quiz",
+    }]
+
+
+def test_copy_uac_geo_guard_rejects_source_region_residuals():
+    pairs = [("Краснодарский край", "Свердловская область"), ("Краснодар", "Екатеринбург")]
+
+    errors = copy_uac._copy_uac_geo_guard(
+        "tp6_cpc_site_ct0097_aon_n000_r0088_ct001_ag011_g00",
+        ["geely monjaro краснодар"],
+        pairs,
+        "r0121",
+    )
+
+    assert "r0088" in errors[0]
+    assert "Краснодар" in errors[1]
+
+
+def test_copy_uac_geo_guard_accepts_target_region_and_r_code():
+    pairs = [("Краснодарский край", "Свердловская область"), ("Краснодар", "Екатеринбург")]
+    name = "tp6_cpc_site_ct0097_aon_n000_r0121_ct001_ag011_g00"
+
+    assert copy_uac._copy_uac_geo_guard(name, ["geely monjaro Екатеринбург"], pairs, "r0121") == []
+
+
+def test_copy_uac_create_live_guard_accepts_persisted_target_spec():
+    spec = SimpleNamespace(
+        display_name="tp6_r0121",
+        href="https://target.ru/quiz",
+        titles=["Title"],
+        texts=["Text"],
+        keywords=["geely екатеринбург"],
+        content_ids=["content-1"],
+    )
+
+    assert copy_uac._copy_uac_create_live_guard(
+        {"contents": [{"id": "content-1", "type": "image", "direct_image_hash": "hash-1"}]},
+        {
+            "display_name": "tp6_r0121",
+            "href": "https://target.ru/quiz",
+            "titles": ["Title"],
+            "texts": ["Text"],
+            "keywords": ["geely екатеринбург"],
+            "contents": [{"id": "content-1", "type": "image", "direct_image_hash": "hash-1"}],
+        },
+        spec,
+    ) == []
+
+
+def test_copy_uac_create_live_guard_rejects_persisted_mismatch():
+    spec = SimpleNamespace(
+        display_name="tp6_r0121",
+        href="https://target.ru",
+        titles=["Title"],
+        texts=["Text"],
+        keywords=["geely екатеринбург"],
+        content_ids=["content-1"],
+    )
+
+    errors = copy_uac._copy_uac_create_live_guard(
+        {"contents": [{"id": "content-1", "type": "image", "direct_image_hash": "hash-1"}]},
+        {
+            "display_name": "tp6_r0088",
+            "href": "https://target.ru/auto",
+            "titles": ["Title"],
+            "texts": ["Text"],
+            "keywords": ["geely екатеринбург"],
+            "contents": [{"id": "content-1", "type": "image", "direct_image_hash": "hash-2"}],
+        },
+        spec,
+    )
+
+    assert "display_name mismatch" in errors[0]
+    assert "href mismatch" in errors[1]
+    assert "image_hashes mismatch" in errors[2]
+
+
 def test_uac_client_uploads_video_urls_when_image_content_ids_are_preseeded(monkeypatch):
     from direct import uac_client
 
