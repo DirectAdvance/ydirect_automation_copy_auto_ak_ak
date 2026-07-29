@@ -88,3 +88,4 @@ donor_tp4_models_cache.json
 # артефакты прогона slepok-qa (в results лежат логины аккаунтов Директа)
 slepok_qa_results.json
 slepok_qa_report.md
+var/
