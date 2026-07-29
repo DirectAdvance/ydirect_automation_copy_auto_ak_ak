@@ -16,18 +16,24 @@ def register_reference_routes(
     load_audiences: Callable[[], list[dict]],
     victory_conn: Callable,
     ag_part1_map: Callable[[], dict],
-    ui_structure_payload: Callable[[], dict],
+    ui_structure_payload: Callable[..., dict],
 ) -> None:
     @bp.route("/api/ui_structure")
     @access
     def api_ui_structure():
         """Heavy slepok/coder maps, fetched lazily by create/structure panels.
 
+        Поддерживает ?light=1&selected=<key> — light-срез: полный слепок для selected,
+        shell-записи для остальных (≈1.5 МБ вместо 17.5 МБ). Без light=1 — полная структура.
+
         no-cache + ETag: браузер обязан ревалидировать, но пока структура не менялась
         получает дешёвый 304 вместо мегабайтов. Без этого ответ кэшировался эвристически
         и вкладка показывала структуру многочасовой давности.
         """
-        payload = ui_structure_payload()
+        light_arg = (request.args.get("light") or "").strip()
+        selected = (request.args.get("selected") or "").strip()
+        light = light_arg == "1"
+        payload = ui_structure_payload(selected_slepok=selected, light=light)
         resp = jsonify(payload)
         sig = payload.get("sig")
         if sig:
@@ -75,6 +81,7 @@ def register_reference_routes(
         conn = victory_conn()
         try:
             cur = conn.cursor()
+            # st берётся из dropdown базовых типов — в таблице только базовые типы, split-суффиксов нет.
             cur.execute(
                 "SELECT kind, content FROM public.direct_ad_templates "
                 "WHERE enabled AND site_type=%s ORDER BY kind, id",
