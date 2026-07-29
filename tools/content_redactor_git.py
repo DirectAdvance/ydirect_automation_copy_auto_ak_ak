@@ -36,7 +36,7 @@ INCLUDE_GLOBS = (
     # Service documentation and shared notes needed by agents touching this scope.
     "direct/CLAUDE.md",
     "direct/CONTENT_EDITOR*.md",
-    "direct/UI_MAP.md",
+    "direct/docs/UI_MAP.md",
     "direct/INDEX.md",
     "direct/STATE.md",
     "direct/ERRORS_JOURNAL.md",
