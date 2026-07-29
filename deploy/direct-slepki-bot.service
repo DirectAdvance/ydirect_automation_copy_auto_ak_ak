@@ -1,0 +1,21 @@
+[Unit]
+Description=SEOAdvanced Direct — Telegram-бот «Слепки Мастер» (приём заданий на слепки)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scripts/home/seoadvanced
+Environment=DIRECT_ROLE=web
+ExecStart=/root/venv/bin/python3 -m direct.slepki_bot
+Restart=always
+RestartSec=10
+
+# Отдельный юнит, а не часть direct-slepki.service (решение Семёна 2026-07-29): падение бота
+# не должно ронять редактор слепков, и наоборот. Порт наружу не нужен — long polling.
+# api.telegram.org с LXC 101 напрямую НЕдоступен → бот ходит через SOCKS-цепочку из .secret
+# (tg_proxy_variants), поэтому юниту нужен только доступ к локальным портам Xray.
+# DIRECT_ROLE=web — на всякий случай: этот процесс не должен поднимать воркеров создания РК.
+
+[Install]
+WantedBy=multi-user.target
