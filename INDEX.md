@@ -3,17 +3,15 @@
 > Сгенерировано `scripts/gen_project_index.py`. Руками не править — перегенерировать.
 > Назначение: найти нужный файл БЕЗ обхода дерева грепом.
 
-Файлов в индексе: **355**
+Файлов в индексе: **360**
 
 ## корень проекта
 
 | файл | КБ | назначение | что внутри |
 |---|---|---|---|
-| `ARCHITECTURE.md` | 41 | ARCHITECTURE — карта кластеров и связности `direct/` |  |
-| `ARCHITECTURE_AUDIT_2026-07-12.md` | 4 | Direct automation: audit of the current split (2026-07-12) |  |
 | `BLUEPRINT_SPLIT_PLAN.md` | 4 | План распила blueprint.py (8522 строки, 398 def/class) |  |
 | `CAMPAIGN_INVARIANTS.md` | 14 | Инварианты создания кампаний (нейродиректолог) |  |
-| `CLAUDE.md` | 11 | CLAUDE.md — Нейродиректолог (home/seoadvanced/direct) |  |
+| `CLAUDE.md` | 13 | CLAUDE.md — Нейродиректолог (home/seoadvanced/direct) |  |
 | `CODER.md` | 50 | Кодер — унифицированное имя кампании/группы |  |
 | `CONTENT_EDITOR.md` | 20 | Content Editor Service |  |
 | `CONTENT_EDITOR_COOKIE_GRID.md` | 4 | Content Editor Cookie/Grid Plan |  |
@@ -22,34 +20,23 @@
 | `COPY_README.md` | 16 | Сервис копирования кампаний Яндекс.Директа |  |
 | `CREATION_PROTECTED_RULES.md` | 10 | Защищённые правила создания РК (спец-логика «Структура слепков» → «Создание РК») |  |
 | `DOD.md` | 187 | DoD — Definition of Done (создание РК нейродиректолога) |  |
-| `DOD_ARCHIVE.md` | 12 | DOD_ARCHIVE — технические детали (перенесены из DOD.md 2026-07-16) |  |
-| `ERRORS_JOURNAL.md` | 983 | 📒 Журнал ошибок создания кампаний — нейродиректолог |  |
-| `ERRORS_JOURNAL_ARCHIVE.md` | 16 | ERRORS_JOURNAL_ARCHIVE — старые записи (переведены из ERRORS_JOURNAL.md 2026-07-16) |  |
-| `EXTRACTION_PLAN.md` | 18 | EXTRACTION_PLAN.md — вынос `/direct/automation` в отдельный сервис |  |
-| `INDEX.md` | 56 | INDEX — direct |  |
+| `ERRORS_JOURNAL.md` | 988 | 📒 Журнал ошибок создания кампаний — нейродиректолог |  |
+| `INDEX.md` | 57 | INDEX — direct |  |
 | `MEMORY.md` | 117 | ⚡ Дубль структуры = ТОЛЬКО внутри одного слепка И одного типа сайта (правило Семёна 2026-07-29) |  |
 | `POSEVY_AUTORULES_PLAN.md` | 11 | Оптимизация уже созданных посевов (tp8/tp9/tp10) в системе автоправил — план |  |
 | `README.md` | 60 | Автоматизация Директа — `direct/` |  |
-| `README_ARCHIVE.md` | 8 | README_ARCHIVE — исторические разделы (перенесены из README.md 2026-07-16) |  |
 | `SLEPKI_AUDIT_2026-07-12.md` | 4 | Slepki audit (2026-07-12) |  |
 | `SLEPKI_BOT_PLAN.md` | 9 | Бот «Слепки Мастер» — принятые решения (2026-07-29) |  |
 | `SLEPKI_REBUILD_PLAN.md` | 22 | Слепки — изменения 2026-07-14 + основа плана пересбора/дополнения |  |
-| `STATE.md` | 216 | Нейродиректолог — Состояние |  |
-| `STATE_ARCHIVE.md` | 929 | Нейродиректолог — STATE.md архив (сессии старше 3 дней) |  |
+| `STATE.md` | 229 | Нейродиректолог — Состояние |  |
 | `STATE_COPY_OTHER.md` | 31 | STATE — вкладка «Прочие сферы» сервиса копирования (/direct/automation/copy) |  |
 | `STRUCTURE_EXCLUSIONS.md` | 25 | STRUCTURE_EXCLUSIONS — реестр НАМЕРЕННЫХ решений по структуре слепков |  |
-| `UI_MAP.md` | 13 | UI-карта: seoadvanced.ru/direct/automation |  |
-| `_PROPOSAL_camp_names_20260729.md` | 8 | Имена кампаний tp2–tp5 пака авто — PROPOSAL |  |
-| `_PROPOSAL_dupes_20260729.md` | 3 | Схлопывание дублей «марка ⊃ марка+модель» — PROPOSAL |  |
-| `_PROPOSAL_monobrand_split_20260729.md` | 7 | Разделение типа сайта «Монобренд» на «Монобренд · <Марка>» |  |
-| `_PROPOSAL_samect_dupes_20260729.md` | 6 | Дубли «один ct внутри одной кампании» — PROPOSAL |  |
-| `_PROPOSAL_slepki_20260729.md` | 29 | Proposal: группы слепков на решение Семёна |  |
+| `_PLAN_restructure_20260729.md` | 19 | План реструктуризации `home/seoadvanced/direct` |  |
 | `__init__.py` | 1 |  |  |
-| `_proposed_piterkina_delete.md` | 27 | PROPOSAL — правки слепка `piterkina` (НЕ применено) |  |
 | `account_filters.py` | 1 | Единый источник WHERE-условий для выборки Авто-аккаунтов из local_gsheet_sites. | base_account_where |
 | `account_service.py` | 54 | Account-facing Direct application service without blueprint imports. | configure |
 | `accounts_main.py` | 7 | Standalone Flask entrypoint for the read-only Direct dashboards | create_app |
-| `agent_board_bridge.py` | 16 | Bridge failed Direct content jobs to Agent Board. | ensure_content_job_agent_column, ensure_price_job_agent_column, ensure_copy_job_agent_columns, notify_content_ |
+| `agent_board_bridge.py` | 17 | Bridge failed Direct content jobs to Agent Board. | ensure_content_job_agent_column, ensure_price_job_agent_column, ensure_copy_job_agent_columns, notify_content_ |
 | `ai_agents.py` | 182 | ИИ-агенты «слепки директологов» для генерации контента Я.Директа. | eff_len, desc_limit, next_promo_type, is_bu_site_type, strip_used_words, alien_signature, has_forbidden_claim, |
 | `ai_agents_data.py` | 93 | Данные-литералы, вынесенные из ai_agents.py (шаг 1 разукрупнения, механический перенос). |  |
 | `ai_content.py` | 52 | Генерация AI-контента объявлений + слепок-контент (кэш + БД) — вынесено из blueprint.py. | configure, generate_post_ad_content |
@@ -76,44 +63,10 @@
 | `content_price_check_routes.py` | 14 | Роуты «Сверки цен» редактора контента Директа (admin-only). | register_price_check_routes |
 | `content_quality.py` | 15 | Единый контур качества контента: генерация → проверка → регенерация (тот же LLM | retry_regen, brand_head_ok, regen_titles, judge_utp, audit_and_regen_utp |
 | `content_renames_routes.py` | 15 | Роуты вкладки «Смена названий» редактора контента Директа. | run_rename, register_rename_routes |
-| `content_replace_routes.py` | 45 | Content-editor replace helpers and routes. | register_replace_routes |
+| `content_replace_routes.py` | 47 | Content-editor replace helpers and routes. | register_replace_routes |
 | `content_sitelinks_routes.py` | 50 | Content-editor sitelink helpers and routes. | register_sitelinks_routes |
 | `content_worker.py` | 11 | Воркер Postgres-очереди редактора контента (direct-content-worker.service). | main |
-| `copy_api.py` | 30 | Программный API сервиса копирования кампаний Директа. | register_copy_api |
-| `copy_asset_steps.py` | 25 | Asset/settings шаги copy-постпроцесса: callouts, sitelinks, promos, bidmods, minus-places. | source_has_network, pull_source_campaign_assets, step_age_bidmods, step_disabled_places, step_attach_callouts, |
-| `copy_cleanup.py` | 11 | Инфо о кампаниях цели и очистка черновиков перед копированием. | configure |
-| `copy_context.py` | 1 | Общий контекст шагов copy-постпроцесса. | CopyCtx |
-| `copy_creative_steps.py` | 14 | Creative/video шаги copy-постпроцесса. | step_adaptive_creatives, step_videos |
-| `copy_engine.py` | 57 | Копирование кампаний Яндекс.Директа 1:1 (обёртки-оркестрация поверх внешнего движка | configure |
-| `copy_feed_upload.py` | 7 | Загрузка фида в целевой аккаунт Директа через feeds.add (v5). | upload_feed_to_target |
-| `copy_feeds.py` | 6 | Фиды копирования: preview, target feed id, валидация feed-map. | configure |
-| `copy_geo.py` | 15 | Гео-слой копирования: гео-замены, ремап r-кода кодера, нормализация имён/href. | configure |
-| `copy_geo_morph.py` | 14 | copy_geo_morph — морфологически корректная гео-замена для копировщика РК (ФАЗА 3a, п.6). | paradigm_for, build_geo_pairs, apply_replacements, scan_residual |
-| `copy_grid_read.py` | 4 | Чтение выбранных Grid-кампаний источника. | configure |
-| `copy_grid_steps.py` | 19 | Grid-докрутка скопированных кампаний: callouts-мост, шаги, видео-резолвер. | configure |
-| `copy_grid_unified.py` | 33 | Grid-only UnifiedCampaign copy path extracted from copy_engine. | configure |
-| `copy_images.py` | 10 | Ремап картинок между кабинетами (v501 + Grid хэши). | configure |
-| `copy_jobs.py` | 3 | Copy-джобы: in-memory состояние очереди копирования + зеркало в create-карточку. | configure |
-| `copy_keyword_steps.py` | 13 | Шаг дозаливки ключевых фраз copy-постпроцесса. | step_keywords |
 | `copy_main.py` | 14 | Standalone Flask entrypoint for the Direct campaign-copy service only. | create_app |
-| `copy_metrika.py` | 6 | Подстановка счётчика/цели Метрики в стратегию копируемых кампаний. | configure |
-| `copy_other.py` | 23 | Вспомогательные функции вкладки «Прочие сферы» (режим mode='other') сервиса copy_engine. |  |
-| `copy_postprocess.py` | 46 | Cookie/Grid postprocess for Direct copy jobs. | configure |
-| `copy_price_steps.py` | 10 | Шаг переноса adPrice для copy-постпроцесса. | step_prices |
-| `copy_request.py` | 5 | Shared request validation for Direct copy UI/API routes. | parse_campaign_ids, parse_feed_map, parse_image_hashes, validate_api_campaign_ids, default_geo_mode, validate_ |
-| `copy_settings_steps.py` | 22 | Сверка и исправление настроек кампаний в copy-постпроцессе. | step_fix_organic_placement, step_fix_search_campaign_invariants, step_settings_diff |
-| `copy_snapshot.py` | 21 | Файловый слой поверх JSON-снапшота кабинета (0 DI): фильтр/переписывание/preflight. |  |
-| `copy_step_utils.py` | 2 | Общие мелкие helper'ы для copy_steps.*. |  |
-| `copy_steps.py` | 1 | Фасад шагов copy-постпроцесса. Реализация разнесена по copy_*_steps.py. |  |
-| `copy_uac.py` | 33 | UAC (Мастер кампаний / Товарные) копирование: чтение и сборка. | configure |
-| `copy_verify.py` | 7 | copy_verify facade. Implementation is split into source/target/diff/geo/repair modules. | run_copy_verification |
-| `copy_verify_diff.py` | 25 | Profile diff logic for copy verification. | diff_profiles |
-| `copy_verify_geo.py` | 10 | Geo/keyword consistency checks for copy verification. | check_geo_kw_consistency |
-| `copy_verify_repair.py` | 26 | Repair facade and repair helpers for copy verification. | run_copy_repair |
-| `copy_verify_source.py` | 15 | Source profile builder for copy verification. | build_source_profile |
-| `copy_verify_state.py` | 1 | DI state for copy verification modules. | configure |
-| `copy_verify_target.py` | 30 | Target profile builder for copy verification. | build_target_profile |
-| `copy_verify_utils.py` | 8 | Shared helpers for copy_verify modules. |  |
 | `create_content.py` | 72 | Ядро генерации контента ОДНОЙ РК (M3 fan-out 14B×3 + 72B-патч). | run_gen_campaign_content |
 | `create_job_status.py` | 9 | Terminal status decisions for create queue jobs. | create_failed_error, terminal_status_for_job, terminal_status_for_parent_failed, has_verification_data, comput |
 | `create_set_account.py` | 3 | Account/template/region preparation for Direct create_set. | prepare_create_set_account, validate_create_set_content |
@@ -168,7 +121,7 @@
 | `grid_read.py` | 45 | Read-only Grid helpers for Direct live verification. | GridReadError, GridReadClient |
 | `job_repository.py` | 32 | PostgreSQL persistence for create/deferred/repair jobs. | configure |
 | `kontent_pack.py` | 108 | Чтение контент-пака нейродиректолога с M3 (sshfs-монт /opt/neuro_kontent). | fs_call_bounded, read_bytes_bounded, isfile_bounded, realpath_bounded, listdir_bounded, isdir_bounded, refresh |
-| `link_check.py` | 15 | HTTP-проверка URL объявления с фолбэком на родительский путь при 404. | strip_quiz_url, resolve_or_fallback_url, resolve_urls_batch |
+| `link_check.py` | 20 | HTTP-проверка URL объявления с фолбэком на родительский путь при 404. | strip_quiz_url, resolve_or_fallback_url, resolve_urls_batch, url_status, url_status_batch |
 | `live_verifier.py` | 19 | Read-only live verification for Direct create_set jobs. | verify_live_create_set |
 | `llm_providers.py` | 64 | LLM-провайдеры нейродиректолога — вынесено из blueprint.py. | configure, record_llm_failure, record_content_fallback, llm_degrade_stats, log_llm_degrade_summary, check_cont |
 | `local_result_verifier.py` | 5 | Pure checks for local create_set result/build metadata. | verify_local_result |
@@ -183,14 +136,6 @@
 | `promo_gen.py` | 13 | Генерация/валидация промоакций (ИИ-контент в стиле слепка) — вынесено из blueprint.py. | configure |
 | `promotions.py` | 6 | Промоакции (скидки/акции) Я.Директа через приватный grid/api (GraphQL). | PromoClient |
 | `queue_server.py` | 177 | Create-set queue lifecycle, workers, watchdog and deferred repair daemons. | configure |
-| `repair_auto.py` | 35 | Orchestration helpers for post-create repair execution. | execute_next_in_place, execute_safe_post_create, execute_all_in_place, recreate_force_names, build_recreate_qu |
-| `repair_common.py` | 3 | Shared imports, constants, RepairDeps and _unique_positive_ints for repair domain modules. | RepairDeps |
-| `repair_content.py` | 15 | Content-domain repair executors: promo, callouts, rename, text/shopping rebuild. | execute_promo_repair, execute_callouts_repair, execute_rename_repair, execute_content_repair |
-| `repair_executor.py` | 2 | Re-export facade — backward-compat hub for all importers of repair_executor. |  |
-| `repair_gate.py` | 23 | Helpers for create_set repair-gate endpoints. | truthy, dict_from_jsonish, normalize_job_context, build_repair_gate_payload, executable_recreate_items, execut |
-| `repair_keywords.py` | 27 | Keyword-domain repair executors: keyword repair and keywords_wrong_group (shift) fix. | execute_keywords_repair, execute_keywords_wrong_group_repair |
-| `repair_media.py` | 17 | Media-domain repair executors: images, adprice, default_text, campaign invariants, images_forbidden. | execute_images_repair, execute_adprice_repair, execute_default_text_repair, execute_campaign_invariant_repair, |
-| `repair_planner.py` | 24 | Repair planning for Direct post-create verification. | build_repair_plan |
 | `routes_accounts.py` | 8 | Read-only account routes for Direct automation. | register_account_routes |
 | `routes_ai.py` | 12 | AI and promo routes for Direct automation. | register_ai_routes |
 | `routes_autorules.py` | 55 | Autorules page routes + Phase 2 API (overview, goals, balance, sensors). | register_autorules_routes |
@@ -263,6 +208,46 @@
 | `minus.py` | 2 | Сенсор: кампании без минус-фраз / без минусовки на уровне кампании. | run |
 | `url_check.py` | 4 | Сенсор: битые ссылки 404/5xx в объявлениях. | run |
 
+## `copy_service/`
+
+| файл | КБ | назначение | что внутри |
+|---|---|---|---|
+| `__init__.py` | 1 | Пакет копирования кабинетов Яндекс.Директа 1:1 (сервис direct-copy). |  |
+| `copy_api.py` | 30 | Программный API сервиса копирования кампаний Директа. | register_copy_api |
+| `copy_asset_steps.py` | 25 | Asset/settings шаги copy-постпроцесса: callouts, sitelinks, promos, bidmods, minus-places. | source_has_network, pull_source_campaign_assets, step_age_bidmods, step_disabled_places, step_attach_callouts, |
+| `copy_cleanup.py` | 11 | Инфо о кампаниях цели и очистка черновиков перед копированием. | configure |
+| `copy_context.py` | 1 | Общий контекст шагов copy-постпроцесса. | CopyCtx |
+| `copy_creative_steps.py` | 14 | Creative/video шаги copy-постпроцесса. | step_adaptive_creatives, step_videos |
+| `copy_engine.py` | 57 | Копирование кампаний Яндекс.Директа 1:1 (обёртки-оркестрация поверх внешнего движка | configure |
+| `copy_feed_upload.py` | 7 | Загрузка фида в целевой аккаунт Директа через feeds.add (v5). | upload_feed_to_target |
+| `copy_feeds.py` | 6 | Фиды копирования: preview, target feed id, валидация feed-map. | configure |
+| `copy_geo.py` | 15 | Гео-слой копирования: гео-замены, ремап r-кода кодера, нормализация имён/href. | configure |
+| `copy_geo_morph.py` | 14 | copy_geo_morph — морфологически корректная гео-замена для копировщика РК (ФАЗА 3a, п.6). | paradigm_for, build_geo_pairs, apply_replacements, scan_residual |
+| `copy_grid_read.py` | 4 | Чтение выбранных Grid-кампаний источника. | configure |
+| `copy_grid_steps.py` | 19 | Grid-докрутка скопированных кампаний: callouts-мост, шаги, видео-резолвер. | configure |
+| `copy_grid_unified.py` | 33 | Grid-only UnifiedCampaign copy path extracted from copy_engine. | configure |
+| `copy_images.py` | 10 | Ремап картинок между кабинетами (v501 + Grid хэши). | configure |
+| `copy_jobs.py` | 3 | Copy-джобы: in-memory состояние очереди копирования + зеркало в create-карточку. | configure |
+| `copy_keyword_steps.py` | 13 | Шаг дозаливки ключевых фраз copy-постпроцесса. | step_keywords |
+| `copy_metrika.py` | 6 | Подстановка счётчика/цели Метрики в стратегию копируемых кампаний. | configure |
+| `copy_other.py` | 23 | Вспомогательные функции вкладки «Прочие сферы» (режим mode='other') сервиса copy_engine. |  |
+| `copy_postprocess.py` | 46 | Cookie/Grid postprocess for Direct copy jobs. | configure |
+| `copy_price_steps.py` | 10 | Шаг переноса adPrice для copy-постпроцесса. | step_prices |
+| `copy_request.py` | 5 | Shared request validation for Direct copy UI/API routes. | parse_campaign_ids, parse_feed_map, parse_image_hashes, validate_api_campaign_ids, default_geo_mode, validate_ |
+| `copy_settings_steps.py` | 22 | Сверка и исправление настроек кампаний в copy-постпроцессе. | step_fix_organic_placement, step_fix_search_campaign_invariants, step_settings_diff |
+| `copy_snapshot.py` | 21 | Файловый слой поверх JSON-снапшота кабинета (0 DI): фильтр/переписывание/preflight. |  |
+| `copy_step_utils.py` | 2 | Общие мелкие helper'ы для copy_steps.*. |  |
+| `copy_steps.py` | 1 | Фасад шагов copy-постпроцесса. Реализация разнесена по copy_*_steps.py. |  |
+| `copy_uac.py` | 33 | UAC (Мастер кампаний / Товарные) копирование: чтение и сборка. | configure |
+| `copy_verify.py` | 7 | copy_verify facade. Implementation is split into source/target/diff/geo/repair modules. | run_copy_verification |
+| `copy_verify_diff.py` | 25 | Profile diff logic for copy verification. | diff_profiles |
+| `copy_verify_geo.py` | 10 | Geo/keyword consistency checks for copy verification. | check_geo_kw_consistency |
+| `copy_verify_repair.py` | 26 | Repair facade and repair helpers for copy verification. | run_copy_repair |
+| `copy_verify_source.py` | 15 | Source profile builder for copy verification. | build_source_profile |
+| `copy_verify_state.py` | 1 | DI state for copy verification modules. | configure |
+| `copy_verify_target.py` | 30 | Target profile builder for copy verification. | build_target_profile |
+| `copy_verify_utils.py` | 8 | Shared helpers for copy_verify modules. |  |
+
 ## `deploy/`
 
 | файл | КБ | назначение | что внутри |
@@ -285,7 +270,31 @@
 
 | файл | КБ | назначение | что внутри |
 |---|---|---|---|
-| `UI_MAP.md` | 12 | UI-карта: seoadvanced.ru/direct/automation |  |
+| `ARCHITECTURE.md` | 41 | ARCHITECTURE — карта кластеров и связности `direct/` |  |
+| `UI_MAP.md` | 13 | UI-карта: seoadvanced.ru/direct/automation |  |
+
+## `docs/archive/`
+
+| файл | КБ | назначение | что внутри |
+|---|---|---|---|
+| `ARCHITECTURE_AUDIT_2026-07-12.md` | 4 | Direct automation: audit of the current split (2026-07-12) |  |
+| `DOD_ARCHIVE.md` | 12 | DOD_ARCHIVE — технические детали (перенесены из DOD.md 2026-07-16) |  |
+| `ERRORS_JOURNAL_ARCHIVE.md` | 16 | ERRORS_JOURNAL_ARCHIVE — старые записи (переведены из ERRORS_JOURNAL.md 2026-07-16) |  |
+| `EXTRACTION_PLAN.md` | 18 | EXTRACTION_PLAN.md — вынос `/direct/automation` в отдельный сервис |  |
+| `README_ARCHIVE.md` | 8 | README_ARCHIVE — исторические разделы (перенесены из README.md 2026-07-16) |  |
+| `STATE_ARCHIVE.md` | 929 | Нейродиректолог — STATE.md архив (сессии старше 3 дней) |  |
+
+## `docs/proposals/`
+
+| файл | КБ | назначение | что внутри |
+|---|---|---|---|
+| `_PROPOSAL_allfeeds_20260729.md` | 17 | PROPOSAL — массовая правка кампаний с бейджем «все фиды» (2026-07-29) |  |
+| `_PROPOSAL_camp_names_20260729.md` | 8 | Имена кампаний tp2–tp5 пака авто — PROPOSAL |  |
+| `_PROPOSAL_dupes_20260729.md` | 3 | Схлопывание дублей «марка ⊃ марка+модель» — PROPOSAL |  |
+| `_PROPOSAL_monobrand_split_20260729.md` | 7 | Разделение типа сайта «Монобренд» на «Монобренд · <Марка>» |  |
+| `_PROPOSAL_samect_dupes_20260729.md` | 6 | Дубли «один ct внутри одной кампании» — PROPOSAL |  |
+| `_PROPOSAL_slepki_20260729.md` | 29 | Proposal: группы слепков на решение Семёна |  |
+| `_proposed_piterkina_delete.md` | 27 | PROPOSAL — правки слепка `piterkina` (НЕ применено) |  |
 
 ## `reconciler_staging/`
 
@@ -327,6 +336,20 @@
 | `uac_reconciler.py` | 36 | uac_reconciler.py — READ-ONLY reconciler: live UAC/Grid payload → нормализованные staging-позиции. | reconcile_account, normalize_to_positions, build_content_gaps, main |
 | `verify_tp15_pull.py` | 11 | verify_tp15_pull.py — РЕАЛЬНАЯ проба таргетинга tp1..tp5 из кабинетов (READ-ONLY). | pull_account, run |
 | `zubakin.tp67.gaps.md` | 2 | zubakin (Зубакин Алексей) — tp6/tp7 reconciler gaps |  |
+
+## `repair/`
+
+| файл | КБ | назначение | что внутри |
+|---|---|---|---|
+| `__init__.py` | 1 | Пакет ремонта/докрутки созданных кампаний. |  |
+| `repair_auto.py` | 35 | Orchestration helpers for post-create repair execution. | execute_next_in_place, execute_safe_post_create, execute_all_in_place, recreate_force_names, build_recreate_qu |
+| `repair_common.py` | 3 | Shared imports, constants, RepairDeps and _unique_positive_ints for repair domain modules. | RepairDeps |
+| `repair_content.py` | 15 | Content-domain repair executors: promo, callouts, rename, text/shopping rebuild. | execute_promo_repair, execute_callouts_repair, execute_rename_repair, execute_content_repair |
+| `repair_executor.py` | 2 | Re-export facade — backward-compat hub for all importers of repair_executor. |  |
+| `repair_gate.py` | 23 | Helpers for create_set repair-gate endpoints. | truthy, dict_from_jsonish, normalize_job_context, build_repair_gate_payload, executable_recreate_items, execut |
+| `repair_keywords.py` | 27 | Keyword-domain repair executors: keyword repair and keywords_wrong_group (shift) fix. | execute_keywords_repair, execute_keywords_wrong_group_repair |
+| `repair_media.py` | 17 | Media-domain repair executors: images, adprice, default_text, campaign invariants, images_forbidden. | execute_images_repair, execute_adprice_repair, execute_default_text_repair, execute_campaign_invariant_repair, |
+| `repair_planner.py` | 24 | Repair planning for Direct post-create verification. | build_repair_plan |
 
 ## `scratchpad/`
 
@@ -392,10 +415,11 @@
 
 | файл | КБ | назначение | что внутри |
 |---|---|---|---|
+| `test_agent_board_git_context.py` | 1 |  | test_agent_board_direct_git_contract_routes_copy_first, test_agent_board_git_context_visible_in_description_an |
 | `test_architecture_boundaries.py` | 2 | Characterization tests for the Direct modular-monolith boundaries. | test_service_entrypoints_do_not_import_web_composition_root, test_runtime_has_no_route_registration_or_bluepri |
 | `test_blueprint_images.py` | 1 |  | test_non_common_ct_fills_manual_with_selected_slepok, test_non_common_ct_uses_explicit_after_selected_slepok |
 | `test_campaign_cookie_picker.py` | 3 |  | test_pick_cookie_preserves_managing_agency_rights_error, test_pick_cookie_single_explicit_account_preserves_ri |
-| `test_content_ad_href_grid.py` | 6 |  | test_ad_href_textad_uses_grid_rmw_not_v5_update, test_ad_href_responsive_uses_grid_rmw_not_v501_update, test_a |
+| `test_content_ad_href_grid.py` | 8 |  | test_ad_href_textad_uses_grid_rmw_not_v5_update, test_ad_href_responsive_uses_grid_rmw_not_v501_update, test_a |
 | `test_content_editor_extra_tabs_access.py` | 6 |  | test_copy_accounts_is_not_scoped_by_directologist, test_copy_accounts_requires_extra_tab_access, test_rename_r |
 | `test_content_images_transport_split.py` | 21 | Разделение транспортов вкладки «Смена изображения» (tp6/tp7). | test_owned_only_from_uac_contents, test_tp6_by_name_outside_uac_is_not_owned, test_adaptive_in_uac_owned_is_bl |
 | `test_content_worker_blocked_skip.py` | 1 |  | test_finish_blocked_account_skip_is_done_without_agent_board |
@@ -420,7 +444,7 @@
 | `test_post_brand_offer_block.py` | 17 | Тесты детерминированного блока марочных оферов для посевов (tp8/tp9/tp10). | TestFmtPayment, TestBuildBrandOfferBlock, TestReplacePostModelList, TestBrandBlockIdempotency |
 | `test_retargeting_probe_status.py` | 3 | Пустая карта условий ретаргетинга — два РАЗНЫХ случая, и их нельзя путать. | v5, test_no_token_is_reported_as_no_token, test_empty_cabinet_is_ok_not_failure, test_missing_result_key_is_ok |
 | `test_review_fixes_20260728.py` | 5 | Две находки код-ревью 2026-07-28. | test_gate_reports_expected_and_shortfall, test_gate_silent_when_counts_match, test_verifier_now_sees_group_sho |
-| `test_routes.py` | 83 |  | test_create_set_route_points_to_api_create_set, test_create_set_authenticated_smoke_reaches_api_create_set, te |
+| `test_routes.py` | 87 |  | test_create_set_route_points_to_api_create_set, test_create_set_authenticated_smoke_reaches_api_create_set, te |
 | `test_second_token_thread.py` | 15 | Tests for second token thread (channel A sub-threads) and atomic 152-flip. | TestASharedCookieState, TestPartitionAIndices, TestBuildCreateSetResponseTimingFields, TestTokenThreadsEnvVar, |
 | `test_sitelinks_reuse_batch.py` | 13 | Реюз и батчинг наборов быстрых ссылок (sitelinks.add). | TestClientBatch, fake_v5, TestReuseByContent, TestBatchHelper |
 | `test_slepki_editor.py` | 3 |  | test_tp2_keyword_preview_falls_back_to_tp1_group, test_tp67_keyword_preview_uses_group_aware_creation_reader,  |
@@ -446,7 +470,8 @@
 | файл | КБ | назначение | что внутри |
 |---|---|---|---|
 | `__init__.py` | 1 |  |  |
-| `direct_git_guard.py` | 7 | Git/deploy guard for Direct automation tasks. | cmd_preflight, cmd_marker, cmd_status, build_parser, main |
+| `content_redactor_git.py` | 16 | Scoped git exporter for Direct content/accounts editor files. | GuardError, cmd_scope, cmd_preflight, cmd_export, cmd_status, build_parser, main |
+| `direct_git_guard.py` | 8 | Git/deploy guard for Direct automation tasks. | cmd_preflight, cmd_marker, cmd_status, build_parser, main |
 | `tone_baseline.py` | 14 | tone_baseline.py — офлайн-базовая-линия тон-войс для всех директолог-слепков. | generate_via_openrouter, corpus_content, run_baseline, print_table, main |
 | `tone_of_voice_watcher.py` | 8 | tone_of_voice_watcher.py — отвязанный watcher тон-войс проверки. | poll_once, main |
 
