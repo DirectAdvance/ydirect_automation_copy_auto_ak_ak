@@ -2,7 +2,7 @@ import json
 
 from direct.main import app
 from direct.content_main import app as content_app
-from direct.copy_service.copy_main import app as copy_app
+from direct.copy_main import app as copy_app
 from direct.slepki_main import app as slepki_app
 from direct import campaign
 from direct import create_set_input

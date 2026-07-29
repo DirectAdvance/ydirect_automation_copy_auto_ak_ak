@@ -6,6 +6,13 @@ from flask import Blueprint, Flask
 
 from direct import (
     agent_board_bridge,
+    content_renames_routes,
+    create_set_feeds,
+    grid_read,
+    grid_finalize,
+    queue_server,
+)
+from direct.copy_service import (
     copy_api,
     copy_cleanup,
     copy_engine,
@@ -14,11 +21,6 @@ from direct import (
     copy_settings_steps,
     copy_grid_read,
     copy_uac,
-    content_renames_routes,
-    create_set_feeds,
-    grid_read,
-    grid_finalize,
-    queue_server,
 )
 from direct.copy_service.copy_api import register_copy_api
 from direct.copy_service.copy_request import parse_feed_map, parse_image_hashes
