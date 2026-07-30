@@ -867,6 +867,16 @@ def test_copy_uac_limits_titles_after_geo_replacement():
     assert len(limited[0]) <= 56
 
 
+def test_copy_uac_sanitizes_inline_minus_keywords():
+    keywords, minus_keywords = copy_uac._copy_uac_sanitize_keywords(
+        ["купить baic -авто -машина -новый -автомобиль", "-отзывы"],
+        ["-бу", "кредит отзывы"],
+    )
+
+    assert keywords == ["купить baic"]
+    assert minus_keywords == ["авто", "машина", "новый", "автомобиль", "отзывы", "бу", "кредит"]
+
+
 def test_copy_uac_geo_guard_does_not_match_city_form_inside_region_adjective():
     pairs = [("Новосибирска", "Саратова"), ("Новосибирск", "Саратов")]
 
