@@ -16986,9 +16986,9 @@
        "groups": [],
        "items": [
         {
-         "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
+         "c": "tp6_cpc_site_ct0186_aon_n000_r0000_ct001_ag011_g00",
          "t": "МК - Niva Legend - КС + Автотаргетинг",
-         "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+         "gc": "ct0186_aon_n000_r0000_ct001_ag011_g00",
          "gk": "мк_niva_legend_кс_волгоградская_область",
          "camps": [
           "tp6_cpa_site — МК - Niva Legend - КС - Волгоградская область  —"
@@ -17004,9 +17004,9 @@
        "groups": [],
        "items": [
         {
-         "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
+         "c": "tp6_cpc_site_ct0188_aon_n000_r0000_ct001_ag011_g00",
          "t": "МК - Niva Travel - КС + Автотаргетинг",
-         "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+         "gc": "ct0188_aon_n000_r0000_ct001_ag011_g00",
          "gk": "мк_niva_travel_кс_волгоградская_область",
          "camps": [
           "tp6_cpa_site — МК - Niva Travel - КС - Волгоградская область  —"
@@ -37624,9 +37624,9 @@
        "name": "МК - Opel - КС + Автотаргетинг",
        "items": [
         {
-         "c": "tp6_cpc_site_ct0000_aon_n000_r0000_ct001_ag011_g00",
+         "c": "tp6_cpc_site_ct0282_aon_n000_r0000_ct001_ag011_g00",
          "t": "МК - Opel - КС + Автотаргетинг",
-         "gc": "ct0000_aon_n000_r0000_ct001_ag011_g00",
+         "gc": "ct0282_aon_n000_r0000_ct001_ag011_g00",
          "gk": "мк_opel_интересы_краснодарский_край_4",
          "camps": [
           "tp6_cpa_site — МК - Opel - Интересы - Краснодарский край — 4"
