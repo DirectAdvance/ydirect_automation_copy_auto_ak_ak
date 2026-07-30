@@ -45,6 +45,46 @@ def diff_profiles(src_profile: Dict[str, dict],
         }
 
     adgroup_maps = id_maps.get("adgroups") or {}
+    capped_ad_dimensions = {
+        "adaptive_titles_count",
+        "adaptive_bodies_count",
+        "sitelinks_ad_level_count",
+        "ads_with_images",
+        "ads_with_video",
+        "button_cta",
+    }
+
+    def _is_accepted_ad_cap(src_c: dict, source: Any, target: Any) -> bool:
+        """Direct can reject the 4th adaptive text banner in a legacy one-group campaign.
+
+        Semen accepted this as 3/4 copy for Agent Board #65. Keep it narrow: only treat
+        one-group source campaigns with exactly four source ads and three target ads as
+        intentional, so ordinary content loss still stays visible.
+        """
+        try:
+            return (
+                int(src_c.get("adgroup_count") or 0) == 1
+                and int(src_c.get("_ads_count") or 0) == 4
+                and int(source) == 4
+                and int(target) == 3
+            )
+        except (TypeError, ValueError):
+            return False
+
+    def _status_with_ad_cap(src_c: dict, dimension: str, source: Any, target: Any) -> str:
+        if source == target:
+            return _OK
+        if dimension in capped_ad_dimensions and _is_accepted_ad_cap(src_c, source, target):
+            return _EXCLUDED
+        return _MISMATCH
+
+    def _hint_with_ad_cap(base: str, status: str) -> str:
+        if status == _EXCLUDED:
+            return (
+                "Direct Grid limit: MAX_ADAPTIVE_TEXT_BANNERS_IN_ADGROUP max=3; "
+                "legacy source has 4 ads in one group, accepted as 3/4 by operator"
+            )
+        return base
 
     def _project_group_signatures(raw: Any) -> dict:
         projected: dict = {}
@@ -151,11 +191,15 @@ def diff_profiles(src_profile: Dict[str, dict],
                                 repair_hint="step_adaptive_creatives copy_steps.py:1049 — titles/bodies RMW; "
                                             "adaptive_ads_for_update grid_finalize.py:2537"))
         else:
+            _st5 = _status_with_ad_cap(src_c, "adaptive_titles_count", s5, t5)
             results.append(_row(scope, "adaptive_titles_count",
-                                _OK if s5 == t5 else _MISMATCH, s5, t5,
-                                repairable=True,
-                                repair_hint="step_adaptive_creatives copy_steps.py:1049 — "
-                                            "UpdateAdaptiveTextAds RMW titles/bodies"))
+                                _st5, s5, t5,
+                                repairable=(_st5 != _EXCLUDED),
+                                repair_hint=_hint_with_ad_cap(
+                                    "step_adaptive_creatives copy_steps.py:1049 — "
+                                    "UpdateAdaptiveTextAds RMW titles/bodies",
+                                    _st5,
+                                )))
 
         # D6: texts — target прокси = adaptive_total (адаптивное объявление имеет и bodies, и titles;
         # отдельного счётчика bodies в campaign_content_counts нет, поэтому target использует тот же
@@ -167,10 +211,14 @@ def diff_profiles(src_profile: Dict[str, dict],
                                 repairable=True,
                                 repair_hint="step_adaptive_creatives copy_steps.py:1049 — bodies RMW"))
         else:
+            _st6 = _status_with_ad_cap(src_c, "adaptive_bodies_count", s6, t6)
             results.append(_row(scope, "adaptive_bodies_count",
-                                _OK if s6 == t6 else _MISMATCH, s6, t6,
-                                repairable=True,
-                                repair_hint="step_adaptive_creatives copy_steps.py:1049 — bodies RMW"))
+                                _st6, s6, t6,
+                                repairable=(_st6 != _EXCLUDED),
+                                repair_hint=_hint_with_ad_cap(
+                                    "step_adaptive_creatives copy_steps.py:1049 — bodies RMW",
+                                    _st6,
+                                )))
 
         # D7: callouts (edit_rows — campaign-level, но Grid может не вернуть черновик)
         s7, t7 = src_c["callout_count"], tgt_c["callout_count"]
@@ -220,10 +268,14 @@ def diff_profiles(src_profile: Dict[str, dict],
                                 repairable=True,
                                 repair_hint="v5 ads.get не прочитал TextAd.SitelinkSetId на цели"))
         else:
+            _st8a = _status_with_ad_cap(src_c, "sitelinks_ad_level_count", s8a, t8a)
             results.append(_row(scope, "sitelinks_ad_level_count",
-                                _OK if s8a == t8a else _MISMATCH, s8a, t8a,
-                                repairable=True,
-                                repair_hint="direct_copy phase_upload должен сохранить SitelinkSetId на каждом объявлении"))
+                                _st8a, s8a, t8a,
+                                repairable=(_st8a != _EXCLUDED),
+                                repair_hint=_hint_with_ad_cap(
+                                    "direct_copy phase_upload должен сохранить SitelinkSetId на каждом объявлении",
+                                    _st8a,
+                                )))
 
         # D9: images
         s9 = src_c["ads_with_images"]
@@ -234,11 +286,15 @@ def diff_profiles(src_profile: Dict[str, dict],
                                 repair_hint="repair_auto image upload; "
                                             "_enrich_adaptive_images grid_read.py:417"))
         else:
+            _st9 = _status_with_ad_cap(src_c, "ads_with_images", s9, t9)
             results.append(_row(scope, "ads_with_images",
-                                _OK if s9 == t9 else _MISMATCH, s9, t9,
-                                repairable=True,
-                                repair_hint="repair_auto image upload; "
-                                            "UpdateAdaptiveTextAds imageHashes grid_finalize.py:2137"))
+                                _st9, s9, t9,
+                                repairable=(_st9 != _EXCLUDED),
+                                repair_hint=_hint_with_ad_cap(
+                                    "repair_auto image upload; "
+                                    "UpdateAdaptiveTextAds imageHashes grid_finalize.py:2137",
+                                    _st9,
+                                )))
 
         # D10: audience/retargeting-привязки групп. GdGridOfferRetargeting (оферный
         # ретаргетинг фида) сюда не входит — это часть товарки, не пользовательские аудитории.
@@ -291,10 +347,11 @@ def diff_profiles(src_profile: Dict[str, dict],
                                             "hasVideo из adaptive_ads_for_update (grid_finalize.py:2537); "
                                             "target adaptive_ads_for_update не прочитан"))
         else:
+            _st13 = _status_with_ad_cap(src_c, "ads_with_video", s13, t13)
             results.append(_row(scope, "ads_with_video",
-                                _OK if s13 == t13 else _MISMATCH, s13, t13,
-                                repairable=True,
-                                repair_hint="step_videos copy_steps.py:1110"))
+                                _st13, s13, t13,
+                                repairable=(_st13 != _EXCLUDED),
+                                repair_hint=_hint_with_ad_cap("step_videos copy_steps.py:1110", _st13)))
 
         # D14: button/CTA — проверяем, если target adaptive_ads_for_update прочитан.
         s14 = src_c["ads_with_button"]
@@ -304,11 +361,15 @@ def diff_profiles(src_profile: Dict[str, dict],
                                 repairable=False,
                                 repair_hint="hasButton из adaptive_ads_for_update не прочитан"))
         else:
+            _st14 = _status_with_ad_cap(src_c, "button_cta", s14, t14)
             results.append(_row(scope, "button_cta",
-                                _OK if s14 == t14 else _MISMATCH, s14, t14,
+                                _st14, s14, t14,
                                 repairable=False,
-                                repair_hint="CTA должен сохраняться RMW в update_adaptive_ads; "
-                                            "отдельного repair-шага пока нет"))
+                                repair_hint=_hint_with_ad_cap(
+                                    "CTA должен сохраняться RMW в update_adaptive_ads; "
+                                    "отдельного repair-шага пока нет",
+                                    _st14,
+                                )))
 
         # D15: adPrice — excluded intentional
         results.append(_row(scope, "ad_price", _EXCLUDED, None, None,

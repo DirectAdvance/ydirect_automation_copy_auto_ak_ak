@@ -14,9 +14,12 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
+SOURCE_ROOT = Path(__file__).resolve().parents[2]  # home/seoadvanced
+TOKEN_ENV_NAMES = ("GIT_TOKEN", "GITHUB_TOKEN", "GH_TOKEN")
 DEFAULT_BRANCH = "ydirect_automation_copy_auto_ak_ak"
 MARKER_FILE = ".deploy_version.json"
 COPY_SCOPE_PREFIXES = (
@@ -35,8 +38,50 @@ COPY_SCOPE_FILES = {
 }
 
 
+def _secret_env_value(names: tuple[str, ...]) -> str:
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value.strip().strip('"').strip("'")
+    for parent in SOURCE_ROOT.parents:
+        env_path = parent / ".secret" / ".env"
+        if not env_path.exists():
+            continue
+        for line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            raw = line.strip()
+            if not raw or raw.startswith("#") or "=" not in raw:
+                continue
+            key, value = raw.split("=", 1)
+            if key.strip() in names:
+                return value.strip().strip('"').strip("'")
+    return ""
+
+
+def _git_env() -> dict:
+    env = os.environ.copy()
+    env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    token = _secret_env_value(TOKEN_ENV_NAMES)
+    if token:
+        askpass = Path(tempfile.gettempdir()) / "direct_git_guard_askpass.sh"
+        if not askpass.exists():
+            askpass.write_text(
+                "#!/bin/sh\n"
+                "case \"$1\" in\n"
+                "*Username*) printf '%s\\n' \"${GIT_USERNAME:-x-access-token}\" ;;\n"
+                "*) printf '%s\\n' \"$GIT_TOKEN\" ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            askpass.chmod(0o700)
+        env.setdefault("GIT_ASKPASS", str(askpass))
+        env.setdefault("GIT_USERNAME", "x-access-token")
+        env["GIT_TOKEN"] = token
+    return env
+
+
 def _run(args: list[str], *, cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
-    proc = subprocess.run(args, cwd=str(cwd), text=True, capture_output=True)
+    env = _git_env() if args and args[0] == "git" else None
+    proc = subprocess.run(args, cwd=str(cwd), text=True, capture_output=True, env=env)
     if check and proc.returncode != 0:
         msg = (proc.stderr or proc.stdout or "").strip()
         raise RuntimeError(f"{' '.join(args)} failed: {msg}")
