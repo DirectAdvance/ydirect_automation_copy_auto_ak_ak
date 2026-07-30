@@ -106,7 +106,8 @@ from ..content.content_editor_helpers import (  # noqa: F401
 )
 from ..content.content_editor_helpers import ensure_content_job_agent_column  # noqa: F401
 from ..content.content_sitelinks_routes import _validate_permutation  # noqa: F401  (monkeypatched)
-from ..content.content_replace_routes import _do_replace  # noqa: F401  (monkeypatched)
+from ..content.content_replace_routes import _do_replace, _blocked_account_skip  # noqa: F401  (monkeypatched)
+from ..account_service import account_write_blocked  # noqa: F401  (monkeypatched in tests)
 
 
 # ── make_job_executor — MUST stay here ────────────────────────────────────────
@@ -129,6 +130,13 @@ def make_job_executor(*, victory_conn, token_for_login, direct_tokens, v5_call, 
         if not token:
             raise RuntimeError(f"ни один агентский токен не открывает аккаунт {job['login']}")
         job_agency = str(job.get("agency") or "").strip()
+
+        # Единый гейт "аккаунт заблокирован для записи" — ПЕРЕД диспетчеризацией по типу,
+        # разом накрывает все 10 мутирующих job.type (было: узкий v5-probe только у
+        # ad_href/ad_title*/ad_text внутри _do_replace). Дешёвый Grid-сигнал, без ad_id.
+        blocked_reason = account_write_blocked(job["login"], agency=job_agency)
+        if blocked_reason:
+            return _blocked_account_skip(job["login"], blocked_reason, probe="grid_userfeatures")
 
         def _job_grid_client(login: str):
             if not job_agency:

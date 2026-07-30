@@ -555,6 +555,7 @@ def test_content_editor_ad_href_executor_skips_adgroups_snapshot(monkeypatch):
     monkeypatch.setattr(content_editor, "_grid_client", NoGrid)
     monkeypatch.setattr(content_editor_helpers, "_uac_read_client", lambda login, factory=None: NoUac(login))
     monkeypatch.setattr(content_editor, "_do_replace", lambda *a, **k: {"replaced": 0, "errors": []})
+    monkeypatch.setattr(content_editor, "account_write_blocked", lambda *a, **k: "")
 
     execute = content_editor.make_job_executor(
         victory_conn=lambda: conn,
@@ -1526,6 +1527,7 @@ def test_make_job_executor_campaign_rename_skips_account_snapshot(monkeypatch):
 
     monkeypatch.setattr(content_editor, "_load_account", boom_load_account)
     monkeypatch.setattr(content_editor, "_do_replace", fake_do_replace)
+    monkeypatch.setattr(content_editor, "account_write_blocked", lambda *a, **k: "")
 
     execute = content_editor.make_job_executor(
         victory_conn=lambda: conn,
@@ -1572,6 +1574,7 @@ def test_make_job_executor_scopes_grid_cookie_to_job_agency(monkeypatch):
 
     monkeypatch.setattr(content_editor, "_load_account", fake_load_account)
     monkeypatch.setattr(content_editor, "_do_replace", fake_do_replace)
+    monkeypatch.setattr(content_editor, "account_write_blocked", lambda *a, **k: "")
     monkeypatch.setattr(campaign, "pick_working_cookie", fake_pick_cookie)
     monkeypatch.setattr(grid_finalize, "get_grid_client", fake_get_grid_client)
 
@@ -1596,6 +1599,46 @@ def test_make_job_executor_scopes_grid_cookie_to_job_agency(monkeypatch):
     assert out == {"replaced": 1, "errors": []}
     assert ("pick", "acc-login", ("victorylotsofads1",), True) in calls
     assert ("grid", "acc-login", "cookie-for-job-agency", False) in calls
+
+
+def test_make_job_executor_skips_all_job_types_when_account_write_blocked(monkeypatch):
+    # Единый гейт (account_write_blocked) должен сработать ДО диспетчеризации по типу и
+    # ДО _load_account/_do_replace — разом накрывает все 10 мутирующих job.type, не
+    # только ad_href/ad_title*/ad_text, у которых уже был узкий v5-probe.
+    conn = _FakeScopeConn(row={"directologist": "Иванов"})
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("blocked account must not reach _load_account/_do_replace")
+
+    monkeypatch.setattr(content_editor, "_load_account", boom)
+    monkeypatch.setattr(content_editor, "_do_replace", boom)
+    monkeypatch.setattr(
+        content_editor, "account_write_blocked",
+        lambda login, *, agency="": f"аккаунт {login} заблокирован (тест)",
+    )
+
+    execute = content_editor.make_job_executor(
+        victory_conn=lambda: conn,
+        token_for_login=lambda *a, **k: ("tok", "agency"),
+        direct_tokens=lambda: {"agency": "tok"},
+        v5_call=lambda *a, **k: None,
+        v501_svc=lambda *a, **k: None,
+    )
+
+    out = execute({
+        "login": "blocked-login",
+        "agency": "victorylotsofads1",
+        "access_directologists": ["Иванов"],
+        "type": "sitelink_title",
+        "old_text": "старый",
+        "new_text": "новый",
+        "mode": "exact",
+    })
+
+    assert out["blocked_account"] is True
+    assert out["replaced"] == 0
+    assert out["errors"] == []
+    assert "заблокирован" in out["message"]
 
 
 # ── _validate_permutation ────────────────────────────────────────────────────

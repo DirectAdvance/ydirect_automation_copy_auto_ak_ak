@@ -387,6 +387,47 @@ _STATE_ORDER = {"ON": 0, "SUSPENDED": 1, "OFF": 2, "ENDED": 3, "CONVERTED": 4, "
 
 _KNOWN_AGENCIES = ["victorylotsofads1", "victoryagency-direct1618440", "victoryagency14", "y-direct-victory", "victoryagencydirect", "useful-call-agency"]
 
+
+def account_write_blocked(login: str, *, agency: str = "") -> str:
+    """Единый гейт "аккаунт заблокирован для записи" — вызывать ПЕРЕД любой мутацией
+    (цены/картинки/названия/ссылки), не только там, где уже стоял точечный v5-probe.
+
+    Источник сигнала — Grid ``userFeatures`` (``BLOCKED``), тот же, что уже показывает
+    фронту ``_check_blocks_response`` (``/direct/api/check_blocks``), но здесь — для
+    ОДНОГО login синхронно, без ThreadPoolExecutor/Flask-request. Дешевле v5-баллов,
+    не требует ad_id/token — можно звать до того, как выбран конкретный объект правки.
+
+    Возвращает '' если писать можно (или Grid не дал однозначного ответа — намеренно
+    fail-open, чтобы недоступная кука не превращалась в ложный skip здоровых аккаунтов);
+    иначе — человекочитаемую причину.
+
+    Перебор кук — как в ``_check_blocks_response.check_one``: агентство job'а первым
+    (дешевле/точнее), затем известные агентства (иногда ``agency`` в job неверный/пустой)."""
+    login = (login or "").strip()
+    if not login:
+        return ""
+    agency = (agency or "").strip()
+    order = ([agency] if agency and agency != "None" else []) + [
+        ag for ag in _KNOWN_AGENCIES if ag != agency
+    ]
+    for ag in order:
+        try:
+            cookie = cmc.load_cookie(ag)
+        except Exception:  # noqa: BLE001 - кука мертва/сеть недоступна → пробуем следующее агентство
+            cookie = None
+        if not cookie:
+            continue
+        csrf = _block_bootstrap(cookie, ag)
+        if csrf is None:
+            continue
+        result = _block_check(cookie, csrf, login)
+        if result is True:
+            return f"аккаунт {login} заблокирован для записи (Grid userFeatures BLOCKED, агентство {ag})"
+        if result is False:
+            return ""
+    return ""
+
+
 def _do_balance(_rqs, ThreadPoolExecutor, as_completed):
     pairs = (request.json or {}).get("pairs") or []
     by_agency: dict[str, list[str]] = {}
