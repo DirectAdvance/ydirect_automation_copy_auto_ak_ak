@@ -392,9 +392,18 @@ def _pack_group_fact(slepok: str, site_type: str, tp: str, ct: str, gk: str) -> 
         else:
             real += 1
             reals.append(s)
-    # Donor-fallback tp4→tp2→tp1, tp2→tp1 — зеркало slepki_editor.read_group_keywords:580-588.
+    # Donor-fallback tp4→tp2→tp1, tp2→tp1 — зеркало slepki_editor.read_group_keywords:633-642.
     # Если в родном паке real==0, но donor-tp содержит реальные ключи — берём их.
-    # auto сохраняем из родного пака (маркер ---autotargeting остаётся без изменений).
+    # auto ТОЖЕ берём из donor-пака (зеркало read_group_keywords, который копирует ВЕСЬ pos
+    # донора, включая маркер ---autotargeting): у групп без своего per-group файла (aon-группы
+    # с дружественным gk) родного пака нет вовсе, поэтому "оставить auto из родного" эквивалентно
+    # "всегда false" и теряет флаг автотаргетинга донора (TP4_DONOR_FALLBACK_LOSES_AUTO_BADGE).
+    # Условие срабатывания фолбэка — `d_real > 0 or d_auto`, НЕ только `d_real > 0`: у ~13.6%
+    # per-group файлов пака (3476/25542) единственная непустая строка — сам маркер, без
+    # реальных фраз (d_real=0, d_auto=True). При `if d_real > 0` такой донор молча пропускался
+    # и auto оставался False, хотя у донора автотаргетинг реально задан (найдено ревью
+    # direct_neyrodirektolog). `real`/`reals` в этом случае корректно остаются 0/[] — фолбэк
+    # только подхватывает флаг auto, ключи по-прежнему не выдумываются.
     if real == 0 and tp in ("tp2", "tp4"):
         donors: tuple = ("tp2", "tp1") if tp == "tp4" else ("tp1",)
         for donor_tp in donors:
@@ -407,16 +416,20 @@ def _pack_group_fact(slepok: str, site_type: str, tp: str, ct: str, gk: str) -> 
                 d_pos, _ = _pack_read_local(os.path.join(d_kd, f"{slepok}.txt"))
             d_real = 0
             d_reals: list = []
+            d_auto = False
             for line in d_pos:
                 s = (line or "").strip()
                 if not s:
                     continue
-                if not _PACK_AUTO_RE.search(s):
+                if _PACK_AUTO_RE.search(s):
+                    d_auto = True
+                else:
                     d_real += 1
                     d_reals.append(s)
-            if d_real > 0:
+            if d_real > 0 or d_auto:
                 real = d_real
                 reals = d_reals
+                auto = auto or d_auto
                 break
     # sig — подпись СОДЕРЖИМОГО пака (кол-во + первый/последний реальный ключ), 1:1 с клиентским
     # `_sig` в _slCountKeywords. Нужна для дедупа счётчика: группы без своего per-group файла
