@@ -45,6 +45,7 @@ WORKER_THREADS = int(os.environ.get("CE_WORKER_THREADS") or 4)
 AGENCY_PARALLEL = int(os.environ.get("CE_AGENCY_PARALLEL") or 2)
 MAX_ATTEMPTS = int(os.environ.get("CE_MAX_ATTEMPTS") or 3)
 POLL_SECONDS = float(os.environ.get("CE_POLL_SECONDS") or 2.0)
+CONTENT_AGENT_RETRY_POLL = int(os.environ.get("CE_AGENT_RETRY_POLL") or 60)
 WORKER_NAME = f"{socket.gethostname()}:{os.getpid()}"
 
 T = ce.CE_JOBS_TABLE
@@ -240,6 +241,73 @@ def _requeue_stale() -> None:
         "WHERE status='running' AND started_at < now() - interval '2 hours'")
 
 
+def _content_retry_insert_from_failed(jobs_exec, table: str, row: dict) -> str:
+    """Build a fresh content_jobs INSERT from a failed row (mirrors _copy_retry_body_from_failed,
+    but content_jobs stores flat columns, not one body jsonb — see agent_board_bridge.py note)."""
+    import json
+    import uuid
+
+    job_id = "ce_" + uuid.uuid4().hex[:12]
+    access = row.get("access_directologists")
+    jobs_exec(
+        f"""INSERT INTO {table}
+            (job_id, username, login, agency, type, old_text, new_text, mode,
+             campaign_count, access_directologists)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        (job_id, "agent-board-auto", row["login"], row.get("agency") or "",
+         row["type"], row["old_text"], row["new_text"], row.get("mode") or "exact",
+         row.get("campaign_count") or 1,
+         json.dumps(access, ensure_ascii=False) if access is not None else None),
+    )
+    return job_id
+
+
+def _content_login_has_active_job(jobs_exec, table: str, login: str) -> bool:
+    row = jobs_exec(
+        f"SELECT 1 AS x FROM {table} WHERE login=%s AND status IN ('queued','running') LIMIT 1",
+        (login,), "one",
+    )
+    return bool(row)
+
+
+def _content_agent_retry_daemon_loop() -> None:
+    """When a linked Agent Board task is done, requeue the failed content job once.
+
+    Mirrors _copy_agent_retry_daemon_loop (queue_server.py), but content_jobs has no
+    'interrupted' status, so the retry is one-shot (content_retry_job_id IS NULL gate,
+    no re-attempt). CE_DAILY_JOB_CAP is intentionally bypassed here, same as copy does."""
+    from .agent_board_bridge import (
+        ensure_content_retry_columns,
+        content_jobs_ready_for_agent_retry,
+        mark_content_retry_started,
+    )
+    while True:
+        try:
+            ensure_content_retry_columns(ce._jobs_exec, T)
+            rows = content_jobs_ready_for_agent_retry(ce._jobs_exec, T, limit=5)
+        except Exception as e:  # noqa: BLE001
+            _log(f"[content-agent-retry] scan failed: {str(e)[:160]}")
+            rows = []
+        for row in rows:
+            failed_jid = row.get("job_id")
+            login = row.get("login") or ""
+            if not failed_jid or not login:
+                continue
+            if _content_login_has_active_job(ce._jobs_exec, T, login):
+                continue
+            try:
+                retry_jid = _content_retry_insert_from_failed(ce._jobs_exec, T, row)
+            except Exception as e:  # noqa: BLE001
+                _log(f"[content-agent-retry] insert failed {failed_jid}: {str(e)[:160]}")
+                continue
+            try:
+                mark_content_retry_started(ce._jobs_exec, T, failed_jid, retry_jid)
+            except Exception as e:  # noqa: BLE001
+                _log(f"[content-agent-retry] mark failed {failed_jid}->{retry_jid}: {str(e)[:160]}")
+            _log(f"[content-agent-retry] {failed_jid} -> {retry_jid} login={login}")
+        time.sleep(max(10, CONTENT_AGENT_RETRY_POLL))
+
+
 def main() -> None:
     guard = _acquire_singleton()
     if guard is None:
@@ -251,6 +319,8 @@ def main() -> None:
     except Exception as e:  # noqa: BLE001 — гонка каталога при одновременном старте с flask
         _log(f"ensure_jobs_table: {str(e)[:200]}")
     _requeue_orphans()
+    threading.Thread(target=_content_agent_retry_daemon_loop, daemon=True,
+                      name="ce-agent-retry").start()
     _log(f"started: threads={WORKER_THREADS}, agency_parallel={AGENCY_PARALLEL}, "
          f"daily_cap={ce.CE_DAILY_JOB_CAP}, worker={WORKER_NAME}")
     threads = [threading.Thread(target=_worker_loop, args=(i,), daemon=True, name=f"ce-worker-{i}")

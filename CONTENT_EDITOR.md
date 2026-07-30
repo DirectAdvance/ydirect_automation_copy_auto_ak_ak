@@ -100,6 +100,27 @@ UI: вкладка «Быстрые ссылки» → «↕️ Порядок �
 - Backfill для старых content-errors выполняется worker’ом на старте и затем раз в минуту; это
   нужно, чтобы уже упавшие задачи не оставались без разбора после деплоя новой логики.
 
+### Авто-ретрай после фикса в Agent Board
+
+По аналогии с copy (`_copy_agent_retry_daemon_loop`, `direct/core/queue_server.py`) в
+`direct-content-worker.service` (`content_worker.py`) запущен демон
+`_content_agent_retry_daemon_loop`: раз в `CE_AGENT_RETRY_POLL` секунд (по умолчанию 60) он
+опрашивает `content_jobs_ready_for_agent_retry` (`agent_board_bridge.py`) — упавшие job, у которых
+связанная Agent Board задача уже `done`, а ретрая ещё не было. Для каждой такой job демон:
+1. проверяет, что на этот `login` сейчас нет активной (`queued`/`running`) content job
+   (`_content_login_has_active_job`) — не плодит второй параллельный job;
+2. собирает и вставляет новую `content_jobs` строку из полей упавшей (`login`, `agency`, `type`,
+   `old_text`, `new_text`, `mode`, `campaign_count`, `access_directologists`) через
+   `_content_retry_insert_from_failed`;
+3. помечает исходную упавшую строку колонками `content_retry_job_id`/`content_retry_started_at`
+   через `mark_content_retry_started`, чтобы не создать второй ретрай на ту же ошибку.
+
+**Отличия от copy-ретрая (важно):** `content_jobs` хранит параметры как плоские колонки, а не один
+`body jsonb`, и у неё нет статуса `interrupted` — ретрай **одноразовый**
+(`content_retry_job_id IS NULL`, без повторной попытки при обрыве). Новая ретрай-job ставится с
+`username='agent-board-auto'` и **намеренно обходит** `CE_DAILY_JOB_CAP` (так же, как copy обходит
+дневной лимит для своих авто-ретраев) — это осознанное решение, не забытый баг.
+
 ## Вкладка «Обзор» (добавлена 2026-07-02)
 
 Копия 1-в-1 вкладки «Обзор» с `/direct/automation` (сайдбар, пункт `📋 Обзор`):

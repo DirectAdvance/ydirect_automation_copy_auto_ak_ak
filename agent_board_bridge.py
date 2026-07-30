@@ -38,6 +38,11 @@ def ensure_content_job_agent_column(jobs_exec: Callable, table: str) -> None:
     jobs_exec(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS agent_board_task_id bigint")
 
 
+def ensure_content_retry_columns(jobs_exec: Callable, table: str) -> None:
+    jobs_exec(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS content_retry_job_id text")
+    jobs_exec(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS content_retry_started_at timestamptz")
+
+
 def ensure_price_job_agent_column(victory_conn_rw: Callable) -> None:
     conn = victory_conn_rw()
     try:
@@ -124,7 +129,10 @@ def notify_content_job_error(jobs_exec: Callable, table: str, job_id: str) -> in
 Что нужно сделать:
 1. Воспроизвести причину ошибки по этой job.
 2. Исправить код/данные так, чтобы такая ошибка больше не повторялась.
-3. Переисполнить или добить исходную операцию до terminal success без ошибок там, где это разрешено активными объектами Direct.
+3. Задеплоить исправление в `direct-content-worker.service` и проверить сервис. Саму content-задачу
+   вручную переисполнять/пересоздавать НЕ нужно: после перевода этой Agent Board задачи в `done`
+   демон content-worker'а автоматически пересоздаст исходную упавшую job с теми же параметрами и
+   доведёт её обычной очередью.
 4. Проверить live-состояние через сервис/Direct.
 5. Обновить `direct/ERRORS_JOURNAL.md` и `direct/STATE.md`.
 
@@ -298,6 +306,43 @@ def mark_copy_retry_started(victory_conn_rw: Callable, failed_job_id: str, retry
         return ok
     finally:
         conn.close()
+
+
+def content_jobs_ready_for_agent_retry(jobs_exec: Callable, table: str, *, limit: int = 5) -> list[dict[str, Any]]:
+    """Failed content-editor jobs whose Agent Board task is done (one-shot retry).
+
+    Unlike copy, content_jobs has no ``interrupted`` status/recovery, so the retry
+    is one-shot: ``content_retry_job_id IS NULL`` is the only gate, no re-attempt.
+    """
+    ensure_content_retry_columns(jobs_exec, table)
+    rows = jobs_exec(
+        f"""SELECT * FROM {table}
+            WHERE status='error'
+              AND agent_board_task_id IS NOT NULL
+              AND content_retry_job_id IS NULL
+            ORDER BY finished_at
+            LIMIT %s""",
+        (max(1, int(limit)) * 5,),
+        "all",
+    ) or []
+    if not rows:
+        return []
+    task_ids = [int(r["agent_board_task_id"]) for r in rows if r.get("agent_board_task_id")]
+    done_tasks = _agent_board_done_task_meta(task_ids)
+    ready = [dict(r) for r in rows if int(r.get("agent_board_task_id") or 0) in done_tasks]
+    return ready[:limit]
+
+
+def mark_content_retry_started(jobs_exec: Callable, table: str, failed_job_id: str, retry_job_id: str) -> bool:
+    row = jobs_exec(
+        f"""UPDATE {table}
+            SET content_retry_job_id=%s, content_retry_started_at=now()
+            WHERE job_id=%s AND status='error' AND content_retry_job_id IS NULL
+            RETURNING job_id""",
+        (retry_job_id, failed_job_id),
+        "one",
+    )
+    return bool(row)
 
 
 def notify_unreported_content_errors(jobs_exec: Callable, table: str, *, limit: int = 5) -> list[int]:
