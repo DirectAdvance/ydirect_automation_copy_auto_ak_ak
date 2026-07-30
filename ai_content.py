@@ -768,6 +768,12 @@ def generate_post_ad_content(
         raw_title = _clean_post_title_readable(A._clean_post_title(raw_title), city)
         raw_body = _clean_post_body_readable(A._clean_post_body(raw_body))
 
+        # tp8-10 (Посевы) не проходит через text_norm._bad_ad_title/_bad_ad_text (те гейтят
+        # tp1-7 объявления) — это единственная страховка от непроверяемых claims (ставка
+        # кредита числом, «гарантия N лет» и т.п.) для сгенерированного LLM поста.
+        if A.has_forbidden_claim(raw_title) or A.has_forbidden_claim(raw_body):
+            continue
+
         result_title = raw_title
         result_body = raw_body
 
