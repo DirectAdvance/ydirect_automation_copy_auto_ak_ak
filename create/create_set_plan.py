@@ -77,6 +77,50 @@ _TP1_TARGET_TAIL_RE = re.compile(
 )
 
 
+def _x3_keyword_groups(agent: str, site_type: str, gks: list, cts: list) -> tuple[list, list]:
+    """Группы х3-кампании, у которых РЕАЛЬНО есть ключевые фразы в паке.
+
+    Нужно варианту «КС» (autotarget выключен): группа без фраз там не таргетирует ничего —
+    ни ключей, ни автотаргета (дефект `X3_KS_VARIANT_KEEPS_AUTOTARGET_ONLY_GROUP`,
+    porg-rgwzgo57 2026-07-30). В вариантах с автотаргетом такие группы законны и остаются.
+
+    Источник — ТОТ ЖЕ, что у создания (`kontent_pack.read_keywords`), поэтому план и билд
+    не разъезжаются. Маркер `---autotargeting` фразой НЕ считается: он и означает
+    «у группы нет ключей, она живёт на автотаргете».
+
+    Пары (gk, ct) держим синхронными: движок сопоставляет их по индексу.
+    Пак недоступен/чтение упало → возвращаем вход КАК ЕСТЬ (fail-open): молча выкинуть
+    группы из-за сбоя чтения хуже, чем оставить лишнюю.
+    """
+    _gks = [str(x) for x in (gks or [])]
+    _cts = [str(x) for x in (cts or [])]
+    if not _gks:
+        return _gks, _cts
+    paired = len(_cts) == len(_gks)
+    try:
+        from .. import kontent_pack as kp
+    except Exception:  # noqa: BLE001
+        return _gks, _cts
+    keep_gks: list = []
+    keep_cts: list = []
+    for i, gk in enumerate(_gks):
+        ct = _cts[i] if paired else (_cts[0] if _cts else "")
+        try:
+            data = kp.read_keywords(site_type, "tp1", ct, agent, group=gk) or {}
+            real = [x for x in (data.get("positive") or [])
+                    if str(x).strip() and str(x).strip().lower() != "---autotargeting"]
+        except Exception:  # noqa: BLE001 — fail-open, см. докстринг
+            keep_gks.append(gk)
+            if paired:
+                keep_cts.append(ct)
+            continue
+        if real:
+            keep_gks.append(gk)
+            if paired:
+                keep_cts.append(ct)
+    return keep_gks, (keep_cts if paired else _cts)
+
+
 def _strip_tp1_target_tail(name: str) -> str:
     """Remove an already harvested targeting suffix before adding x3 variants."""
     out = str(name or "").strip()
@@ -1066,7 +1110,8 @@ def _set_plan_response():
                         _has_feed_or_smart = ("фид" in _low_cn) or ("смарт-баннер" in _low_cn) or ("смарт-банер" in _low_cn)
                         _prod_only = (not _is_combi) and _has_feed_or_smart
 
-                        def _emit_tp1(label_body: str, at: bool, keep: bool):
+                        def _emit_tp1(label_body: str, at: bool, keep: bool,
+                                      only_gks=None, only_cts=None):
                             label = label_body + (f" - {oblast}" if oblast else "")
                             nm, renamed = _uniq(f"tp1_cpc_site — {label}")
                             _p = {"type": "tp1_rsy", "variant": v, "pay": None, "feed_id": None,
@@ -1074,7 +1119,8 @@ def _set_plan_response():
                                   "budget": rs["cpc_budget"], "cpa": rs["cpc_cpa"],
                                   "tp1_segment": None, "tp1_label": label,
                                   "autotarget": (at or _prod_only), "autotarget_keep_keywords": keep,
-                                  "tp1_only_gks": _og, "tp1_only_cts": _oc,
+                                  "tp1_only_gks": (_og if only_gks is None else only_gks),
+                                  "tp1_only_cts": (_oc if only_cts is None else only_cts),
                                   "tp1_all_feeds": _all_feeds, "camp_key": cname}
                             if _prod_only:
                                 _p["products_only"] = True
@@ -1089,11 +1135,36 @@ def _set_plan_response():
                             plan.append(_p)
 
                         if _X3 in _ctags:
-                            # тег «х3» → 3 кампании (КС / автотаргет / КС+автотаргет), КАЖДОЙ ПОЛНЫЙ бюджет
+                            # тег «х3» → 3 кампании (КС / автотаргет / КС+автотаргет), КАЖДОЙ ПОЛНЫЙ бюджет.
+                            # Правило Семёна 2026-07-30: исходная кампания обязана нести группы С
+                            # КЛЮЧАМИ, и из неё делаются три варианта. Отсюда состав групп РАЗНЫЙ:
+                            #   • «КС» (autotarget=False) — ТОЛЬКО группы с ключами. Группа без
+                            #     ключей здесь не таргетирует НИЧЕГО (ни ключей, ни автотаргета) —
+                            #     живой дефект `X3_KS_VARIANT_KEEPS_AUTOTARGET_ONLY_GROUP`
+                            #     (porg-rgwzgo57, группа «Автотаргет» в «РСЯ - Комби - Общие запросы - КС»).
+                            #   • «Автотаргетинг» и «КС + Автотаргетинг» — группы как есть: там
+                            #     автотаргет включён и беcключевая группа работает штатно.
+                            # Ключи проверяются по ПАКУ (тот же источник, что у создания), а не по
+                            # именам: имя группы про наличие фраз ничего не говорит.
                             _x3_base_name = _strip_tp1_target_tail(cname)
+                            _kw_gks, _kw_cts = _x3_keyword_groups(agent, site_type, _og, _oc)
+                            if _og and not _kw_gks:
+                                warnings.append(
+                                    f"х3 «{cname}»: ни одна группа не несёт ключей в паке — "
+                                    f"вариант «КС» не создан (создавать пустую кампанию нечем)")
                             for _var in _X3V:
+                                _ks_only = not _var["autotarget"]      # чистый «КС»-вариант
+                                if _ks_only and _og and not _kw_gks:
+                                    continue                            # нечего класть — кампанию не эмитим
+                                if _ks_only and _og and len(_kw_gks) < len(_og):
+                                    _dropped = [g for g in _og if g not in _kw_gks]
+                                    warnings.append(
+                                        f"х3 «{cname}» вариант «КС»: отброшены группы без ключей "
+                                        f"({len(_dropped)} из {len(_og)}): {_dropped[:6]}")
                                 _emit_tp1(f"{_x3_base_name} - {_var['suffix']}",
-                                          _var["autotarget"], _var["keep_keywords"])
+                                          _var["autotarget"], _var["keep_keywords"],
+                                          only_gks=(_kw_gks if _ks_only else None),
+                                          only_cts=(_kw_cts if _ks_only else None))
                         else:
                             _at, _keep = _tp1_mode(cname, c.get("targeting") or "")
                             _emit_tp1(cname, _at, _keep)
