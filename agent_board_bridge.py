@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 
 PROJECT_PATH = "/opt/scripts/home/seoadvanced"
+_COPY_JOB_AGENT_COLUMNS_ENSURED = False
 
 
 def _short(value: Any, limit: int = 1200) -> str:
@@ -63,9 +64,26 @@ def ensure_price_job_agent_column(victory_conn_rw: Callable) -> None:
 
 
 def ensure_copy_job_agent_columns(victory_conn_rw: Callable) -> None:
+    global _COPY_JOB_AGENT_COLUMNS_ENSURED
+    if _COPY_JOB_AGENT_COLUMNS_ENSURED:
+        return
+    required = {"agent_board_task_id", "copy_retry_job_id", "copy_retry_started_at"}
     conn = victory_conn_rw()
     try:
         with conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name='direct_automation_jobs' "
+                "  AND column_name = ANY(%s)",
+                (sorted(required),),
+            )
+            existing = {str(r[0]) for r in cur.fetchall() or []}
+            if required.issubset(existing):
+                _COPY_JOB_AGENT_COLUMNS_ENSURED = True
+                conn.commit()
+                return
+            cur.execute("SET LOCAL lock_timeout = '2s'")
+            cur.execute("SET LOCAL statement_timeout = '5s'")
             cur.execute(
                 "ALTER TABLE public.direct_automation_jobs "
                 "ADD COLUMN IF NOT EXISTS agent_board_task_id bigint"
@@ -79,6 +97,7 @@ def ensure_copy_job_agent_columns(victory_conn_rw: Callable) -> None:
                 "ADD COLUMN IF NOT EXISTS copy_retry_started_at timestamptz"
             )
         conn.commit()
+        _COPY_JOB_AGENT_COLUMNS_ENSURED = True
     finally:
         conn.close()
 
@@ -250,7 +269,10 @@ def _agent_board_done_task_meta(task_ids: list[int]) -> dict[int, dict[str, Any]
 
 def copy_jobs_ready_for_agent_retry(victory_conn_rw: Callable, *, limit: int = 5) -> list[dict[str, Any]]:
     """Failed copy jobs whose Agent Board task is done and whose retry needs to run."""
-    ensure_copy_job_agent_columns(victory_conn_rw)
+    try:
+        ensure_copy_job_agent_columns(victory_conn_rw)
+    except Exception:  # noqa: BLE001 - hot retry scan must not be blocked by best-effort DDL
+        traceback.print_exc()
     import psycopg2.extras
 
     conn = victory_conn_rw()
