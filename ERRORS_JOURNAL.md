@@ -4,6 +4,27 @@
 > метод решения → **помогло или нет** (проверено живым прогоном). Перед фиксом любой ошибки —
 > СНАЧАЛА искать её здесь: возможно, решение уже известно или уже пробовали и не помогло.
 
+### GIT_TOOLS_NO_AUTH_CANNOT_FETCH_PUSH — copy_service_git.py/direct_git_guard.py не умели аутентифицироваться к GitHub (2026-07-30) ✅ подтверждено реальным push
+- Симптом: два независимых Agent Board инцидента упирались в одну причину. #67:
+  `direct_git_guard.py preflight` → `git fetch origin` тихо проглатывал auth-ошибку (`check=False`),
+  свежесть против origin никогда реально не проверялась. #65: `copy_service_git.py export` падал
+  `could not read Username for 'https://github.com'` — коммит `9aa22656` (copy-фикс) не мог уехать.
+- Root-cause: чистый кодовый пробел, НЕ инфраструктура/секрет — `GIT_TOKEN` уже лежит в
+  `.secret/.env` и уже читается/работает в `tools/content_redactor_git.py`
+  (`TOKEN_ENV_NAMES`/`_secret_env_value()`/`_git_env()`/`GIT_ASKPASS`-скрипт), только два других
+  git-инструмента не переиспользовали этот же паттерн.
+- Решение: тот же паттерн скопирован в оба файла (`tools/copy_service_git.py`,
+  `tools/direct_git_guard.py:_run`) — `_run()` теперь передаёт `env=_git_env()` при `args[0]=="git"`.
+  `check=False` на fetch в `direct_git_guard.py` НЕ менялся (осознанное поведение, best-effort).
+- Проверено фактом на LXC101: `git fetch` через новый env — `RC=0` в обоих инструментах (раньше падал
+  на auth); `git push --dry-run` дошёл до GitHub (ошибка стала non-fast-forward, не auth); экспорт-кэш
+  на LXC101 был расходился с origin (старые неопубликованные снапшоты) — синхронизирован
+  (`git reset --hard origin/main` над кэш-директорией, НЕ над source) и `copy_service_git.py export`
+  реально запушил новый коммит `d2c925b8` в `github.com/DirectAdvance/ydirect_automation_copy_auto_ak_ak`
+  (`main`), содержащий фикс из `9aa22656` — **задача Agent Board #65 разблокирована фактом**.
+- **НЕ помогло ранее:** н/д (первый фикс этой сигнатуры).
+- Отчёт: `.claude/sdd/git-token-gap-fix-report.md`.
+
 ### MONOBRAND_SYNTHETIC_CT0000_HARDCODE — синтетическая «Общее - Автотаргетинг» tp6/tp7 хардкодила ct0000 на брендовых Монобренд-вкладках (2026-07-30) 🟡 фикс на Mac, ждёт live-прогона
 - Симптом: движок ВСЕГДА добавляет синтетическую позицию «ТК/МК - Общее - Автотаргетинг» с
   жёстко зашитым `ct0000`, если в структуре tp6/tp7 нет отдельного pure-autotarget
