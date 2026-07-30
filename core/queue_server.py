@@ -1966,6 +1966,15 @@ def _ensure_copy_agent_retry_daemon(app) -> None:
     threading.Thread(target=_copy_agent_retry_daemon_loop, args=(app,), daemon=True).start()
 
 
+def _copy_worker_db_bootstrap() -> None:
+    """Best-effort DB bootstrap for direct-copy.service without blocking Flask bind."""
+    try:
+        _jobs_db_init()                                   # схема таблицы (mirror прогресса копирования)
+        _copy_jobs_recover()                              # crash-cleanup ТОЛЬКО своих copy-джоб
+    except Exception as e:  # noqa: BLE001
+        print(f"[copy-startup] db bootstrap skipped: {str(e)[:160]}", flush=True)
+
+
 def _write_gate_owner(job_kind: str) -> str:
     kind = str(job_kind or "")
     if kind == "copy_campaigns":
@@ -2399,11 +2408,10 @@ def _ensure_copy_worker(app):
         if _CREATE_WORKER["started"]:
             return
         _CREATE_WORKER["started"] = True
-    _jobs_db_init()                                       # схема таблицы (mirror прогресса копирования)
-    _copy_jobs_recover()                                  # crash-cleanup ТОЛЬКО своих copy-джоб
+    threading.Thread(target=_copy_worker_db_bootstrap, daemon=True).start()
     _ensure_create_watchdog()                             # heartbeat зависших джоб (по in-memory этого процесса)
     _ensure_copy_agent_retry_daemon(app)                  # Agent Board done → повтор failed copy job
-    _create_watchdog_tick()
+    threading.Thread(target=_create_watchdog_tick, daemon=True).start()
     workers = int(_CREATE_WORKERS or _create_workers_count())
     for _ in range(workers):                              # параллельно по разным агентствам
         threading.Thread(target=_create_worker_loop, args=(app,), daemon=True).start()
