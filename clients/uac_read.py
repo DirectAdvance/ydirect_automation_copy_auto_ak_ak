@@ -45,12 +45,31 @@ def _count_real_keywords(row: dict[str, Any]) -> int | None:
 
 
 def _count_audiences(row: dict[str, Any]) -> int | None:
-    """Число аудиторий кампании (``ca_retargeting_condition.goals``). ``None`` — не отдано."""
+    """Число аудиторий кампании. ``None`` — поле не отдано (tri-state, проверка молчит).
+
+    ⚠️ Реальная форма ответа UAC (живой разбор 2026-07-30, `porg-xjxpfxby` 713160868):
+    цели лежат НЕ в ``ca_retargeting_condition.goals``, а на уровень глубже —
+    ``ca_retargeting_condition.condition_rules[].goals``. Прежний код читал только верхний
+    ``goals``, не находил его и возвращал ``None`` → `UAC_STRUCT_AUDIENCES_MISSING` не мог
+    сработать НИКОГДА, а кампания с 9 живыми аудиториями выглядела как «аудиторий нет».
+    Верхний ``goals`` оставлен как запасная форма — вдруг UAC отдаёт и её.
+    """
     cond = row.get("ca_retargeting_condition")
     if isinstance(cond, dict):
         goals = cond.get("goals")
         if isinstance(goals, list):
             return len(goals)
+        rules = cond.get("condition_rules")
+        if isinstance(rules, list):
+            total = 0
+            seen: set[str] = set()
+            for rule in rules:
+                for goal in ((rule or {}).get("goals") or []) if isinstance(rule, dict) else []:
+                    gid = str((goal or {}).get("id") or "") if isinstance(goal, dict) else str(goal)
+                    if gid and gid not in seen:      # одна цель может повторяться в разных правилах
+                        seen.add(gid)
+                        total += 1
+            return total
         return None
     for key in ("audiences", "interest_ids"):
         value = row.get(key)
