@@ -87,6 +87,12 @@
 
 Код на Mac → Mutagen → LXC101 `/opt/scripts/home/seoadvanced/direct/`. Сервис `direct-create.service` (:5020) + `direct-create-worker.service`.
 
+⛔ **`direct-copy.service` (:5022) — ЗАПРЕЩЕНО рестартовать, пока в очереди есть задание на
+копирование кампаний** (`direct_automation_jobs.kind='copy_campaigns'`, status
+`queued`/`claimed`/`running`) — воркер copy встроен в этот же процесс, graceful drain отсутствует,
+рестарт обрывает копирование кабинета на середине. Обязательный SQL-чек и порядок действий —
+`COPY_README.md` → «Как запустить / подебажить».
+
 ## 🔐 Git: три зоны — куда что коммитить (правило Семёна 2026-07-29)
 
 ⚠️ `home/seoadvanced/direct/` — **отдельный nested git**, родительский репо его не видит

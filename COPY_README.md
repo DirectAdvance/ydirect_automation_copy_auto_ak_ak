@@ -145,6 +145,25 @@ POST /api/copy_start
 
 ## Как запустить / подебажить
 
+### ⛔ ЗАПРЕТ рестарта при активной джобе копирования (правило Семёна 2026-07-30)
+
+`direct-copy.service` сам исполняет copy-поток (`_ensure_copy_worker`) — отдельного воркера с
+graceful drain здесь НЕТ (в отличие от `direct-content-worker.service`, у которого drain ≤540с).
+Рестарт этого юнита **обрывает** copy-джобу на середине: частично применённая копия кабинета
+(созданы не все кампании/группы/ключи) без отката.
+
+**Перед ЛЮБЫМ `systemctl restart direct-copy.service` — сначала обязательный SQL-чек:**
+
+```sql
+SELECT id, status, created_at FROM public.direct_automation_jobs
+WHERE kind = 'copy_campaigns' AND status IN ('queued', 'claimed', 'running')
+ORDER BY created_at DESC;
+```
+
+Запрос вернул ≥1 строку → **рестарт запрещён**. Ждать, пока `status` уйдёт в `done`/`error`, либо
+получить явное подтверждение Семёна на прерывание конкретной джобы. Срочность фикса этот гейт не
+отменяет — правку выкатывать после того, как очередь копирования пуста.
+
 **Сервис:**
 ```
 ssh proxmox-ts "pct exec 101 -- systemctl restart direct-copy.service"
