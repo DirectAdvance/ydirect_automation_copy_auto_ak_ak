@@ -182,19 +182,35 @@ def cmd_preflight(args: argparse.Namespace) -> int:
     if _remote_exists(repo, branch):
         ahead, behind = _ahead_behind(repo, branch)
         if behind:
-            full_dirty = _porcelain(repo)  # весь status, БЕЗ scope-фильтра
-            if not full_dirty and ahead == 0:
-                _run(["git", "reset", "--hard", f"origin/{branch}"], cwd=repo)
-                print(
-                    f"AUTO-HEALED: {repo} was {behind} commit(s) behind origin/{branch} — "
-                    f"fast-forwarded automatically (clean tree, no local-only commits, "
-                    f"git — источник истины)",
-                    file=sys.stderr,
+            # Scope-фильтрованный статус: репо общий на несколько зон/сессий, чужие
+            # незакоммиченные файлы вне args.scope не должны ни блокировать авто-heal,
+            # ни (тем более) быть кандидатом на снос — see .claude/sdd/ ...report.md.
+            scoped_dirty = _dirty_scope_lines(_porcelain(repo), args.scope)
+            if not scoped_dirty and ahead == 0:
+                # ff-only вместо reset --hard: если входящие коммиты всё же задевают
+                # путь, грязный вне scope, git безопасно откажет вместо сноса чужой работы.
+                merge = _run(
+                    ["git", "merge", "--ff-only", f"origin/{branch}"], cwd=repo, check=False,
                 )
+                if merge.returncode == 0:
+                    print(
+                        f"AUTO-HEALED: {repo} was {behind} commit(s) behind origin/{branch} — "
+                        f"fast-forwarded automatically (clean in-scope tree, no local-only "
+                        f"commits, git — источник истины)",
+                        file=sys.stderr,
+                    )
+                else:
+                    msg = (merge.stderr or merge.stdout or "").strip()
+                    print(
+                        f"BLOCKED: local HEAD is behind origin/{branch} by {behind} commit(s); "
+                        f"auto fast-forward failed ({msg}); resolve manually before edits",
+                        file=sys.stderr,
+                    )
+                    return 3
             else:
                 reason = (
-                    "uncommitted changes present"
-                    if full_dirty
+                    "in-scope uncommitted changes present"
+                    if scoped_dirty
                     else f"{ahead} local commit(s) not on origin (diverged, needs manual rebase)"
                 )
                 print(

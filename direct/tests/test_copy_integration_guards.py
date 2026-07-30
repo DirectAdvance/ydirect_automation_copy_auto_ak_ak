@@ -842,6 +842,19 @@ def test_copy_uac_geo_strings_and_sitelinks_use_target_geo():
     }]
 
 
+def test_copy_uac_geo_strings_extract_phrase_keyword_dicts():
+    pairs = [("Новосибирска", "Саратова"), ("Новосибирск", "Саратов")]
+    detail = {"keywords": [{"phrase": "купить авто из Новосибирска"}]}
+
+    keywords = copy_uac._copy_uac_geo_strings(
+        copy_uac._copy_uac_strings(detail, "keywords", limit=20),
+        pairs,
+    )
+
+    assert keywords == ["купить авто из Саратова"]
+    assert copy_uac._copy_uac_geo_guard("tp6_r0076", keywords, pairs, "r0076") == []
+
+
 def test_copy_uac_geo_guard_rejects_source_region_residuals():
     pairs = [("Краснодарский край", "Свердловская область"), ("Краснодар", "Екатеринбург")]
 

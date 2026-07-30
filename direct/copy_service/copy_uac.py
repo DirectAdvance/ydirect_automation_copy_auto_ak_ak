@@ -48,8 +48,11 @@ def _copy_uac_strings(value, *keys: str, limit: int = 8) -> list[str]:
     for item in (raw or []):
         if isinstance(item, dict):
             text = ""
-            for key in ("text", "title", "value", "body", "name"):
-                text = str(item.get(key) or "").strip()
+            for key in ("text", "title", "value", "body", "name", "phrase", "keyword", "query"):
+                val = item.get(key)
+                if isinstance(val, (dict, list)):
+                    continue
+                text = str(val or "").strip()
                 if text:
                     break
         else:
