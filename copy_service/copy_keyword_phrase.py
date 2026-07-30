@@ -27,7 +27,73 @@ def _target_geo_words(geo_pairs: list[tuple[str, str]] | None) -> list[list[str]
     return forms
 
 
-def clean_keyword_phrase(phrase: str, geo_pairs: list[tuple[str, str]] | None = None) -> str:
+def _positive_word_count(tokens: list[str]) -> int:
+    return sum(1 for token in tokens if token and not token.startswith("-"))
+
+
+def _drop_target_geo_form_once(tokens: list[str], target_forms: list[list[str]]) -> tuple[list[str], bool]:
+    for form in target_forms:
+        if not form:
+            continue
+        for idx in range(0, len(tokens) - len(form) + 1):
+            chunk = tokens[idx:idx + len(form)]
+            if any(str(token).startswith("-") for token in chunk):
+                continue
+            if [_plain_word(token) for token in chunk] == form:
+                return tokens[:idx] + tokens[idx + len(form):], True
+    return tokens, False
+
+
+def _limit_positive_words(
+    tokens: list[str],
+    target_forms: list[list[str]],
+    max_positive_words: int | None,
+) -> list[str]:
+    if not max_positive_words or max_positive_words <= 0:
+        return tokens
+    limited = list(tokens)
+    was_over_limit = _positive_word_count(limited) > max_positive_words
+    while was_over_limit:
+        limited, dropped = _drop_target_geo_form_once(limited, target_forms)
+        if not dropped:
+            break
+    if _positive_word_count(limited) <= max_positive_words:
+        return limited
+
+    out: list[str] = []
+    positives = 0
+    for token in limited:
+        if token.startswith("-"):
+            out.append(token)
+            continue
+        if positives >= max_positive_words:
+            continue
+        out.append(token)
+        positives += 1
+
+    # Avoid ending UAC keyword phrases with a dangling forced preposition like "+с".
+    if out and out[-1].startswith("+"):
+        next_positive = None
+        for token in limited:
+            if token in out or token.startswith("-"):
+                continue
+            next_positive = token
+            break
+        if next_positive and _positive_word_count(out) >= max_positive_words:
+            for idx in range(len(out) - 2, -1, -1):
+                if not out[idx].startswith("-"):
+                    out.pop(idx)
+                    break
+            out.append(next_positive)
+    return out
+
+
+def clean_keyword_phrase(
+    phrase: str,
+    geo_pairs: list[tuple[str, str]] | None = None,
+    *,
+    max_positive_words: int | None = None,
+) -> str:
     """Remove invalid/self-blocking inline minus fragments after geo rewrite."""
     tokens = _SPACE_RE.sub(" ", str(phrase or "").strip()).split(" ")
     if not tokens:
@@ -58,4 +124,5 @@ def clean_keyword_phrase(phrase: str, geo_pairs: list[tuple[str, str]] | None = 
                 continue
         out.append(token)
         i += 1
+    out = _limit_positive_words(out, target_forms, max_positive_words)
     return " ".join(out).strip()

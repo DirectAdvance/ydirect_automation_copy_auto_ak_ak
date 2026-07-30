@@ -20,6 +20,7 @@ from .copy_keyword_phrase import clean_keyword_phrase
 _direct_tokens = _resolve_agency_hint = _token_for_login = _v501_svc = None
 _UAC_TITLE_MAX = 56
 _UAC_TEXT_MAX = 81
+_UAC_KEYWORD_MAX_POSITIVE_WORDS = 7
 
 
 def configure(deps: dict) -> None:
@@ -83,7 +84,11 @@ def _copy_uac_geo_strings(values: list[str], geo_pairs: list[tuple[str, str]] | 
 def _copy_uac_keyword_strings(values: list[str], geo_pairs: list[tuple[str, str]] | None) -> list[str]:
     out: list[str] = []
     for val in values or []:
-        text = clean_keyword_phrase(_copy_uac_geo_text(val, geo_pairs), geo_pairs)
+        text = clean_keyword_phrase(
+            _copy_uac_geo_text(val, geo_pairs),
+            geo_pairs,
+            max_positive_words=_UAC_KEYWORD_MAX_POSITIVE_WORDS,
+        )
         if text and text not in out:
             out.append(text)
     return out

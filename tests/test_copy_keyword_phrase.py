@@ -27,3 +27,26 @@ def test_uac_sanitize_keeps_agent_board_76_phrase_out_of_keywords_validation():
 
     assert clean_keywords == ["купить baic"]
     assert minus_keywords == ["авто", "машина", "новый", "автомобиль"]
+
+
+def test_uac_keyword_strings_limits_agent_board_77_phrase_after_geo_replacement():
+    geo_pairs = [
+        ("Краснодар", "Нижний Новгород"),
+        ("Краснодарский край", "Нижегородская область"),
+    ]
+
+    keywords = _copy_uac_keyword_strings(
+        ["авито нижний новгород нижегородская область авто +с пробегом"],
+        geo_pairs,
+    )
+
+    assert keywords == ["авито авто +с пробегом"]
+
+
+def test_uac_keyword_strings_limits_overlong_phrase_without_dangling_plus_word():
+    keywords = _copy_uac_keyword_strings(
+        ["авито нижний новгород нижегородская область авто +с пробегом"],
+        [],
+    )
+
+    assert keywords == ["авито нижний новгород нижегородская область +с пробегом"]
