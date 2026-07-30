@@ -182,11 +182,27 @@ def cmd_preflight(args: argparse.Namespace) -> int:
     if _remote_exists(repo, branch):
         ahead, behind = _ahead_behind(repo, branch)
         if behind:
-            print(
-                f"BLOCKED: local HEAD is behind origin/{branch} by {behind} commit(s); pull/rebase before edits",
-                file=sys.stderr,
-            )
-            return 3
+            full_dirty = _porcelain(repo)  # весь status, БЕЗ scope-фильтра
+            if not full_dirty and ahead == 0:
+                _run(["git", "reset", "--hard", f"origin/{branch}"], cwd=repo)
+                print(
+                    f"AUTO-HEALED: {repo} was {behind} commit(s) behind origin/{branch} — "
+                    f"fast-forwarded automatically (clean tree, no local-only commits, "
+                    f"git — источник истины)",
+                    file=sys.stderr,
+                )
+            else:
+                reason = (
+                    "uncommitted changes present"
+                    if full_dirty
+                    else f"{ahead} local commit(s) not on origin (diverged, needs manual rebase)"
+                )
+                print(
+                    f"BLOCKED: local HEAD is behind origin/{branch} by {behind} commit(s) and "
+                    f"cannot auto-heal ({reason}); resolve manually before edits",
+                    file=sys.stderr,
+                )
+                return 3
     elif args.require_remote:
         print(f"BLOCKED: origin/{branch} does not exist", file=sys.stderr)
         return 4
