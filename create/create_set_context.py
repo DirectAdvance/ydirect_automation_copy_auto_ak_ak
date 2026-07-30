@@ -468,10 +468,11 @@ def _tp67_struct_merge_mode(rec: dict) -> str:
         return "audience"
     return "autotarget"
 
-def _tp67_common_autotarget_rec(tp: str, sq: str = "site") -> dict:
+def _tp67_common_autotarget_rec(tp: str, sq: str = "site", ct: str = "ct0000") -> dict:
     is_tp7 = str(tp or "") == "tp7"
     prefix = "ТК" if is_tp7 else "МК"
-    gc = "ct0000_aon_n000_r0000_ct010_ag001_g00" if is_tp7 else "ct0000_aon_n000_r0000_ct001_ag011_g00"
+    ct = str(ct or "").strip() or "ct0000"
+    gc = f"{ct}_aon_n000_r0000_ct010_ag001_g00" if is_tp7 else f"{ct}_aon_n000_r0000_ct001_ag011_g00"
     gk = "tk_common_autotarget" if is_tp7 else "mk_common_autotarget"
     name = f"{prefix} - Общее - Автотаргетинг"
     return {"name": name, "group": "Общее", "label": name, "sq": sq or "site", "is_auto": True,
@@ -479,6 +480,39 @@ def _tp67_common_autotarget_rec(tp: str, sq: str = "site") -> dict:
             "audiences": [], "audiences_unsupported": 0, "keyword_source": "", "pricing": "",
             "feed_role": "", "feed_id": None, "feed_key": "", "camp_names": [name],
             "pos_key": f"{sq or 'site'}|Общее|{name}"}
+
+
+_CT4_TOKEN_RE = re.compile(r"ct\d{4}")
+
+
+def _tp67_common_ct_for_segment(site_type: str, sq: str, merged: list[dict]) -> str:
+    """ct для синтетической «Общее - Автотаргетинг» позиции tp6/tp7.
+
+    `ct0000` («полное отсутствие бренда», CODER.md) легитимен только для «Мультибренд» и
+    «Монобренд · Общая». На конкретной брендовой вкладке («Монобренд · Haval») он давал
+    generic-контент вместо бренда (MONOBRAND_SYNTHETIC_CT0000_HARDCODE). Резолвим ct бренда:
+    1) мажоритарный валидный ct среди соседних позиций этого же (sq, tp) в структуре слепка —
+       они все несут один и тот же брендовый ct; 2) если items нет — по имени бренда через
+       `local_gsheet_naming.ag_part1` (`_ct_for_name`).
+    """
+    from .. import kontent_pack as kp  # noqa: PLC0415 — локальный импорт, как в _base_site_type
+    base = kp.base_site_type(site_type)
+    if base != "Монобренд":
+        return "ct0000"
+    m = re.search(r"·\s*(.+)$", str(site_type or ""))
+    brand = (m.group(1).strip() if m else "")
+    if not brand or brand.lower() == "общая":
+        return "ct0000"
+    counts: dict[str, int] = {}
+    for rec in merged:
+        if (str(rec.get("sq") or "site").strip() or "site") != (sq or "site"):
+            continue
+        tok = _CT4_TOKEN_RE.search(str(rec.get("gc") or ""))
+        if tok and tok.group(0) != "ct0000":
+            counts[tok.group(0)] = counts.get(tok.group(0), 0) + 1
+    if counts:
+        return max(counts.items(), key=lambda kv: kv[1])[0]
+    return _ct_for_name(brand) or "ct0000"
 
 def _slepok_struct_groups(slepok: str, site_type: str, tp: str) -> list[dict]:
     """Позиции СТРУКТУРЫ слепка для (slepok, site_type, tp6|tp7).
@@ -614,7 +648,8 @@ def _slepok_struct_groups(slepok: str, site_type: str, tp: str) -> list[dict]:
                 for x in merged
             )
             if not has_common_at:
-                merged.append(_tp67_common_autotarget_rec(tp, sq))
+                _common_ct = _tp67_common_ct_for_segment(site_type, sq, merged)
+                merged.append(_tp67_common_autotarget_rec(tp, sq, _common_ct))
     return merged
 
 def _tp67_keywords_for_groups(slepok: str, site_type: str, tp: str, ct: str, city: str,

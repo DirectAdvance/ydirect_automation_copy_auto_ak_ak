@@ -4,6 +4,40 @@
 > метод решения → **помогло или нет** (проверено живым прогоном). Перед фиксом любой ошибки —
 > СНАЧАЛА искать её здесь: возможно, решение уже известно или уже пробовали и не помогло.
 
+### MONOBRAND_SYNTHETIC_CT0000_HARDCODE — синтетическая «Общее - Автотаргетинг» tp6/tp7 хардкодила ct0000 на брендовых Монобренд-вкладках (2026-07-30) 🟡 фикс на Mac, ждёт live-прогона
+- Симптом: движок ВСЕГДА добавляет синтетическую позицию «ТК/МК - Общее - Автотаргетинг» с
+  жёстко зашитым `ct0000`, если в структуре tp6/tp7 нет отдельного pure-autotarget
+  «Общее»-элемента. `ct0000` (CODER.md = «полное отсутствие бренда») легитимен только для
+  «Мультибренд» и «Монобренд · Общая», но код НЕ смотрел на site_type/сегмент — для
+  `scherbakova/Монобренд · Haval/tp7` синтетика получала общий контент вместо Haval, хотя
+  соседняя `«ТК - Общие запросы»` в том же блоке корректно несла `ct0111`.
+- Масштаб (офлайн-скан по всей структуре 8 слепков): 26 комбинаций slepok×site_type×tp —
+  karavaev (Lada×2, Geely×2, Changan), kryuchkova (Lada), pavlov (Haval), piterkina (Lada,
+  Geely, Chery, Tenet), scherbakova (Haval, Lada, Belgee, Tenet), terehov (Lada×2, Haval,
+  Chery), tumashenko (Haval), zubakin (Chery×2, Changan×2, Lada, Belgee).
+- Root-cause: `create_set_context._tp67_common_autotarget_rec` (`create/create_set_context.py`)
+  собирала `gc` с литералом `"ct0000_..."` без параметра. `_slepok_struct_groups` вызывала её
+  без учёта `site_type`. Дальше в `create_set_plan._emit_struct:1517` цепочка резолва ct
+  (`_ct_for_name(name)` → … → `_gc_ct(g.get("gc"))` → `"ct0000"`) читала именно этот
+  захардкоженный `gc`, потому что «Общее» не матчится ни по одному имени модели.
+- Решение (`create/create_set_context.py:471-520,650`): `_tp67_common_autotarget_rec` принимает
+  `ct` параметром и собирает `gc` из него. Новая `_tp67_common_ct_for_segment(site_type, sq,
+  merged)`: `base_site_type(site_type) != "Монобренд"` или сегмент `"· Общая"` → `ct0000`
+  (без изменений); иначе — мажоритарный валидный (`!= ct0000`) ct среди СОСЕДНИХ позиций того
+  же `(sq, tp)` блока структуры (они все несут один и тот же брендовый ct), фолбэк — резолв
+  бренда по имени (после `·`) через `_ct_for_name` (`local_gsheet_naming`/`ag_part1`).
+  DI: `_ct_for_name` добавлен в `core/automation_runtime._create_set_context_deps()`.
+- Верифицировано офлайн (реальная структура `slepki_store.assemble()`, без похода в БД):
+  скан ВСЕХ Монобренд-вкладок (кроме «· Общая») дал ровно те же **26** синтетических записей,
+  **0** остались на `ct0000` после фикса (`scherbakova/Haval/tp7`→`ct0111`,
+  `karavaev/Lada/tp6`→`ct0181`, `karavaev/Geely`→`ct0097`, `zubakin/Changan`→`ct0029`,
+  `piterkina/Chery`→`ct0044`, `scherbakova/Belgee`→`ct0026`, `.../Tenet`→`ct0300` и т.д.).
+  Контроль: `Мультибренд` (pavlov/terehov/tumashenko/salamahin, 16 случаев) и
+  `Монобренд · Общая` (chepelev/karavaev/pavlov/terehov/tumashenko/zubakin) остались на
+  `ct0000` без изменений — 0 расхождений с «до фикса». `py_compile` OK на обоих файлах.
+- ⚠️ НЕ верифицировано: живой прогон create на затронутых аккаунтах, сервисы
+  `direct-create`/`direct-create-worker` НЕ рестартованы, `direct_verifier` не звался.
+
 ### ACCOUNT_BLOCK_GATE_ONLY_2_OF_10_TYPES — гейт "аккаунт заблокирован" стоял только у ad_href/ad_title*/ad_text, остальные 8 типов + price шли в error (2026-07-30) 🟡 ждёт live-прогона
 - Симптом: `CONTENT_EDITOR_BLOCKED_ACCOUNT_PREFLIGHT_SKIP` (запись ниже) закрыла только
   `ad_href` и `ad_title/ad_title2/ad_text` (2 из 10 мутирующих `content_jobs.type`).

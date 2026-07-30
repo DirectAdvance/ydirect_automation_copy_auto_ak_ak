@@ -1652,6 +1652,9 @@ def _create_set_context_deps() -> dict:
         "_kw_clean": _kw_clean,
         "_victory_conn": _victory_conn,
         "kp": kp,
+        # ct бренда для синтетической «Общее - Автотаргетинг» на монобрендовых вкладках
+        # (MONOBRAND_SYNTHETIC_CT0000_HARDCODE, см. _tp67_common_ct_for_segment).
+        "_ct_for_name": _ct_for_name,
     }
 
 
