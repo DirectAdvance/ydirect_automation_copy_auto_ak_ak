@@ -34,6 +34,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
+from .account_service import account_write_blocked
 from .agent_board_bridge import notify_price_job_error
 
 
@@ -1443,6 +1444,7 @@ def run_apply_pool(deps: dict, job_specs: list[dict], chain_after: bool = True) 
             by_login.setdefault(keyed_it["login"], []).append(keyed_it)
 
         agency_dead = False   # баллы агентства кончились (152) — остальные логины пропускаем
+        blocked_logins: dict[str, str] = {}   # login -> причина; латч на остаток прогона ПО LOGIN
         for login, group in by_login.items():
             if agency_dead:
                 for keyed_it in group:
@@ -1451,6 +1453,21 @@ def run_apply_pool(deps: dict, job_specs: list[dict], chain_after: bool = True) 
                         jst[jid]["result"]["skipped"].append(
                             {"login": login, "url": (keyed_it["_item"].get("url") or ""),
                              "reason": "agency_no_units"})
+                    _mark_item_done(jid)
+                continue
+
+            # Гейт "аккаунт заблокирован для записи" — ДО _get_ads_batch/_batch_update_prices.
+            # Латч per-login (НЕ agency_dead — это разный уровень: остальные логины того же
+            # агентства продолжают заливаться нормально).
+            if login not in blocked_logins:
+                blocked_logins[login] = account_write_blocked(login, agency=agency)
+            if blocked_logins[login]:
+                for keyed_it in group:
+                    jid = keyed_it["job_id"]
+                    with lock:
+                        jst[jid]["result"]["skipped"].append(
+                            {"login": login, "url": (keyed_it["_item"].get("url") or ""),
+                             "reason": "account_blocked"})
                     _mark_item_done(jid)
                 continue
 
