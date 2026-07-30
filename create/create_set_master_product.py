@@ -1234,13 +1234,19 @@ def run_master_product_item(deps: dict, *, it, name, href, region_ids, counter_i
             feed_filters=it_ff,                 # товарка tp7: фильтр по модели/марке, не по всему фиду
             listings_feed_filters=it_lff,        # фильтр по collectionId (tp7-only; [] = весь фид)
             keywords=it_keywords,
-            # DEFECT 3 (2026-07-10, эталон Семёна по кабинету 712694741): tp7-АВТОТАРГЕТ должен
+            # DEFECT 3 (2026-07-10, эталон Семёна по кабинету 712694741): АВТОТАРГЕТ-позиция должна
             # рендериться как «Подобрать оптимальную» (Аудитория), а не «Настроить вручную». При
             # keywords=[]/audiences=[] ЕДИНСТВЕННЫЙ ручной сигнал в payload — minus_keywords (глоб.
-            # «отзывы») → UAC-товарка (product) флипает блок «Аудитория» в «Настроить вручную».
-            # Требование Семёна: для tp7-автотаргета минус-слова НЕ нужны → шлём []. Ручные режимы
-            # tp7 (keywords/audience) — минус-слова как есть. tp6-мастер не тронут (рендерит верно).
-            minus_keywords=([] if (is_product and targeting_mode == "autotarget")
+            # «отзывы») → UAC флипает блок «Аудитория» в «Настроить вручную».
+            # Требование Семёна: для автотаргета минус-слова НЕ нужны → шлём []. Ручные режимы
+            # (keywords/audience) — минус-слова как есть.
+            # ⚠️ 2026-07-30: правка была применена ТОЛЬКО к товарке (`is_product`), с посылкой
+            # «tp6-мастер не тронут (рендерит верно)». Посылка ОПРОВЕРГНУТА живым кабинетом:
+            # `porg-uy3huxcn` / `tp6_…ct001_ag001_g00 — МК - Общие запросы - Автотаргетинг` показывал
+            # «Настроить вручную», а UAC-detail этой РК давал `keywords=null`, аудиторий нет и
+            # `minus_keywords=["отзывы"]` — тот же единственный ручной сигнал. Условие расширено на
+            # ОБА типа (мастер tp6 и товарка tp7): решает режим позиции, а не тип кампании.
+            minus_keywords=([] if targeting_mode == "autotarget"
                             else list(dict.fromkeys((it_minus_keywords or []) + _enabled_minus_words()))),
             audiences=it_audiences,
             audience_interest_type="short-term",
