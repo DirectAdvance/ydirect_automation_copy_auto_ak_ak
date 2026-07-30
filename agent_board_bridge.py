@@ -278,19 +278,24 @@ def copy_jobs_ready_for_agent_retry(victory_conn_rw: Callable, *, limit: int = 5
     conn = victory_conn_rw()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SET LOCAL statement_timeout = '15s'")
             cur.execute(
-                """SELECT j.*, r.status AS copy_retry_status
-                   FROM public.direct_automation_jobs j
+                """WITH candidates AS (
+                       SELECT *
+                       FROM public.direct_automation_jobs
+                       WHERE kind='copy_campaigns'
+                         AND status='error'
+                         AND agent_board_task_id IS NOT NULL
+                         AND updated_at >= now() - interval '14 days'
+                       ORDER BY updated_at DESC
+                       LIMIT %s
+                   )
+                   SELECT j.*, r.status AS copy_retry_status
+                   FROM candidates j
                    LEFT JOIN public.direct_automation_jobs r ON r.job_id = j.copy_retry_job_id
-                   WHERE j.kind='copy_campaigns'
-                     AND j.status='error'
-                     AND j.agent_board_task_id IS NOT NULL
-                     AND (
-                           j.copy_retry_job_id IS NULL
-                           OR r.status = 'interrupted'
-                         )
-                   ORDER BY j.updated_at
-                   LIMIT %s""",
+                   WHERE j.copy_retry_job_id IS NULL
+                      OR r.status = 'interrupted'
+                   ORDER BY j.updated_at DESC""",
                 (max(1, int(limit)) * 5,),
             )
             rows = [dict(r) for r in cur.fetchall() or []]
