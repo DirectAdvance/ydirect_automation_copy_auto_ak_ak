@@ -1,5 +1,17 @@
 # Нейродиректолог — Состояние
 
+## Сессия 2026-07-30 (вечер) — push+рестарт content-agent-retry + гейт блокировки аккаунта
+
+**Сделано:** экспортировано 3 локальных коммита (`ccb998d9` content-гейт, `c2d63b06` price latch,
+`9963c846` docs) через `tools/content_redactor_git.py export` → `yandex_direct_content_redactor`
+`main` `8943f7e` (preflight после push: `source_drift_count=0`). Заодно уехал ранее не задеплоенный
+`253dfc0c` content-agent-retry (входил в тот же diff). Очередь `direct_automation.content_jobs`
+перед рестартом: `done=104 / error=10`, `running=0` — безопасно. Рестартованы
+`direct-content.service` + `direct-content-worker.service` на LXC101, оба `active (running)`
+новыми PID (`362566`/`362565`), worker стартовал `threads=4, agency_parallel=2, daily_cap=50` без
+трейсбека. Smoke `GET /direct/automation/content` → `302` (auth redirect, не 5xx). Price
+(`price_check.py`) — рестарт не требуется, крон подхватит новый код в 20:00 автоматически.
+
 ## Сессия 2026-07-30 — 8 аккаунтов созданы, фикс чтения пака, сплошная сверка по DoD
 
 **Сделано:**
