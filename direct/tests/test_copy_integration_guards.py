@@ -514,9 +514,9 @@ def test_notify_copy_job_error_creates_agent_board_task(monkeypatch):
             return False
 
         def execute(self, sql, params=None):
-            if "SELECT * FROM public.direct_automation_jobs" in sql:
+            if "SELECT * FROM direct_automation.jobs" in sql:
                 self._select = True
-            if "UPDATE public.direct_automation_jobs SET agent_board_task_id" in sql:
+            if "UPDATE direct_automation.jobs SET agent_board_task_id" in sql:
                 calls["update"] = params
 
         def fetchone(self):
@@ -610,8 +610,9 @@ def test_copy_jobs_ready_for_agent_retry_reads_done_tasks_separately(monkeypatch
     ready = agent_board_bridge.copy_jobs_ready_for_agent_retry(lambda: FakeConn(), limit=5)
 
     assert [r["job_id"] for r in ready] == ["failed-copy-1"]
-    assert "JOIN agent_board.tasks" not in executed[0]
-    assert "LEFT JOIN public.direct_automation_jobs r" in executed[0]
+    select_sql = next(sql for sql in executed if "FROM candidates j" in sql)
+    assert "JOIN agent_board.tasks" not in select_sql
+    assert "LEFT JOIN direct_automation.jobs r" in select_sql
 
 
 def test_mark_copy_retry_started_allows_replacing_interrupted_retry(monkeypatch):
@@ -666,6 +667,7 @@ def test_copy_retry_body_strips_old_job_markers_and_cleans_drafts():
             "_copy_api_payload_hash": "old-hash",
             "source_login": "source-login",
             "target_login": "target-login",
+            "created_by": "scherbakova",
             "campaign_ids": [11, 22],
             "target_cleanup": "none",
         },
@@ -677,6 +679,7 @@ def test_copy_retry_body_strips_old_job_markers_and_cleans_drafts():
     assert body["login"] == "target-login"
     assert body["target_login"] == "target-login"
     assert body["created_by"] == "agent-board-auto"
+    assert body["_copy_retry_original_user"] == "scherbakova"
     assert body["_copy_retry_of"] == "failed1"
     assert body["_copy_retry_agent_board_task_id"] == 77
     assert body["target_cleanup"] == "delete_drafts"
@@ -853,6 +856,26 @@ def test_copy_uac_geo_strings_extract_phrase_keyword_dicts():
 
     assert keywords == ["купить авто из Саратова"]
     assert copy_uac._copy_uac_geo_guard("tp6_r0076", keywords, pairs, "r0076") == []
+
+
+def test_copy_uac_limits_titles_after_geo_replacement():
+    title = "Купить BAIC в Нижнем Новгороде. Цена от 5 351 ₽/мес. Звоните!"
+
+    limited = copy_uac._copy_uac_limit_strings([title], 56)
+
+    assert limited == ["Купить BAIC в Нижнем Новгороде. Цена от 5 351 ₽/мес"]
+    assert len(limited[0]) <= 56
+
+
+def test_copy_uac_geo_guard_does_not_match_city_form_inside_region_adjective():
+    pairs = [("Новосибирска", "Саратова"), ("Новосибирск", "Саратов")]
+
+    assert copy_uac._copy_uac_geo_guard(
+        "tp6_cpc_site_ct0014_aon_n000_r0076_ct001_ag011_g00",
+        ["ключи Новосибирская область"],
+        pairs,
+        "r0076",
+    ) == []
 
 
 def test_copy_uac_geo_guard_rejects_source_region_residuals():

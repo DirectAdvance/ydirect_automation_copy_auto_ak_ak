@@ -85,7 +85,7 @@ def _copy_jobs_recover() -> None:
         conn = _victory_conn_rw()
         try:
             cur = conn.cursor()
-            cur.execute("UPDATE public.direct_automation_jobs SET status='interrupted', updated_at=now() "
+            cur.execute("UPDATE direct_automation.jobs SET status='interrupted', updated_at=now() "
                         "WHERE kind='copy_campaigns' AND status IN ('running','queued')")
             conn.commit()
         finally:

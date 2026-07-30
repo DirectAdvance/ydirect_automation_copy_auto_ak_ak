@@ -17,25 +17,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import direct_git_zones  # noqa: E402
+
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]  # home/seoadvanced
 TOKEN_ENV_NAMES = ("GIT_TOKEN", "GITHUB_TOKEN", "GH_TOKEN")
 DEFAULT_BRANCH = "ydirect_automation_copy_auto_ak_ak"
 MARKER_FILE = ".deploy_version.json"
-COPY_SCOPE_PREFIXES = (
-    "copy",
-    "copy_service/",
-    "COPY_",
-    "tests/test_copy",
-)
-COPY_SCOPE_FILES = {
-    ".gitignore",
-    "CLAUDE.md",
-    "core/queue_server.py",
-    "core/job_repository.py",
-    "agent_board_bridge.py",
-    "tools/direct_git_guard.py",
-}
 
 
 def _secret_env_value(names: tuple[str, ...]) -> str:
@@ -128,22 +117,16 @@ def _dirty_target_lines(repo: Path, target_files: list[str]) -> list[str]:
     return dirty
 
 
-def _copy_scope_path(path: str) -> bool:
-    clean = path.strip()
-    if clean in COPY_SCOPE_FILES:
-        return True
-    return any(clean.startswith(prefix) for prefix in COPY_SCOPE_PREFIXES)
-
-
 def _dirty_scope_lines(lines: list[str], scope: str) -> list[str]:
-    if scope != "copy":
+    if scope == "all":
         return lines
     dirty: list[str] = []
     for line in lines:
         path = line[3:] if len(line) > 3 else line
         if " -> " in path:
             path = path.split(" -> ", 1)[1]
-        if _copy_scope_path(path):
+        zone = direct_git_zones.classify(path)
+        if zone == scope:
             dirty.append(line)
     return dirty
 
@@ -290,7 +273,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     preflight = sub.add_parser("preflight", help="Check branch, remote freshness and dirty files before edits")
     preflight.add_argument("--target-file", action="append", default=[], help="File that the task plans to edit")
-    preflight.add_argument("--scope", choices=("all", "copy"), default="all", help="Dirty-file scope")
+    preflight.add_argument(
+        "--scope",
+        choices=("all", "copy", "content", "slepki", "automation"),
+        default="all",
+        help="Dirty-file scope",
+    )
     preflight.add_argument("--allow-dirty", action="store_true", help="Allow existing dirty files")
     preflight.add_argument("--require-remote", action="store_true", help="Block when origin/<branch> is absent")
     preflight.set_defaults(func=cmd_preflight)
@@ -301,7 +289,12 @@ def build_parser() -> argparse.ArgumentParser:
     marker.set_defaults(func=cmd_marker)
 
     status = sub.add_parser("status", help="Show git state and deploy marker")
-    status.add_argument("--scope", choices=("all", "copy"), default="all", help="Dirty-file scope")
+    status.add_argument(
+        "--scope",
+        choices=("all", "copy", "content", "slepki", "automation"),
+        default="all",
+        help="Dirty-file scope",
+    )
     status.set_defaults(func=cmd_status)
     return parser
 

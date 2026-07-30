@@ -405,7 +405,7 @@ def register_copy_routes(
     @access
     def api_copy_queue():
         """Список последних copy-джоб для вкладки «Очередь» в редакторе контента.
-        Читает из public.direct_automation_jobs (kind='copy_campaigns') — тот же источник,
+        Читает из direct_automation.jobs (kind='copy_campaigns') — тот же источник,
         что и UI очереди direct-create; НЕ дублирует хранение, только читает.
         Автор берётся из body.created_by, область видимости — по directologist-правам."""
         if copy_queue_func is None:

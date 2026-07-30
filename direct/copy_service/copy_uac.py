@@ -17,6 +17,8 @@ from .copy_geo import _COPY_R_CODE_RE, _copy_apply_geo_replacements, _copy_norma
 
 # ── DI (инъектится copy_engine.configure фан-аутом; None до инъекции) ──
 _direct_tokens = _resolve_agency_hint = _token_for_login = _v501_svc = None
+_UAC_TITLE_MAX = 56
+_UAC_TEXT_MAX = 81
 
 
 def configure(deps: dict) -> None:
@@ -77,6 +79,30 @@ def _copy_uac_geo_strings(values: list[str], geo_pairs: list[tuple[str, str]] | 
     return out
 
 
+def _copy_uac_limit_strings(values: list[str], max_len: int) -> list[str]:
+    out: list[str] = []
+    for val in values or []:
+        text = str(val or "").strip()
+        if len(text) > max_len:
+            cut = text[:max_len].rstrip()
+            boundary = max(
+                cut.rfind("."),
+                cut.rfind("!"),
+                cut.rfind("?"),
+                cut.rfind(";"),
+            )
+            if boundary >= int(max_len * 0.55):
+                cut = cut[:boundary].rstrip()
+            else:
+                space = cut.rfind(" ")
+                if space >= int(max_len * 0.55):
+                    cut = cut[:space].rstrip()
+            text = cut.rstrip(" .,!?:;")
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
 def _copy_uac_sitelinks(value, *, source_domain: str, target_domain: str,
                         geo_pairs: list[tuple[str, str]] | None = None) -> list[dict]:
     out = []
@@ -113,9 +139,8 @@ def _copy_uac_geo_guard(name: str, text_fields: list[str], geo_pairs: list[tuple
         return errors
 
     haystack = "\n".join([str(name or "")] + [str(x or "") for x in text_fields or []])
-    hay_low = haystack.casefold()
     for term in source_terms:
-        if term.casefold() in hay_low:
+        if re.search(r"\b" + re.escape(term) + r"\b", haystack, re.IGNORECASE | re.UNICODE):
             errors.append(f"осталось исходное гео {term!r}")
             break
     return errors
@@ -478,8 +503,14 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
                 raise RuntimeError("uac detail пуст")
             source_domain = str(body.get("_copy_source_domain") or "").strip()
             target_domain = str(body.get("target_domain") or "").strip()
-            titles = _copy_uac_geo_strings(_copy_uac_strings(d, "titles", "title_items", limit=5), geo_pairs)
-            texts = _copy_uac_geo_strings(_copy_uac_strings(d, "texts", "text_items", limit=3), geo_pairs)
+            titles = _copy_uac_limit_strings(
+                _copy_uac_geo_strings(_copy_uac_strings(d, "titles", "title_items", limit=5), geo_pairs),
+                _UAC_TITLE_MAX,
+            )
+            texts = _copy_uac_limit_strings(
+                _copy_uac_geo_strings(_copy_uac_strings(d, "texts", "text_items", limit=3), geo_pairs),
+                _UAC_TEXT_MAX,
+            )
             sitelinks = _copy_uac_sitelinks(_copy_uac_value(d, "sitelinks", default=[]) or [],
                                             source_domain=source_domain, target_domain=target_domain,
                                             geo_pairs=geo_pairs)
