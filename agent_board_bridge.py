@@ -41,6 +41,12 @@ def ensure_content_job_agent_column(jobs_exec: Callable, table: str) -> None:
 def ensure_content_retry_columns(jobs_exec: Callable, table: str) -> None:
     jobs_exec(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS content_retry_job_id text")
     jobs_exec(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS content_retry_started_at timestamptz")
+    # Depth of the retry chain (0 = original job, N = Nth consecutive auto-retry).
+    # Gates content_jobs_ready_for_agent_retry so a chronically-failing retry chain
+    # cannot loop forever (codex-auditor finding, content-retry-cap-fix).
+    jobs_exec(
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS content_retry_depth int NOT NULL DEFAULT 0"
+    )
 
 
 def ensure_price_job_agent_column(victory_conn_rw: Callable) -> None:
@@ -308,11 +314,18 @@ def mark_copy_retry_started(victory_conn_rw: Callable, failed_job_id: str, retry
         conn.close()
 
 
-def content_jobs_ready_for_agent_retry(jobs_exec: Callable, table: str, *, limit: int = 5) -> list[dict[str, Any]]:
+def content_jobs_ready_for_agent_retry(
+    jobs_exec: Callable, table: str, *, limit: int = 5, max_depth: int = 3
+) -> list[dict[str, Any]]:
     """Failed content-editor jobs whose Agent Board task is done (one-shot retry).
 
     Unlike copy, content_jobs has no ``interrupted`` status/recovery, so the retry
-    is one-shot: ``content_retry_job_id IS NULL`` is the only gate, no re-attempt.
+    is one-shot per row: ``content_retry_job_id IS NULL`` gates a row from being
+    retried twice. That alone does not cap the CHAIN length though — a new retry
+    row that itself fails is a separate row with its own ``content_retry_job_id IS
+    NULL``, so the error -> agent-board-task -> done -> retry cycle could repeat on
+    it forever. ``content_retry_depth`` caps that chain: rows at/above ``max_depth``
+    are excluded here and simply stay terminal ``status='error'`` for manual triage.
     """
     ensure_content_retry_columns(jobs_exec, table)
     rows = jobs_exec(
@@ -320,9 +333,10 @@ def content_jobs_ready_for_agent_retry(jobs_exec: Callable, table: str, *, limit
             WHERE status='error'
               AND agent_board_task_id IS NOT NULL
               AND content_retry_job_id IS NULL
+              AND coalesce(content_retry_depth, 0) < %s
             ORDER BY finished_at
             LIMIT %s""",
-        (max(1, int(limit)) * 5,),
+        (max_depth, max(1, int(limit)) * 5),
         "all",
     ) or []
     if not rows:
@@ -333,16 +347,12 @@ def content_jobs_ready_for_agent_retry(jobs_exec: Callable, table: str, *, limit
     return ready[:limit]
 
 
-def mark_content_retry_started(jobs_exec: Callable, table: str, failed_job_id: str, retry_job_id: str) -> bool:
-    row = jobs_exec(
-        f"""UPDATE {table}
-            SET content_retry_job_id=%s, content_retry_started_at=now()
-            WHERE job_id=%s AND status='error' AND content_retry_job_id IS NULL
-            RETURNING job_id""",
-        (retry_job_id, failed_job_id),
-        "one",
-    )
-    return bool(row)
+# mark_content_retry_started() was removed (content-retry-cap-fix): a standalone
+# UPDATE run as a second _jobs_exec call after INSERT was not atomic with it — a
+# crash between the two could insert an orphan retry row while leaving the failed
+# row's content_retry_job_id NULL, causing a duplicate retry on the next poll.
+# content_worker._content_retry_insert_from_failed() now does INSERT+UPDATE as one
+# writable-CTE statement instead.
 
 
 def notify_unreported_content_errors(jobs_exec: Callable, table: str, *, limit: int = 5) -> list[int]:

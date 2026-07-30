@@ -46,6 +46,10 @@ AGENCY_PARALLEL = int(os.environ.get("CE_AGENCY_PARALLEL") or 2)
 MAX_ATTEMPTS = int(os.environ.get("CE_MAX_ATTEMPTS") or 3)
 POLL_SECONDS = float(os.environ.get("CE_POLL_SECONDS") or 2.0)
 CONTENT_AGENT_RETRY_POLL = int(os.environ.get("CE_AGENT_RETRY_POLL") or 60)
+# Max length of the error -> agent-board-task -> done -> retry chain per job lineage
+# (content_retry_depth). A row at/above this depth stays terminal 'error' instead of
+# retrying again (content-retry-cap-fix, codex-auditor finding).
+CONTENT_AGENT_RETRY_MAX_DEPTH = int(os.environ.get("CE_AGENT_RETRY_MAX_DEPTH") or 3)
 WORKER_NAME = f"{socket.gethostname()}:{os.getpid()}"
 
 T = ce.CE_JOBS_TABLE
@@ -241,25 +245,54 @@ def _requeue_stale() -> None:
         "WHERE status='running' AND started_at < now() - interval '2 hours'")
 
 
-def _content_retry_insert_from_failed(jobs_exec, table: str, row: dict) -> str:
-    """Build a fresh content_jobs INSERT from a failed row (mirrors _copy_retry_body_from_failed,
-    but content_jobs stores flat columns, not one body jsonb — see agent_board_bridge.py note)."""
+def _content_retry_insert_from_failed(jobs_exec, table: str, row: dict) -> str | None:
+    """Insert a fresh content_jobs retry row from a failed row AND mark the failed
+    row's content_retry_job_id in the SAME statement (mirrors _copy_retry_body_from_failed,
+    but content_jobs stores flat columns, not one body jsonb — see agent_board_bridge.py note).
+
+    INSERT + mark used to be two separate _jobs_exec calls (two connections/transactions):
+    a crash between them left the failed row's content_retry_job_id NULL while an orphan
+    retry row already existed, so the daemon's next poll created a SECOND retry for the
+    same failure (content-retry-cap-fix, codex-auditor finding). A writable CTE makes both
+    happen in one statement/transaction instead.
+
+    content_retry_depth is the failed row's depth + 1, so the chain length is capped by
+    content_jobs_ready_for_agent_retry()'s max_depth gate on the NEXT poll.
+
+    Returns the retry job_id, or None if the failed row no longer matched the UPDATE's
+    WHERE (status/content_retry_job_id changed under us). In that rare race the INSERT
+    still committed (a writable CTE's INSERT runs regardless of what the outer statement
+    matches) — the orphan retry row is not linked to any failed job, but it is a normal
+    queued job and will simply execute on its own; it is not a correctness hazard, just
+    logged so it's visible if it ever happens."""
     import json
     import uuid
 
     job_id = "ce_" + uuid.uuid4().hex[:12]
     access = row.get("access_directologists")
-    jobs_exec(
-        f"""INSERT INTO {table}
-            (job_id, username, login, agency, type, old_text, new_text, mode,
-             campaign_count, access_directologists)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+    depth = int(row.get("content_retry_depth") or 0) + 1
+    result = jobs_exec(
+        f"""WITH ins AS (
+                INSERT INTO {table}
+                    (job_id, username, login, agency, type, old_text, new_text, mode,
+                     campaign_count, access_directologists, content_retry_depth)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING job_id
+            )
+            UPDATE {table}
+            SET content_retry_job_id = (SELECT job_id FROM ins),
+                content_retry_started_at = now()
+            WHERE job_id = %s AND status='error' AND content_retry_job_id IS NULL
+            RETURNING (SELECT job_id FROM ins) AS retry_job_id""",
         (job_id, "agent-board-auto", row["login"], row.get("agency") or "",
          row["type"], row["old_text"], row["new_text"], row.get("mode") or "exact",
          row.get("campaign_count") or 1,
-         json.dumps(access, ensure_ascii=False) if access is not None else None),
+         json.dumps(access, ensure_ascii=False) if access is not None else None,
+         depth,
+         row["job_id"]),
+        "one",
     )
-    return job_id
+    return result["retry_job_id"] if result else None
 
 
 def _content_login_has_active_job(jobs_exec, table: str, login: str) -> bool:
@@ -274,17 +307,20 @@ def _content_agent_retry_daemon_loop() -> None:
     """When a linked Agent Board task is done, requeue the failed content job once.
 
     Mirrors _copy_agent_retry_daemon_loop (queue_server.py), but content_jobs has no
-    'interrupted' status, so the retry is one-shot (content_retry_job_id IS NULL gate,
-    no re-attempt). CE_DAILY_JOB_CAP is intentionally bypassed here, same as copy does."""
+    'interrupted' status, so a given row is retried one-shot (content_retry_job_id IS
+    NULL gate). The CHAIN of consecutive retries is capped separately by
+    content_retry_depth/CONTENT_AGENT_RETRY_MAX_DEPTH — see content_jobs_ready_for_agent_retry().
+    CE_DAILY_JOB_CAP is intentionally bypassed here, same as copy does."""
     from .agent_board_bridge import (
         ensure_content_retry_columns,
         content_jobs_ready_for_agent_retry,
-        mark_content_retry_started,
     )
     while True:
         try:
             ensure_content_retry_columns(ce._jobs_exec, T)
-            rows = content_jobs_ready_for_agent_retry(ce._jobs_exec, T, limit=5)
+            rows = content_jobs_ready_for_agent_retry(
+                ce._jobs_exec, T, limit=5, max_depth=CONTENT_AGENT_RETRY_MAX_DEPTH
+            )
         except Exception as e:  # noqa: BLE001
             _log(f"[content-agent-retry] scan failed: {str(e)[:160]}")
             rows = []
@@ -298,12 +334,12 @@ def _content_agent_retry_daemon_loop() -> None:
             try:
                 retry_jid = _content_retry_insert_from_failed(ce._jobs_exec, T, row)
             except Exception as e:  # noqa: BLE001
-                _log(f"[content-agent-retry] insert failed {failed_jid}: {str(e)[:160]}")
+                _log(f"[content-agent-retry] insert+mark failed {failed_jid}: {str(e)[:160]}")
                 continue
-            try:
-                mark_content_retry_started(ce._jobs_exec, T, failed_jid, retry_jid)
-            except Exception as e:  # noqa: BLE001
-                _log(f"[content-agent-retry] mark failed {failed_jid}->{retry_jid}: {str(e)[:160]}")
+            if not retry_jid:
+                _log(f"[content-agent-retry] {failed_jid}: UPDATE matched no row "
+                     "(status/content_retry_job_id changed under us) — retry row inserted orphaned")
+                continue
             _log(f"[content-agent-retry] {failed_jid} -> {retry_jid} login={login}")
         time.sleep(max(10, CONTENT_AGENT_RETRY_POLL))
 
