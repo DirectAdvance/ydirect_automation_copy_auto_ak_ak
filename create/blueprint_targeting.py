@@ -398,14 +398,19 @@ def _pack_group_fact(slepok: str, site_type: str, tp: str, ct: str, gk: str) -> 
     # донора, включая маркер ---autotargeting): у групп без своего per-group файла (aon-группы
     # с дружественным gk) родного пака нет вовсе, поэтому "оставить auto из родного" эквивалентно
     # "всегда false" и теряет флаг автотаргетинга донора (TP4_DONOR_FALLBACK_LOSES_AUTO_BADGE).
-    # Условие срабатывания фолбэка — `d_real > 0 or d_auto`, НЕ только `d_real > 0`: у ~13.6%
-    # per-group файлов пака (3476/25542) единственная непустая строка — сам маркер, без
-    # реальных фраз (d_real=0, d_auto=True). При `if d_real > 0` такой донор молча пропускался
-    # и auto оставался False, хотя у донора автотаргетинг реально задан (найдено ревью
-    # direct_neyrodirektolog). `real`/`reals` в этом случае корректно остаются 0/[] — фолбэк
-    # только подхватывает флаг auto, ключи по-прежнему не выдумываются.
+    # У ~13.6% per-group файлов пака (3476/25542) единственная непустая строка — сам маркер,
+    # без реальных фраз (d_real=0, d_auto=True); такого донора нельзя молча пропускать — auto
+    # у него реально задан (найдено ревью direct_neyrodirektolog). Но переходить в break по
+    # ПЕРВОМУ такому донору тоже нельзя: для tp4 цепочка tp2→tp1 двухшаговая, и marker-only
+    # tp2 не должен обрывать поиск РЕАЛЬНЫХ ключей в tp1 (живой пример
+    # Мультибренд/salamahin/ct0036/changan_cs95: tp2 marker-only, tp1 несёт 30 реальных фраз —
+    # наивный `break` на marker-only tp2 терял их, real падал с 30 до 0). Поэтому `d_auto`
+    # копится по ВСЕЙ цепочке (`chain_auto`), а `break`/присвоение real/reals происходит
+    # только когда найден донор с `d_real > 0`; если реальных ключей не нашлось нигде в
+    # цепочке — real/reals остаются 0/[], а auto всё равно подхватывает накопленный `chain_auto`.
     if real == 0 and tp in ("tp2", "tp4"):
         donors: tuple = ("tp2", "tp1") if tp == "tp4" else ("tp1",)
+        chain_auto = False
         for donor_tp in donors:
             d_kd = os.path.join(kp._ct_dir(site_type, donor_tp, ct), "keywords")
             if slug:
@@ -426,11 +431,14 @@ def _pack_group_fact(slepok: str, site_type: str, tp: str, ct: str, gk: str) -> 
                 else:
                     d_real += 1
                     d_reals.append(s)
-            if d_real > 0 or d_auto:
+            chain_auto = chain_auto or d_auto
+            if d_real > 0:
                 real = d_real
                 reals = d_reals
-                auto = auto or d_auto
+                auto = auto or chain_auto
                 break
+        else:
+            auto = auto or chain_auto
     # sig — подпись СОДЕРЖИМОГО пака (кол-во + первый/последний реальный ключ), 1:1 с клиентским
     # `_sig` в _slCountKeywords. Нужна для дедупа счётчика: группы без своего per-group файла
     # падают на ОДИН ct-агрегат и должны быть посчитаны один раз. Наружу (в pack_facts) НЕ уходит.
