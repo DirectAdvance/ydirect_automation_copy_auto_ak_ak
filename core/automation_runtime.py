@@ -67,6 +67,7 @@ from ..llm_providers import (           # ре-экспорт: внутренн�
     _M3_LLM_TIMEOUT_14B, _M3_LLM_REPAIR_TIMEOUT, _M3_CONTENT_IDLE_TIMEOUT, _OPENROUTER_LLM_MODEL,
     _m3_llm_probe, _m3_complete, _m3_complete_url, _m3_complete_parallel,
     _openrouter_api_key, _openrouter_probe, _openrouter_completion_probe,
+    openrouter_profiles_available as _openrouter_profiles_available,
     _or_complete_url, _llm_pair_for,
     _strip_error_leak, _has_error_leak,
 )
@@ -4496,6 +4497,7 @@ _pack_resolver.configure({
     "_m3_llm_probe": _m3_llm_probe,
     "_openrouter_probe": _openrouter_probe,
     "_openrouter_completion_probe": _openrouter_completion_probe,
+    "_openrouter_profiles_available": _openrouter_profiles_available,
     "_touch_running_jobs_heartbeat": _touch_running_jobs_heartbeat,
 })
 _account_service.configure({

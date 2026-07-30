@@ -20,6 +20,9 @@ _ct_segment_map = _missing
 _m3_llm_probe = _missing
 _openrouter_probe = _missing
 _openrouter_completion_probe = _missing
+# Профили OpenRouter (рабочий → личный). Дефолт — только рабочий: если DI не прокинул
+# (старый вызывающий код), гейт ведёт себя ровно как прежде, а не падает на _missing.
+_openrouter_profiles_available = lambda: ["work"]  # noqa: E731
 _touch_running_jobs_heartbeat = _missing
 
 
@@ -169,10 +172,16 @@ def _m3_or_openrouter_gate_ok() -> bool:
     if _m3_completion_gate_ok():
         print("[m3-gate] M3 health моргнул, но completion-probe OK — продолжаем", flush=True)
         return True
-    if _openrouter_probe() and _openrouter_completion_probe():
-        print("[m3-gate] M3 недоступен, OpenRouter жив → контент пойдёт через "
-              "DeepSeek V4 Flash (платно)", flush=True)
-        return True
+    # Профили OpenRouter в порядке приоритета: рабочий → личный (резерв). Раньше здесь
+    # проверялся ТОЛЬКО рабочий ключ, поэтому при его исчерпании гейт останавливал создание,
+    # хотя живой личный ключ уже был (живой случай 2026-07-30: work HTTP 402, home OK,
+    # check_content_pipeline_health давал any_alive=True, а этот гейт — False).
+    for _prof in _openrouter_profiles_available():
+        if _openrouter_probe(profile=_prof) and _openrouter_completion_probe(profile=_prof):
+            _who = "рабочий" if _prof == "work" else "личный (резерв)"
+            print(f"[m3-gate] M3 недоступен, OpenRouter {_who} жив → контент пойдёт через "
+                  "DeepSeek V4 Flash (платно)", flush=True)
+            return True
     return False
 
 
