@@ -47,6 +47,7 @@ INCLUDE_GLOBS = (
     # Git-контракт зоны.
     "direct/tools/direct_git_guard.py",
     "direct/tools/copy_service_git.py",
+    "direct/tools/direct_git_zones.py",
 )
 
 # ⛔ Ничего из этих зон в copy-репозиторий попадать не должно.

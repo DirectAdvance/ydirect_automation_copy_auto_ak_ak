@@ -108,7 +108,7 @@ def _copy_queue_allowed_directologists() -> list[str] | None:
 
 
 def _copy_repair_pending(job_id: str) -> bool:
-    """True если для copy-job есть незавершённая запись в public.direct_delayed_repairs.
+    """True если для copy-job есть незавершённая запись в direct_automation.delayed_repairs.
 
     Persistent добивка (kind='content_repair') создаётся queue_server после done copy-job
     (_schedule_delayed_content_repair_after_done) и выполняется демоном direct-create-worker.
@@ -123,7 +123,7 @@ def _copy_repair_pending(job_id: str) -> bool:
         try:
             cur = conn.cursor()
             cur.execute(
-                "SELECT 1 FROM public.direct_delayed_repairs "
+                "SELECT 1 FROM direct_automation.delayed_repairs "
                 "WHERE parent_job_id = %s "
                 "  AND status IN ('waiting', 'running') "
                 "LIMIT 1",
@@ -150,7 +150,7 @@ def _copy_api_idempotency_lookup(idempotency_key: str) -> dict | None:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             cur.execute(
                 "SELECT job_id, login, status, total, kind, agency, body "
-                "FROM public.direct_automation_jobs "
+                "FROM direct_automation.jobs "
                 "WHERE kind='copy_campaigns' "
                 "  AND body->>'_copy_api_idempotency_key' = %s "
                 "ORDER BY created_at DESC LIMIT 1",
@@ -165,11 +165,12 @@ def _copy_api_idempotency_lookup(idempotency_key: str) -> dict | None:
 
 
 def _copy_queue_jobs() -> list[dict]:
-    """Последние 200 copy-джоб из public.direct_automation_jobs для вкладки «Очередь».
+    """Последние 200 copy-джоб из direct_automation.jobs для вкладки «Очередь».
     Возвращает список dict с полями: job_id, status, total, done, created, failed,
     error, created_at, source_login, target_login, elapsed.
     При недоступности Victory возвращает пустой список."""
     allowed_directologists = _copy_queue_allowed_directologists()
+    username = (session.get("username") or "").strip()
     try:
         import psycopg2.extras
         from direct.core.direct_repository import victory_conn
@@ -181,7 +182,7 @@ def _copy_queue_jobs() -> list[dict]:
                 cur.execute(
                     "SELECT job_id, login, status, total, done, created, failed, "
                     "       error, created_at, body "
-                    "FROM public.direct_automation_jobs "
+                    "FROM direct_automation.jobs "
                     "WHERE kind='copy_campaigns' "
                     "ORDER BY created_at DESC LIMIT 200"
                 )
@@ -193,16 +194,16 @@ def _copy_queue_jobs() -> list[dict]:
                 cur.execute(
                     "SELECT j.job_id, j.login, j.status, j.total, j.done, j.created, j.failed, "
                     "       j.error, j.created_at, j.body "
-                    "FROM public.direct_automation_jobs j "
+                    "FROM direct_automation.jobs j "
                     "WHERE j.kind='copy_campaigns' "
-                    "  AND EXISTS ("
+                    "  AND (EXISTS ("
                     "    SELECT 1 FROM public.local_gsheet_sites s "
                     "    WHERE s.direction='Авто' "
                     "      AND s.directologist = ANY(%s) "
                     "      AND s.login_key IN (j.body->>'source_login', COALESCE(j.body->>'target_login', j.login))"
-                    "  ) "
+                    "  ) OR j.body->>'created_by' = %s OR j.body->>'_copy_retry_original_user' = %s) "
                     "ORDER BY j.created_at DESC LIMIT 200",
-                    (allowed_directologists,),
+                    (allowed_directologists, username, username),
                 )
             rows = [dict(r) for r in cur.fetchall()]
         finally:
@@ -216,6 +217,7 @@ def _copy_queue_jobs() -> list[dict]:
         source_login = body.get("source_login") or ""
         target_login = body.get("target_login") or r.get("login") or ""
         created_by = body.get("created_by") or body.get("username") or body.get("_actor") or ""
+        original_created_by = body.get("_copy_retry_original_user") or ""
         created_at = r.get("created_at")
         if hasattr(created_at, "timestamp"):
             try:
@@ -234,6 +236,7 @@ def _copy_queue_jobs() -> list[dict]:
             "source_login": source_login,
             "target_login": target_login,
             "created_by": created_by,
+            "original_created_by": original_created_by,
             "elapsed": None,
         })
     return result
