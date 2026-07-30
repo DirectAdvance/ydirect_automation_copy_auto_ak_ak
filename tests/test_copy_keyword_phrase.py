@@ -50,3 +50,13 @@ def test_uac_keyword_strings_limits_overlong_phrase_without_dangling_plus_word()
     )
 
     assert keywords == ["авито нижний новгород нижегородская область +с пробегом"]
+
+
+def test_uac_sanitize_limits_direct_overlong_keyword_without_dangling_plus_word():
+    clean_keywords, minus_keywords = _copy_uac_sanitize_keywords(
+        ["авито нижний новгород нижегородская область авто +с пробегом"],
+        [],
+    )
+
+    assert clean_keywords == ["авито нижний новгород нижегородская область +с пробегом"]
+    assert minus_keywords == []

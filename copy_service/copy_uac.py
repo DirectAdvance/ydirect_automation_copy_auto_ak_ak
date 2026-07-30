@@ -145,7 +145,11 @@ def _copy_uac_sanitize_keywords(
     seen_minus: set[str] = set()
 
     def add_keyword(value: str) -> None:
-        text = str(value or "").strip()
+        text = clean_keyword_phrase(
+            str(value or "").strip(),
+            [],
+            max_positive_words=_UAC_KEYWORD_MAX_POSITIVE_WORDS,
+        )
         key = text.lower()
         if text and key not in seen_keywords:
             seen_keywords.add(key)
