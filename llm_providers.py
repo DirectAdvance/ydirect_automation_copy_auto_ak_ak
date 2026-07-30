@@ -567,11 +567,17 @@ _OPENROUTER_IDLE_TIMEOUT = float(os.environ.get("OPENROUTER_IDLE_TIMEOUT", "45")
 _OPENROUTER_HARD_CAP = float(os.environ.get("OPENROUTER_HARD_CAP", "240"))
 
 
-def _openrouter_api_key() -> str:
-    """OPENROUTER_API_KEY через .secret/loader.load_openrouter (кэш процесса).
+def _openrouter_api_key(profile: str = "work") -> str:
+    """Ключ OpenRouter по профилю через .secret/loader.load_openrouter (кэш процесса).
+
+    `work` — рабочий ключ (`OPENROUTER_API_KEY`), `home` — личный резерв
+    (`OPENROUTER_HOME_API_KEY`). Личный включается ТОЛЬКО когда рабочий контур
+    (M3 + рабочий OpenRouter) недоступен — приоритет Семёна 2026-07-30.
+
     ⚠ НЕ load_secrets() — легаси-сводный dict этот ключ не отдаёт (грабли 03.07)."""
-    if "key" in _OPENROUTER_KEY_CACHE:
-        return _OPENROUTER_KEY_CACHE["key"]
+    prof = (profile or "work").strip().lower()
+    if prof in _OPENROUTER_KEY_CACHE:
+        return _OPENROUTER_KEY_CACHE[prof]
     key = ""
     try:
         import pathlib
@@ -582,22 +588,28 @@ def _openrouter_api_key() -> str:
                 if str(cand.parent) not in _sys.path:
                     _sys.path.insert(0, str(cand.parent))
                 from loader import load_openrouter  # type: ignore
-                key = str((load_openrouter() or {}).get("api_key") or "")
+                key = str((load_openrouter(prof) or {}).get("api_key") or "")
                 break
     except Exception as _ke:  # noqa: BLE001
         # НЕ кэшируем пустоту: транзиентный сбой чтения .secret не должен отключать
         # платный контур до рестарта (ревью 03.07). Ошибку показываем, не глотаем.
-        print(f"[llm-or] ключ не прочитан (повторим при следующем вызове): {str(_ke)[:120]}", flush=True)
+        print(f"[llm-or] ключ ({prof}) не прочитан (повторим при следующем вызове): {str(_ke)[:120]}",
+              flush=True)
         return ""
     if key:
-        _OPENROUTER_KEY_CACHE["key"] = key
+        _OPENROUTER_KEY_CACHE[prof] = key
     return key
 
 
-def _openrouter_probe(timeout: float = 5.0) -> bool:
-    """Жив ли платный контур: ключ есть И авторизованный эндпоинт отвечает.
+def openrouter_profiles_available() -> list[str]:
+    """Профили OpenRouter, у которых реально есть ключ. Порядок = приоритет обращения."""
+    return [p for p in ("work", "home") if _openrouter_api_key(p)]
+
+
+def _openrouter_probe(timeout: float = 5.0, profile: str = "work") -> bool:
+    """Жив ли платный контур ДАННОГО профиля: ключ есть И авторизованный эндпоинт отвечает.
     Используется M3-гейтом: M3 лёг, OpenRouter жив → НЕ паузим, фолбэк переключит сам."""
-    key = _openrouter_api_key()
+    key = _openrouter_api_key(profile)
     if not key:
         return False
     import requests as _rqs
@@ -612,15 +624,15 @@ def _openrouter_probe(timeout: float = 5.0) -> bool:
         d = (r.json() or {}).get("data") or {}
         lim, usage = d.get("limit"), d.get("usage")
         if lim is not None and usage is not None and float(usage) >= float(lim):
-            print("[llm-or] лимит OpenRouter исчерпан (usage>=limit) — контур считаем недоступным",
-                  flush=True)
+            print(f"[llm-or] лимит OpenRouter ({profile}) исчерпан (usage>=limit) — "
+                  f"контур считаем недоступным", flush=True)
             return False
         return True
     except Exception:  # noqa: BLE001
         return False
 
 
-def _openrouter_completion_probe(timeout: float = 8.0) -> bool:
+def _openrouter_completion_probe(timeout: float = 8.0, profile: str = "work") -> bool:
     """Минимальный платёжеспособный probe completions.
 
     `/api/v1/key` проверяет только валидность ключа/лимит, но не гарантирует, что текущий
@@ -628,7 +640,7 @@ def _openrouter_completion_probe(timeout: float = 8.0) -> bool:
     на генерации. Запрашиваем тот же порядок max_tokens, что у тяжёлых генераций, иначе
     `max_tokens=1` проходит при остатке 134–195 токенов и даёт ложный OK.
     """
-    key = _openrouter_api_key()
+    key = _openrouter_api_key(profile)
     if not key:
         return False
     import requests as _rqs
@@ -645,10 +657,11 @@ def _openrouter_completion_probe(timeout: float = 8.0) -> bool:
                       timeout=(_OPENROUTER_CONNECT_TIMEOUT, timeout), proxies=_OR_PROXIES)
         if r.status_code == 200:
             return True
-        print(f"[llm-or] completion-probe failed: HTTP {r.status_code}: {r.text[:120]}", flush=True)
+        print(f"[llm-or] completion-probe ({profile}) failed: HTTP {r.status_code}: "
+              f"{r.text[:120]}", flush=True)
         return False
     except Exception as e:  # noqa: BLE001
-        print(f"[llm-or] completion-probe unavailable: {str(e)[:120]}", flush=True)
+        print(f"[llm-or] completion-probe ({profile}) unavailable: {str(e)[:120]}", flush=True)
         return False
 
 
@@ -685,19 +698,30 @@ def check_content_pipeline_health(
             print("[llm-preflight] M3 /v1/models не ответил, но completion-probe OK", flush=True)
         return models_alive, completion_alive
 
-    def _check_or() -> bool:
+    def _check_or_profile(profile: str) -> bool:
         for attempt in range(or_retries):
-            if _openrouter_probe(timeout=or_timeout) and _openrouter_completion_probe(timeout=or_timeout):
+            if (_openrouter_probe(timeout=or_timeout, profile=profile)
+                    and _openrouter_completion_probe(timeout=or_timeout, profile=profile)):
                 return True
             if attempt < or_retries - 1:
                 _time.sleep(or_pause)
         return False
 
-    with ThreadPoolExecutor(max_workers=2) as _ex:
+    # Профили проверяем ОБА и параллельно: гейт обязан знать, есть ли ХОТЬ ОДИН живой контур.
+    # Приоритет (рабочий → личный) реализован в _or_complete_url, а не тут: здесь только
+    # ответ на вопрос «можно ли вообще начинать набор».
+    _profiles = openrouter_profiles_available()
+    with ThreadPoolExecutor(max_workers=1 + max(1, len(_profiles))) as _ex:
         _fm3 = _ex.submit(_check_m3)
-        _for = _ex.submit(_check_or)
+        _fors = {prof: _ex.submit(_check_or_profile, prof) for prof in _profiles}
         m3_models_alive, m3_alive = _fm3.result()
-        or_alive = _for.result()
+        or_by_profile = {prof: bool(f.result()) for prof, f in _fors.items()}
+    or_work_alive = bool(or_by_profile.get("work"))
+    or_home_alive = bool(or_by_profile.get("home"))
+    or_alive = or_work_alive or or_home_alive
+    if or_home_alive and not or_work_alive:
+        print("[llm-preflight] рабочий OpenRouter недоступен — резервом идёт личный ключ (home)",
+              flush=True)
     m3_solo_stable_alive = m3_alive
     if m3_alive and not or_alive and _M3_SOLO_COMPLETION_REQUIRED_SUCCESSES > 1:
         # Если OpenRouter неплатежеспособен/недоступен, M3 остаётся единственным контуром.
@@ -716,15 +740,16 @@ def check_content_pipeline_health(
             )
             m3_alive = False
 
+    _or_who = "рабочий OpenRouter" if or_work_alive else ("личный OpenRouter (резерв)" if or_home_alive else "OpenRouter")
     if m3_alive and or_alive:
-        message = "M3 completion жив, OpenRouter жив"
+        message = f"M3 completion жив, {_or_who} жив"
     elif m3_alive:
         message = "M3 completion жив (OpenRouter недоступен — идём без фолбэка)"
     elif or_alive:
         if m3_models_alive:
-            message = "OpenRouter жив (M3 /v1/models жив, но completion мёртв — M3 отключён)"
+            message = f"{_or_who} жив (M3 /v1/models жив, но completion мёртв — M3 отключён)"
         else:
-            message = "OpenRouter жив (M3 недоступен — фолбэк включится автоматически)"
+            message = f"{_or_who} жив (M3 недоступен — фолбэк включится автоматически)"
     else:
         if m3_models_alive:
             message = (
@@ -738,6 +763,8 @@ def check_content_pipeline_health(
             )
     return {"m3_alive": m3_alive, "m3_models_alive": m3_models_alive,
             "m3_completion_alive": m3_alive, "or_alive": or_alive,
+            "or_work_alive": or_work_alive, "or_home_alive": or_home_alive,
+            "or_profiles": list(_profiles),
             "m3_solo_stable_alive": m3_solo_stable_alive,
             "any_alive": m3_alive or or_alive, "message": message}
 
@@ -749,9 +776,12 @@ def _or_complete_url(url: str, messages: list, max_tokens: int = 400, temperatur
     ЧИСТЫЙ: (None, err) при сбое — фолбэк на M3 добавляет _llm_pair_for, не эта функция."""
     import time as _time
     import requests as _rqs
-    key = _openrouter_api_key()
-    if not key:
-        return None, "OPENROUTER_API_KEY пуст (.secret/.env)"
+    # Порядок профилей = приоритет Семёна 2026-07-30: сначала РАБОЧИЙ ключ, личный — только
+    # если рабочий не отработал (кончились кредиты / ключ пуст / контур недоступен). M3 к этому
+    # моменту уже отыгран другой стороной пары (_llm_pair_for), здесь только сторона OpenRouter.
+    _profiles = openrouter_profiles_available()
+    if not _profiles:
+        return None, "OPENROUTER_API_KEY пуст (.secret/.env); личный OPENROUTER_HOME_API_KEY тоже не задан"
     idle = float(timeout) if timeout is not None else _OPENROUTER_IDLE_TIMEOUT
     payload = {"model": _OPENROUTER_LLM_MODEL, "messages": messages,
                "max_tokens": int(max_tokens), "temperature": float(temperature), "stream": True}
@@ -759,50 +789,55 @@ def _or_complete_url(url: str, messages: list, max_tokens: int = 400, temperatur
         payload["top_p"] = float(top_p)
     last_err = "OpenRouter: нет ответа"
     n = max(1, tries)
-    for attempt in range(n):
-        last = (attempt == n - 1)
-        _touch_running_jobs_heartbeat()   # LLM-вызов = прогресс (анти-watchdog)
-        started = _time.time()
-        try:
-            r = _rqs.post("https://openrouter.ai/api/v1/chat/completions", json=payload,
-                          headers={"Authorization": f"Bearer {key}"}, stream=True,
-                          timeout=(_OPENROUTER_CONNECT_TIMEOUT, idle), proxies=_OR_PROXIES)
-        except Exception as e:  # noqa: BLE001
-            last_err = f"OpenRouter недоступен: {str(e)[:120]}"
+    for _pi, _prof in enumerate(_profiles):
+        key = _openrouter_api_key(_prof)
+        if _pi:
+            print(f"[llm-or] рабочий контур не отработал ({last_err[:90]}) — "
+                  f"переключаюсь на профиль '{_prof}'", flush=True)
+        for attempt in range(n):
+            last = (attempt == n - 1)
+            _touch_running_jobs_heartbeat()   # LLM-вызов = прогресс (анти-watchdog)
+            started = _time.time()
+            try:
+                r = _rqs.post("https://openrouter.ai/api/v1/chat/completions", json=payload,
+                              headers={"Authorization": f"Bearer {key}"}, stream=True,
+                              timeout=(_OPENROUTER_CONNECT_TIMEOUT, idle), proxies=_OR_PROXIES)
+            except Exception as e:  # noqa: BLE001
+                last_err = f"OpenRouter недоступен: {str(e)[:120]}"
+                if not last:
+                    _time.sleep(backoff)
+                continue
+            if r.status_code != 200:
+                last_err = f"OpenRouter HTTP {r.status_code}: {r.text[:160]}"
+                r.close()
+                if not last:
+                    _time.sleep(backoff)
+                continue
+            try:
+                content, hit_cap, meta = _consume_sse_stream(r, _OPENROUTER_HARD_CAP, started, idle=idle)
+            except Exception as e:  # noqa: BLE001
+                last_err = f"OpenRouter завис (нет токенов > {idle:.0f}с/обрыв): {str(e)[:120]}"
+                record_llm_failure("openrouter", "hang")
+                if not last:
+                    _time.sleep(backoff)
+                continue
+            finally:
+                r.close()
+            if hit_cap:
+                print(f"[llm-or] hard-cap {_OPENROUTER_HARD_CAP:.0f}с — стрим обрезан", flush=True)
+            if (content or "").strip():
+                return content, None
+            cls = _empty_content_class(meta)
+            last_err = _empty_content_reason("OpenRouter", meta)
+            record_llm_failure("openrouter", cls)
+            # ГРОМКО: раньше это была немая строка «пустой content», и набор молча ехал на статику.
+            print(f"[llm-or] попытка {attempt + 1}/{n}: {last_err}", flush=True)
+            # РЕТРАИМ и reasoning_only тоже: класс СТОХАСТИЧЕСКИЙ, а не детерминированный —
+            # замер 2026-07-19 на боевом промпте: v4-flash 6/12 и 8/12 пусто (~50-67%), т.е. повтор
+            # выигрывает примерно в половине случаев. (Ранние прогоны давали серии 10/10 и 12/12 —
+            # это разброс маршрутизации OpenRouter, НЕ детерминизм. Не сокращать здесь попытки.)
             if not last:
                 _time.sleep(backoff)
-            continue
-        if r.status_code != 200:
-            last_err = f"OpenRouter HTTP {r.status_code}: {r.text[:160]}"
-            r.close()
-            if not last:
-                _time.sleep(backoff)
-            continue
-        try:
-            content, hit_cap, meta = _consume_sse_stream(r, _OPENROUTER_HARD_CAP, started, idle=idle)
-        except Exception as e:  # noqa: BLE001
-            last_err = f"OpenRouter завис (нет токенов > {idle:.0f}с/обрыв): {str(e)[:120]}"
-            record_llm_failure("openrouter", "hang")
-            if not last:
-                _time.sleep(backoff)
-            continue
-        finally:
-            r.close()
-        if hit_cap:
-            print(f"[llm-or] hard-cap {_OPENROUTER_HARD_CAP:.0f}с — стрим обрезан", flush=True)
-        if (content or "").strip():
-            return content, None
-        cls = _empty_content_class(meta)
-        last_err = _empty_content_reason("OpenRouter", meta)
-        record_llm_failure("openrouter", cls)
-        # ГРОМКО: раньше это была немая строка «пустой content», и набор молча ехал на статику.
-        print(f"[llm-or] попытка {attempt + 1}/{n}: {last_err}", flush=True)
-        # РЕТРАИМ и reasoning_only тоже: класс СТОХАСТИЧЕСКИЙ, а не детерминированный —
-        # замер 2026-07-19 на боевом промпте: v4-flash 6/12 и 8/12 пусто (~50-67%), т.е. повтор
-        # выигрывает примерно в половине случаев. (Ранние прогоны давали серии 10/10 и 12/12 —
-        # это разброс маршрутизации OpenRouter, НЕ детерминизм. Не сокращать здесь попытки.)
-        if not last:
-            _time.sleep(backoff)
     return None, last_err
 
 
