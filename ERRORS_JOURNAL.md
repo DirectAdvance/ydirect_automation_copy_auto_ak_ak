@@ -4,6 +4,37 @@
 > метод решения → **помогло или нет** (проверено живым прогоном). Перед фиксом любой ошибки —
 > СНАЧАЛА искать её здесь: возможно, решение уже известно или уже пробовали и не помогло.
 
+### ACCOUNT_BLOCK_GATE_ONLY_2_OF_10_TYPES — гейт "аккаунт заблокирован" стоял только у ad_href/ad_title*/ad_text, остальные 8 типов + price шли в error (2026-07-30) 🟡 ждёт live-прогона
+- Симптом: `CONTENT_EDITOR_BLOCKED_ACCOUNT_PREFLIGHT_SKIP` (запись ниже) закрыла только
+  `ad_href` и `ad_title/ad_title2/ad_text` (2 из 10 мутирующих `content_jobs.type`).
+  `image_replace/campaign_rename/sitelink_*/callout*` на заблокированном аккаунте
+  по-прежнему падали в `error` и создавали Agent Board задачу. Price-check (`run_apply_pool`)
+  вообще не имел write-preflight — заблокированный login несколько раз безуспешно бился
+  в `ads.update` вместе со здоровыми логинами того же агентства.
+- Root-cause: узкий v5-probe (`_ad_noop_write_blocked`) требует `ad_id`, поэтому был
+  зашит точечно в `_replace_ad_href`/`_h_ad_field`, а не на уровне общего входа воркера.
+- Решение: новая `account_service.account_write_blocked(login, *, agency="")` — только
+  Grid `userFeatures BLOCKED` (тот же сигнал, что уже отдаёт фронту `_check_blocks_response`),
+  синхронно для одного login, без `ad_id`/Flask-контекста, fail-open при недоступной куке.
+  Вызывается: (1) `web/routes_content_editor.py` `make_job_executor.execute()` — ОДИН раз
+  ДО диспетчеризации по `job.type`, разом накрывает все 10 типов, при блокировке —
+  существующий `_blocked_account_skip()` (contract `content_worker._finish` не менялся);
+  (2) `price_check.py` `run_apply_pool._agency_worker` — per-login латч (аналог
+  `agency_dead`, но по login) перед `_ad_ids_for`, `result.skipped[].reason="account_blocked"`.
+  Старый узкий v5-probe в `_replace_ad_href`/`_h_ad_field` НЕ трогали (доп. страховка).
+- Проверено: LXC101 py3.11 pytest — новые тесты 6 passed (`test_account_write_blocked.py`,
+  `test_price_check_blocked_gate.py`), затронутые executor-тесты в `test_routes.py` — 6
+  passed; полный прогон `direct/tests/` — 46 failed/851 passed, тот же список пре-существующих
+  падений что и baseline сессии (46 failed/836 passed), новых падений нет.
+  Golden SQL (LXC101/Victory) до/после: Q1 (error по типу ad_href) 8→4 (падение чужими
+  live-repair между сессиями, НЕ моим кодом — сервисы не рестартованы), Q2/Q3 без изменений (0/0).
+- ⚠️ НЕ верифицировано живым прогоном: сервисы (`direct-content(-worker)`, price-check)
+  НЕ рестартованы, заведомо заблокированный login (`e-20074375`/`porg-tbtotml3`) через
+  реальную очередь не прогонялся. Статус 🟡 до live-подтверждения `direct_verifier`.
+- Не делать: не расширять текстовый маркер `_direct_account_blocked_reason` на голое
+  `"Нет доступа к API"` — race с `CONTENT_EDITOR_BLOCKED_ACCOUNT_PREFLIGHT_SKIP` ниже, тот
+  же запрет остаётся в силе.
+
 ### RUN_CONFIG_MISSING_MASTER_VARIANT — tp6 не создавался, потому что в запросе не было `master_*` (2026-07-30) ✅ моя ошибка запуска, НЕ дефект кода
 - Симптом (нашёл Семён): после прогона 8 аккаунтов ни на одном НЕТ кампаний tp6 (МК).
   Разбивка по tp в кабинетах: `{1,2,4,5,7}` — шестёрки нет нигде.
