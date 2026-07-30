@@ -197,9 +197,12 @@ def execute_safe_post_create(login: str, ctx: dict, plan: dict[str, Any], deps: 
         else:
             failed.append({"action": "ensure_callouts", "status": status, "result": out})
 
-    # keywords_repair удалён из safe-post-create пути: UpdateUnifiedAdGroups — подтверждённый no-op
-    # (ключи не добавляются). NO_KEYWORDS_LIVE → resume_or_recreate_campaign (плановый recreate,
-    # не in-place). execute_keywords_repair в repair_executor сохранён, но авто-вызов убран.
+    # keywords_repair не зовётся в safe-post-create пути: сразу после создания Grid ещё не достиг
+    # консистентности, поэтому докрутка ключей отложена на delayed-цикл (см. skipped_actions ниже).
+    # NO_KEYWORDS_LIVE → resume_or_recreate_campaign (плановый recreate, не in-place).
+    # ⚠️ Прежнее обоснование «UpdateUnifiedAdGroups — подтверждённый no-op (ключи не добавляются)»
+    # ОПРОВЕРГНУТО 2026-07-30 (инцидент 713155623): no-op он не для чтения, а для записи ключей
+    # он разрушителен — пустой массив стирает живые фразы. См. repair_keywords.py:174.
 
     rename_names, rename_actions, _ = rgate.executable_rename_campaigns(plan or {})
     if rename_names and rename_actions:
