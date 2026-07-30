@@ -51,6 +51,11 @@ def build_source_profile(src_dir: Any,
     campaign_callouts = _rj_dict(src_dir / "campaign_callouts.json")   # str(cid) → [str(co_id)]
     campaign_promos = _rj_dict(src_dir / "campaign_promos.json")       # str(cid) → str(promo_id)
     campaign_sitelinks = _rj_dict(src_dir / "campaign_sitelinks.json") # str(cid) → sitelink_set_id
+    fallback_callouts_count = len({
+        str((c.get("Callout") or {}).get("CalloutText") or c.get("CalloutText") or c.get("Id") or "").strip().lower()
+        for c in _rj(src_dir / "callouts.json")
+        if str((c.get("Callout") or {}).get("CalloutText") or c.get("CalloutText") or c.get("Id") or "").strip()
+    })
     source_audiences_readable = False
     source_audiences: Optional[Dict[int, dict]] = cached_audiences
     if source_audiences is not None:
@@ -189,9 +194,11 @@ def build_source_profile(src_dir: Any,
         promo_id = campaign_promos.get(cid)
         has_promo = bool(promo_id)
 
-        # D7: callouts
+        # D7: callouts. If campaign-level source links were unreadable, writer falls back to
+        # the union from callouts.json for every mapped campaign; verifier must compare against
+        # the same intended target state, not the empty campaign_callouts.json file.
         callout_ids = campaign_callouts.get(cid) or []
-        callout_count = len(callout_ids)
+        callout_count = len(callout_ids) if campaign_callouts else fallback_callouts_count
 
         # D8: sitelinks. Быстрые ссылки бывают на двух независимых уровнях:
         # campaign-level (Grid inheritableSitelinkSet) и ad-level

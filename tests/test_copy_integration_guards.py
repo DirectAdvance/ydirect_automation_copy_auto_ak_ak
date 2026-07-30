@@ -22,6 +22,7 @@ from direct.copy_service import (
 from direct.copy_service.copy_api import register_copy_api
 from direct.copy_service.copy_request import parse_feed_map, parse_image_hashes
 from direct.copy_service.copy_verify_source import build_source_profile
+from direct.copy_service.copy_verify_diff import diff_profiles
 
 
 def test_copy_target_feed_id_prefers_preseeded_id_maps(tmp_path, monkeypatch):
@@ -268,6 +269,98 @@ def test_copy_auto_feed_map_uses_target_agency_hint(monkeypatch):
         target_agency_hint="victoryagency14",
     ) == {"3418098": 3595536}
     assert ("target", "victoryagency14") in calls
+
+
+def test_copy_verify_source_callouts_match_writer_union_fallback(tmp_path):
+    src_dir = tmp_path
+    (src_dir / "campaigns.json").write_text(
+        '[{"Id":1,"TextCampaign":{"Settings":[]}}]',
+        encoding="utf-8",
+    )
+    (src_dir / "adgroups.json").write_text('[{"Id":10,"CampaignId":1}]', encoding="utf-8")
+    (src_dir / "ads.json").write_text("[]", encoding="utf-8")
+    (src_dir / "keywords.json").write_text("[]", encoding="utf-8")
+    (src_dir / "callouts.json").write_text(
+        '[{"Id":101,"Callout":{"CalloutText":"Гарантия"}},'
+        '{"Id":102,"Callout":{"CalloutText":"Авто с ПТС"}}]',
+        encoding="utf-8",
+    )
+    (src_dir / "campaign_callouts.json").write_text("{}", encoding="utf-8")
+
+    profile = build_source_profile(src_dir)
+
+    assert profile["1"]["callout_count"] == 2
+
+
+def test_copy_verify_accepts_direct_three_ad_cap_for_legacy_group():
+    src_profile = {
+        "1": {
+            "adgroup_count": 1,
+            "kw_count": 0,
+            "camp_neg_count": 0,
+            "shared_set_count": 0,
+            "has_promo": False,
+            "promo_id": None,
+            "ads_with_titles": 4,
+            "ads_with_texts": 4,
+            "callout_count": 0,
+            "has_sitelinks": True,
+            "campaign_has_sitelinks": False,
+            "ad_sitelinks_count": 4,
+            "ads_with_images": 4,
+            "audiences": {},
+            "bid_modifier_types": [],
+            "strategy_name": "SERVING_OFF",
+            "ads_with_video": 0,
+            "ads_with_button": 0,
+            "tracking_norm": "",
+            "site_monitoring": True,
+            "minus_places": [],
+            "shopping_count": 0,
+            "listing_count": 0,
+            "shopping_filter_signatures_by_group": {},
+            "listing_filter_signatures_by_group": {},
+            "_ads_count": 4,
+        }
+    }
+    tgt_profile = {
+        "2": {
+            "adgroup_count": 1,
+            "kw_count": 0,
+            "shared_set_count": 0,
+            "has_promo": False,
+            "promo_id": None,
+            "ads_with_titles": 3,
+            "ads_with_texts": 3,
+            "callout_count": 0,
+            "has_sitelinks": True,
+            "campaign_has_sitelinks": False,
+            "ad_sitelinks_count": 3,
+            "ads_with_images": 3,
+            "audiences": {},
+            "strategy_name": "SERVING_OFF",
+            "ads_with_video": 0,
+            "ads_with_button": 0,
+            "ad_price": None,
+            "tracking_norm": "",
+            "site_monitoring": True,
+            "minus_places": [],
+            "shopping_count": 0,
+            "listing_count": 0,
+            "shopping_filter_signatures_by_group": {},
+            "listing_filter_signatures_by_group": {},
+            "_reads_ok": {"invariants": True, "edit_rows": True, "ad_level_sitelinks": True},
+        }
+    }
+
+    rows = diff_profiles(src_profile, tgt_profile, {"campaigns": {"1": 2}, "adgroups": {}})
+    by_dim = {r["dimension"]: r for r in rows}
+
+    assert by_dim["adaptive_titles_count"]["status"] == "excluded_intentional"
+    assert by_dim["adaptive_bodies_count"]["status"] == "excluded_intentional"
+    assert by_dim["sitelinks_ad_level_count"]["status"] == "excluded_intentional"
+    assert by_dim["ads_with_images"]["status"] == "excluded_intentional"
+    assert by_dim["adaptive_titles_count"]["repairable"] is False
 
 
 def test_copy_auto_feed_map_falls_back_to_existing_listing_feed(monkeypatch):
@@ -688,6 +781,24 @@ def test_copy_uac_extracts_source_content_ids_and_image_hashes_in_order():
 
     assert copy_uac._copy_uac_content_ids(row) == ["c1", "c3"]
     assert copy_uac._copy_uac_image_hashes(row) == ["h1", "h3"]
+
+
+def test_copy_uac_target_images_use_urls_not_source_content_ids():
+    row = {
+        "contents": [
+            {
+                "id": "source-account-content-id",
+                "type": "image",
+                "direct_image_hash": "source-hash",
+                "source_url": "https://avatars.mds.yandex.net/get-direct/source/orig",
+            },
+        ],
+    }
+
+    assert copy_uac._copy_uac_content_ids(row) == ["source-account-content-id"]
+    assert copy_uac._copy_uac_target_image_urls(row) == [
+        "https://avatars.mds.yandex.net/get-direct/source/orig",
+    ]
 
 
 def test_copy_uac_rejects_video_extension_content_id_without_type():

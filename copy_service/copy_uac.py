@@ -263,11 +263,16 @@ def _copy_uac_is_video_content(item: dict) -> bool:
 
 
 def _copy_uac_content_ids(row: dict) -> list[str]:
-    """Source UAC content ids that are safe to reuse in target create payload.
+    """Source UAC content ids from campaign detail.
 
     Video content ids are account-local UAC extensions. Reusing a source video id
     in the target account makes create fail with VIDEO_EXTENSION_NOT_FOUND, so
     videos must go through ``video_urls`` and be uploaded by the target client.
+
+    Image ids are account-local too for copy purposes. They are exposed as
+    direct image hashes in some UAC errors, but passing them to another account
+    can still fail with BannerDefectIds.Gen.IMAGE_NOT_FOUND. Copy creation must
+    upload images into the target account instead of reusing this list.
     """
     ids: list[str] = []
     for item in (row.get("contents") or []):
@@ -279,6 +284,15 @@ def _copy_uac_content_ids(row: dict) -> list[str]:
         if cid and cid not in ids:
             ids.append(cid)
     return ids
+
+
+def _copy_uac_target_image_urls(row: dict) -> list[str]:
+    """Image URLs to upload into the target account for UAC copy.
+
+    Source ``content_id`` values are not portable across accounts. Prefer the
+    original image URL from campaign detail; fall back to broader media scan.
+    """
+    return _copy_uac_content_media_urls(row, want="image") or _copy_uac_media_urls(row, want="image")
 
 
 def _copy_uac_image_hashes(row: dict) -> list[str]:
@@ -531,12 +545,6 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
             elif src_id > 0:
                 detail_errors[src_id] = err or "detail пуст"
 
-    preseed = _copy_uac_preseed_target_image_hashes(
-        source_login, target_login, target_agency, list(details_by_src.values()))
-    if preseed.get("failed"):
-        rep["errors"].append(
-            "uac image preseed warnings: " + "; ".join(str(x) for x in preseed["failed"][:4]))
-
     pending_creates: list[tuple[int, int, str, object]] = []
     early_results: dict[int, dict] = {}
 
@@ -602,9 +610,8 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
                 _img = [tgt_img_urls[(cidx * 5 + k) % len(tgt_img_urls)] for k in range(5)]
                 _content_ids: list[str] = []
             else:
-                _content_ids = _copy_uac_content_ids(d)
-                _img = [] if _content_ids else (
-                    _copy_uac_content_media_urls(d, want="image") or _copy_uac_media_urls(d, want="image"))
+                _content_ids = []
+                _img = _copy_uac_target_image_urls(d)
             copy_href = _copy_uac_campaign_href(
                 d, fallback_href=target_href, source_domain=source_domain, target_domain=target_domain)
             # socdem источника, иначе датакласс молча подставит дефолт age_18 вместо возраста источника.
