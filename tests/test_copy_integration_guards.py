@@ -855,6 +855,17 @@ def test_copy_uac_geo_strings_extract_phrase_keyword_dicts():
     assert copy_uac._copy_uac_geo_guard("tp6_r0076", keywords, pairs, "r0076") == []
 
 
+def test_copy_uac_geo_guard_does_not_match_city_form_inside_region_adjective():
+    pairs = [("Новосибирска", "Саратова"), ("Новосибирск", "Саратов")]
+
+    assert copy_uac._copy_uac_geo_guard(
+        "tp6_cpc_site_ct0014_aon_n000_r0076_ct001_ag011_g00",
+        ["ключи Новосибирская область"],
+        pairs,
+        "r0076",
+    ) == []
+
+
 def test_copy_uac_geo_guard_rejects_source_region_residuals():
     pairs = [("Краснодарский край", "Свердловская область"), ("Краснодар", "Екатеринбург")]
 

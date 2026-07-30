@@ -113,9 +113,8 @@ def _copy_uac_geo_guard(name: str, text_fields: list[str], geo_pairs: list[tuple
         return errors
 
     haystack = "\n".join([str(name or "")] + [str(x or "") for x in text_fields or []])
-    hay_low = haystack.casefold()
     for term in source_terms:
-        if term.casefold() in hay_low:
+        if re.search(r"\b" + re.escape(term) + r"\b", haystack, re.IGNORECASE | re.UNICODE):
             errors.append(f"осталось исходное гео {term!r}")
             break
     return errors
