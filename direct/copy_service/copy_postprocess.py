@@ -13,7 +13,7 @@ from ..clients import grid_finalize as gf
 from ..repair import repair_auto as rauto
 from ..repair import repair_executor as rex
 from ..repair import repair_gate as rgate
-from .copy_step_utils import _invalidate_target_edit_rows, _source_edit_rows, _subset_rows
+from .copy_step_utils import _chunks, _invalidate_target_edit_rows, _source_edit_rows, _subset_rows
 
 
 def _engine():
@@ -536,6 +536,135 @@ def _copy_uac_results_from_body(body: dict) -> list[dict]:
     return out
 
 
+def _copy_v5_error_text(ce, j: dict) -> str:
+    try:
+        if callable(getattr(ce, "_v5_err", None)):
+            return ce._v5_err(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return str((j or {}).get("error") or j)[:300]
+
+
+def _copy_int_map_values(values: dict | None) -> list[int]:
+    out: list[int] = []
+    seen: set[int] = set()
+    for value in (values or {}).values():
+        try:
+            ivalue = int(value)
+        except (TypeError, ValueError):
+            continue
+        if ivalue > 0 and ivalue not in seen:
+            out.append(ivalue)
+            seen.add(ivalue)
+    return out
+
+
+def _copy_v5_visible_ids(ctx, service: str, result_key: str, ids: list[int]) -> tuple[set[int], str]:
+    if not ids or not ctx.target_token or not ctx.v5_call:
+        return set(ids or []), ""
+    ce = _engine()
+    visible: set[int] = set()
+    for chunk in _chunks(ids, 1000):
+        j = ctx.v5_call(
+            service,
+            "get",
+            ctx.target_token,
+            ctx.target_login,
+            {"SelectionCriteria": {"Ids": chunk}, "FieldNames": ["Id"]},
+        )
+        if isinstance(j, dict) and j.get("error"):
+            return visible, _copy_v5_error_text(ce, j)
+        for row in (((j or {}).get("result") or {}).get(result_key) or []):
+            try:
+                rid = int(row.get("Id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if rid > 0:
+                visible.add(rid)
+    return visible, ""
+
+
+def _copy_target_v5_visibility(ctx) -> dict:
+    campaign_ids = _copy_int_map_values(ctx.maps.get("campaigns"))
+    adgroup_ids = _copy_int_map_values(ctx.maps.get("adgroups"))
+    if not campaign_ids and not adgroup_ids:
+        return {"ok": True, "campaigns_total": 0, "adgroups_total": 0}
+    if not ctx.target_token or not ctx.v5_call:
+        return {
+            "ok": False,
+            "error": "нет v5-токена/вызова для проверки target после upload",
+            "campaigns_total": len(campaign_ids),
+            "adgroups_total": len(adgroup_ids),
+            "campaigns_seen": 0,
+            "adgroups_seen": 0,
+        }
+
+    seen_campaigns, campaign_error = _copy_v5_visible_ids(ctx, "campaigns", "Campaigns", campaign_ids)
+    if campaign_error:
+        return {
+            "ok": False,
+            "error": f"campaigns.get: {campaign_error[:220]}",
+            "campaigns_total": len(campaign_ids),
+            "campaigns_seen": len(seen_campaigns),
+            "adgroups_total": len(adgroup_ids),
+            "adgroups_seen": 0,
+        }
+    seen_adgroups, adgroup_error = _copy_v5_visible_ids(ctx, "adgroups", "AdGroups", adgroup_ids)
+    if adgroup_error:
+        return {
+            "ok": False,
+            "error": f"adgroups.get: {adgroup_error[:220]}",
+            "campaigns_total": len(campaign_ids),
+            "campaigns_seen": len(seen_campaigns),
+            "adgroups_total": len(adgroup_ids),
+            "adgroups_seen": len(seen_adgroups),
+        }
+
+    missing_campaigns = [cid for cid in campaign_ids if cid not in seen_campaigns]
+    missing_adgroups = [gid for gid in adgroup_ids if gid not in seen_adgroups]
+    ok = not missing_campaigns and not missing_adgroups
+    return {
+        "ok": ok,
+        "campaigns_total": len(campaign_ids),
+        "campaigns_seen": len(seen_campaigns),
+        "adgroups_total": len(adgroup_ids),
+        "adgroups_seen": len(seen_adgroups),
+        "missing_campaigns": missing_campaigns[:20],
+        "missing_adgroups": missing_adgroups[:20],
+    }
+
+
+def _copy_apply_v5_visibility_gate(job_id: str, rep: dict, ctx, *, attempts: int = 1, sleep_sec: float = 2.0) -> bool:
+    attempts = max(1, int(attempts or 1))
+    visibility: dict = {}
+    for attempt in range(1, attempts + 1):
+        visibility = _copy_target_v5_visibility(ctx)
+        if visibility.get("ok"):
+            rep["target_v5_visibility"] = visibility
+            return True
+        if attempt < attempts:
+            _engine()._copy_job_log(
+                job_id,
+                "target v5 visibility: ожидание видимости после upload "
+                f"({int(visibility.get('campaigns_seen') or 0)}/{int(visibility.get('campaigns_total') or 0)} campaigns, "
+                f"{int(visibility.get('adgroups_seen') or 0)}/{int(visibility.get('adgroups_total') or 0)} adgroups; "
+                f"попытка {attempt}/{attempts})",
+            )
+            time.sleep(max(0.0, float(sleep_sec or 0.0)))
+    rep["target_v5_visibility"] = visibility
+    msg = (
+        "target v5 objects не видны после upload: "
+        f"campaigns {int(visibility.get('campaigns_seen') or 0)}/{int(visibility.get('campaigns_total') or 0)}, "
+        f"adgroups {int(visibility.get('adgroups_seen') or 0)}/{int(visibility.get('adgroups_total') or 0)}"
+    )
+    if visibility.get("error"):
+        msg += f"; {visibility.get('error')}"
+    msg += "; postprocess skipped"
+    rep["errors"].append(msg)
+    _engine()._copy_job_log(job_id, msg)
+    return False
+
+
 def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                              src_dir: Path, workdir: Path, body: dict) -> dict:
     """Cookie/Grid fallback after direct_copy upload: callouts, ShoppingAd, ListingAd, verification, repair."""
@@ -606,6 +735,8 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
         feed_offer_prices=ce._grid_feed_offer_prices, account_offer_prices=ce._account_offer_prices,
         group_ad_price=ce._group_ad_price, set_ad_prices=ce._grid_set_ad_prices,
     )
+    if not _copy_apply_v5_visibility_gate(job_id, rep, cstep_ctx, attempts=5, sleep_sec=3.0):
+        return rep
 
     # ФАЗА 3b (п.4 адаптивы / п.12 видео): source-Grid (куки источника, чтение состава), гео-пары
     # job'а, RMW-апдейтер адаптивов (сохраняет target href/adPrice/видео), видео-аплоуд по куки.

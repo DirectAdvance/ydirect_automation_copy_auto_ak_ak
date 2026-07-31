@@ -24,7 +24,6 @@ _CAMPAIGN_STRUCT_KEYS = (
     "CpmBannerCampaign", "UnifiedAdCampaign",
 )
 
-
 def source_has_network(campaign: dict) -> bool:
     """True, если у исходной кампании включена сеть (РСЯ): блок Network стратегии не SERVING_OFF.
     Работает по snapshot campaigns.json (v5). Для tp1/tp3/сетевых вернёт True, для поиск-only — False."""

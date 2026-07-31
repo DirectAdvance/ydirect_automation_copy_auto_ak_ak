@@ -143,6 +143,86 @@ def test_copy_postprocess_accepts_pure_uac_without_v5_campaign_mapping(tmp_path,
     assert "v5 campaign mapping не требуется" in " ".join(logs)
 
 
+def test_copy_postprocess_v5_visibility_gate_blocks_missing_target_objects(monkeypatch):
+    logs = []
+    calls = []
+
+    def fake_v5_call(service, _method, _token, _login, _params):
+        calls.append(service)
+        if service == "campaigns":
+            return {"result": {"Campaigns": []}}
+        if service == "adgroups":
+            return {"result": {"AdGroups": []}}
+        raise AssertionError(service)
+
+    monkeypatch.setattr(
+        copy_postprocess,
+        "_engine",
+        lambda: SimpleNamespace(
+            _copy_job_log=lambda _job_id, msg: logs.append(msg),
+            _v5_err=lambda j: str(j.get("error")),
+        ),
+    )
+    ctx = SimpleNamespace(
+        target_login="porg-target",
+        target_token="token",
+        v5_call=fake_v5_call,
+        maps={
+            "campaigns": {"101": 713204818},
+            "adgroups": {"201": 9001, "202": 9002},
+        },
+    )
+    rep = {"errors": []}
+
+    ok = copy_postprocess._copy_apply_v5_visibility_gate("job-v5", rep, ctx)
+
+    assert ok is False
+    assert calls == ["campaigns", "adgroups"]
+    assert rep["target_v5_visibility"]["campaigns_seen"] == 0
+    assert rep["target_v5_visibility"]["adgroups_seen"] == 0
+    assert "campaigns 0/1, adgroups 0/2" in rep["errors"][0]
+    assert "postprocess skipped" in logs[0]
+
+
+def test_copy_postprocess_v5_visibility_gate_allows_visible_target_objects(monkeypatch):
+    calls = []
+
+    def fake_v5_call(service, _method, _token, _login, params):
+        calls.append((service, params["SelectionCriteria"]["Ids"]))
+        if service == "campaigns":
+            return {"result": {"Campaigns": [{"Id": 713204818}]}}
+        if service == "adgroups":
+            return {"result": {"AdGroups": [{"Id": 9001}]}}
+        raise AssertionError(service)
+
+    monkeypatch.setattr(
+        copy_postprocess,
+        "_engine",
+        lambda: SimpleNamespace(
+            _copy_job_log=lambda *_args: None,
+            _v5_err=lambda j: str(j.get("error")),
+        ),
+    )
+    ctx = SimpleNamespace(
+        target_login="porg-target",
+        target_token="token",
+        v5_call=fake_v5_call,
+        maps={
+            "campaigns": {"101": 713204818},
+            "adgroups": {"201": 9001},
+        },
+    )
+    rep = {"errors": []}
+
+    ok = copy_postprocess._copy_apply_v5_visibility_gate("job-v5", rep, ctx)
+
+    assert ok is True
+    assert rep["errors"] == []
+    assert rep["target_v5_visibility"]["campaigns_seen"] == 1
+    assert rep["target_v5_visibility"]["adgroups_seen"] == 1
+    assert calls == [("campaigns", [713204818]), ("adgroups", [9001])]
+
+
 def test_copy_attach_callouts_skips_fresh_grid_read_lag(tmp_path, monkeypatch):
     src_dir = tmp_path / "source"
     src_dir.mkdir()

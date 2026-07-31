@@ -730,6 +730,13 @@ def _copy_run_job(job_id: str, body: dict) -> None:
     cleanup_result: dict | None = None
     target_token = ""
     target_token_agency = ""
+    workdir: Path | None = None
+    src_dir: Path | None = None
+    meta: dict = {}
+    audit: dict = {}
+    rewrite_meta: dict = {}
+    skipped_v5_snapshot: list[dict] = []
+    skipped_grid_snapshot: list[dict] = []
 
     def _run_target_cleanup(progress: int = 45) -> None:
         nonlocal cleanup_result
@@ -1346,11 +1353,35 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             _copy_job_log(job_id, f"copy_verify reverify schedule error: {str(_te)[:150]}")
     except BaseException as e:  # noqa: BLE001
         # cleanup_result инициализирован вне try → всегда доступен здесь.
-        # Если очистка отработала до падения job — явно включаем её в result,
-        # чтобы пользователь видел факт удаления/архивации в карточке статуса.
-        _err_result = {"cleanup": cleanup_result} if cleanup_result is not None else None
-        _copy_job_upsert(job_id, status="error", error=str(e)[:500], progress=100,
-                         **({} if _err_result is None else {"result": _err_result}))
+        # При падениях после phase_upload нельзя терять workdir/id_maps: по ним scoped-retry
+        # понимает, какие target-черновики чистить и какие source campaigns перезапускать.
+        with _COPY_JOBS_LOCK:
+            _current_result = ((_COPY_JOBS.get(job_id) or {}).get("result") or {})
+        _err_result = dict(_current_result) if isinstance(_current_result, dict) else {}
+        _err_result.update({
+            "source_login": source_login,
+            "target_login": target_login,
+            "selected": len(selected_ids),
+        })
+        if meta:
+            _err_result["snapshot"] = meta
+        if audit:
+            _err_result["preflight"] = audit
+        if rewrite_meta:
+            _err_result["context_rewrite"] = rewrite_meta
+        if skipped_v5_snapshot or skipped_grid_snapshot:
+            _err_result["skipped_campaigns"] = list(skipped_v5_snapshot or []) + list(skipped_grid_snapshot or [])
+        if cleanup_result is not None:
+            _err_result["cleanup"] = cleanup_result
+        if workdir is not None:
+            _err_result["workdir"] = str(workdir)
+            maps_path = workdir / "id_maps.json"
+            if maps_path.exists():
+                try:
+                    _err_result["id_maps"] = _copy_read_json(maps_path)
+                except Exception as _map_exc:  # noqa: BLE001
+                    _err_result["id_maps_error"] = str(_map_exc)[:180]
+        _copy_job_upsert(job_id, status="error", error=str(e)[:500], progress=100, result=_err_result)
         _copy_job_log(job_id, f"ошибка: {str(e)[:300]}")
     finally:
         # Артефакты оставляем во временной папке до ручной очистки — полезно для отладки id_maps/upload_log.
