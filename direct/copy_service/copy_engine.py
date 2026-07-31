@@ -634,6 +634,36 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         except Exception as _ex:  # noqa: BLE001 — кросс-чек best-effort; при сбое остаётся прежняя grid-логика
             _v5_campaigns_for_expected = None
             _copy_job_log(job_id, f"v5-кросс-чек типов недоступен ({str(_ex)[:80]}) — grid-классификация как есть")
+        early_expected_snapshot: int | None = None
+        early_skipped_v5_snapshot: list[dict] = []
+        if _v5_campaigns_for_expected is not None:
+            early_expected_snapshot, early_skipped_v5_snapshot = _copy_expected_snapshot_count(
+                selected_ids,
+                selected_uac_rows,
+                _v5_campaigns_for_expected,
+                set(getattr(dc, "SKIP_CAMPAIGN_NAMES", set()) or set()),
+            )
+            early_skip_error = _copy_selected_skip_error(
+                selected_ids, selected_uac_rows, early_skipped_v5_snapshot
+            )
+            if early_skip_error:
+                _copy_job_log(
+                    job_id,
+                    "выбранные кампании не копируются: "
+                    + ", ".join(f"{x.get('Id')}:{x.get('reason')}" for x in early_skipped_v5_snapshot[:8])
+                )
+                _copy_job_upsert(
+                    job_id,
+                    total=0,
+                    result={
+                        "source_login": source_login,
+                        "target_login": target_login,
+                        "selected": len(selected_ids),
+                        "snapshot": {"campaigns": 0},
+                        "skipped_campaigns": early_skipped_v5_snapshot,
+                    },
+                )
+                raise RuntimeError(early_skip_error)
         selected_unified_rows = [
             r for r in selected_grid_rows
             if str(r.get("typename") or r.get("type") or "") == "GdUnifiedCampaign"
@@ -712,12 +742,15 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         # meta.get("campaigns") = только v5-снапшот (UAC вычтены в expected_snapshot ниже) — НЕ использовать как total.
         _copy_job_upsert(job_id, progress=28, total=len(selected_ids))
         _copy_job_log(job_id, f"snapshot отфильтрован: {meta.get('campaigns')} кампаний")
-        expected_snapshot, skipped_v5_snapshot = _copy_expected_snapshot_count(
-            selected_ids,
-            selected_uac_rows,
-            _v5_campaigns_for_expected,
-            set(getattr(dc, "SKIP_CAMPAIGN_NAMES", set()) or set()),
-        )
+        if early_expected_snapshot is None:
+            expected_snapshot, skipped_v5_snapshot = _copy_expected_snapshot_count(
+                selected_ids,
+                selected_uac_rows,
+                _v5_campaigns_for_expected,
+                set(getattr(dc, "SKIP_CAMPAIGN_NAMES", set()) or set()),
+            )
+        else:
+            expected_snapshot, skipped_v5_snapshot = early_expected_snapshot, early_skipped_v5_snapshot
         if skipped_v5_snapshot:
             _copy_job_log(
                 job_id,
