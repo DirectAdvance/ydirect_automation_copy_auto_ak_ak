@@ -10,12 +10,13 @@ from .copy_context import CopyCtx, _noop_log
 from .copy_step_utils import _chunks, _rj, _v5_add_err, _wj
 
 
-def _copy_source_image_file(ctx: CopyCtx, source_hash: str, meta: dict | None, rep: dict) -> Path | None:
+def _copy_source_image_file(ctx: CopyCtx, source_hash: str, meta: dict | None, rep: dict,
+                            *, prefer_preview: bool = False) -> Path | None:
     h = str(source_hash or "").strip()
     if not h:
         return None
     src_file = Path(ctx.src_dir) / "images" / f"{h}.img"
-    if src_file.exists() and src_file.stat().st_size > 0:
+    if not prefer_preview and src_file.exists() and src_file.stat().st_size > 0:
         return src_file
     url = str((meta or {}).get("preview_url") or "").strip()
     if not url:
@@ -49,6 +50,9 @@ def _copy_target_image_hash(ctx: CopyCtx, source_hash: str, meta: dict | None, r
     mapped = str(img_map.get(h) or "").strip()
     if mapped:
         return mapped
+    failed_uploads = getattr(ctx, "_image_upload_failed", set())
+    if h in failed_uploads:
+        return ""
     upload = getattr(ctx.grid, "upload_image", None)
     if not callable(upload):
         return ""
@@ -60,8 +64,18 @@ def _copy_target_image_hash(ctx: CopyCtx, source_hash: str, meta: dict | None, r
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"source image {h[:12]}: target upload failed: {str(e)[:160]}")
         return ""
+    if not tgt_hash and str((meta or {}).get("preview_url") or "").strip():
+        preview_file = _copy_source_image_file(ctx, h, meta, rep, prefer_preview=True)
+        if preview_file and preview_file != src_file:
+            try:
+                tgt_hash = str(upload(str(preview_file)) or "").strip()
+            except Exception as e:  # noqa: BLE001
+                rep["errors"].append(f"source image {h[:12]}: target preview upload failed: {str(e)[:160]}")
+                tgt_hash = ""
     if not tgt_hash:
         rep["errors"].append(f"source image {h[:12]}: target upload returned empty hash")
+        failed_uploads.add(h)
+        setattr(ctx, "_image_upload_failed", failed_uploads)
         return ""
     img_map[h] = tgt_hash
     rep["images_uploaded"] = int(rep.get("images_uploaded") or 0) + 1
