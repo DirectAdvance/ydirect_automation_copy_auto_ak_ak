@@ -693,11 +693,14 @@ class UacClient:
             for u in spec.image_urls:                       # картинки по URL
                 if image_limit and image_count >= image_limit:
                     break
-                try:
-                    content_ids.append(self.upload_content(u, "image", spec.adv_type))
-                    image_count += 1
-                except UacApiError:
-                    pass
+                for attempt in range(3):
+                    try:
+                        content_ids.append(self.upload_content(u, "image", spec.adv_type))
+                        image_count += 1
+                        break
+                    except UacApiError:
+                        if attempt < 2:
+                            time.sleep(0.8)
                 time.sleep(0.3)
             # ⚠️ ЛОКАЛЬНЫЕ видео — ВНУТРИ `if not content_ids`, как и картинки.
             # Путь СОЗДАНИЯ: prefetch уже залил 4 картинки + 2 видео и положил их в

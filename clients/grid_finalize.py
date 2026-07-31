@@ -178,6 +178,34 @@ def _grid_images_rich(raw_images) -> list[dict]:
     return out
 
 
+def _grid_multicards_write(raw_multicards) -> list[dict]:
+    """Read shape ``multicards`` -> UpdateAdaptiveTextAds write shape.
+
+    Browser HAR for adaptive carousel sends only scalar card fields plus ``imageHash``.
+    Keeping this in every RMW payload prevents unrelated text/price/image updates from
+    wiping an existing carousel.
+    """
+    out: list[dict] = []
+    seen_hashes: set[str] = set()
+    for card in raw_multicards or []:
+        if not isinstance(card, dict):
+            continue
+        image = card.get("image") if isinstance(card.get("image"), dict) else {}
+        image_hash = str(card.get("imageHash") or image.get("imageHash") or "").strip()
+        if not image_hash or image_hash in seen_hashes:
+            continue
+        seen_hashes.add(image_hash)
+        out.append({
+            "imageHash": image_hash,
+            "currency": card.get("currency") or None,
+            "href": card.get("href") or None,
+            "price": card.get("price") or None,
+            "priceOld": card.get("priceOld") or None,
+            "text": card.get("text") or None,
+        })
+    return out
+
+
 def _grid_inheritable_write(raw, value_key: str | None) -> dict | None:
     """Прочитанный ``{policy, assetValue}`` → write-shape для UpdateAdaptiveTextAds.
 
@@ -2670,6 +2698,10 @@ class GridClient:
             # поведение для вызывающих, которые состояние не читают, напр. repair_media).
             if it.get("displayHref"):
                 item["displayHref"] = str(it["displayHref"])
+            if it.get("multicards"):
+                item["multicards"] = [
+                    dict(card) for card in (it.get("multicards") or []) if isinstance(card, dict)
+                ]
             upd.append(item)
         self.last_ad_update_errors = []
         if not upd:
@@ -2779,6 +2811,7 @@ class GridClient:
              # customText — кастомная надпись кнопки; без неё RMW обнулял текст у кнопок,
              # где он задан (GdBannerButtonInput{action customText href}, интроспекция 2026-07-18)
              "hasVideo hasButton button{action customText href} "
+             "multicards{id text href price priceOld currency image{imageHash}} "
              "inheritableCallouts{policy assetValue} inheritableSitelinkSet{policy assetValue} "
              "permalinkWithPhone{permalinkId phoneId policy} "
              "typedCreatives{creativeId creativeType}}"
@@ -2818,6 +2851,7 @@ class GridClient:
                     "hasVideo": bool(row.get("hasVideo")),
                     "hasButton": bool(row.get("hasButton")),
                     "button": row.get("button"),
+                    "multicards": _grid_multicards_write(row.get("multicards")),
                     # ad-level наборы уже в WRITE-shape (assetValue→sitelinkSetId) — вызывающий
                     # кладёт их в update_ad_images as-is. None = состояние не пришло → fallback.
                     "inheritableSitelinkSet": _grid_inheritable_write(

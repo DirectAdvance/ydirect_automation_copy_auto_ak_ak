@@ -802,6 +802,11 @@ def _grid_update_adaptive_ads(login: str, items: list[dict],
         }
         if display_href:
             item["displayHref"] = display_href
+        multicards = it.get("multicards")
+        if multicards is None:
+            multicards = cur.get("multicards")
+        if multicards:
+            item["multicards"] = [dict(card) for card in (multicards or []) if isinstance(card, dict)]
         if ad_price:
             item["adPrice"] = ad_price
         # Ревью 03.07 #17: СУЩЕСТВУЮЩУЮ кнопку проносим в основной payload (full-replace её стирал,

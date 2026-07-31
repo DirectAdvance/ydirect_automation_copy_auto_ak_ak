@@ -50,7 +50,7 @@ def _clean_group_brand(name: str) -> str:
     return ""
 
 
-def step_prices(ctx: CopyCtx) -> dict:
+def step_prices(ctx: CopyCtx, campaign_ids: list[int] | None = None) -> dict:
     """П.8. Проставить НОВЫЕ РЕАЛЬНЫЕ цены из ФИДА ЦЕЛЕВОГО аккаунта на созданные копированием
     адаптивные (комбинаторные) объявления через Grid adPrice (UpdateAdaptiveTextAds, куки target,
     без баллов). Старые цены НЕ переносим — читаем офферы из target-фида.
@@ -133,7 +133,9 @@ def step_prices(ctx: CopyCtx) -> dict:
         brand_for_ad[tgt_ad_id] = _clean_group_brand(group_name.get(gid, "")) if gid else ""
 
     # 4) Созданные адаптивные объявления target (id/href/titles/bodies/imageHashes) через Grid.
-    camp_ids = [int(v) for v in (ctx.maps.get("campaigns") or {}).values() if str(v).isdigit()]
+    wanted_cids = {int(c) for c in (campaign_ids or []) if str(c).isdigit() and int(c) > 0}
+    camp_ids = [int(v) for v in (ctx.maps.get("campaigns") or {}).values()
+                if str(v).isdigit() and (not wanted_cids or int(v) in wanted_cids)]
     ad_ids = list(rev_ads.keys())
     if not camp_ids or not ad_ids:
         ctx.log("adPrice: нет целевых campaign/ad id — пропуск")
