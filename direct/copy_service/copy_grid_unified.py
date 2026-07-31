@@ -1,4 +1,4 @@
-"""Grid-only Text/Unified campaign copy path extracted from copy_engine."""
+"""Grid-only UnifiedCampaign copy path extracted from copy_engine."""
 from __future__ import annotations
 
 import json
@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..clients import grid_create as gc
 from ..clients import grid_finalize as gf
+from ..core import campaign as cmc
 
 
 def _engine():
@@ -69,15 +70,13 @@ def _copy_rcode_to_region(r_code: str) -> str:
         return ""
 
 
-_GRID_CONVERTIBLE_CAMPAIGN_TYPES = {"GdUnifiedCampaign", "GdTextCampaign"}
-
-
 def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: list[dict],
                                  workdir: Path) -> dict:
-    """Cookie-only copy for selected Grid GdUnifiedCampaign/GdTextCampaign rows.
+    """Cookie-only copy for selected Grid GdUnifiedCampaign rows.
 
-    This path creates target Unified campaigns via Grid, preserving campaign/group names, keywords,
-    text ads, and adding product Shopping/Listing ads where the source had them.
+    This path is intentionally narrower than direct_copy.py: it handles draft Unified campaigns
+    visible in Grid when v5 units are depleted, preserving campaign/group names, keywords, text ads,
+    and adding product Shopping/Listing ads where the source had them.
     """
     ce = _engine()
     from .copy_steps import _clean_group_brand as _csteps_clean_group_brand
@@ -90,6 +89,11 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
     target_city = (body.get("target_city") or "").strip()
     target_region = (body.get("target_region") or "").strip()
     target_agency = body.get("agency") or ce._resolve_agency_hint(target_login, "")
+    target_cookie_accounts = (str(target_agency).strip(),) if str(target_agency or "").strip() else None
+    target_cookie = None
+    if target_cookie_accounts:
+        target_cookie = cmc.pick_working_cookie(target_login, accounts=target_cookie_accounts)
+        cmc.remember_working_cookie(target_login, target_cookie)
     # ДОРАБОТКА 1: feed_map (пофидовая замена) в ЕПК-ветке. Раньше брался ОДИН авто-фид
     # (ce._copy_target_feed_id, feed_map игнорировался). Теперь: если body.feed_map задан и валиден
     # (те же проверки, что в _copy_run_job — целевой фид ПРИНАДЛЕЖИТ target-аккаунту), используем
@@ -204,15 +208,9 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
     except Exception as e:  # noqa: BLE001 — v501 image-хэши best-effort: картинки доберём из grid-ads
         ce._copy_job_log(job_id, f"v501 image-хэши источника не получены ({str(e)[:180]}) — продолжаю без них")
         source_image_hashes = {}
-    campaigns = [
-        c for c in (snap.get("campaigns") or [])
-        if str(c.get("__typename")) in _GRID_CONVERTIBLE_CAMPAIGN_TYPES
-    ]
+    campaigns = [c for c in (snap.get("campaigns") or []) if str(c.get("__typename")) == "GdUnifiedCampaign"]
     if len(campaigns) != len(selected_ids):
-        raise RuntimeError(
-            f"grid snapshot неполный: выбрано {len(selected_ids)}, "
-            f"прочитано {len(campaigns)} Text/Unified"
-        )
+        raise RuntimeError(f"grid snapshot неполный: выбрано {len(selected_ids)}, прочитано {len(campaigns)} Unified")
     if not src_domain:
         for camp in campaigns:
             src_domain = ce._copy_domain_from_href((camp.get("additionalData") or {}).get("href"))
@@ -431,7 +429,7 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
                             _si["model_field"] = "model"
                         shop_items.append(_si)
                 if shop_items:
-                    grid = gf.GridClient(target_login)
+                    grid = gf.GridClient(target_login, cookie=target_cookie)
                     # add_shopping_ads возвращает ПОЗИЦИОННЫЙ list[int|None] (None = не создан). Спариваем
                     # id↔item ДО отбрасывания None — иначе schлопывание сдвинет vendor-фильтр на чужой товар.
                     _shop_pairs = [(int(x), _si) for x, _si in zip(grid.add_shopping_ads(shop_items) or [], shop_items) if x]

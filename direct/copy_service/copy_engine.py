@@ -103,6 +103,59 @@ def _copy_target_campaign_types(target_login: str, target_token: str | None) -> 
     return {str(x).strip() for x in raw if str(x).strip()}
 
 
+def _copy_target_add_preflight_error(target_login: str, target_token: str | None) -> str:
+    """Return a blocking error when target cannot create campaigns.
+
+    The probe uses campaigns.add with an intentionally invalid past StartDate. On a writable
+    account Yandex returns validation 5005 and creates nothing; when the token lacks write access,
+    Yandex returns 54 before validation, which is the failure we want to catch before copy work.
+    """
+    if not target_login or not target_token or not callable(_v5_call):
+        return ""
+    probe = {
+        "Campaigns": [{
+            "Name": "__copy_preflight_no_create__",
+            "StartDate": "2000-01-01",
+            "TextCampaign": {
+                "BiddingStrategy": {
+                    "Search": {"BiddingStrategyType": "HIGHEST_POSITION"},
+                    "Network": {"BiddingStrategyType": "SERVING_OFF"},
+                },
+            },
+        }],
+    }
+    try:
+        res = _v5_call("campaigns", "add", target_token, target_login, probe)
+    except Exception as exc:  # noqa: BLE001
+        return f"preflight campaigns.add недоступен: {str(exc)[:180]}"
+
+    def _err_is_denied(err: dict) -> bool:
+        code = str(err.get("error_code") or err.get("Code") or "").strip()
+        text = " ".join(str(err.get(k) or "") for k in (
+            "error_string", "error_detail", "Message", "Details",
+        ))
+        return code == "54" or "нет прав" in text.lower()
+
+    top_error = res.get("error") if isinstance(res, dict) else None
+    if isinstance(top_error, dict):
+        if _err_is_denied(top_error):
+            return (
+                f"нет прав на создание кампаний в target-аккаунте {target_login}: "
+                "preflight campaigns.add вернул 54 «Нет прав на объект»"
+            )
+        return ""
+
+    add_results = ((res.get("result") or {}).get("AddResults") or []) if isinstance(res, dict) else []
+    for item in add_results:
+        for err in (item.get("Errors") or []):
+            if isinstance(err, dict) and _err_is_denied(err):
+                return (
+                    f"нет прав на создание кампаний в target-аккаунте {target_login}: "
+                    "preflight campaigns.add вернул 54 «Нет прав на объект»"
+                )
+    return ""
+
+
 def _copy_enrich_body_context(body: dict, source_login: str, target_login: str) -> None:
     """Best-effort copy context for post-create repairs/verifiers.
 
@@ -754,6 +807,24 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             target_agency_hint or _resolve_agency_hint(target_login, ""),
             _direct_tokens(),
         )
+        target_add_error = _copy_target_add_preflight_error(target_login, target_token)
+        if target_add_error:
+            _copy_job_log(job_id, target_add_error)
+            _copy_job_upsert(
+                job_id,
+                status="error",
+                progress=100,
+                total=0,
+                error=target_add_error,
+                result={
+                    "source_login": source_login,
+                    "target_login": target_login,
+                    "selected": len(selected_ids),
+                    "target_write_denied": "54" in target_add_error or "Нет прав" in target_add_error,
+                    "preflight": {"target_campaigns_add": "denied"},
+                },
+            )
+            raise RuntimeError(target_add_error)
         target_types = _copy_target_campaign_types(target_login, target_token)
         grid_convert_rows: list[dict] = []
         if (

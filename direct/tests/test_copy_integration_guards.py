@@ -269,6 +269,48 @@ def test_copy_upload_terminal_error_classifies_target_write_denied(tmp_path):
     assert len(errors) == 2
 
 
+def test_copy_target_add_preflight_blocks_yandex_54(monkeypatch):
+    monkeypatch.setattr(
+        copy_engine,
+        "_v5_call",
+        lambda *_args, **_kwargs: {
+            "error": {
+                "error_code": 54,
+                "error_string": "Нет прав",
+                "error_detail": "Нет прав на объект ",
+            }
+        },
+    )
+
+    msg = copy_engine._copy_target_add_preflight_error("porg-target", "token")
+
+    assert "preflight campaigns.add вернул 54" in msg
+    assert "porg-target" in msg
+
+
+def test_copy_target_add_preflight_allows_validation_error(monkeypatch):
+    seen = {}
+
+    def fake_v5_call(_svc, _method, _token, _login, params):
+        seen["start_date"] = params["Campaigns"][0]["StartDate"]
+        return {
+            "result": {
+                "AddResults": [{
+                    "Errors": [{
+                        "Code": 5005,
+                        "Message": "Поле задано неверно",
+                        "Details": "Значение даты в поле StartDate не может быть меньше текущей даты",
+                    }]
+                }]
+            }
+        }
+
+    monkeypatch.setattr(copy_engine, "_v5_call", fake_v5_call)
+
+    assert copy_engine._copy_target_add_preflight_error("porg-target", "token") == ""
+    assert seen["start_date"] == "2000-01-01"
+
+
 def test_copy_campaigns_route_hides_archived_campaigns():
     app = Flask(__name__)
     bp = Blueprint("copy_campaigns_filter_test", __name__, url_prefix="/direct")
