@@ -20,6 +20,13 @@
 `DirectAdvance/ydirect_automation_copy_auto_ak_ak` main. Live-copy на проде на момент записи не
 перепроверялся.
 
+**Деплой/сервис:** перед рестартом `direct-copy.service` проверена очередь Victory:
+`copy_campaigns` в `queued`/`claimed`/`running` = 0. LXC101 файл
+`/opt/scripts/home/seoadvanced/direct/copy_service/copy_price_steps.py` содержит
+`_price_segment_from_names`/`by_min_fallback`, `py_compile` на LXC OK. `direct-copy.service`
+перезапущен 2026-07-31 13:43:50 +05, статус `active/running`, PID `1473270`; локальный smoke
+`GET /direct/api/copy_queue` вернул ожидаемый `401 Unauthorized`.
+
 ## ✅ РЕЗУЛЬТАТ: копия 1:1 достигнута ФАКТОМ (проверено v5 API + Grid)
 
 Источник `porg-mushirne` → `porg-jh2si7rh`, `porg-as46rje6`, `porg-r7ro6tei`.
