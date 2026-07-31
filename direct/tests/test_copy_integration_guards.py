@@ -219,6 +219,39 @@ def test_copy_selected_skip_error_for_archived_only_selection():
     assert "ARCHIVED не копируем" in msg
 
 
+def test_copy_grid_campaign_is_archived_from_cookie_status():
+    assert copy_engine._copy_grid_campaign_is_archived({
+        "id": "10",
+        "status": {"primaryStatus": "ARCHIVED", "archived": False},
+    })
+    assert copy_engine._copy_grid_campaign_is_archived({
+        "id": "11",
+        "status": "ON",
+        "archived": True,
+    })
+    assert not copy_engine._copy_grid_campaign_is_archived({
+        "id": "12",
+        "status": "SUSPENDED",
+        "archived": False,
+    })
+
+
+def test_copy_selected_skip_error_for_archived_grid_only_selection():
+    selected = {1001}
+    skipped_grid = [copy_engine._copy_grid_archived_skip_row({
+        "id": "1001",
+        "name": "master archived",
+        "typename": "GdUnifiedCampaign",
+        "status": "ARCHIVED",
+        "archived": True,
+    })]
+
+    msg = copy_engine._copy_selected_skip_error(selected, [], [], skipped_grid)
+
+    assert "все выбранные кампании архивные" in msg
+    assert skipped_grid[0]["source"] == "grid"
+
+
 def test_copy_upload_terminal_error_classifies_target_write_denied(tmp_path):
     (tmp_path / "id_maps.json").write_text('{"campaigns": {}}', encoding="utf-8")
     (tmp_path / "_upload_log.json").write_text(

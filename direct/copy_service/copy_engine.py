@@ -512,12 +512,38 @@ def _copy_expected_snapshot_count(selected_ids: set[int], selected_uac_rows: lis
     return len(expected_ids) + len(unknown_non_uac), skipped
 
 
+def _copy_grid_campaign_is_archived(row: dict) -> bool:
+    status = row.get("status")
+    if isinstance(status, dict):
+        primary = str(status.get("primaryStatus") or status.get("status") or "").upper()
+        archived = bool(status.get("archived"))
+    else:
+        primary = str(status or "").upper()
+        archived = bool(row.get("archived"))
+    state = str(row.get("state") or row.get("State") or "").upper()
+    return archived or primary == "ARCHIVED" or state == "ARCHIVED"
+
+
+def _copy_grid_archived_skip_row(row: dict) -> dict:
+    return {
+        "Id": int(row.get("id") or row.get("Id") or 0),
+        "Name": row.get("name") or row.get("Name"),
+        "Type": row.get("typename") or row.get("type"),
+        "State": "ARCHIVED",
+        "Status": row.get("status"),
+        "reason": "archived",
+        "source": "grid",
+    }
+
+
 def _copy_selected_skip_error(selected_ids: set[int], selected_uac_rows: list[dict],
-                              skipped_v5_snapshot: list[dict]) -> str:
+                              skipped_v5_snapshot: list[dict],
+                              skipped_grid_snapshot: list[dict] | None = None) -> str:
     """Human-readable fail-fast error when all requested campaigns are intentionally skipped."""
-    if not selected_ids or selected_uac_rows or len(skipped_v5_snapshot) < len(selected_ids):
+    skipped = list(skipped_v5_snapshot or []) + list(skipped_grid_snapshot or [])
+    if not selected_ids or selected_uac_rows or len(skipped) < len(selected_ids):
         return ""
-    reasons = {str(x.get("reason") or "") for x in skipped_v5_snapshot}
+    reasons = {str(x.get("reason") or "") for x in skipped}
     if reasons == {"archived"}:
         return (
             f"все выбранные кампании архивные ({len(selected_ids)}) — "
@@ -661,9 +687,6 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         _copy_job_upsert(job_id, status="running", progress=5, workdir=str(workdir))
         dc = _direct_copy_module()
         selected_grid_rows = _copy_selected_grid_campaigns(source_login, selected_ids)
-        selected_uac_rows = [r for r in selected_grid_rows if _copy_is_uac_grid_row(r)]
-        if selected_uac_rows:
-            _copy_job_log(job_id, f"uac selected: {len(selected_uac_rows)} кампаний через Grid/UAC")
         # Кросс-чек с v5 (авторитетный, стабильный источник типа). Grid-typename флейкует:
         # наблюдалось «13 GdUnifiedCampaign» на кампаниях, которые v5 стабильно отдаёт как
         # TEXT_CAMPAIGN → неверный grid-cookie путь → битый CopyCamp-снапшот (EOF@305) и падение
@@ -686,41 +709,46 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         except Exception as _ex:  # noqa: BLE001 — кросс-чек best-effort; при сбое остаётся прежняя grid-логика
             _v5_campaigns_for_expected = None
             _copy_job_log(job_id, f"v5-кросс-чек типов недоступен ({str(_ex)[:80]}) — grid-классификация как есть")
-        early_expected_snapshot: int | None = None
-        early_skipped_v5_snapshot: list[dict] = []
-        if _v5_campaigns_for_expected is not None:
-            early_expected_snapshot, early_skipped_v5_snapshot = _copy_expected_snapshot_count(
-                selected_ids,
-                selected_uac_rows,
-                _v5_campaigns_for_expected,
-                set(getattr(dc, "SKIP_CAMPAIGN_NAMES", set()) or set()),
+        skipped_grid_snapshot: list[dict] = []
+        for _gr in selected_grid_rows:
+            try:
+                _gid = int(_gr.get("id") or _gr.get("Id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if _gid not in selected_ids or _gid in _v5_native:
+                continue
+            if _copy_grid_campaign_is_archived(_gr):
+                skipped_grid_snapshot.append(_copy_grid_archived_skip_row(_gr))
+        skipped_grid_ids = {int(x.get("Id") or 0) for x in skipped_grid_snapshot}
+        if skipped_grid_ids:
+            _copy_job_log(
+                job_id,
+                "grid-cookie: пропущено ARCHIVED Master/Product кампаний: "
+                + ", ".join(str(x) for x in sorted(skipped_grid_ids)[:8])
             )
-            early_skip_error = _copy_selected_skip_error(
-                selected_ids, selected_uac_rows, early_skipped_v5_snapshot
+            selected_grid_rows = [
+                r for r in selected_grid_rows
+                if str(r.get("id") or r.get("Id") or "").isdigit()
+                and int(r.get("id") or r.get("Id") or 0) not in skipped_grid_ids
+            ]
+        active_selected_ids = set(selected_ids) - skipped_grid_ids
+        selected_uac_rows = [r for r in selected_grid_rows if _copy_is_uac_grid_row(r)]
+        if selected_uac_rows:
+            _copy_job_log(job_id, f"uac selected: {len(selected_uac_rows)} кампаний через Grid/UAC")
+        grid_only_skip_error = _copy_selected_skip_error(selected_ids, selected_uac_rows, [], skipped_grid_snapshot)
+        if grid_only_skip_error:
+            _copy_job_upsert(
+                job_id,
+                total=0,
+                result={
+                    "source_login": source_login,
+                    "target_login": target_login,
+                    "selected": len(selected_ids),
+                    "snapshot": {"campaigns": 0},
+                    "skipped_campaigns": skipped_grid_snapshot,
+                },
             )
-            if early_skip_error:
-                _copy_job_log(
-                    job_id,
-                    "выбранные кампании не копируются: "
-                    + ", ".join(f"{x.get('Id')}:{x.get('reason')}" for x in early_skipped_v5_snapshot[:8])
-                )
-                _copy_job_upsert(
-                    job_id,
-                    total=0,
-                    result={
-                        "source_login": source_login,
-                        "target_login": target_login,
-                        "selected": len(selected_ids),
-                        "snapshot": {"campaigns": 0},
-                        "skipped_campaigns": early_skipped_v5_snapshot,
-                    },
-                )
-                raise RuntimeError(early_skip_error)
-        selected_unified_rows = [
-            r for r in selected_grid_rows
-            if str(r.get("typename") or r.get("type") or "") == "GdUnifiedCampaign"
-            and int(r.get("id") or 0) not in _v5_native
-        ]
+            raise RuntimeError(grid_only_skip_error)
         target_token, target_token_agency = _token_for_login(
             target_login,
             target_agency_hint or _resolve_agency_hint(target_login, ""),
@@ -737,20 +765,57 @@ def _copy_run_job(job_id: str, body: dict) -> None:
                 r for r in selected_grid_rows
                 if str(r.get("typename") or r.get("type") or "") in ("GdTextCampaign", "GdUnifiedCampaign")
             ]
-            if grid_convert_rows and len(grid_convert_rows) == len(selected_ids):
+            if grid_convert_rows and len(grid_convert_rows) == len(active_selected_ids):
                 _copy_job_log(
                     job_id,
                     f"grid-cookie copy: target не поддерживает TEXT_CAMPAIGN, "
                     f"конвертирую {len(grid_convert_rows)} Text/Unified campaigns в ЕПК",
                 )
-
+        early_expected_snapshot: int | None = None
+        early_skipped_v5_snapshot: list[dict] = []
+        if _v5_campaigns_for_expected is not None:
+            early_expected_snapshot, early_skipped_v5_snapshot = _copy_expected_snapshot_count(
+                active_selected_ids,
+                selected_uac_rows,
+                _v5_campaigns_for_expected,
+                set(getattr(dc, "SKIP_CAMPAIGN_NAMES", set()) or set()),
+            )
+            early_skip_error = _copy_selected_skip_error(
+                selected_ids, selected_uac_rows, early_skipped_v5_snapshot, skipped_grid_snapshot
+            )
+            if early_skip_error and not (grid_convert_rows and len(grid_convert_rows) == len(active_selected_ids)):
+                _copy_job_log(
+                    job_id,
+                    "выбранные кампании не копируются: "
+                    + ", ".join(
+                        f"{x.get('Id')}:{x.get('reason')}"
+                        for x in (list(early_skipped_v5_snapshot) + list(skipped_grid_snapshot))[:8]
+                    )
+                )
+                _copy_job_upsert(
+                    job_id,
+                    total=0,
+                    result={
+                        "source_login": source_login,
+                        "target_login": target_login,
+                        "selected": len(selected_ids),
+                        "snapshot": {"campaigns": 0},
+                        "skipped_campaigns": list(early_skipped_v5_snapshot) + list(skipped_grid_snapshot),
+                    },
+                )
+                raise RuntimeError(early_skip_error)
+        selected_unified_rows = [
+            r for r in selected_grid_rows
+            if str(r.get("typename") or r.get("type") or "") == "GdUnifiedCampaign"
+            and int(r.get("id") or 0) not in _v5_native
+        ]
         grid_only_rows = selected_unified_rows
         grid_only_reason = "Unified campaigns без Direct API баллов"
-        if grid_convert_rows and len(grid_convert_rows) == len(selected_ids):
+        if grid_convert_rows and len(grid_convert_rows) == len(active_selected_ids):
             grid_only_rows = grid_convert_rows
             grid_only_reason = "Text/Unified campaigns → ЕПК (target без TEXT_CAMPAIGN)"
 
-        if grid_only_rows and len(grid_only_rows) == len(selected_ids):
+        if grid_only_rows and len(grid_only_rows) == len(active_selected_ids):
             _copy_job_log(job_id, f"grid-cookie copy: {len(grid_only_rows)} {grid_only_reason}")
             _run_target_cleanup(progress=35)
             grid_res = _copy_grid_unified_campaigns(job_id, body, grid_only_rows, workdir)
@@ -789,7 +854,7 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         # ВАЖНО: вызывается ДО _copy_filter_snapshot — campaign_callouts.json должен существовать
         # во время фильтрации снимка, чтобы campaign-level уточнения (inheritableCallouts) не
         # отфильтровались из callouts.json (ad-level callout_ids=0 → без этого callout_texts=[]).
-        # Использует list(selected_ids) — кампании до фильтра (campaigns.json ещё не отфильтрован).
+        # Использует active_selected_ids — архивные Grid-only кампании уже отсеяны выше.
         # Best-effort: недоступность Grid не валит копирование — постпроцесс откатится на union/единичное.
         _asset_pull: dict = {}
 
@@ -799,7 +864,7 @@ def _copy_run_job(job_id: str, body: dict) -> None:
                 _src_cli = cmc.build_client(source_login, account=(source_agency or None))
                 _src_grid = gf.GridClient(source_login, cookie=(_src_cli.sess.headers.get("Cookie") or ""))
                 _asset_pull["report"] = _csteps.pull_source_campaign_assets(
-                    _src_grid, list(selected_ids), src_dir, log=(lambda m: _copy_job_log(job_id, m)))
+                    _src_grid, list(active_selected_ids), src_dir, log=(lambda m: _copy_job_log(job_id, m)))
             except Exception as e:  # noqa: BLE001
                 _asset_pull["error"] = str(e)[:180]
 
@@ -809,23 +874,23 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             name=f"copy-assets-{job_id[:8]}",
         )
         _asset_thread.start()
-        dc.phase_pull(src_dir, src_auth, source_login, selected_campaign_ids=sorted(selected_ids))
+        dc.phase_pull(src_dir, src_auth, source_login, selected_campaign_ids=sorted(active_selected_ids))
         _asset_thread.join()
         _pa = _asset_pull.get("report") or {}
         if _pa.get("errors"):
             _copy_job_log(job_id, f"pull source assets warnings: {'; '.join(_pa['errors'][:3])[:220]}")
         if _asset_pull.get("error"):
             _copy_job_log(job_id, f"pull source assets: пропуск ({_asset_pull['error']})")
-        meta = _copy_filter_snapshot(src_dir, selected_ids)
+        meta = _copy_filter_snapshot(src_dir, active_selected_ids)
         if meta.get("dropped_empty_adgroups"):
             _copy_job_log(job_id, f"snapshot: пропущено {meta['dropped_empty_adgroups']} групп без копируемых объявлений (только архивные)")
         # total = ВСЕ выбранные кампании (v5 + UAC), чтобы счётчик «создано N/M» был честным.
         # meta.get("campaigns") = только v5-снапшот (UAC вычтены в expected_snapshot ниже) — НЕ использовать как total.
-        _copy_job_upsert(job_id, progress=28, total=len(selected_ids))
+        _copy_job_upsert(job_id, progress=28, total=max(0, len(selected_ids) - len(skipped_grid_snapshot)))
         _copy_job_log(job_id, f"snapshot отфильтрован: {meta.get('campaigns')} кампаний")
         if early_expected_snapshot is None:
             expected_snapshot, skipped_v5_snapshot = _copy_expected_snapshot_count(
-                selected_ids,
+                active_selected_ids,
                 selected_uac_rows,
                 _v5_campaigns_for_expected,
                 set(getattr(dc, "SKIP_CAMPAIGN_NAMES", set()) or set()),
@@ -838,8 +903,13 @@ def _copy_run_job(job_id: str, body: dict) -> None:
                 "snapshot: пропущено v5-кампаний не в скоупе pull: "
                 + ", ".join(f"{x.get('Id')}:{x.get('reason')}" for x in skipped_v5_snapshot[:8])
             )
-            _copy_job_upsert(job_id, total=max(0, len(selected_ids) - len(skipped_v5_snapshot)))
-        skip_error = _copy_selected_skip_error(selected_ids, selected_uac_rows, skipped_v5_snapshot)
+            _copy_job_upsert(
+                job_id,
+                total=max(0, len(selected_ids) - len(skipped_v5_snapshot) - len(skipped_grid_snapshot)),
+            )
+        skip_error = _copy_selected_skip_error(
+            selected_ids, selected_uac_rows, skipped_v5_snapshot, skipped_grid_snapshot
+        )
         if skip_error:
             raise RuntimeError(skip_error)
         if int(meta.get("campaigns") or 0) != expected_snapshot:
@@ -881,8 +951,8 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             skipped_cids = _copy_skip_unmapped_feed_campaigns(
                 src_dir, feed_map_valid, log=lambda m: _copy_job_log(job_id, m))
             if skipped_cids:
-                # total = полный selected минус пропущенные v5; UAC в remaining остаются
-                remaining = len(selected_ids) - len(skipped_cids)
+                # total = активный selected минус пропущенные по feed-map; UAC в remaining остаются
+                remaining = len(active_selected_ids) - len(skipped_cids)
                 _copy_job_upsert(job_id, total=max(0, remaining))
         target_feed_abs = dc.build_url_feed_url(target_domain, target_feed_url) if target_feed_url else ""
         audit = _copy_snapshot_preflight(
@@ -1052,6 +1122,7 @@ def _copy_run_job(job_id: str, body: dict) -> None:
                     "selected": len(selected_ids),
                     "snapshot": meta,
                     "upload_errors": upload_errors[:20],
+                    "skipped_campaigns": list(skipped_grid_snapshot) + list(skipped_v5_snapshot or []),
                     "workdir": str(workdir),
                     "cleanup": cleanup_result,
                 },
@@ -1062,7 +1133,9 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         metrika_res = {"updated": 0, "warned": 0}
         if token:
             _copy_job_log(job_id, f"докрутка Метрики: counter={counter_id}, goal={goal_id}")
-            metrika_res = _copy_apply_metrika(target_login, token, src_dir, workdir, counter_id, goal_id, selected_ids, job_id)
+            metrika_res = _copy_apply_metrika(
+                target_login, token, src_dir, workdir, counter_id, goal_id, active_selected_ids, job_id
+            )
         target_agency = _ag or target_agency_hint or _resolve_agency_hint(target_login, "")
         uac_copy = {"created": 0, "results": [], "errors": [], "uses_direct_units": False}
         if selected_uac_rows:
@@ -1098,6 +1171,8 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         skipped_camps = _copy_read_json(src_dir / "campaigns_skipped.json")
         if skipped_v5_snapshot:
             skipped_camps = list(skipped_camps or []) + skipped_v5_snapshot
+        if skipped_grid_snapshot:
+            skipped_camps = list(skipped_camps or []) + skipped_grid_snapshot
         final_results = cookie_post.get("results") or _copy_build_results(src_dir, workdir)
         final_status, final_error = _copy_terminal_status_from_postprocess(final_results, cookie_post)
         _copy_job_upsert(

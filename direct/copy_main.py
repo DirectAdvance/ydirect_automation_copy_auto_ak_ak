@@ -125,8 +125,20 @@ def _copy_login_allowed(login: str) -> tuple[bool, str]:
         return False, f"не удалось проверить доступ к аккаунту {login}: {str(exc)[:160]}"
 
 
+def _copy_grid_row_is_archived(row: dict) -> bool:
+    status = row.get("status")
+    if isinstance(status, dict):
+        primary = str(status.get("primaryStatus") or status.get("status") or "").upper()
+        archived = bool(status.get("archived"))
+    else:
+        primary = str(status or "").upper()
+        archived = bool(row.get("archived"))
+    state = str(row.get("state") or row.get("State") or "").upper()
+    return archived or primary == "ARCHIVED" or state == "ARCHIVED"
+
+
 def _copy_archived_campaign_ids(login: str, ids: list[int], agency: str = "") -> set[int]:
-    """Return selected campaign IDs that v5 marks as ARCHIVED."""
+    """Return selected campaign IDs archived in v5 or cookie-backed Grid."""
     ids = [int(x) for x in (ids or []) if str(x).isdigit() and int(x) > 0]
     if not login or not ids:
         return set()
@@ -149,6 +161,19 @@ def _copy_archived_campaign_ids(login: str, ids: list[int], agency: str = "") ->
             status = str(row.get("Status") or "").upper()
             if state == "ARCHIVED" or status == "ARCHIVED":
                 archived.add(int(row.get("Id") or 0))
+    wanted = set(ids)
+    try:
+        for row in yandex.grid_list_campaigns(login):
+            try:
+                cid = int(row.get("id") or row.get("Id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if cid in wanted and _copy_grid_row_is_archived(row):
+                archived.add(cid)
+    except Exception:
+        # Grid/cookie is authoritative for Master/Product statuses, but the campaign-list page
+        # should still load when cookies are temporarily unavailable; runtime copy has its own guard.
+        pass
     return archived
 
 
