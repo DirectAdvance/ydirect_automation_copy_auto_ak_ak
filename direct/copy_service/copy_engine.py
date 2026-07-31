@@ -311,6 +311,11 @@ def _copy_terminal_status_from_results(rows: list[dict]) -> tuple[str, str | Non
     return "error", ("; ".join(samples) + tail)[:500]
 
 
+def _copy_postprocess_error_can_wait_for_settle(error: str) -> bool:
+    text = str(error or "").strip()
+    return text.startswith("verify: ") or text.startswith("verification gate:")
+
+
 def _copy_terminal_status_from_postprocess(rows: list[dict], cookie_post: dict | None) -> tuple[str, str | None]:
     """Return terminal status including postprocess verification gates."""
     status, error = _copy_terminal_status_from_results(rows)
@@ -318,6 +323,8 @@ def _copy_terminal_status_from_postprocess(rows: list[dict], cookie_post: dict |
     if isinstance(cookie_post, dict):
         post_errors = [str(e).strip() for e in (cookie_post.get("errors") or []) if str(e).strip()]
     if status == "done" and post_errors:
+        if all(_copy_postprocess_error_can_wait_for_settle(e) for e in post_errors):
+            return "done", None
         return "error", "; ".join(post_errors[:3])[:500]
     return status, error
 

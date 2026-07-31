@@ -234,7 +234,7 @@ def _copy_api_status_payload(job_id: str, job: dict, repair_pending_func: Option
             repair_pending = bool(repair_pending_func(job_id))
         except Exception:  # noqa: BLE001
             repair_pending = False
-    public_status = "settling" if status == "done" and (settling or repair_pending) else status
+    public_status = "settling" if settling or (status == "done" and repair_pending) else status
     terminal = public_status in ("done", "error", "cancelled", "interrupted", "superseded")
 
     safe: dict = {

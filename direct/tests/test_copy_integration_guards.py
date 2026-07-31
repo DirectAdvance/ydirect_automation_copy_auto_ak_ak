@@ -49,14 +49,27 @@ def test_copy_terminal_status_is_error_when_campaign_failed():
     assert "tp7 product: нет feed_id" in error
 
 
-def test_copy_terminal_status_includes_postprocess_errors():
+def test_copy_terminal_status_includes_hard_postprocess_errors():
     status, error = copy_engine._copy_terminal_status_from_postprocess(
         [{"ok": True, "name": "campaign"}],
-        {"errors": ["verification gate: 1 незакрытых дефектов"]},
+        {"errors": ["feed-filters listing: UNAVAILABLE_FIELD"]},
     )
 
     assert status == "error"
-    assert "verification gate" in error
+    assert "feed-filters" in error
+
+
+def test_copy_terminal_status_defers_verify_only_postprocess_errors():
+    status, error = copy_engine._copy_terminal_status_from_postprocess(
+        [{"ok": True, "name": "campaign"}],
+        {"errors": [
+            "verify: 75 расхождений НЕ закрыто авторемонтом",
+            "verification gate: 102 незакрытых дефектов",
+        ]},
+    )
+
+    assert status == "done"
+    assert error is None
 
 
 def test_copy_feed_filters_retry_drops_unavailable_fields_until_success():
