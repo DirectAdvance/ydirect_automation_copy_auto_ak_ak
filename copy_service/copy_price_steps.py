@@ -29,6 +29,26 @@ def _merge_cheaper(prev: tuple | None, new: tuple) -> tuple:
 _KODER_SEGMENT_RE = re.compile(r"_a(?:on|off)_n\d{3}_r\d{4}_", re.I)
 
 
+def _price_segment_from_names(*names: str) -> str:
+    """Price segment from copied campaign/group names.
+
+    Explicit Марки/Модели keep strict feed matching. Explicit Общее/common topics use
+    the target feed minimum via _group_ad_price(..., "Общее"). Unknown legacy names
+    stay on the old safe path ("Модели") so we do not put a random car price on a
+    brand/model ad when the segment is not visible in snapshots.
+    """
+    for name in names:
+        parts = [p.strip().lower() for p in re.split(r"\s*[|·—–]\s*|\s+-\s+|\s*/\s*", name or "")]
+        for part in parts:
+            if part == "марки":
+                return "Марки"
+            if part == "модели":
+                return "Модели"
+            if part in ("общее", "общие запросы", "общая"):
+                return "Общее"
+    return "Модели"
+
+
 def _clean_group_brand(name: str) -> str:
     """Бренд/модель группы из её имени для матча с ключами прайс-карты фида.
     Реальные слепки называют группы по-разному («01 | Changan Uni-K | Москва», «Changan | С пробегом»,
@@ -61,12 +81,13 @@ def step_prices(ctx: CopyCtx, campaign_ids: list[int] | None = None) -> dict:
     (мин цена); пусто → фолбэк account_offer_prices (мердж всех фидов target); (3) tgt_ad → бренд по
     снапшоту (maps['ads']→ads.json.AdGroupId→adgroups.json.Name); (4) читаем созданные адаптивные
     объявления target через Grid adaptive_ads_for_update (id/href/titles/bodies/imageHashes);
-    (5) цена = group_ad_price(prices, brand, 'Модели'); нет марки/модели в фиде → цена ПУСТАЯ (тумблер
-    выключен), adPrice не выставляется; (6) _grid_set_ad_prices.
+    (5) цена = group_ad_price(prices, brand, segment): Марки/Модели строго по ключу target-фида,
+    нет марки/модели в фиде → цена ПУСТАЯ; Общее/прочие СТ → минимальная цена машины из target-фида;
+    (6) _grid_set_ad_prices.
 
     Идемпотентно/безопасно: нет grid/хелперов/прайса/адаптивных ads → пропуск с отчётом, job не падает.
     ShoppingAd тут не трогаем — товарные берут цену из фида нативно; adPrice применим к адаптивным."""
-    rep = {"feeds": [], "ads_scanned": 0, "priced": 0, "by_brand": 0,
+    rep = {"feeds": [], "ads_scanned": 0, "priced": 0, "by_brand": 0, "by_min_fallback": 0,
            "no_price": 0, "errors": []}
     if ctx.grid is None:
         rep["errors"].append("нет grid-клиента — adPrice пропущены")
@@ -123,14 +144,25 @@ def step_prices(ctx: CopyCtx, campaign_ids: list[int] | None = None) -> dict:
         if aid and gid:
             src_ad_group[aid] = gid
     group_name: dict[str, str] = {}
+    group_campaign: dict[str, str] = {}
     for g in _rj(ctx.src_dir / "adgroups.json"):
         gid = str(g.get("Id") or "")
         if gid:
             group_name[gid] = str(g.get("Name") or "").strip()
+            group_campaign[gid] = str(g.get("CampaignId") or "")
+    campaign_name: dict[str, str] = {}
+    for c in _rj(ctx.src_dir / "campaigns.json"):
+        cid = str(c.get("Id") or "")
+        if cid:
+            campaign_name[cid] = str(c.get("Name") or "").strip()
     brand_for_ad: dict[int, str] = {}
+    segment_for_ad: dict[int, str] = {}
     for tgt_ad_id, src_ad_id in rev_ads.items():
         gid = src_ad_group.get(src_ad_id)
-        brand_for_ad[tgt_ad_id] = _clean_group_brand(group_name.get(gid, "")) if gid else ""
+        gname = group_name.get(gid, "") if gid else ""
+        cname = campaign_name.get(group_campaign.get(gid, ""), "") if gid else ""
+        brand_for_ad[tgt_ad_id] = _clean_group_brand(gname) if gid else ""
+        segment_for_ad[tgt_ad_id] = _price_segment_from_names(gname, cname)
 
     # 4) Созданные адаптивные объявления target (id/href/titles/bodies/imageHashes) через Grid.
     wanted_cids = {int(c) for c in (campaign_ids or []) if str(c).isdigit() and int(c) > 0}
@@ -146,21 +178,22 @@ def step_prices(ctx: CopyCtx, campaign_ids: list[int] | None = None) -> dict:
         rep["errors"].append(f"read adaptive ads: {str(e)[:180]}")
         return rep
 
-    # 5) Маппинг ad→бренд→цена (нет марки/модели в фиде → цена пустая), собираем payload.
+    # 5) Маппинг ad→бренд/сегмент→цена, собираем payload.
     items: list[dict] = []
     for aid, st in live_ads.items():
         if not (st.get("titles") and st.get("bodies")):
             continue                                   # не адаптивное / без контента — adPrice неприменим
         rep["ads_scanned"] += 1
         brand = brand_for_ad.get(int(aid), "")
+        segment = segment_for_ad.get(int(aid), "Модели")
         cur, old, mode = 0, 0, ""
-        if brand:
+        if brand or segment not in ("Марки", "Модели"):
             try:
-                cur, old = ctx.group_ad_price(prices, brand, "Модели")
+                cur, old = ctx.group_ad_price(prices, brand, segment)
             except Exception:  # noqa: BLE001
                 cur, old = 0, 0
             if cur:
-                mode = "by_brand"
+                mode = "by_brand" if segment in ("Марки", "Модели") else "by_min_fallback"
         if not cur:
             rep["no_price"] += 1
             continue
@@ -180,5 +213,6 @@ def step_prices(ctx: CopyCtx, campaign_ids: list[int] | None = None) -> dict:
         except Exception as e:  # noqa: BLE001
             rep["errors"].append(f"set prices: {str(e)[:180]}")
     ctx.log(f"adPrice из target-фида: проставлено {rep['priced']}/{len(items)} адаптивных "
-            f"(по марке {rep['by_brand']}, без цены {rep['no_price']}; фидов {len(rep['feeds'])})")
+            f"(по марке/модели {rep['by_brand']}, минимумом фида {rep['by_min_fallback']}, "
+            f"без цены {rep['no_price']}; фидов {len(rep['feeds'])})")
     return rep
