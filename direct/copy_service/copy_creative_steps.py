@@ -150,6 +150,9 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
     try:
         # RMW по tgt_camp_ids: сохраняет target href/adPrice/creativeIds(видео), меняет только текст+картинки.
         rep["updated"] = int(ctx.update_adaptive_ads(ctx.target_login, items, tgt_camp_ids) or 0)
+        if rep["updated"] < len(items):
+            rep["errors"].append(
+                f"grid update adaptive: обновлено {rep['updated']}/{len(items)} объявлений")
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"grid update adaptive: {str(e)[:200]}")
     ctx.log(f"адаптивы 1:1 (Grid, 0 баллов): контент обновлён у {rep['updated']}/{len(items)} "

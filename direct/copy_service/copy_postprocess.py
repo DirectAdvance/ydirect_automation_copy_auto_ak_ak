@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from pathlib import Path
@@ -364,6 +365,41 @@ def _v5_conditions_to_grid(raw) -> list[dict]:
     return out
 
 
+def _copy_set_product_feed_filters(grid, items: list[dict], *, listing: bool) -> int:
+    """Set product/listing feed filters, retrying without Grid-rejected feed fields."""
+    try:
+        return grid.set_product_feed_filters(items, listing=listing)
+    except Exception as exc:  # noqa: BLE001
+        text = str(exc)
+        if "UNAVAILABLE_FIELD" not in text:
+            raise
+        unavailable_by_item: dict[int, set[int]] = {}
+        for item_idx, cond_idx in re.findall(
+            r"adUpdateItems\[(\d+)\]\.feedFilter\.conditions\[(\d+)\]", text
+        ):
+            unavailable_by_item.setdefault(int(item_idx), set()).add(int(cond_idx))
+        if not unavailable_by_item:
+            raise
+        retry_items: list[dict] = []
+        for idx, item in enumerate(items or []):
+            drop = unavailable_by_item.get(idx) or set()
+            if not drop:
+                retry_items.append(item)
+                continue
+            conds = [
+                cond for cond_idx, cond in enumerate(item.get("conditions") or [])
+                if cond_idx not in drop
+            ]
+            if not conds:
+                continue
+            retry_item = dict(item)
+            retry_item["conditions"] = conds
+            retry_items.append(retry_item)
+        if not retry_items:
+            return 0
+        return grid.set_product_feed_filters(retry_items, listing=listing)
+
+
 def _copy_apply_product_filters(src_dir: Path, maps: dict, grid, log=None) -> dict:
     """Перенести feedFilter источника на созданные в цели ShoppingAd/ListingAd (Grid).
 
@@ -408,7 +444,7 @@ def _copy_apply_product_filters(src_dir: Path, maps: dict, grid, log=None) -> di
         if not items:
             continue
         try:
-            rep[key] = grid.set_product_feed_filters(items, listing=listing)
+            rep[key] = _copy_set_product_feed_filters(grid, items, listing=listing)
         except Exception as e:  # noqa: BLE001 — UNKNOWN_FIELD (схема целевого фида) не должна валить job
             rep["errors"].append(f"feed-filters {key}: {str(e)[:220]}")
     if log:

@@ -19,6 +19,7 @@ The main Direct automation app remains in direct-create.service on port 5020.
 import json
 import os
 import sys
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -164,6 +165,30 @@ def _copy_api_idempotency_lookup(idempotency_key: str) -> dict | None:
         return None
 
 
+def _copy_ts(value):
+    if hasattr(value, "timestamp"):
+        try:
+            return value.timestamp()
+        except Exception:  # noqa: BLE001
+            return None
+    return value
+
+
+def _copy_elapsed_seconds(row: dict) -> int | None:
+    status = str(row.get("status") or "")
+    terminal = {"done", "error", "cancelled", "interrupted"}
+    started_at = _copy_ts(row.get("started_at")) or _copy_ts(row.get("created_at"))
+    if not started_at:
+        return None
+    if status == "running":
+        return max(0, int(time.time() - float(started_at)))
+    if status in terminal:
+        finished_at = _copy_ts(row.get("updated_at"))
+        if finished_at:
+            return max(0, int(float(finished_at) - float(started_at)))
+    return None
+
+
 def _copy_queue_jobs() -> list[dict]:
     """Последние 200 copy-джоб из direct_automation.jobs для вкладки «Очередь».
     Возвращает список dict с полями: job_id, status, total, done, created, failed,
@@ -181,7 +206,7 @@ def _copy_queue_jobs() -> list[dict]:
             if allowed_directologists is None:
                 cur.execute(
                     "SELECT job_id, login, status, total, done, created, failed, "
-                    "       error, created_at, body "
+                    "       error, created_at, updated_at, started_at, body "
                     "FROM direct_automation.jobs "
                     "WHERE kind='copy_campaigns' "
                     "ORDER BY created_at DESC LIMIT 200"
@@ -193,7 +218,7 @@ def _copy_queue_jobs() -> list[dict]:
             else:
                 cur.execute(
                     "SELECT j.job_id, j.login, j.status, j.total, j.done, j.created, j.failed, "
-                    "       j.error, j.created_at, j.body "
+                    "       j.error, j.created_at, j.updated_at, j.started_at, j.body "
                     "FROM direct_automation.jobs j "
                     "WHERE j.kind='copy_campaigns' "
                     "  AND (EXISTS ("
@@ -218,12 +243,7 @@ def _copy_queue_jobs() -> list[dict]:
         target_login = body.get("target_login") or r.get("login") or ""
         created_by = body.get("created_by") or body.get("username") or body.get("_actor") or ""
         original_created_by = body.get("_copy_retry_original_user") or ""
-        created_at = r.get("created_at")
-        if hasattr(created_at, "timestamp"):
-            try:
-                created_at = created_at.timestamp()
-            except Exception:  # noqa: BLE001
-                created_at = None
+        created_at = _copy_ts(r.get("created_at"))
         result.append({
             "job_id": r.get("job_id"),
             "status": r.get("status"),
@@ -237,7 +257,7 @@ def _copy_queue_jobs() -> list[dict]:
             "target_login": target_login,
             "created_by": created_by,
             "original_created_by": original_created_by,
-            "elapsed": None,
+            "elapsed": _copy_elapsed_seconds(r),
         })
     return result
 

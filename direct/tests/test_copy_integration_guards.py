@@ -15,7 +15,6 @@ from direct.copy_service import (
     copy_engine,
     copy_feeds,
     copy_postprocess,
-    copy_price_steps,
     copy_settings_steps,
     copy_steps,
     copy_grid_read,
@@ -248,65 +247,6 @@ def test_copy_postprocess_executes_adprice_repair_for_live_warning(monkeypatch):
     assert calls[0][1] == [101]
 
 
-def test_copy_price_segment_detects_common_from_campaign_name():
-    assert copy_price_steps._price_segment_from_names("Автокредит", "РСЯ - Общее - КС") == "Общее"
-    assert copy_price_steps._price_segment_from_names("01 | Changan", "РСЯ - Марки - КС") == "Марки"
-    assert copy_price_steps._price_segment_from_names("01 | Changan Uni-K", "РСЯ - Модели - КС") == "Модели"
-    assert copy_price_steps._price_segment_from_names("01 | Changan Uni-K", "legacy name") == "Модели"
-
-
-def test_copy_prices_use_feed_minimum_for_non_mark_model_segment(tmp_path):
-    src_dir = tmp_path / "src"
-    src_dir.mkdir()
-    (src_dir / "ads.json").write_text(
-        '[{"Id": "1", "AdGroupId": "10"}]',
-        encoding="utf-8",
-    )
-    (src_dir / "adgroups.json").write_text(
-        '[{"Id": "10", "CampaignId": "20", "Name": "Автокредит"}]',
-        encoding="utf-8",
-    )
-    (src_dir / "campaigns.json").write_text(
-        '[{"Id": "20", "Name": "РСЯ - Общее - КС"}]',
-        encoding="utf-8",
-    )
-
-    class FakeGrid:
-        def adaptive_ads_for_update(self, campaign_ids, ad_ids):
-            assert campaign_ids == [200]
-            assert ad_ids == [100]
-            return {100: {"titles": ["t"], "bodies": ["b"], "href": "https://target.test"}}
-
-    calls = []
-    written = []
-
-    def fake_group_ad_price(prices, brand, segment):
-        calls.append((prices, brand, segment))
-        return (777000, 0) if segment == "Общее" else (0, 0)
-
-    ctx = SimpleNamespace(
-        target_login="target-login",
-        src_dir=src_dir,
-        workdir=tmp_path,
-        body={},
-        maps={"feeds": {"11": 123}, "campaigns": {"20": 200}, "ads": {"1": 100}},
-        grid=FakeGrid(),
-        feed_offer_prices=lambda login, feed_id: {"lada": (777000, 0), "haval": (990000, 0)},
-        account_offer_prices=None,
-        group_ad_price=fake_group_ad_price,
-        set_ad_prices=lambda login, items, apply_combo_button=False: written.extend(items) or len(items),
-        log=lambda _m: None,
-    )
-
-    out = copy_price_steps.step_prices(ctx)
-
-    assert calls == [({"lada": (777000, 0), "haval": (990000, 0)}, "Автокредит", "Общее")]
-    assert out["priced"] == 1
-    assert out["by_min_fallback"] == 1
-    assert out["no_price"] == 0
-    assert written[0]["current"] == 777000
-
-
 def test_copy_adaptive_creatives_remaps_multicards(monkeypatch, tmp_path):
     class FakeSourceGrid:
         def adaptive_ads_for_update(self, _campaign_ids, _ad_ids):
@@ -410,6 +350,144 @@ def test_grid_update_adaptive_ads_preserves_multicards(monkeypatch):
     assert updated == 1
     item = payloads[0]["updateInput"]["adUpdateItems"][0]
     assert item["multicards"][0]["imageHash"] == "tgt-card"
+
+
+def test_grid_update_adaptive_ads_chunks_large_payload(monkeypatch):
+    payload_sizes = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, items):
+            self.items = items
+
+        def json(self):
+            return {
+                "data": {
+                    "updateAdaptiveTextAds": {
+                        "updatedAds": [{"id": it["id"]} for it in self.items],
+                        "validationResult": {"errors": []},
+                    }
+                }
+            }
+
+    class FakeGrid:
+        def adaptive_ads_for_update(self, _campaign_ids, ad_ids):
+            return {
+                int(aid): {
+                    "href": "https://example.test",
+                    "titles": ["Old title"],
+                    "bodies": ["Old body"],
+                    "imageHashes": ["old-img"],
+                    "creativeIds": [],
+                }
+                for aid in ad_ids
+            }
+
+        def _bootstrap_csrf(self):
+            return None
+
+        def _post(self, _op, _query, variables):
+            items = variables["updateInput"]["adUpdateItems"]
+            payload_sizes.append(len(items))
+            return FakeResponse(items)
+
+    monkeypatch.setattr(
+        create_set_feeds,
+        "gf",
+        SimpleNamespace(get_grid_client=lambda _login: FakeGrid()),
+        raising=False,
+    )
+
+    items = [{"id": i, "titles": ["New title"], "bodies": ["New body"]} for i in range(1, 52)]
+
+    updated = create_set_feeds._grid_update_adaptive_ads(
+        "target-login",
+        items,
+        campaign_ids=[202],
+        apply_combo_button=False,
+    )
+
+    assert updated == 51
+    assert payload_sizes == [50, 1]
+
+
+def test_grid_update_adaptive_ads_falls_back_without_multicards(monkeypatch):
+    payloads = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, items):
+            self.items = items
+
+        def json(self):
+            if any("multicards" in it for it in self.items):
+                return {
+                    "data": {
+                        "updateAdaptiveTextAds": {
+                            "updatedAds": [None for _ in self.items],
+                            "validationResult": {
+                                "errors": [{"code": "BAD_MULTICARD", "path": "adUpdateItems[0].multicards"}]
+                            },
+                        }
+                    }
+                }
+            return {
+                "data": {
+                    "updateAdaptiveTextAds": {
+                        "updatedAds": [{"id": it["id"]} for it in self.items],
+                        "validationResult": {"errors": []},
+                    }
+                }
+            }
+
+    class FakeGrid:
+        def adaptive_ads_for_update(self, _campaign_ids, ad_ids):
+            return {
+                int(aid): {
+                    "href": "https://example.test",
+                    "titles": ["Old title"],
+                    "bodies": ["Old body"],
+                    "imageHashes": ["old-img"],
+                    "creativeIds": [],
+                }
+                for aid in ad_ids
+            }
+
+        def _bootstrap_csrf(self):
+            return None
+
+        def _post(self, _op, _query, variables):
+            items = variables["updateInput"]["adUpdateItems"]
+            payloads.append(items)
+            return FakeResponse(items)
+
+    monkeypatch.setattr(
+        create_set_feeds,
+        "gf",
+        SimpleNamespace(get_grid_client=lambda _login: FakeGrid()),
+        raising=False,
+    )
+
+    updated = create_set_feeds._grid_update_adaptive_ads(
+        "target-login",
+        [{
+            "id": 22,
+            "titles": ["New title"],
+            "bodies": ["New body"],
+            "image_hashes": ["img1", "img2", "img3", "img4", "img5"],
+            "multicards": [{"imageHash": "card-img", "currency": None, "href": None,
+                            "price": None, "priceOld": None, "text": None}],
+        }],
+        campaign_ids=[202],
+        apply_combo_button=False,
+    )
+
+    assert updated == 1
+    assert "multicards" in payloads[0][0]
+    assert "multicards" not in payloads[-1][0]
+    assert payloads[-1][0]["imageHashes"] == ["img1", "img2", "img3", "img4", "img5"]
 
 
 def test_copy_timed_raises_on_step_timeout(monkeypatch):

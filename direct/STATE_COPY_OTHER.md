@@ -341,3 +341,28 @@ SERVING_OFF). `strategyName=AUTOBUDGET` в Grid-payload — внутреннее
   стратегии в Grid enum → узкий апдесит пропускает их. Только ручное изменение в интерфейсе ИЛИ
   реверс Grid write-enum ручных стратегий (отдельная экспертная задача).
 - Промо: код исправлен, но для текущего porg-jh2si7rh нужен НОВЫЙ copy run (старый снэпшот без промо).
+
+## Сессия 2026-07-31 — live copy porg-2wkbqwqe → porg-uy3huxcn: adaptive media batching
+
+- **Прогон:** `copy_start`, 48 кампаний: 22 v5 TEXT + 26 Grid/UAC, target `autopark777.site`,
+  `counter=110883157`, `goal=586896806`, job `28cba2b9d714`.
+- **Итог job:** `done=48`, `created=48`, `failed=0`, но терминальный `error` из postprocess:
+  `updateListingAds(feed-filter) UNAVAILABLE_FIELD` + Grid source-read gaps. Очередь перед стартом ждала
+  same-agency create job ~18 мин; само выполнение от `started_at` до error ~24м50с.
+- **Проверено live:** кампаний target 48 (26 grid + 22 v5), все DRAFT. В именах кампаний старого
+  `Краснодар*` нет; в 26 UAC campaign names найден `r####`, wrong_r=0; v5 group names: 101/101
+  с `r0002`, wrong_r=0.
+- **Дефект media подтверждён:** `adaptive_creatives` подготовил 303 объявления, 315 image remap,
+  78 carousel cards, но `UpdateAdaptiveTextAds` вернул `0/303`. Live-read target:
+  `image_count_dist={0:49,1:291,2:12}`, дублей внутри imageHashes нет, `five_same=0`, но
+  `img_mismatch=303/352`, `mc_mismatch=303/352`, `multicard_ads=0`.
+- **Цены:** live target `adPrice` есть у 276/352 adaptive ads; это совпадает с postprocess
+  `проставлено 276/276`, еще 76 без цены = 49 без content/images + 27 без цены по фиду.
+- **Фикс:** `_grid_update_adaptive_ads` теперь бьёт adaptive full-replace на чанки по 50, пишет
+  top-level/validation диагностику в journald, делает per-ad fallback, а при отказе `multicards`
+  повторяет без карусели, чтобы не терять 5 основных картинок. `step_adaptive_creatives` теперь
+  добавляет ошибку в rep при `updated < len(items)`, а не оставляет молчаливый `0`.
+- **Тесты:** `py_compile create/create_set_feeds.py copy_service/copy_creative_steps.py`; focused pytest
+  `test_copy_adaptive_creatives_remaps_multicards`, `test_grid_update_adaptive_ads_preserves_multicards`,
+  `test_grid_update_adaptive_ads_chunks_large_payload`,
+  `test_grid_update_adaptive_ads_falls_back_without_multicards` — 4 passed.
