@@ -29,6 +29,7 @@ INCLUDE_GLOBS = (
     # Код сервиса копирования.
     "direct/copy_service/*.py",
     "direct/copy_main.py",
+    "direct/core/queue_server.py",
     "direct/web/routes_copy.py",
     # Документация зоны.
     "direct/COPY_INDEX.md",
@@ -36,6 +37,7 @@ INCLUDE_GLOBS = (
     "direct/STATE_COPY_OTHER.md",
     # Тесты зоны.
     "direct/tests/test_copy_integration_guards.py",
+    "direct/tests/test_copy_retry_scoped.py",
     "direct/tests/test_direct_copy_transient_retry.py",
     # UI вкладки /direct/automation/copy.
     "templates/direct/copy.html",

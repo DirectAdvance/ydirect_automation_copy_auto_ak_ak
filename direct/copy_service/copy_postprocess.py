@@ -5,6 +5,7 @@ import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from copy import copy
 from pathlib import Path
 
 from ..core import campaign as cmc
@@ -48,8 +49,103 @@ def _copy_timed(job_id: str, label: str, fn, *, timeout_sec: int | None = None):
     finally:
         ce._copy_job_log(job_id, f"[timing] {label}: {time.monotonic() - _t:.0f}s")
 
+def _copy_maps_subset_for_target_campaigns(maps: dict, src_dir: Path,
+                                           target_campaign_ids: list[int]) -> dict:
+    """Keep copy id-maps scoped to campaigns that need image repair."""
+    target_ids = {str(int(x)) for x in (target_campaign_ids or []) if int(x) > 0}
+    camp_map = {
+        str(src): tgt for src, tgt in ((maps or {}).get("campaigns") or {}).items()
+        if str(tgt) in target_ids
+    }
+    if not camp_map:
+        return {}
+    source_cids = set(camp_map)
+    try:
+        adgroups = json.loads((Path(src_dir) / "adgroups.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        adgroups = []
+    source_gids = {
+        str(ag.get("Id") or "") for ag in adgroups
+        if str(ag.get("CampaignId") or "") in source_cids and str(ag.get("Id") or "")
+    }
+    try:
+        ads = json.loads((Path(src_dir) / "ads.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        ads = []
+    source_aids = {
+        str(ad.get("Id") or "") for ad in ads
+        if (str(ad.get("CampaignId") or "") in source_cids
+            or str(ad.get("AdGroupId") or "") in source_gids)
+        and str(ad.get("Id") or "")
+    }
+    out = dict(maps or {})
+    out["campaigns"] = camp_map
+    if source_gids:
+        out["adgroups"] = {
+            str(src): tgt for src, tgt in ((maps or {}).get("adgroups") or {}).items()
+            if str(src) in source_gids
+        }
+    if source_aids:
+        out["ads"] = {
+            str(src): tgt for src, tgt in ((maps or {}).get("ads") or {}).items()
+            if str(src) in source_aids
+        }
+    return out
+
+
+def _copy_execute_source_image_repairs(login: str, ctx: dict, campaign_ids: list[int],
+                                       actions: list[dict], unsupported: list[dict],
+                                       copy_step_ctx, post_verify=None) -> dict:
+    """Repair missing copy images from the source snapshot/Grid instead of create slepok pools."""
+    out = {
+        "action": "images_repair",
+        "ok": True,
+        "executed": 0,
+        "failed": 0,
+        "campaign_ids": campaign_ids,
+        "executed_actions": [],
+        "unsupported_actions": unsupported[:40],
+        "copy_source_images": True,
+    }
+    if copy_step_ctx is None:
+        out.update({"ok": False, "failed": len(campaign_ids), "error": "нет copy_step_ctx для source image repair"})
+        return out
+    maps = _copy_maps_subset_for_target_campaigns(
+        getattr(copy_step_ctx, "maps", {}) or {},
+        getattr(copy_step_ctx, "src_dir", Path(".")),
+        campaign_ids,
+    )
+    if not maps.get("campaigns"):
+        out.update({"ok": False, "failed": len(campaign_ids), "error": "нет campaign id-map для source image repair"})
+        return out
+    repair_ctx = copy(copy_step_ctx)
+    repair_ctx.maps = maps
+    repair_ctx.cached_adaptive_src = None
+    try:
+        from . import copy_steps as csteps
+        repair_out = csteps.step_adaptive_creatives(repair_ctx)
+    except Exception as e:  # noqa: BLE001
+        repair_out = {"errors": [str(e)[:220]], "updated": 0}
+    out["result"] = repair_out
+    errors = [str(e) for e in (repair_out.get("errors") or []) if str(e)]
+    updated = int(repair_out.get("updated") or 0)
+    if errors or updated <= 0:
+        out["ok"] = False
+        out["failed"] = len(campaign_ids)
+        if errors:
+            out["error"] = "; ".join(errors)[:220]
+        else:
+            out["error"] = "source image repair не обновил объявления"
+    else:
+        out["executed"] = len(campaign_ids)
+        out["executed_actions"] = [{k: v for k, v in a.items()} for a in actions]
+    if post_verify:
+        post_verify(out, login, ctx)
+    return out
+
+
 def _copy_execute_image_repairs(login: str, ctx: dict, plan: dict, deps,
-                                post_verify=None) -> dict:
+                                post_verify=None, copy_step_ctx=None) -> dict:
     """Run Grid-only image repairs for copy live verification failures."""
     ids, actions, unsupported = rgate.executable_images_repairs(plan or {})
     out = {
@@ -64,6 +160,10 @@ def _copy_execute_image_repairs(login: str, ctx: dict, plan: dict, deps,
     if not ids or not actions:
         out["note"] = "нет executable images_repair"
         return out
+    body = (ctx or {}).get("body") if isinstance(ctx, dict) else {}
+    if isinstance(body, dict) and str(body.get("_kind") or "") == "copy_campaigns" and not str(body.get("agent") or "").strip():
+        return _copy_execute_source_image_repairs(
+            login, ctx, ids, actions, unsupported, copy_step_ctx, post_verify=post_verify)
     repair_out, status = rex.execute_images_repair(login, ctx, ids, deps)
     out.update({"status": status, "result": repair_out})
     if 200 <= int(status) < 300 and repair_out.get("ok"):
@@ -691,14 +791,6 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
     maps.setdefault("promotions", {})
     uac_results = _copy_uac_results_from_body(body)
 
-    try:
-        client = cmc.build_client(target_login, account=(target_agency or None))
-        cookie = client.sess.headers.get("Cookie") or ""
-        grid = gf.GridClient(target_login, cookie=cookie)
-    except Exception as e:  # noqa: BLE001
-        rep["errors"].append(f"cookie init: {str(e)[:220]}")
-        return rep
-
     if not maps.get("campaigns"):
         src_campaigns = ce._copy_read_json(src_dir / "campaigns.json")
         if not src_campaigns and uac_results:
@@ -708,6 +800,16 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                 f"id_maps: pure UAC/Grid copy — v5 campaign mapping не требуется ({len(uac_results)} кампаний)",
             )
             return rep
+
+    try:
+        client = cmc.build_client(target_login, account=(target_agency or None))
+        cookie = client.sess.headers.get("Cookie") or ""
+        grid = gf.GridClient(target_login, cookie=cookie)
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"cookie init: {str(e)[:220]}")
+        return rep
+
+    if not maps.get("campaigns"):
         recover = _copy_recover_campaign_maps_by_name(
             target_login, cookie, src_dir, maps, log=(lambda m: ce._copy_job_log(job_id, m)))
         rep["campaign_map_recovery"] = recover
@@ -1201,6 +1303,7 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                     current_plan,
                     ce._repair_deps(),
                     post_verify=ce._attach_post_repair_verification,
+                    copy_step_ctx=cstep_ctx,
                 )
                 rep["copy_image_repair"] = image_auto
                 if image_auto.get("post_repair_live_verification"):
