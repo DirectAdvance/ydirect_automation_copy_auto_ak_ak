@@ -19,6 +19,7 @@ from direct.copy_service import (
     copy_settings_steps,
     copy_steps,
     copy_grid_read,
+    copy_grid_unified,
     copy_uac,
 )
 from direct.copy_service.copy_api import register_copy_api
@@ -34,6 +35,54 @@ def test_copy_target_feed_id_prefers_preseeded_id_maps(tmp_path, monkeypatch):
     monkeypatch.setattr(copy_feeds, "_feed_key", lambda value: value)
 
     assert copy_feeds._copy_target_feed_id("target", "agency", Path(tmp_path), "example.ru") == 12345
+
+
+def test_grid_unified_copy_scopes_target_cookie_to_job_agency(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeEngine:
+        _COPY_R_CODE_RE = copy_engine._COPY_R_CODE_RE
+        _resolve_agency_hint = staticmethod(lambda _login, _default: "wrong-agency")
+        _copy_grid_validate_feed_map = staticmethod(lambda *_args, **_kwargs: {})
+        _copy_target_feed_id = staticmethod(lambda *_args, **_kwargs: 0)
+        _copy_job_log = staticmethod(lambda *_args, **_kwargs: None)
+        _copy_grid_read_selected = staticmethod(
+            lambda *_args, **_kwargs: {"campaigns": [], "groups": [], "ads": []}
+        )
+        _copy_v501_ad_image_hashes = staticmethod(lambda *_args, **_kwargs: {})
+        _copy_ctx = staticmethod(lambda _login: {})
+        _copy_domain_from_href = staticmethod(lambda _href: "")
+        _copy_image_remapper = staticmethod(lambda *_args, **_kwargs: (lambda hashes: hashes))
+        _copy_write_json = staticmethod(lambda *_args, **_kwargs: None)
+
+    def fake_pick(login, accounts=(), **_kwargs):
+        calls.append(("pick", login, tuple(accounts)))
+        return "cookie=victory"
+
+    def fake_remember(login, cookie):
+        calls.append(("remember", login, cookie))
+
+    monkeypatch.setattr(copy_grid_unified, "_engine", lambda: FakeEngine)
+    monkeypatch.setattr(copy_grid_unified.cmc, "pick_working_cookie", fake_pick)
+    monkeypatch.setattr(copy_grid_unified.cmc, "remember_working_cookie", fake_remember)
+
+    copy_grid_unified._copy_grid_unified_campaigns(
+        "job",
+        {
+            "source_login": "porg-source",
+            "target_login": "porg-target",
+            "agency": "victorylotsofads1",
+            "campaign_ids": [],
+            "target_domain": "example.ru",
+            "mode": "other",
+            "geo_mode": "keep",
+        },
+        [],
+        tmp_path,
+    )
+
+    assert ("pick", "porg-target", ("victorylotsofads1",)) in calls
+    assert ("remember", "porg-target", "cookie=victory") in calls
 
 
 def test_copy_terminal_status_is_error_when_campaign_failed():

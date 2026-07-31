@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..clients import grid_create as gc
 from ..clients import grid_finalize as gf
+from ..core import campaign as cmc
 
 
 def _engine():
@@ -88,6 +89,11 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
     target_city = (body.get("target_city") or "").strip()
     target_region = (body.get("target_region") or "").strip()
     target_agency = body.get("agency") or ce._resolve_agency_hint(target_login, "")
+    target_cookie_accounts = (str(target_agency).strip(),) if str(target_agency or "").strip() else None
+    target_cookie = None
+    if target_cookie_accounts:
+        target_cookie = cmc.pick_working_cookie(target_login, accounts=target_cookie_accounts)
+        cmc.remember_working_cookie(target_login, target_cookie)
     # ДОРАБОТКА 1: feed_map (пофидовая замена) в ЕПК-ветке. Раньше брался ОДИН авто-фид
     # (ce._copy_target_feed_id, feed_map игнорировался). Теперь: если body.feed_map задан и валиден
     # (те же проверки, что в _copy_run_job — целевой фид ПРИНАДЛЕЖИТ target-аккаунту), используем
@@ -423,7 +429,7 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
                             _si["model_field"] = "model"
                         shop_items.append(_si)
                 if shop_items:
-                    grid = gf.GridClient(target_login)
+                    grid = gf.GridClient(target_login, cookie=target_cookie)
                     # add_shopping_ads возвращает ПОЗИЦИОННЫЙ list[int|None] (None = не создан). Спариваем
                     # id↔item ДО отбрасывания None — иначе schлопывание сдвинет vendor-фильтр на чужой товар.
                     _shop_pairs = [(int(x), _si) for x, _si in zip(grid.add_shopping_ads(shop_items) or [], shop_items) if x]
