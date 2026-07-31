@@ -1,4 +1,4 @@
-"""Grid-only UnifiedCampaign copy path extracted from copy_engine."""
+"""Grid-only Text/Unified campaign copy path extracted from copy_engine."""
 from __future__ import annotations
 
 import json
@@ -69,13 +69,15 @@ def _copy_rcode_to_region(r_code: str) -> str:
         return ""
 
 
+_GRID_CONVERTIBLE_CAMPAIGN_TYPES = {"GdUnifiedCampaign", "GdTextCampaign"}
+
+
 def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: list[dict],
                                  workdir: Path) -> dict:
-    """Cookie-only copy for selected Grid GdUnifiedCampaign rows.
+    """Cookie-only copy for selected Grid GdUnifiedCampaign/GdTextCampaign rows.
 
-    This path is intentionally narrower than direct_copy.py: it handles draft Unified campaigns
-    visible in Grid when v5 units are depleted, preserving campaign/group names, keywords, text ads,
-    and adding product Shopping/Listing ads where the source had them.
+    This path creates target Unified campaigns via Grid, preserving campaign/group names, keywords,
+    text ads, and adding product Shopping/Listing ads where the source had them.
     """
     ce = _engine()
     from .copy_steps import _clean_group_brand as _csteps_clean_group_brand
@@ -202,9 +204,15 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
     except Exception as e:  # noqa: BLE001 — v501 image-хэши best-effort: картинки доберём из grid-ads
         ce._copy_job_log(job_id, f"v501 image-хэши источника не получены ({str(e)[:180]}) — продолжаю без них")
         source_image_hashes = {}
-    campaigns = [c for c in (snap.get("campaigns") or []) if str(c.get("__typename")) == "GdUnifiedCampaign"]
+    campaigns = [
+        c for c in (snap.get("campaigns") or [])
+        if str(c.get("__typename")) in _GRID_CONVERTIBLE_CAMPAIGN_TYPES
+    ]
     if len(campaigns) != len(selected_ids):
-        raise RuntimeError(f"grid snapshot неполный: выбрано {len(selected_ids)}, прочитано {len(campaigns)} Unified")
+        raise RuntimeError(
+            f"grid snapshot неполный: выбрано {len(selected_ids)}, "
+            f"прочитано {len(campaigns)} Text/Unified"
+        )
     if not src_domain:
         for camp in campaigns:
             src_domain = ce._copy_domain_from_href((camp.get("additionalData") or {}).get("href"))

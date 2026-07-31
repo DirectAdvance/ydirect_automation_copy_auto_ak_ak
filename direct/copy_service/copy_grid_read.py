@@ -48,7 +48,7 @@ def _copy_selected_grid_campaigns(login: str, selected_ids: set[int]) -> list[di
 
 
 def _copy_grid_read_selected(login: str, selected_ids: set[int]) -> dict:
-    """Read selected Unified campaigns with Grid cookies, without Direct API units."""
+    """Read selected Text/Unified campaigns with Grid cookies, without Direct API units."""
     from ..clients.grid_read import GridReadClient
 
     ids = [int(x) for x in selected_ids if int(x) > 0]
@@ -67,7 +67,9 @@ def _copy_grid_read_selected(login: str, selected_ids: set[int]) -> dict:
         "client(searchBy:{login:$login}){campaigns(input:$inp){rowset{"
         "id name __typename status{primaryStatus archived} "
         "...on GdUnifiedCampaign{metrikaCounters placementTypes additionalData{href} "
-        "minusKeywords disabledPlaces strategy{budget{sum}}}}}}"
+        "minusKeywords disabledPlaces strategy{budget{sum}}}"
+        "...on GdTextCampaign{metrikaCounters placementTypes additionalData{href} "
+        "minusKeywords disabledPlaces strategy{budget{sum}}}}}}}"
     )
     camps_data = reader._post("CopyCamp", q_campaigns, {"login": login, "inp": inp_common})
     campaigns = ((((camps_data.get("data") or {}).get("client") or {})

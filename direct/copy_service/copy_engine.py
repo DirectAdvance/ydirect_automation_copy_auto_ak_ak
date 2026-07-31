@@ -75,6 +75,34 @@ def _direct_copy_module():
     return mod
 
 
+def _copy_target_campaign_types(target_login: str, target_token: str | None) -> set[str] | None:
+    """Return target AvailableCampaignTypes from Direct clients.get.
+
+    None means the check is unavailable, so callers must keep the older path.
+    """
+    if not target_login or not target_token or not callable(_v5_call):
+        return None
+    try:
+        res = _v5_call(
+            "clients",
+            "get",
+            target_token,
+            target_login,
+            {"FieldNames": ["AvailableCampaignTypes"]},
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(res, dict) or res.get("error"):
+        return None
+    clients = (res.get("result") or {}).get("Clients") or []
+    if not clients:
+        return None
+    raw = clients[0].get("AvailableCampaignTypes")
+    if not isinstance(raw, list):
+        return None
+    return {str(x).strip() for x in raw if str(x).strip()}
+
+
 def _copy_enrich_body_context(body: dict, source_login: str, target_login: str) -> None:
     """Best-effort copy context for post-create repairs/verifiers.
 
@@ -501,6 +529,30 @@ def _copy_selected_skip_error(selected_ids: set[int], selected_uac_rows: list[di
     )
 
 
+def _copy_upload_terminal_error(workdir: Path, expected_campaigns: int) -> tuple[str, list[str]]:
+    """Classify full upload failure before cookie postprocess hides the real cause."""
+    maps = _copy_read_json(workdir / "id_maps.json") if (workdir / "id_maps.json").exists() else {}
+    if (maps.get("campaigns") or {}) or expected_campaigns <= 0:
+        return "", []
+    log_rows = _copy_read_json(workdir / "_upload_log.json") if (workdir / "_upload_log.json").exists() else []
+    campaign_errors = [
+        str(row) for row in (log_rows or [])
+        if str(row).startswith("кампания ") and " FAIL:" in str(row)
+    ]
+    if not campaign_errors:
+        return "", []
+    if all("[campaigns.add] 54" in row or "Нет прав" in row for row in campaign_errors):
+        return (
+            f"нет прав на создание кампаний в target-аккаунте: campaigns.add вернул 54 "
+            f"для {len(campaign_errors)}/{expected_campaigns}; проверьте управляющее агентство/токен target",
+            campaign_errors,
+        )
+    return (
+        "campaigns.add не создал ни одной кампании: " + "; ".join(campaign_errors[:3])[:420],
+        campaign_errors,
+    )
+
+
 def _copy_run_job(job_id: str, body: dict) -> None:
     source_login = (body.get("source_login") or "").strip()
     target_login = (body.get("target_login") or "").strip()
@@ -669,10 +721,39 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             if str(r.get("typename") or r.get("type") or "") == "GdUnifiedCampaign"
             and int(r.get("id") or 0) not in _v5_native
         ]
-        if selected_unified_rows and len(selected_unified_rows) == len(selected_ids):
-            _copy_job_log(job_id, f"grid-cookie copy: {len(selected_unified_rows)} Unified campaigns без Direct API баллов")
+        target_token, target_token_agency = _token_for_login(
+            target_login,
+            target_agency_hint or _resolve_agency_hint(target_login, ""),
+            _direct_tokens(),
+        )
+        target_types = _copy_target_campaign_types(target_login, target_token)
+        grid_convert_rows: list[dict] = []
+        if (
+            target_types is not None
+            and "TEXT_CAMPAIGN" not in target_types
+            and "UNIFIED_CAMPAIGN" in target_types
+        ):
+            grid_convert_rows = [
+                r for r in selected_grid_rows
+                if str(r.get("typename") or r.get("type") or "") in ("GdTextCampaign", "GdUnifiedCampaign")
+            ]
+            if grid_convert_rows and len(grid_convert_rows) == len(selected_ids):
+                _copy_job_log(
+                    job_id,
+                    f"grid-cookie copy: target не поддерживает TEXT_CAMPAIGN, "
+                    f"конвертирую {len(grid_convert_rows)} Text/Unified campaigns в ЕПК",
+                )
+
+        grid_only_rows = selected_unified_rows
+        grid_only_reason = "Unified campaigns без Direct API баллов"
+        if grid_convert_rows and len(grid_convert_rows) == len(selected_ids):
+            grid_only_rows = grid_convert_rows
+            grid_only_reason = "Text/Unified campaigns → ЕПК (target без TEXT_CAMPAIGN)"
+
+        if grid_only_rows and len(grid_only_rows) == len(selected_ids):
+            _copy_job_log(job_id, f"grid-cookie copy: {len(grid_only_rows)} {grid_only_reason}")
             _run_target_cleanup(progress=35)
-            grid_res = _copy_grid_unified_campaigns(job_id, body, selected_unified_rows, workdir)
+            grid_res = _copy_grid_unified_campaigns(job_id, body, grid_only_rows, workdir)
             if cleanup_result is not None:
                 grid_res["cleanup"] = cleanup_result
             status = "done" if not grid_res.get("errors") else "error"
@@ -766,11 +847,6 @@ def _copy_run_job(job_id: str, body: dict) -> None:
                 f"snapshot неполный: выбрано {len(selected_ids)}, UAC/tp6/tp7 {len(selected_uac_rows)}, "
                 f"в v5 snapshot {meta.get('campaigns')} вместо {expected_snapshot}"
             )
-        target_token, target_token_agency = _token_for_login(
-            target_login,
-            target_agency_hint or _resolve_agency_hint(target_login, ""),
-            _direct_tokens(),
-        )
         target_cookie_account = (
             target_token_agency or target_agency_hint or _resolve_agency_hint(target_login, "") or target_login
         )
@@ -966,6 +1042,21 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             image_hashes=(provided_image_hashes or None),
             progress_callback=_copy_upload_progress,
         )
+        upload_error, upload_errors = _copy_upload_terminal_error(workdir, expected_snapshot)
+        if upload_error:
+            _copy_job_upsert(
+                job_id,
+                result={
+                    "source_login": source_login,
+                    "target_login": target_login,
+                    "selected": len(selected_ids),
+                    "snapshot": meta,
+                    "upload_errors": upload_errors[:20],
+                    "workdir": str(workdir),
+                    "cleanup": cleanup_result,
+                },
+            )
+            raise RuntimeError(upload_error)
         _copy_job_upsert(job_id, progress=82)
         token, _ag = target_token, target_token_agency
         metrika_res = {"updated": 0, "warned": 0}

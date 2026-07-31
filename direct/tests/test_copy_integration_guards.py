@@ -1,5 +1,6 @@
 from contextlib import nullcontext
 from pathlib import Path
+import json
 import re
 from types import SimpleNamespace
 import time
@@ -216,6 +217,23 @@ def test_copy_selected_skip_error_for_archived_only_selection():
 
     assert "все выбранные кампании архивные" in msg
     assert "ARCHIVED не копируем" in msg
+
+
+def test_copy_upload_terminal_error_classifies_target_write_denied(tmp_path):
+    (tmp_path / "id_maps.json").write_text('{"campaigns": {}}', encoding="utf-8")
+    (tmp_path / "_upload_log.json").write_text(
+        json.dumps([
+            "кампания 'one' FAIL: [campaigns.add] 54: Нет прав: Нет прав на объект ",
+            "кампания 'two' FAIL: [campaigns.add] 54: Нет прав: Нет прав на объект ",
+        ], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    msg, errors = copy_engine._copy_upload_terminal_error(tmp_path, 2)
+
+    assert "нет прав на создание кампаний" in msg
+    assert "target-аккаунте" in msg
+    assert len(errors) == 2
 
 
 def test_copy_campaigns_route_hides_archived_campaigns():
