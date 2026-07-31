@@ -382,6 +382,14 @@ function _cecopyPollStart() {
   _cecopyPollTick();
 }
 
+function _cecopyJobIsTerminal(j) {
+  const publicStatus = j && (j.public_status || j.status);
+  if (publicStatus === 'settling' || publicStatus === 'repair_pending') return false;
+  if (j && j.status === 'done' && (j.settling || j.repair_pending)) return false;
+  if (j && typeof j.terminal === 'boolean') return Boolean(j.terminal);
+  return ['done', 'error', 'cancelled', 'interrupted', 'superseded'].includes(String(publicStatus || ''));
+}
+
 async function _cecopyPollTick() {
   if (!CECOPY_JOB_ID) return;
   try {
@@ -393,7 +401,7 @@ async function _cecopyPollTick() {
     }
     const j = await r.json();
     _cecopyRenderJobCard(j);
-    if (j.terminal || j.status === 'done' || j.status === 'error' || j.status === 'cancelled') {
+    if (_cecopyJobIsTerminal(j)) {
       _cecopyForgetJob(CECOPY_JOB_ID);
       if (CECOPY_POLL_TIMER) { clearInterval(CECOPY_POLL_TIMER); CECOPY_POLL_TIMER = null; }
     }
@@ -436,7 +444,10 @@ function _cecopyRenderJobCard(j) {
   const accEl = card.querySelector('.ce-job-acc');
   if (accEl) accEl.textContent = accLabel + ' · копирование';
 
-  const st = j.status || j.public_status || 'queued';
+  let st = j.public_status || j.status || 'queued';
+  if (j.status === 'done' && (j.settling || j.repair_pending)) {
+    st = j.repair_pending ? 'repair_pending' : 'settling';
+  }
   card.className = 'ce-job-card ' + st;
 
   const bar  = card.querySelector('.ce-job-progress-bar');
@@ -448,10 +459,23 @@ function _cecopyRenderJobCard(j) {
     error: 'Ошибка', cancelled: 'Отменено', settling: 'Сверка…', repair_pending: 'Ремонт…',
   }[st] || st;
 
-  const created  = j.created  || (j.result_summary || {}).created  || '';
-  const expected = j.expected || (j.result_summary || {}).expected || j.total || '';
+  const rs = j.result_summary || {};
+  const campaignSummary = rs.campaigns || {};
+  const created  = j.created  || campaignSummary.created || rs.created || '';
+  const expected = j.expected || campaignSummary.total || rs.expected || j.total || '';
   const elapsed  = j.elapsed ? (Math.round(Number(j.elapsed)) + ' с') : '';
   const progStr  = (created || expected) ? (' · создано: ' + created + (expected ? '/' + expected : '')) : '';
+  const gate = rs.verification_gate || {};
+  const verify = rs.verification || {};
+  let checkText = '';
+  if (gate && Object.prototype.hasOwnProperty.call(gate, 'ok')) {
+    checkText = gate.ok
+      ? ' · проверка: OK'
+      : ' · проверка: блокеры ' + (gate.blockers_count || 0);
+  } else if (verify && verify.summary) {
+    const diffCount = Number(verify.diff_count || 0);
+    checkText = diffCount ? (' · copy_verify: расхождений ' + diffCount) : ' · copy_verify: OK';
+  }
 
   if (st === 'queued') {
     if (bar) bar.style.width = '4%';
@@ -462,7 +486,7 @@ function _cecopyRenderJobCard(j) {
     const est   = Math.max(60, 30 + total * 20);
     const pct   = 6 + 89 * (1 - Math.exp(-sec / est));
     if (bar) bar.style.width = Math.min(95, pct).toFixed(1) + '%';
-    if (note) note.textContent = stLabel + (elapsed ? ' · ' + elapsed : '') + progStr;
+    if (note) note.textContent = stLabel + (elapsed ? ' · ' + elapsed : '') + progStr + checkText;
   } else {
     // terminal
     if (bar) bar.style.width = '100%';
@@ -470,6 +494,7 @@ function _cecopyRenderJobCard(j) {
     let noteText = stLabel;
     if (created || expected) noteText += ' · создано: ' + created + (expected ? '/' + expected : '');
     if (elapsed) noteText += ' · ' + elapsed;
+    noteText += checkText;
     if (j.error) noteText += ' · ' + _cecopyEsc(String(j.error).slice(0, 100));
     if (note) note.textContent = noteText;
   }

@@ -14,6 +14,7 @@ from ..clients import grid_finalize as gf
 # ── DI (инъектится copy_engine.configure фан-аутом; None до инъекции) ──
 _grid_list_campaigns = None
 _COPY_SELECTED_GRID_LIST_TIMEOUT_SEC = 25
+_COPY_GRID_READ_RETRY_CHUNK = 10
 
 
 def configure(deps: dict) -> None:
@@ -51,7 +52,7 @@ def _copy_grid_read_selected(login: str, selected_ids: set[int]) -> dict:
     """Read selected Text/Unified campaigns with Grid cookies, without Direct API units."""
     from ..clients.grid_read import GridReadClient
 
-    ids = [int(x) for x in selected_ids if int(x) > 0]
+    ids = sorted({int(x) for x in selected_ids if int(x) > 0})
     if not ids:
         return {"campaigns": [], "groups": [], "ads": []}
     id_strings = [str(x) for x in ids]
@@ -71,9 +72,7 @@ def _copy_grid_read_selected(login: str, selected_ids: set[int]) -> dict:
         "...on GdTextCampaign{metrikaCounters placementTypes additionalData{href} "
         "minusKeywords disabledPlaces strategy{budget{sum}}}}}}}"
     )
-    camps_data = reader._post("CopyCamp", q_campaigns, {"login": login, "inp": inp_common})
-    campaigns = ((((camps_data.get("data") or {}).get("client") or {})
-                  .get("campaigns") or {}).get("rowset") or [])
+    campaigns = _copy_grid_read_campaign_rows(reader, login, q_campaigns, inp_common, ids)
 
     q_ads = (
         "query CopyAds($login:String!,$inp:GdAdsContainerInput!){"
@@ -85,12 +84,114 @@ def _copy_grid_read_selected(login: str, selected_ids: set[int]) -> dict:
         "...on GdListingAd{id adGroupId campaignId}"
         "}}}}"
     )
-    ads_data = reader._post("CopyAds", q_ads, {"login": login, "inp": inp_common})
-    ads = ((((ads_data.get("data") or {}).get("client") or {})
-            .get("ads") or {}).get("rowset") or [])
+    ads = _copy_grid_read_ad_rows(reader, login, q_ads, inp_common, ids)
 
     groups = gf.GridClient(login, cookie=reader.cookie).groups_for_edit(ids)
     return {"campaigns": campaigns, "groups": groups, "ads": ads}
+
+
+def _copy_grid_read_selected_campaigns(login: str, selected_ids: set[int]) -> list[dict]:
+    """Read only selected campaign rows via the same resilient CopyCamp path."""
+    from ..clients.grid_read import GridReadClient
+
+    ids = sorted({int(x) for x in selected_ids if int(x) > 0})
+    if not ids:
+        return []
+    reader = GridReadClient(login)
+    inp_common = {
+        "filter": {"campaignIdIn": [str(x) for x in ids]},
+        "statRequirements": {"preset": "TODAY", "goalIds": [], "useCampaignGoalIds": True},
+        "limitOffset": {"limit": 10000, "offset": 0},
+        "orderBy": [{"order": "ASC", "field": "ID"}],
+    }
+    q_campaigns = (
+        "query CopyCamp($login:String!,$inp:GdCampaignsContainerInput!){"
+        "client(searchBy:{login:$login}){campaigns(input:$inp){rowset{"
+        "id name __typename status{primaryStatus archived} "
+        "...on GdUnifiedCampaign{metrikaCounters placementTypes additionalData{href} "
+        "minusKeywords disabledPlaces strategy{budget{sum}}}"
+        "...on GdTextCampaign{metrikaCounters placementTypes additionalData{href} "
+        "minusKeywords disabledPlaces strategy{budget{sum}}}}}}}"
+    )
+    return _copy_grid_read_campaign_rows(reader, login, q_campaigns, inp_common, ids)
+
+
+def _copy_grid_read_campaign_rows(reader, login: str, query: str, inp_common: dict,
+                                  ids: list[int]) -> list[dict]:
+    """Read campaign rows and retry missing ids in small chunks."""
+    rows = _copy_grid_read_campaign_rows_once(reader, login, query, inp_common, ids)
+    expected = {int(x) for x in ids}
+    got = {_safe_row_id(row, "id") for row in rows}
+    missing = sorted(expected - got)
+    if missing:
+        rows_by_id = {
+            cid: row for row in rows
+            for cid in [_safe_row_id(row, "id")]
+            if cid > 0
+        }
+        for chunk in _chunks(missing, _COPY_GRID_READ_RETRY_CHUNK):
+            for row in _copy_grid_read_campaign_rows_once(reader, login, query, inp_common, chunk):
+                cid = _safe_row_id(row, "id")
+                if cid in expected:
+                    rows_by_id[cid] = row
+        still_missing = sorted(expected - set(rows_by_id))
+        if still_missing:
+            for cid in still_missing:
+                for row in _copy_grid_read_campaign_rows_once(reader, login, query, inp_common, [cid]):
+                    row_id = _safe_row_id(row, "id")
+                    if row_id == cid:
+                        rows_by_id[cid] = row
+                        break
+        rows = [rows_by_id[cid] for cid in ids if cid in rows_by_id]
+    return rows
+
+
+def _copy_grid_read_campaign_rows_once(reader, login: str, query: str, inp_common: dict,
+                                       ids: list[int]) -> list[dict]:
+    inp = _copy_grid_read_input_for_ids(inp_common, ids)
+    data = reader._post("CopyCamp", query, {"login": login, "inp": inp})
+    return ((((data.get("data") or {}).get("client") or {})
+             .get("campaigns") or {}).get("rowset") or [])
+
+
+def _copy_grid_read_ad_rows(reader, login: str, query: str, inp_common: dict,
+                            ids: list[int]) -> list[dict]:
+    rows_by_id: dict[int, dict] = {}
+    idless: list[dict] = []
+    for chunk in _chunks(ids, _COPY_GRID_READ_RETRY_CHUNK):
+        inp = _copy_grid_read_input_for_ids(inp_common, chunk)
+        data = reader._post("CopyAds", query, {"login": login, "inp": inp})
+        rows = ((((data.get("data") or {}).get("client") or {})
+                 .get("ads") or {}).get("rowset") or [])
+        for row in rows:
+            aid = _safe_row_id(row, "id")
+            if aid > 0:
+                rows_by_id[aid] = row
+            else:
+                idless.append(row)
+    return list(rows_by_id.values()) + idless
+
+
+def _copy_grid_read_input_for_ids(inp_common: dict, ids: list[int]) -> dict:
+    inp = dict(inp_common)
+    flt = dict(inp.get("filter") or {})
+    flt["campaignIdIn"] = [str(int(x)) for x in ids if int(x) > 0]
+    inp["filter"] = flt
+    inp["limitOffset"] = dict(inp.get("limitOffset") or {"limit": 10000, "offset": 0})
+    return inp
+
+
+def _safe_row_id(row: dict, key: str) -> int:
+    try:
+        return int((row or {}).get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _chunks(values: list[int], size: int):
+    step = max(1, int(size or 1))
+    for idx in range(0, len(values), step):
+        yield values[idx:idx + step]
 
 
 def _copy_grid_campaign_spec(name: str, counter_id: int, goal_id: int,

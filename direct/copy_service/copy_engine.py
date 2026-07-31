@@ -911,6 +911,27 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             if str(r.get("typename") or r.get("type") or "") == "GdUnifiedCampaign"
             and int(r.get("id") or 0) not in _v5_native
         ]
+        if selected_unified_rows and len(selected_unified_rows) == len(active_selected_ids):
+            try:
+                _grid_campaign_rows = _copy_grid_read_selected_campaigns(source_login, active_selected_ids)
+                _grid_unified_ids = {
+                    int(r.get("id") or 0) for r in (_grid_campaign_rows or [])
+                    if str(r.get("__typename") or "") == "GdUnifiedCampaign"
+                }
+                if _grid_unified_ids != active_selected_ids:
+                    _copy_job_log(
+                        job_id,
+                        "grid-cookie route отменён: CopyCamp подтвердил "
+                        f"{len(_grid_unified_ids)} Unified из {len(active_selected_ids)} выбранных"
+                    )
+                    selected_uac_rows = [
+                        r for r in selected_uac_rows
+                        if int(r.get("id") or 0) in _grid_unified_ids
+                    ]
+                    selected_unified_rows = []
+            except Exception as _ex:  # noqa: BLE001
+                _copy_job_log(job_id, f"grid-cookie route preflight недоступен ({str(_ex)[:120]}) — v5-pull")
+                selected_unified_rows = []
         grid_only_rows = selected_unified_rows
         grid_only_reason = "Unified campaigns без Direct API баллов"
         if grid_convert_rows and len(grid_convert_rows) == len(active_selected_ids):
@@ -1364,7 +1385,7 @@ from .copy_feeds import (  # noqa: E402,F401  (ре-экспорт распил�
 )
 
 from .copy_grid_read import (  # noqa: E402,F401  (ре-экспорт распила)
-    _copy_selected_grid_campaigns, _copy_grid_read_selected, _copy_grid_campaign_spec,
+    _copy_selected_grid_campaigns, _copy_grid_read_selected, _copy_grid_read_selected_campaigns, _copy_grid_campaign_spec,
 )
 
 from .copy_uac import (  # noqa: E402,F401  (ре-экспорт распила)
