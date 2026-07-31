@@ -484,6 +484,23 @@ def _copy_expected_snapshot_count(selected_ids: set[int], selected_uac_rows: lis
     return len(expected_ids) + len(unknown_non_uac), skipped
 
 
+def _copy_selected_skip_error(selected_ids: set[int], selected_uac_rows: list[dict],
+                              skipped_v5_snapshot: list[dict]) -> str:
+    """Human-readable fail-fast error when all requested campaigns are intentionally skipped."""
+    if not selected_ids or selected_uac_rows or len(skipped_v5_snapshot) < len(selected_ids):
+        return ""
+    reasons = {str(x.get("reason") or "") for x in skipped_v5_snapshot}
+    if reasons == {"archived"}:
+        return (
+            f"все выбранные кампании архивные ({len(selected_ids)}) — "
+            "ARCHIVED не копируем; выберите активные/остановленные/черновики"
+        )
+    return (
+        f"все выбранные кампании пропущены ({len(selected_ids)}): "
+        + ", ".join(sorted(r for r in reasons if r)[:4])
+    )
+
+
 def _copy_run_job(job_id: str, body: dict) -> None:
     source_login = (body.get("source_login") or "").strip()
     target_login = (body.get("target_login") or "").strip()
@@ -708,6 +725,9 @@ def _copy_run_job(job_id: str, body: dict) -> None:
                 + ", ".join(f"{x.get('Id')}:{x.get('reason')}" for x in skipped_v5_snapshot[:8])
             )
             _copy_job_upsert(job_id, total=max(0, len(selected_ids) - len(skipped_v5_snapshot)))
+        skip_error = _copy_selected_skip_error(selected_ids, selected_uac_rows, skipped_v5_snapshot)
+        if skip_error:
+            raise RuntimeError(skip_error)
         if int(meta.get("campaigns") or 0) != expected_snapshot:
             raise RuntimeError(
                 f"snapshot неполный: выбрано {len(selected_ids)}, UAC/tp6/tp7 {len(selected_uac_rows)}, "

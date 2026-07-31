@@ -130,6 +130,26 @@ def register_copy_routes(
             return None
         return jsonify({"error": err or f"{label} вне вашего доступа"}), 403
 
+    def _copy_campaign_is_archived(row: dict) -> bool:
+        state = str((row or {}).get("state") or "").upper()
+        status = str((row or {}).get("status") or "").upper()
+        return state == "ARCHIVED" or status == "ARCHIVED" or bool((row or {}).get("archived"))
+
+    def _copy_hide_archived_campaigns(resp):
+        payload = resp.get_json(silent=True) if hasattr(resp, "get_json") else None
+        if not isinstance(payload, dict) or not isinstance(payload.get("campaigns"), list):
+            return resp
+        rows = payload.get("campaigns") or []
+        visible = [c for c in rows if not _copy_campaign_is_archived(c)]
+        hidden = len(rows) - len(visible)
+        if not hidden:
+            return resp
+        payload = dict(payload)
+        payload["campaigns"] = visible
+        payload["archived_hidden"] = int(payload.get("archived_hidden") or 0) + hidden
+        status_code = getattr(resp, "status_code", 200) or 200
+        return jsonify(payload), status_code
+
     @bp.route("/api/copy_campaigns")
     @access
     def api_copy_campaigns():
@@ -137,7 +157,7 @@ def register_copy_routes(
         denied = _copy_login_guard(request.args.get("login"), "login")
         if denied is not None:
             return denied
-        return api_campaigns_func()
+        return _copy_hide_archived_campaigns(api_campaigns_func())
 
     @bp.route("/api/copy_target_prefill")
     @access

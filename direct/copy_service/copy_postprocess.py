@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from pathlib import Path
 
 from ..core import campaign as cmc
+from ..clients import grid_create as gc
 from ..clients import grid_finalize as gf
 from ..repair import repair_auto as rauto
 from ..repair import repair_executor as rex
@@ -453,6 +454,62 @@ def _copy_apply_product_filters(src_dir: Path, maps: dict, grid, log=None) -> di
     return rep
 
 
+def _copy_campaign_name_map(src_dir: Path) -> dict[str, str]:
+    """source campaign id -> final target campaign name from rewritten snapshot."""
+    out: dict[str, str] = {}
+    for camp in _engine()._copy_read_json(src_dir / "campaigns.json"):
+        try:
+            src_id = str(int(camp.get("Id") or 0))
+        except Exception:  # noqa: BLE001
+            continue
+        name = str(camp.get("Name") or "").strip()
+        if src_id and name:
+            out[src_id] = name
+    return out
+
+
+def _copy_recover_campaign_maps_by_name(target_login: str, cookie: str, src_dir: Path, maps: dict,
+                                        *, log=None) -> dict:
+    """Recover missing v5 phase_upload campaign mapping from live target campaign names."""
+    campaigns = maps.setdefault("campaigns", {})
+    if campaigns:
+        return {"recovered": 0, "errors": []}
+
+    src_names = _copy_campaign_name_map(src_dir)
+    if not src_names:
+        return {"recovered": 0, "errors": ["id_maps: campaigns пустой, campaigns.json пуст/нечитаем"]}
+
+    try:
+        reader = gc.GridCreateClient(target_login, cookie=cookie)
+    except Exception as exc:  # noqa: BLE001
+        return {"recovered": 0, "errors": [f"id_maps: init name recovery: {str(exc)[:160]}"]}
+
+    recovered: dict[str, int] = {}
+    errors: list[str] = []
+    for src_id, name in src_names.items():
+        try:
+            found = reader._read_campaign_ids_by_name_strict(name)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{src_id}: поиск target-кампании по имени: {str(exc)[:160]}")
+            continue
+        if len(found) == 1:
+            recovered[src_id] = int(found[0])
+        elif not found:
+            errors.append(f"{src_id}: target-кампания не найдена по имени «{name[:80]}»")
+        else:
+            errors.append(f"{src_id}: неоднозначное имя target-кампании «{name[:80]}» ({len(found)} шт.)")
+
+    if recovered:
+        campaigns.update(recovered)
+        try:
+            _engine()._copy_write_json(src_dir.parent / "id_maps.json", maps)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"id_maps: recovered, но запись не удалась: {str(exc)[:160]}")
+        if log:
+            log(f"id_maps: восстановлен campaign mapping по именам ({len(recovered)}/{len(src_names)})")
+    return {"recovered": len(recovered), "errors": errors}
+
+
 def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                              src_dir: Path, workdir: Path, body: dict) -> dict:
     """Cookie/Grid fallback after direct_copy upload: callouts, ShoppingAd, ListingAd, verification, repair."""
@@ -485,6 +542,17 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"cookie init: {str(e)[:220]}")
         return rep
+
+    if not maps.get("campaigns"):
+        recover = _copy_recover_campaign_maps_by_name(
+            target_login, cookie, src_dir, maps, log=(lambda m: ce._copy_job_log(job_id, m)))
+        rep["campaign_map_recovery"] = recover
+        if recover.get("errors") and not maps.get("campaigns"):
+            rep["errors"].append(
+                "id_maps: нет campaign mapping после phase_upload; восстановление по именам не удалось: "
+                + "; ".join((recover.get("errors") or [])[:3])[:360]
+            )
+            return rep
 
     # ФАЗА 1 под-сервисы (copy_steps): единый контекст для шагов П.10/П.11/П.13/П.14.
     from . import copy_steps as csteps

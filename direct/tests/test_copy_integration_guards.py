@@ -4,7 +4,7 @@ import re
 from types import SimpleNamespace
 import time
 
-from flask import Blueprint, Flask
+from flask import Blueprint, Flask, jsonify
 
 from direct import agent_board_bridge
 from direct.core import queue_server
@@ -203,6 +203,66 @@ def test_copy_expected_snapshot_excludes_selected_archived_v5_campaigns():
 
     assert expected == 25
     assert [x["Id"] for x in skipped] == [26, 27, 28]
+
+
+def test_copy_selected_skip_error_for_archived_only_selection():
+    selected = {710698862, 710698931}
+    skipped = [
+        {"Id": 710698862, "Name": "arch 1", "reason": "archived"},
+        {"Id": 710698931, "Name": "arch 2", "reason": "archived"},
+    ]
+
+    msg = copy_engine._copy_selected_skip_error(selected, [], skipped)
+
+    assert "все выбранные кампании архивные" in msg
+    assert "ARCHIVED не копируем" in msg
+
+
+def test_copy_campaigns_route_hides_archived_campaigns():
+    app = Flask(__name__)
+    bp = Blueprint("copy_campaigns_filter_test", __name__, url_prefix="/direct")
+
+    def access(fn):
+        return fn
+
+    def api_campaigns():
+        return jsonify({
+            "campaigns": [
+                {"id": 1, "name": "active v5", "state": "ON", "status": "ACCEPTED"},
+                {"id": 2, "name": "archived v5", "state": "ARCHIVED", "status": "MODERATION"},
+                {"id": 3, "name": "active grid", "state": "DRAFT", "status": "DRAFT"},
+                {"id": 4, "name": "archived grid", "state": "ON", "status": "ARCHIVED", "archived": True},
+            ]
+        })
+
+    register_copy_routes(
+        bp,
+        access,
+        api_campaigns_func=api_campaigns,
+        account_prefill_func=lambda: None,
+        metrika_goals_for=lambda _login: None,
+        parse_number=lambda value, default=0: int(value or default),
+        copy_default_feed_path="/feed.xml",
+        counter_foreign_owner=lambda *_args: None,
+        resolve_agency_hint=lambda *_args: "",
+        ensure_create_worker=lambda _app: None,
+        job_new=lambda *_args, **_kwargs: "job-1",
+        copy_job_upsert=lambda *_args, **_kwargs: None,
+        create_jobs_ahead=lambda _job_id: 0,
+        create_jobs={},
+        create_jobs_lock=nullcontext(),
+        copy_jobs={},
+        copy_jobs_lock=nullcontext(),
+        feeds_preview_func=lambda *_args: {},
+        login_allowed_func=lambda _login: (True, ""),
+    )
+    app.register_blueprint(bp)
+
+    payload = app.test_client().get("/direct/api/copy_campaigns?login=porg-src").get_json()
+
+    assert [c["id"] for c in payload["campaigns"]] == [1, 3]
+    assert all(str(c.get("state") or "").upper() != "ARCHIVED" for c in payload["campaigns"])
+    assert payload["archived_hidden"] == 2
 
 
 def test_direct_copy_caps_text_ads_per_group_before_add():
@@ -628,6 +688,48 @@ def test_copy_selected_grid_campaigns_times_out_to_empty(monkeypatch):
 
     assert rows == []
     assert time.monotonic() - started < 0.1
+
+
+def test_campaigns_edit_data_transient_batch_falls_back_to_single(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    client = grid_finalize.GridClient("login", cookie="cookie")
+    monkeypatch.setattr(client, "_bootstrap_csrf", lambda: None)
+    monkeypatch.setattr(
+        client,
+        "_unified_campaign_update_from_edit_row",
+        lambda row: {"id": row["id"], "sitelink": row.get("inheritableSitelinkSet")},
+    )
+
+    def fake_post(_op, _query, variables):
+        ids = variables["campaignInput"]["filter"]["campaignIdIn"]
+        calls.append(tuple(ids))
+        if len(ids) > 1:
+            return FakeResponse({
+                "errors": [{"message": "Внутренняя ошибка сервера. reqId = test"}],
+                "data": {"client": {"campaigns": {"rowset": []}}},
+            })
+        return FakeResponse({
+            "data": {"client": {"campaigns": {"rowset": [{
+                "id": ids[0],
+                "inheritableSitelinkSet": {"assetValue": "55"},
+            }]}}},
+        })
+
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    rows = client._read_unified_campaign_update_payloads([101, 102])
+
+    assert set(rows) == {101, 102}
+    assert calls[:3] == [("101", "102"), ("101", "102"), ("101", "102")]
+    assert calls[-2:] == [("101",), ("102",)]
 
 
 def test_copy_cleanup_uac_list_timeout_is_non_critical(monkeypatch):

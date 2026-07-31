@@ -74,6 +74,12 @@ function _cecopyDropdown(inpId, ddId) {
   dd.style.display = 'block';
 }
 
+function _cecopyIsArchivedCampaign(c) {
+  const state = String((c || {}).state || '').toUpperCase();
+  const status = String((c || {}).status || '').toUpperCase();
+  return state === 'ARCHIVED' || status === 'ARCHIVED' || (c || {}).archived === true;
+}
+
 // ── Инициализатор (вызывается ceSetSection при первом открытии) ───────────────
 function _ceCopyTabInit() {
   if (_CECOPY_INIT) return;
@@ -117,7 +123,7 @@ async function ceCopyLoadSource() {
       if (box) box.innerHTML = '<div style="color:#e3b341;padding:8px">' + _cecopyEsc(j.error) + '</div>';
       return;
     }
-    CECOPY_CAMPS = (j.campaigns || []).slice().sort((a, b) =>
+    CECOPY_CAMPS = (j.campaigns || []).filter(c => !_cecopyIsArchivedCampaign(c)).slice().sort((a, b) =>
       String(a.name || '').localeCompare(String(b.name || ''), 'ru'));
     ceCopyRenderCamps();
   } catch (e) {
