@@ -86,7 +86,7 @@
 | `step_videos` | `copy_steps.py:1177` | скачать mp4 из Grid source → аплоуд → RMW-привязка на цели |
 | `step_attach_sitelinks` | `copy_steps.py:387` | перенос быстрых ссылок с гео-морфом; вызывается **синхронно ДО verify** (copy_engine.py:825) |
 | `step_attach_promos` | `copy_steps.py:497` | привязка промоакций к кампаниям цели |
-| `step_prices` | `copy_steps.py:689` | цены из фида ЦЕЛИ (не источника) |
+| `step_prices` | `copy_price_steps.py` | цены из фида ЦЕЛИ (не источника): `Марки`/`Модели` строго по своему ключу, `Общее`/прочие СТ — минимум фида |
 | `step_fix_search_campaign_invariants` | `copy_steps.py:659` | форсирует на tp2 (TEXT_CAMPAIGN): `enableCompanyInfo=False` + автотаргет EXACT_V2_MARK/WITHOUT_BRAND; вызывается ДО live_verification (copy_engine.py:1090); `keywords=grp["keywords"]` — реальные ключи (пустой список стирает ключи!) |
 | `pull_source_campaign_assets` | `copy_steps.py` | читает campaign-level callout/sitelink id с УРОВНЯ КАМПАНИИ (inheritableCallouts/inheritableSitelinkSet); вызывается ДО `_copy_filter_snapshot` (copy_engine.py:1479) |
 | `_copy_apply_metrika` | `copy_metrika.py` | перенос счётчика + PriorityGoals (`Operation="SET"`) через v5 |

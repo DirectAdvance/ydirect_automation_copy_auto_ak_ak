@@ -136,6 +136,7 @@ POST /api/copy_start
 | 1009-лимит ключей Grid | Grid принимает max 1000 на батч | `step_keywords` batch=1000 |
 | `counter_foreign_owner` | Счётчик принадлежит другому аккаунту → нельзя привязать | Проверяется в роуте до старта job'а |
 | Фид должен принадлежать target | Нельзя использовать фид источника в чужом аккаунте; внешний `feed_map` нормализуется и валидируется до cleanup/upload | `copy_api.parse_feed_map` + `_copy_validated_feed_map` + `_copy_preseed_feed_maps` |
+| adPrice берётся только из target-фида | `Марки`/`Модели` строго ищут свою марку/модель; если её нет в фиде цели — цена пустая. `Общее`/прочие СТ не привязаны к конкретной модели → ставится минимальная цена машины из target-фида | `copy_price_steps._price_segment_from_names` + `_group_ad_price` |
 | full PATCH UAC обнуляет картинки | `_UAC_PATCH_FULL_KEYS` не содержит `content_ids` | `routes_content_editor._uac_campaign_patch_payload` деривация; порядок: картинки ПОСЛЕДНИМИ |
 | `set_campaign_invariants` падает на DEFAULT/MULTIPLE_CPA | `strategyName='DEFAULT'` и `MULTIPLE_CPA` невалидны на запись; weekly `OPTIMIZE_CLICKS` с бюджетом пишется HAR-формой `AUTOBUDGET_AVG_CLICK` | guard `_unsupported_strategy` в `grid_finalize._unified_campaign_update_from_edit_row`; weekly clicks — `grid_finalize._strategy_update_payload` |
 | tp6 cleanup не удаляет через v5 | `campaigns.get Types=[UNIFIED_CAMPAIGN]` → пусто | `_copy_cleanup_uac_drafts` — только Grid по куки |
