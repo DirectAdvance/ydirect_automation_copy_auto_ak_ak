@@ -158,6 +158,7 @@ def _copy_api_result_summary(result: Any) -> dict | None:
     verify = _as_dict(data.get("copy_verify") or post.get("copy_verify"))
     live = _as_dict(data.get("live_verification") or post.get("live_verification"))
     repair = _as_dict(data.get("auto_repair") or post.get("copy_repair") or post.get("auto_repair"))
+    gate = _as_dict(data.get("verification_gate") or post.get("verification_gate"))
 
     if verify:
         verify_rows = verify.get("results") or verify.get("diffs") or verify.get("diff") or []
@@ -178,6 +179,13 @@ def _copy_api_result_summary(result: Any) -> dict | None:
             "status": repair.get("status"),
             "repairs_count": len(repair.get("repairs") or []),
             "errors_count": len(repair.get("errors") or []),
+        }
+    if gate:
+        blockers = gate.get("blockers") or []
+        summary["verification_gate"] = {
+            "ok": gate.get("ok"),
+            "blockers_count": len(blockers) if isinstance(blockers, list) else 0,
+            "blockers": blockers[:10] if isinstance(blockers, list) else [],
         }
     errors = []
     for row in rows:

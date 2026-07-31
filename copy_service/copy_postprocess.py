@@ -115,6 +115,127 @@ def _copy_execute_adprice_repairs(cstep_ctx, plan: dict, repair_ctx: dict,
     return out
 
 
+_COPY_HARD_LIVE_ISSUE_CODES = {
+    "NO_IMAGES_LIVE",
+    "IMAGE_MISSING",
+    "NO_ADPRICE_LIVE",
+    "UAC_IMAGES_LOW",
+    "UAC_MEDIA_MISSING",
+    "UAC_TITLES_MISSING",
+    "UAC_TEXTS_MISSING",
+    "UAC_VIDEO_MISSING",
+    "UAC_FEED_MISSING",
+    "UAC_PRODUCT_MODEL_FILTER_MISSING",
+    "EMPTY_DEFAULT_TEXT_LIVE",
+}
+
+_COPY_VERIFY_REPORT_ONLY_DIMENSIONS = {
+    "ad_price",          # цены в copy сверяются через live NO_ADPRICE_LIVE, не source=target
+    "bid_modifiers",     # copy намеренно ставит стандарт
+    "campaign_neg_count",  # отдельного безопасного repair-шага сейчас нет
+}
+
+
+def _copy_live_blockers(live: dict | None) -> list[dict]:
+    """Return live-verification findings that must prevent a clean copy ``done``."""
+    if not isinstance(live, dict):
+        return [{"kind": "live_verification", "code": "MISSING", "message": "live_verification не выполнена"}]
+    summary = live.get("summary") if isinstance(live.get("summary"), dict) else {}
+    plan = live.get("repair_plan") if isinstance(live.get("repair_plan"), dict) else {}
+    issues = [i for i in (live.get("issues") or []) if isinstance(i, dict)]
+    actions = [a for a in (plan.get("actions") or []) if isinstance(a, dict)]
+    blockers: list[dict] = []
+    try:
+        live_errors = int((summary or {}).get("errors") or 0)
+    except (TypeError, ValueError):
+        live_errors = 0
+    if live_errors > 0:
+        error_codes = [
+            str(i.get("code") or "").strip()
+            for i in issues
+            if str(i.get("severity") or "").lower() == "error" and str(i.get("code") or "").strip()
+        ]
+        blockers.append({
+            "kind": "live_verification",
+            "code": "LIVE_ERRORS",
+            "count": live_errors,
+            "codes": sorted(set(error_codes))[:12],
+        })
+    for action in actions:
+        code = str(action.get("issue_code") or "").strip()
+        if code in _COPY_HARD_LIVE_ISSUE_CODES:
+            blockers.append({
+                "kind": "repair_plan",
+                "code": code,
+                "action": action.get("action"),
+                "campaign_id": action.get("campaign_id"),
+                "name": action.get("name"),
+            })
+    return blockers
+
+
+def _copy_verify_blockers(verify_result: dict | None) -> list[dict]:
+    """Return source→target copy_verify rows that must prevent a clean copy ``done``."""
+    if not isinstance(verify_result, dict):
+        return [{"kind": "copy_verify", "dimension": "MISSING", "status": "missing"}]
+    if verify_result.get("error"):
+        return [{
+            "kind": "copy_verify",
+            "dimension": "VERIFY_ERROR",
+            "status": "error",
+            "error": str(verify_result.get("error"))[:220],
+        }]
+    rows = verify_result.get("results") or []
+    blockers: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "")
+        if status in ("ok", "excluded_intentional"):
+            continue
+        dim = str(row.get("dimension") or "")
+        if dim in _COPY_VERIFY_REPORT_ONLY_DIMENSIONS:
+            continue
+        hint = str(row.get("repair_hint") or "")
+        if dim == "campaign_exists" and "UAC tp6/tp7" in hint:
+            continue
+        blockers.append({
+            "kind": "copy_verify",
+            "scope": row.get("scope"),
+            "dimension": dim,
+            "status": status,
+            "source": row.get("source"),
+            "target": row.get("target"),
+            "repairable": bool(row.get("repairable")),
+        })
+    return blockers
+
+
+def _copy_apply_verification_gate(rep: dict) -> None:
+    """Promote unresolved verification findings into hard postprocess errors."""
+    blockers: list[dict] = []
+    live_blockers = _copy_live_blockers(rep.get("live_verification"))
+    if live_blockers:
+        blockers.extend(live_blockers)
+    verify_blockers = _copy_verify_blockers(rep.get("copy_verify"))
+    if verify_blockers:
+        blockers.extend(verify_blockers)
+    if not blockers:
+        rep["verification_gate"] = {"ok": True, "blockers": []}
+        return
+
+    rep["verification_gate"] = {"ok": False, "blockers": blockers[:80]}
+    sample = []
+    for b in blockers[:6]:
+        if b.get("kind") == "copy_verify":
+            sample.append(f"{b.get('dimension')}={b.get('status')} {b.get('scope')}")
+        else:
+            sample.append(f"{b.get('kind')}:{b.get('code')}")
+    msg = f"verification gate: {len(blockers)} незакрытых дефектов ({'; '.join(sample)})"
+    if msg not in rep.get("errors", []):
+        rep.setdefault("errors", []).append(msg)
+
+
 def _copy_demote_optional_source_grid_errors(rep: dict, source_login: str) -> None:
     """Move source Grid read failures from hard errors to report-only warnings.
 
@@ -945,5 +1066,6 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
         rep["errors"].append(f"copy_repair: {str(_re)[:200]}")
 
     _copy_demote_optional_source_grid_errors(rep, body.get("source_login") or "")
+    _copy_apply_verification_gate(rep)
     rep["results"] = results
     return rep

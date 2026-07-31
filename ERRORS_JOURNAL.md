@@ -1043,6 +1043,29 @@
 - Статус: ✅ проверено живым кабинетом — 102/102 группы → `r0066`, 204/204 фильтра совпали с источником пофрагментно (сверка по `id_maps.json`), `DefaultTexts` не затёрты, повторный прогон ремонта идемпотентен.
 - НЕ помогало ранее: — (первое наблюдение этой сигнатуры).
 
+### COPY_VERIFICATION_REPORT_ONLY_DONE — copy_verify/live нашли дефекты, но job закрылась done (2026-07-31)
+- Симптом: копия `porg-2wkbqwqe → porg-keimtsnw` (job `42d0cc464b9c`) завершилась
+  `status=done`, `failed=0`, но живой разбор показал незакрытые дефекты: `NO_ADPRICE_LIVE`
+  по tp1, `UAC_IMAGES_LOW` на 3 UAC-кампаниях, неперенесённые `UpdateAdaptiveTextAds.multicards`,
+  а `copy_verify` мог держать `listing_filter_signature=mismatch` без влияния на статус.
+- Где: `copy_engine._copy_terminal_status_from_results()` считал terminal status только по
+  per-campaign `results[].ok`; `copy_postprocess` логировал/возвращал `copy_verify` и
+  `live_verification`, но non-ok строки оставались report-only.
+- Root-cause: для copy “кампании созданы” было приравнено к “копия успешна”. Это неверно:
+  перенос 1:1 обязан считать цены, media, UAC completeness, shopping/listing filters и adaptive
+  multicards частью результата, а не посторонним отчетом.
+- Решение (2026-07-31): добавлен `copy_postprocess._copy_apply_verification_gate()`:
+  незакрытые hard live issues (`NO_ADPRICE_LIVE`, `UAC_IMAGES_LOW`, media/default-text и др.) и
+  non-ok critical `copy_verify` rows (`ads_with_images`, `shopping/listing_filter_signature`,
+  adaptive media/CTA и т.п.) попадают в `cookie_postprocess.verification_gate` и `errors`.
+  `copy_engine._copy_terminal_status_from_postprocess()` переводит чистые per-campaign results из
+  `done` в `error`, если postprocess errors непустые; delayed settled reverify тоже может перевести
+  старый `done` в `error`.
+- Статус: 🟡 локально проверено `py_compile` и targeted tests; ждёт copy-ветку/export/deploy и
+  живой повтор/repair на `porg-keimtsnw`.
+- НЕ помогало ранее: оставлять `copy_verify` report-only или поднимать только repairable-unresolved
+  строки — unrepairable signature mismatch и live warn `NO_ADPRICE_LIVE` всё равно проходили как `done`.
+
 ### JOB_STATUS_ERROR_SKIPS_HAS_ISSUES — при `failed>0` разбивка `has_issues` не пишется вовсе (2026-07-27)
 - Симптом: контрольный прогон `69a140093e78` (26 items, created=25, failed=1) закончился со статусом **`error`**, а не `done`. В `result` НЕТ ключа `has_issues`, хотя live-верификатор нашёл 23 ошибки — карточка/потребитель разбивки `lv_errors`/`ver_errors` её не получает.
 - Где: `queue_server.py:2179-2188` — `compute_job_issues_breakdown(...)` вызывается ТОЛЬКО внутри `if _st == "done":`. Статус считает `create_job_status.terminal_status_for_job` (`failed>0` → `error`).

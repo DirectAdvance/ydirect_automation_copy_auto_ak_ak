@@ -44,6 +44,81 @@ def test_copy_terminal_status_is_error_when_campaign_failed():
     assert "tp7 product: нет feed_id" in error
 
 
+def test_copy_terminal_status_includes_postprocess_errors():
+    status, error = copy_engine._copy_terminal_status_from_postprocess(
+        [{"ok": True, "name": "campaign"}],
+        {"errors": ["verification gate: 1 незакрытых дефектов"]},
+    )
+
+    assert status == "error"
+    assert "verification gate" in error
+
+
+def test_copy_live_gate_blocks_adprice_warning():
+    rep = {
+        "errors": [],
+        "live_verification": {
+            "summary": {"errors": 0, "warnings": 1},
+            "repair_plan": {
+                "actions": [{
+                    "action": "adprice_repair",
+                    "issue_code": "NO_ADPRICE_LIVE",
+                    "campaign_id": 101,
+                }]
+            },
+        },
+        "copy_verify": {"results": [], "summary": {"ok": 1}},
+    }
+
+    copy_postprocess._copy_apply_verification_gate(rep)
+
+    assert rep["verification_gate"]["ok"] is False
+    assert "NO_ADPRICE_LIVE" in str(rep["verification_gate"]["blockers"])
+    assert rep["errors"]
+
+
+def test_copy_verify_gate_blocks_media_and_listing_mismatches():
+    verify_result = {
+        "results": [
+            {"scope": "campaign:1→2", "dimension": "ads_with_images",
+             "status": "mismatch", "source": 5, "target": 4, "repairable": True},
+            {"scope": "campaign:1→2", "dimension": "listing_filter_signature",
+             "status": "mismatch", "source": {"g1": ["a"]}, "target": {"g2": ["b"]},
+             "repairable": False},
+            {"scope": "campaign:1→2", "dimension": "ad_price",
+             "status": "excluded_intentional", "source": None, "target": None},
+        ],
+        "summary": {"ok": 0, "mismatch": 2},
+    }
+
+    blockers = copy_postprocess._copy_verify_blockers(verify_result)
+
+    assert [b["dimension"] for b in blockers] == ["ads_with_images", "listing_filter_signature"]
+
+
+def test_copy_verify_gate_keeps_known_uac_id_map_gap_report_only():
+    verify_result = {
+        "results": [{
+            "scope": "campaign:11→MISSING",
+            "dimension": "campaign_exists",
+            "status": "missing",
+            "source": 11,
+            "target": None,
+            "repairable": False,
+            "repair_hint": "UAC tp6/tp7 не пишутся в id_maps['campaigns']",
+        }],
+        "summary": {"missing": 1},
+    }
+
+    assert copy_postprocess._copy_verify_blockers(verify_result) == []
+
+
+def test_copy_verify_gate_blocks_top_level_verify_error():
+    blockers = copy_postprocess._copy_verify_blockers({"error": "build_target_profile: boom"})
+
+    assert blockers[0]["dimension"] == "VERIFY_ERROR"
+
+
 def test_copy_expected_snapshot_excludes_selected_archived_v5_campaigns():
     selected = set(range(1, 36))
     uac_rows = [{"id": str(i)} for i in range(29, 36)]
@@ -1155,9 +1230,17 @@ def test_copy_api_result_summary_counts_current_verify_results():
             "summary": {"total": 1},
             "results": [{"dimension": "ads", "ok": False}],
         },
+        "cookie_postprocess": {
+            "verification_gate": {
+                "ok": False,
+                "blockers": [{"dimension": "ads_with_images", "status": "mismatch"}],
+            }
+        },
     })
 
     assert summary["verification"]["diff_count"] == 1
+    assert summary["verification_gate"]["ok"] is False
+    assert summary["verification_gate"]["blockers_count"] == 1
 
 
 def test_copy_verify_source_accepts_direct_items_dict_for_minus_places(tmp_path):
