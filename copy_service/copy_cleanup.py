@@ -101,7 +101,8 @@ def _copy_target_campaigns_info(login: str) -> dict:
         return {"error": str(e)[:200]}
 
 
-def _copy_cleanup_uac_drafts(job_id: str, login: str, errors: list[str]) -> int:
+def _copy_cleanup_uac_drafts(job_id: str, login: str, errors: list[str],
+                             campaign_ids: list[int] | set[int] | None = None) -> int:
     """Удалить UAC/МК-ЧЕРНОВИКИ целевого логина по кукам (v5 их не видит → дубли +3 за прогон).
 
     Удаляем ТОЛЬКО status=DRAFT и не-archived: запущенные кампании не трогаем.
@@ -115,6 +116,7 @@ def _copy_cleanup_uac_drafts(job_id: str, login: str, errors: list[str]) -> int:
     except Exception as e:  # noqa: BLE001
         errors.append(f"cleanup uac list: {str(e)[:120]}")
         return 0
+    allowed = {int(x) for x in (campaign_ids or []) if str(x).isdigit() and int(x) > 0}
     ids: list[int] = []
     for row in rows:
         if str(row.get("status") or "").upper() != "DRAFT" or row.get("archived"):
@@ -125,7 +127,7 @@ def _copy_cleanup_uac_drafts(job_id: str, login: str, errors: list[str]) -> int:
             cid = int(row.get("id") or 0)
         except (TypeError, ValueError):
             continue
-        if cid > 0:
+        if cid > 0 and (not allowed or cid in allowed):
             ids.append(cid)
     if not ids:
         return 0
@@ -140,7 +142,8 @@ def _copy_cleanup_uac_drafts(job_id: str, login: str, errors: list[str]) -> int:
     return len(res.get("deleted") or [])
 
 
-def _copy_target_cleanup(job_id: str, login: str, agency: str, mode: str) -> dict:
+def _copy_target_cleanup(job_id: str, login: str, agency: str, mode: str,
+                         campaign_ids: list[int] | set[int] | None = None) -> dict:
     """Очистить целевой аккаунт ДО копирования.
 
     mode='delete_drafts': удаляет только кампании со Status=DRAFT (v5 campaigns.delete,
@@ -172,9 +175,12 @@ def _copy_target_cleanup(job_id: str, login: str, agency: str, mode: str) -> dic
     errors: list[str] = []
 
     if mode == "delete_drafts":
-        drafts = [c["Id"] for c in campaigns if c.get("Status") == "DRAFT"]
+        allowed = {int(x) for x in (campaign_ids or []) if str(x).isdigit() and int(x) > 0}
+        drafts = [c["Id"] for c in campaigns
+                  if c.get("Status") == "DRAFT" and (not allowed or int(c["Id"]) in allowed)]
         non_draft_skip = len(campaigns) - len(drafts)
-        _copy_job_log(job_id, f"cleanup delete_drafts: к удалению {len(drafts)}, пропускаем не-черновики {non_draft_skip}")
+        scope_note = f" из scoped {len(allowed)}" if allowed else ""
+        _copy_job_log(job_id, f"cleanup delete_drafts: к удалению {len(drafts)}{scope_note}, пропускаем не-черновики/вне scope {non_draft_skip}")
         deleted = 0
         for i in range(0, len(drafts), 100):
             chunk = drafts[i:i + 100]
@@ -187,7 +193,7 @@ def _copy_target_cleanup(job_id: str, login: str, agency: str, mode: str) -> dic
                 else:
                     errors.append(f"delete {rr.get('Id')}: {str(rr.get('Errors') or 'unknown')[:100]}")
         # МК/tp6 невидимы для v5 (campaigns.get их не отдаёт) → копятся дублями: чистим по кукам.
-        deleted += _copy_cleanup_uac_drafts(job_id, login, errors)
+        deleted += _copy_cleanup_uac_drafts(job_id, login, errors, campaign_ids=allowed)
         _copy_job_log(job_id, f"cleanup delete_drafts: удалено {deleted}, ошибок {len(errors)}, пропущено {non_draft_skip}")
         return {"ok": True, "deleted": deleted, "archived": 0,
                 "skipped_non_draft": non_draft_skip, "errors": errors}

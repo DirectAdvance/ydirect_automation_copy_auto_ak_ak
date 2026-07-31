@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -79,6 +80,8 @@ _RESUME_MAX = 3
 _RESUME_POLL = 120
 _COPY_AGENT_RETRY_DAEMON = {"started": False}
 _COPY_AGENT_RETRY_POLL = int(os.environ.get("DIRECT_COPY_AGENT_RETRY_POLL", "60"))
+_COPY_RETRY_PAIR_RE = re.compile(r"(?:campaign|кампания)[:\s]+(\d+)\s*(?:→|->|=>)\s*(\d+)", re.IGNORECASE)
+_COPY_RETRY_TARGET_RE = re.compile(r"кампания\s+(\d+)\s*:", re.IGNORECASE)
 _DEFERRED_STALE_HOURS = 3
 _DELAYED_REPAIR_DAEMON = {"started": False}
 _DELAYED_REPAIR_POLL = 60
@@ -1894,6 +1897,128 @@ def _create_jobs_ahead(jid: str) -> int:
     return running + idx
 
 
+def _copy_retry_walk_strings(value, *, _depth: int = 0):
+    if _depth > 8:
+        return
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _copy_retry_walk_strings(item, _depth=_depth + 1)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _copy_retry_walk_strings(item, _depth=_depth + 1)
+
+
+def _copy_retry_load_id_maps(result: dict) -> dict:
+    maps = result.get("id_maps") if isinstance(result.get("id_maps"), dict) else {}
+    if maps:
+        return maps
+    workdir = str(result.get("workdir") or "").strip()
+    if not workdir:
+        return {}
+    try:
+        with open(os.path.join(workdir, "id_maps.json"), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 - retry scope falls back to all campaigns below.
+        return {}
+
+
+def _copy_retry_failed_scope(row: dict) -> dict:
+    """Определить, какие source-кампании реально нужно пересоздать в Agent Board retry."""
+    body = row.get("body") or {}
+    selected = []
+    for raw in body.get("campaign_ids") or []:
+        try:
+            cid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if cid > 0 and cid not in selected:
+            selected.append(cid)
+    selected_set = set(selected)
+    result = row.get("result") if isinstance(row.get("result"), dict) else {}
+    maps = _copy_retry_load_id_maps(result)
+    campaign_map = maps.get("campaigns") if isinstance(maps.get("campaigns"), dict) else {}
+    source_to_target: dict[int, int] = {}
+    target_to_source: dict[int, int] = {}
+    for src_raw, tgt_raw in campaign_map.items():
+        try:
+            src_id = int(src_raw)
+            tgt_id = int(tgt_raw)
+        except (TypeError, ValueError):
+            continue
+        if src_id > 0 and tgt_id > 0:
+            source_to_target[src_id] = tgt_id
+            target_to_source[tgt_id] = src_id
+
+    bad_source: set[int] = set()
+    cleanup_target: set[int] = set()
+
+    def add_source(src_id: int, tgt_id: int = 0) -> None:
+        if src_id in selected_set:
+            bad_source.add(src_id)
+            if tgt_id > 0:
+                cleanup_target.add(tgt_id)
+            elif source_to_target.get(src_id):
+                cleanup_target.add(source_to_target[src_id])
+
+    def add_target(tgt_id: int) -> None:
+        if tgt_id <= 0:
+            return
+        cleanup_target.add(tgt_id)
+        src_id = target_to_source.get(tgt_id)
+        if src_id:
+            add_source(src_id, tgt_id)
+
+    for item in result.get("results") or []:
+        if not isinstance(item, dict) or item.get("ok", True):
+            continue
+        try:
+            src_id = int(item.get("source_id") or 0)
+        except (TypeError, ValueError):
+            src_id = 0
+        if src_id:
+            add_source(src_id)
+            continue
+        for key in ("campaign_id", "id"):
+            try:
+                tgt_id = int(item.get(key) or 0)
+            except (TypeError, ValueError):
+                tgt_id = 0
+            if tgt_id:
+                add_target(tgt_id)
+
+    for text in _copy_retry_walk_strings({"error": row.get("error") or "", "result": result}):
+        for match in _COPY_RETRY_PAIR_RE.finditer(text):
+            try:
+                src_id = int(match.group(1))
+                tgt_id = int(match.group(2))
+            except (TypeError, ValueError):
+                continue
+            add_source(src_id, tgt_id)
+        for match in _COPY_RETRY_TARGET_RE.finditer(text):
+            try:
+                add_target(int(match.group(1)))
+            except (TypeError, ValueError):
+                continue
+
+    bad_selected = sorted(x for x in bad_source if x in selected_set)
+    if not bad_selected:
+        return {
+            "mode": "all",
+            "campaign_ids": selected,
+            "cleanup_target_ids": [],
+            "reason": "no_campaign_specific_errors",
+        }
+    return {
+        "mode": "failed_campaigns",
+        "campaign_ids": bad_selected,
+        "cleanup_target_ids": sorted(cleanup_target),
+        "all_campaign_ids": selected,
+    }
+
+
 def _copy_retry_body_from_failed(row: dict) -> dict:
     """Build a fresh copy_campaigns body from a failed persisted copy job."""
     body = dict(row.get("body") or {})
@@ -1913,8 +2038,17 @@ def _copy_retry_body_from_failed(row: dict) -> dict:
     body["created_by"] = "agent-board-auto"
     body["_copy_retry_of"] = row.get("job_id") or ""
     body["_copy_retry_agent_board_task_id"] = row.get("agent_board_task_id")
-    # Failed copy attempts can leave partial Direct drafts. The retry is allowed to clean drafts
-    # before re-copying, but it still does not archive or touch accepted campaigns.
+    scope = _copy_retry_failed_scope(row)
+    if scope.get("mode") == "failed_campaigns":
+        body["_copy_retry_all_campaign_ids"] = scope.get("all_campaign_ids") or list(body.get("campaign_ids") or [])
+        body["campaign_ids"] = scope.get("campaign_ids") or []
+        body["_copy_retry_scope"] = "failed_campaigns"
+        body["_copy_retry_cleanup_target_ids"] = scope.get("cleanup_target_ids") or []
+    else:
+        body["_copy_retry_scope"] = "all"
+        body["_copy_retry_scope_reason"] = scope.get("reason") or ""
+    # Failed copy attempts can leave partial Direct drafts. Retry cleans only the broken target
+    # drafts when we can isolate them; otherwise it falls back to the legacy full draft cleanup.
     body["target_cleanup"] = "delete_drafts"
     return body
 
