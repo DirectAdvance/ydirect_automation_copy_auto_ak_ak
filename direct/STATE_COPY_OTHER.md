@@ -7,6 +7,19 @@
 
 Сессии 2026-07-16 → 2026-07-17.
 
+## Сессия 2026-07-31 — copy adPrice: минимум фида для `Общее`/прочих СТ
+
+**Сделано:** `copy_price_steps.step_prices` теперь определяет price-сегмент по имени группы и
+кампании. Для `Марки`/`Модели` остаётся строгий матч по target-фиду: если марки/модели нет, цена
+пустая и донорская цена не переносится. Для `Общее`/`Общие запросы`/прочих СТ передаётся сегмент
+`Общее`, поэтому `_group_ad_price` ставит минимальную цену машины из target-фида.
+
+**Проверено:** `py_compile` целевых copy/create/grid модулей OK; focused pytest по price-segment,
+минимуму фида и adprice-repair — `4 passed`; `git diff --check` OK. Код закоммичен в
+`neurodirectologist` ветку `ydirect_automation_copy_auto_ak_ak` (`ad03b743`) и экспортирован в
+`DirectAdvance/ydirect_automation_copy_auto_ak_ak` main (`c8a7511`). Live-copy на проде на момент
+записи не перепроверялся.
+
 ## ✅ РЕЗУЛЬТАТ: копия 1:1 достигнута ФАКТОМ (проверено v5 API + Grid)
 
 Источник `porg-mushirne` → `porg-jh2si7rh`, `porg-as46rje6`, `porg-r7ro6tei`.
