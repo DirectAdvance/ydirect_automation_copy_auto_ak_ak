@@ -367,38 +367,52 @@ def _v5_conditions_to_grid(raw) -> list[dict]:
 
 
 def _copy_set_product_feed_filters(grid, items: list[dict], *, listing: bool) -> int:
-    """Set product/listing feed filters, retrying without Grid-rejected feed fields."""
-    try:
-        return grid.set_product_feed_filters(items, listing=listing)
-    except Exception as exc:  # noqa: BLE001
-        text = str(exc)
-        if "UNAVAILABLE_FIELD" not in text:
-            raise
-        unavailable_by_item: dict[int, set[int]] = {}
-        for item_idx, cond_idx in re.findall(
-            r"adUpdateItems\[(\d+)\]\.feedFilter\.conditions\[(\d+)\]", text
-        ):
-            unavailable_by_item.setdefault(int(item_idx), set()).add(int(cond_idx))
-        if not unavailable_by_item:
-            raise
-        retry_items: list[dict] = []
-        for idx, item in enumerate(items or []):
-            drop = unavailable_by_item.get(idx) or set()
-            if not drop:
-                retry_items.append(item)
-                continue
-            conds = [
-                cond for cond_idx, cond in enumerate(item.get("conditions") or [])
-                if cond_idx not in drop
-            ]
-            if not conds:
-                continue
-            retry_item = dict(item)
-            retry_item["conditions"] = conds
-            retry_items.append(retry_item)
-        if not retry_items:
-            return 0
-        return grid.set_product_feed_filters(retry_items, listing=listing)
+    """Set product/listing feed filters, dropping Grid-rejected fields until stable."""
+    retry_items = list(items or [])
+    for _attempt in range(6):
+        try:
+            return grid.set_product_feed_filters(retry_items, listing=listing)
+        except Exception as exc:  # noqa: BLE001
+            text = str(exc)
+            if "UNAVAILABLE_FIELD" not in text:
+                raise
+            next_items = _copy_drop_unavailable_feed_filter_conditions(retry_items, text)
+            if next_items is None:
+                raise
+            retry_items = next_items
+            if not retry_items:
+                return 0
+    return grid.set_product_feed_filters(retry_items, listing=listing)
+
+
+def _copy_drop_unavailable_feed_filter_conditions(items: list[dict], error_text: str) -> list[dict] | None:
+    """Return items with UNAVAILABLE_FIELD condition indexes removed, or None when unparseable."""
+    text = str(error_text or "")
+    unavailable_by_item: dict[int, set[int]] = {}
+    for item_idx, cond_idx in re.findall(
+        r"adUpdateItems\[(\d+)\]\.feedFilter\.conditions\[(\d+)\]", text
+    ):
+        unavailable_by_item.setdefault(int(item_idx), set()).add(int(cond_idx))
+    if not unavailable_by_item:
+        return None
+    retry_items: list[dict] = []
+    changed = False
+    for idx, item in enumerate(items or []):
+        drop = unavailable_by_item.get(idx) or set()
+        if not drop:
+            retry_items.append(item)
+            continue
+        conds = [
+            cond for cond_idx, cond in enumerate(item.get("conditions") or [])
+            if cond_idx not in drop
+        ]
+        changed = True
+        if not conds:
+            continue
+        retry_item = dict(item)
+        retry_item["conditions"] = conds
+        retry_items.append(retry_item)
+    return retry_items if changed else None
 
 
 def _copy_apply_product_filters(src_dir: Path, maps: dict, grid, log=None) -> dict:

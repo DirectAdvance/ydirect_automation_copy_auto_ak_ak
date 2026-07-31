@@ -18,6 +18,7 @@ from direct.copy_service import (
     copy_engine,
     copy_feeds,
     copy_postprocess,
+    copy_jobs,
     copy_settings_steps,
     copy_steps,
     copy_grid_read,
@@ -56,6 +57,66 @@ def test_copy_terminal_status_includes_postprocess_errors():
 
     assert status == "error"
     assert "verification gate" in error
+
+
+def test_copy_feed_filters_retry_drops_unavailable_fields_until_success():
+    class FakeGrid:
+        def __init__(self):
+            self.calls = []
+
+        def set_product_feed_filters(self, items, *, listing=False):
+            self.calls.append((json.loads(json.dumps(items)), listing))
+            if len(self.calls) == 1:
+                raise RuntimeError(
+                    "updateListingAds(feed-filter): "
+                    "{\"errors\":[{\"path\":\"adUpdateItems[0].feedFilter.conditions[0]\"}]}"
+                    " UNAVAILABLE_FIELD"
+                )
+            if len(self.calls) == 2:
+                raise RuntimeError(
+                    "updateListingAds(feed-filter): "
+                    "{\"errors\":[{\"path\":\"adUpdateItems[1].feedFilter.conditions[1]\"}]}"
+                    " UNAVAILABLE_FIELD"
+                )
+            return len(items)
+
+    items = [
+        {"id": 1, "conditions": [{"field": "mark_id"}, {"field": "url"}]},
+        {"id": 2, "conditions": [{"field": "url"}, {"field": "folder_id"}]},
+    ]
+
+    updated = copy_postprocess._copy_set_product_feed_filters(FakeGrid(), items, listing=True)
+
+    assert updated == 2
+
+
+def test_copy_jobs_recover_keeps_live_memory_jobs_running(monkeypatch):
+    executed = []
+
+    class FakeCursor:
+        def execute(self, sql, params=None):
+            executed.append((sql, params))
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(copy_jobs, "_victory_conn_rw", lambda: FakeConn())
+    with copy_jobs._COPY_JOBS_LOCK:
+        copy_jobs._COPY_JOBS.clear()
+        copy_jobs._COPY_JOBS["live-job"] = {"status": "running"}
+
+    copy_jobs._copy_jobs_recover()
+
+    sql, params = executed[0]
+    assert "NOT (job_id = ANY(%s))" in sql
+    assert params == (["live-job"],)
 
 
 def test_copy_live_gate_blocks_adprice_warning():

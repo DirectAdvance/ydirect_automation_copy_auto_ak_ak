@@ -82,11 +82,25 @@ def _copy_jobs_recover() -> None:
     Трогает ТОЛЬКО kind='copy_campaigns' — очередь создания РК в direct.service не задета.
     Авто-докрутку не делаем: повторный «Копировать» сам пропустит уже созданное (суффикс _vNN)."""
     try:
+        with _COPY_JOBS_LOCK:
+            live_ids = {
+                str(job_id)
+                for job_id, job in _COPY_JOBS.items()
+                if (job or {}).get("status") in ("queued", "running")
+            }
         conn = _victory_conn_rw()
         try:
             cur = conn.cursor()
-            cur.execute("UPDATE direct_automation.jobs SET status='interrupted', updated_at=now() "
-                        "WHERE kind='copy_campaigns' AND status IN ('running','queued')")
+            if live_ids:
+                cur.execute(
+                    "UPDATE direct_automation.jobs SET status='interrupted', updated_at=now() "
+                    "WHERE kind='copy_campaigns' AND status IN ('running','queued') "
+                    "AND NOT (job_id = ANY(%s))",
+                    (list(live_ids),),
+                )
+            else:
+                cur.execute("UPDATE direct_automation.jobs SET status='interrupted', updated_at=now() "
+                            "WHERE kind='copy_campaigns' AND status IN ('running','queued')")
             conn.commit()
         finally:
             conn.close()
