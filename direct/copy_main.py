@@ -125,6 +125,33 @@ def _copy_login_allowed(login: str) -> tuple[bool, str]:
         return False, f"не удалось проверить доступ к аккаунту {login}: {str(exc)[:160]}"
 
 
+def _copy_archived_campaign_ids(login: str, ids: list[int], agency: str = "") -> set[int]:
+    """Return selected campaign IDs that v5 marks as ARCHIVED."""
+    ids = [int(x) for x in (ids or []) if str(x).isdigit() and int(x) > 0]
+    if not login or not ids:
+        return set()
+    token, _agency = accounts._token_for_login(
+        login,
+        agency or yandex.resolve_agency_hint(login, ""),
+        accounts._direct_tokens(),
+    )
+    if not token:
+        return set()
+    archived: set[int] = set()
+    for i in range(0, len(ids), 1000):
+        chunk = ids[i:i + 1000]
+        data = accounts._v5_call("campaigns", "get", token, login, {
+            "SelectionCriteria": {"Ids": chunk},
+            "FieldNames": ["Id", "State", "Status"],
+        })
+        for row in ((data.get("result") or {}).get("Campaigns") or []):
+            state = str(row.get("State") or "").upper()
+            status = str(row.get("Status") or "").upper()
+            if state == "ARCHIVED" or status == "ARCHIVED":
+                archived.add(int(row.get("Id") or 0))
+    return archived
+
+
 def _copy_repair_pending(job_id: str) -> bool:
     """True если для copy-job есть незавершённая запись в direct_automation.delayed_repairs.
 
@@ -340,6 +367,7 @@ def create_app() -> Flask:
         job_db_get_func=queue._job_db_get,
         copy_queue_func=_copy_queue_jobs,           # список джоб для вкладки «Очередь»
         login_allowed_func=_copy_login_allowed,
+        archived_campaign_ids_func=_copy_archived_campaign_ids,
     )
     # Программный API /api/v1/copy для внешних клиентов (auth по X-API-Key, fail-closed).
     register_copy_api(

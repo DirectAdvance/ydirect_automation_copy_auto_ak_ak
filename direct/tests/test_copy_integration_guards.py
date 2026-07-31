@@ -232,6 +232,7 @@ def test_copy_campaigns_route_hides_archived_campaigns():
                 {"id": 2, "name": "archived v5", "state": "ARCHIVED", "status": "MODERATION"},
                 {"id": 3, "name": "active grid", "state": "DRAFT", "status": "DRAFT"},
                 {"id": 4, "name": "archived grid", "state": "ON", "status": "ARCHIVED", "archived": True},
+                {"id": 5, "name": "archived lost flag", "state": "ON", "status": "MODERATION"},
             ]
         })
 
@@ -255,6 +256,7 @@ def test_copy_campaigns_route_hides_archived_campaigns():
         copy_jobs_lock=nullcontext(),
         feeds_preview_func=lambda *_args: {},
         login_allowed_func=lambda _login: (True, ""),
+        archived_campaign_ids_func=lambda _login, ids, _agency="": {5},
     )
     app.register_blueprint(bp)
 
@@ -262,7 +264,7 @@ def test_copy_campaigns_route_hides_archived_campaigns():
 
     assert [c["id"] for c in payload["campaigns"]] == [1, 3]
     assert all(str(c.get("state") or "").upper() != "ARCHIVED" for c in payload["campaigns"])
-    assert payload["archived_hidden"] == 2
+    assert payload["archived_hidden"] == 3
 
 
 def test_direct_copy_caps_text_ads_per_group_before_add():

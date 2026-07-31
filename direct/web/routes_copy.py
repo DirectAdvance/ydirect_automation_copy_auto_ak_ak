@@ -83,6 +83,7 @@ def register_copy_routes(
     job_db_get_func: Callable | None = None,  # fallback copy_status после рестарта direct-copy.service
     copy_queue_func: Callable | None = None,  # список последних copy-джоб для вкладки «Очередь»
     login_allowed_func: Callable[[str], tuple[bool, str]] | None = None,  # scoped content-user guard
+    archived_campaign_ids_func: Callable | None = None,  # login, ids, agency -> set[int] archived by v5
 ) -> None:
     def _copy_ts(value):
         if hasattr(value, "timestamp"):
@@ -135,12 +136,36 @@ def register_copy_routes(
         status = str((row or {}).get("status") or "").upper()
         return state == "ARCHIVED" or status == "ARCHIVED" or bool((row or {}).get("archived"))
 
+    def _copy_campaign_id(row: dict) -> int:
+        try:
+            return int((row or {}).get("id") or 0)
+        except (TypeError, ValueError):
+            return 0
+
     def _copy_hide_archived_campaigns(resp):
         payload = resp.get_json(silent=True) if hasattr(resp, "get_json") else None
         if not isinstance(payload, dict) or not isinstance(payload.get("campaigns"), list):
             return resp
         rows = payload.get("campaigns") or []
-        visible = [c for c in rows if not _copy_campaign_is_archived(c)]
+        archived_ids: set[int] = set()
+        if archived_campaign_ids_func is not None:
+            ids = [_copy_campaign_id(c) for c in rows]
+            ids = [cid for cid in ids if cid > 0]
+            if ids:
+                try:
+                    archived_ids = {
+                        int(cid) for cid in archived_campaign_ids_func(
+                            (request.args.get("login") or "").strip(),
+                            ids,
+                            (request.args.get("agency") or "").strip(),
+                        )
+                    }
+                except Exception as exc:  # noqa: BLE001 — основной ответ уже есть, не валим список
+                    current_app.logger.warning("copy archived campaign probe failed: %s", str(exc)[:200])
+        visible = [
+            c for c in rows
+            if _copy_campaign_id(c) not in archived_ids and not _copy_campaign_is_archived(c)
+        ]
         hidden = len(rows) - len(visible)
         if not hidden:
             return resp
