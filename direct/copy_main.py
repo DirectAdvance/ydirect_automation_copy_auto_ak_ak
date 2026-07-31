@@ -43,6 +43,7 @@ from direct.core import automation_runtime as _runtime  # noqa: E402,F401
 from direct import account_service as accounts  # noqa: E402
 from direct.create import blueprint_metrika as metrika  # noqa: E402
 from direct.copy_service import copy_engine  # noqa: E402
+from direct.copy_service.copy_access import login_allowed_for_directologists  # noqa: E402
 from direct.core import queue_server as queue  # noqa: E402
 from direct.clients import yandex_gateway as yandex  # noqa: E402
 from direct.web.routes_copy import register_copy_routes  # noqa: E402
@@ -106,6 +107,22 @@ def _copy_queue_allowed_directologists() -> list[str] | None:
                 if str(x).strip()
             ]
     return []
+
+
+def _copy_login_allowed(login: str) -> tuple[bool, str]:
+    """Scope copy source/target logins for non-admin content users."""
+    if session.get("is_admin") or session.get("content_admin"):
+        return True, ""
+    try:
+        from direct.core.direct_repository import victory_conn
+
+        return login_allowed_for_directologists(
+            victory_conn,
+            login,
+            _copy_queue_allowed_directologists(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, f"не удалось проверить доступ к аккаунту {login}: {str(exc)[:160]}"
 
 
 def _copy_repair_pending(job_id: str) -> bool:
@@ -322,6 +339,7 @@ def create_app() -> Flask:
         repair_pending_func=_copy_repair_pending,  # persistent добивка direct_delayed_repairs
         job_db_get_func=queue._job_db_get,
         copy_queue_func=_copy_queue_jobs,           # список джоб для вкладки «Очередь»
+        login_allowed_func=_copy_login_allowed,
     )
     # Программный API /api/v1/copy для внешних клиентов (auth по X-API-Key, fail-closed).
     register_copy_api(

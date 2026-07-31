@@ -7,7 +7,7 @@
    Пространство имён: CECOPY_* (чтобы не конфликтовать с ACC_ALL и esc()
    из content_editor.js; copy_common.js на этой странице НЕ подключён).
 
-   Для copy-вкладки логины грузятся отдельным списком, без directologist-scoping.
+   Для copy-вкладки логины грузятся отдельным backend-scoped списком.
    ============================================================================ */
 
 // ── Состояние ────────────────────────────────────────────────────────────────
@@ -18,6 +18,8 @@ let CECOPY_JOB_ID = null;
 let CECOPY_POLL_TIMER = null;
 let _CECOPY_INIT = false;
 let CECOPY_ACC_ALL = [];
+let CECOPY_JOB_META = {};
+const CECOPY_JOB_LS = 'direct_content_copy_job_v1';
 
 // ── Вспомогательные функции ──────────────────────────────────────────────────
 function _cecopySrcSuggest() { _cecopyDropdown('cecopy-source-login', 'cecopy-source-dd'); }
@@ -87,7 +89,7 @@ function _ceCopyTabInit() {
       }
     });
   });
-  // Восстановить активную джобу, если была
+  _cecopyRestoreJob();
   if (CECOPY_JOB_ID) _cecopyPollStart();
 }
 
@@ -239,6 +241,81 @@ function ceCopyResolveGoal() {
     }).catch(() => {});
 }
 
+function _cecopyRememberJob(jobId, sourceLogin, targetLogin) {
+  if (!jobId) return;
+  CECOPY_JOB_META = {
+    job_id: jobId,
+    source_login: sourceLogin || '',
+    target_login: targetLogin || '',
+  };
+  try { localStorage.setItem(CECOPY_JOB_LS, JSON.stringify(CECOPY_JOB_META)); } catch (e) {}
+}
+
+function _cecopyForgetJob(jobId) {
+  if (jobId && CECOPY_JOB_ID && jobId !== CECOPY_JOB_ID) return;
+  CECOPY_JOB_ID = null;
+  CECOPY_JOB_META = {};
+  try { localStorage.removeItem(CECOPY_JOB_LS); } catch (e) {}
+}
+
+function _cecopyRestoreJob() {
+  if (CECOPY_JOB_ID) return;
+  try {
+    const saved = JSON.parse(localStorage.getItem(CECOPY_JOB_LS) || '{}');
+    if (!saved || !saved.job_id) return;
+    CECOPY_JOB_ID = String(saved.job_id);
+    CECOPY_JOB_META = saved;
+    _cecopyRenderJobCard({
+      job_id: CECOPY_JOB_ID,
+      status: 'queued',
+      source_login: saved.source_login || '',
+      target_login: saved.target_login || '',
+    });
+  } catch (e) {}
+}
+
+// ── Попап ошибок запуска (Метрика/цель) — стиль сайта вместо alert() ──────────
+// Разметки в шаблоне для copy-вкладки нет, поэтому строим .ceimg-modal (те же
+// классы, что у "Замены изображения") один раз и переиспользуем узел.
+function _cecopyEnsureAlertModal() {
+  let el = document.getElementById('cecopy-alert-modal');
+  if (el) return el;
+  el = document.createElement('div');
+  el.className = 'ceimg-modal';
+  el.id = 'cecopy-alert-modal';
+  el.hidden = true;
+  el.innerHTML =
+    '<div class="ceimg-modal-back" data-cecopy-alert-close="1"></div>' +
+    '<div class="ceimg-modal-box" role="dialog" aria-modal="true" aria-labelledby="cecopy-alert-title" style="width:min(420px,100%)">' +
+      '<div class="ceimg-modal-head">' +
+        '<h3 id="cecopy-alert-title">Нельзя запустить копирование</h3>' +
+        '<button type="button" class="ceimg-modal-x" id="cecopy-alert-close" aria-label="Закрыть окно">' +
+          '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">' +
+            '<path d="M4 4l8 8M12 4l-8 8"></path>' +
+          '</svg>' +
+        '</button>' +
+      '</div>' +
+      '<div class="ceimg-modal-hint" id="cecopy-alert-text" style="margin-top:14px"></div>' +
+      '<div class="ceimg-modal-foot">' +
+        '<button type="button" class="ce-btn small" id="cecopy-alert-ok">Понятно</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(el);
+  const close = () => { el.hidden = true; };
+  el.addEventListener('click', e => {
+    if (e.target.closest('[data-cecopy-alert-close]') || e.target.closest('#cecopy-alert-close') || e.target.closest('#cecopy-alert-ok')) close();
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !el.hidden) close(); });
+  return el;
+}
+
+function _cecopyAlert(message) {
+  const el = _cecopyEnsureAlertModal();
+  const txt = document.getElementById('cecopy-alert-text');
+  if (txt) txt.textContent = message;
+  el.hidden = false;
+}
+
 // ── Запуск копирования ────────────────────────────────────────────────────────
 async function ceCopyStart() {
   const srcLogin = ((document.getElementById('cecopy-source-login') || {}).value || '').trim();
@@ -250,7 +327,11 @@ async function ceCopyStart() {
   const goal     = ((document.getElementById('cecopy-goal') || {}).value || '').trim();
   const cleanup  = (document.querySelector('input[name="cecopy-cleanup"]:checked') || {}).value || 'none';
   if (!srcLogin || !tgtLogin) { alert('Укажите старый и новый аккаунт'); return; }
-  if (!counter) { alert('Укажите счётчик Метрики'); return; }
+  if (!CECOPY_SELECTED.size) { alert('Выберите хотя бы одну кампанию'); return; }
+  if (!counter) { _cecopyAlert('Укажите счётчик Метрики'); return; }
+  if (!goal) { _cecopyAlert('Цель «Все формы» обязательна'); return; }
+  if (!domain) { alert('Укажите домен целевого аккаунта'); return; }
+  if (!city && !region) { alert('Укажите город или регион целевого аккаунта'); return; }
   const btn = document.getElementById('cecopy-start-btn');
   if (btn) btn.disabled = true;
   const msg = document.getElementById('cecopy-msg');
@@ -265,7 +346,7 @@ async function ceCopyStart() {
       counter_id: counter,
       goal_id: goal,
       campaign_ids: Array.from(CECOPY_SELECTED).map(Number).filter(Boolean),
-      cleanup: cleanup,
+      target_cleanup: cleanup,
     };
     const r = await fetch('/direct/api/copy_start', {
       method: 'POST',
@@ -278,6 +359,7 @@ async function ceCopyStart() {
       return;
     }
     CECOPY_JOB_ID = j.job_id || null;
+    if (CECOPY_JOB_ID) _cecopyRememberJob(CECOPY_JOB_ID, srcLogin, tgtLogin);
     if (msg) msg.innerHTML = 'Задание <b>' + _cecopyEsc(j.job_id || '') + '</b> запущено.';
     if (CECOPY_JOB_ID) _cecopyPollStart();
   } catch (e) {
@@ -298,9 +380,15 @@ async function _cecopyPollTick() {
   if (!CECOPY_JOB_ID) return;
   try {
     const r = await fetch('/direct/api/copy_status/' + encodeURIComponent(CECOPY_JOB_ID));
+    if (r.status === 404) {
+      _cecopyForgetJob(CECOPY_JOB_ID);
+      if (CECOPY_POLL_TIMER) { clearInterval(CECOPY_POLL_TIMER); CECOPY_POLL_TIMER = null; }
+      return;
+    }
     const j = await r.json();
     _cecopyRenderJobCard(j);
     if (j.terminal || j.status === 'done' || j.status === 'error' || j.status === 'cancelled') {
+      _cecopyForgetJob(CECOPY_JOB_ID);
       if (CECOPY_POLL_TIMER) { clearInterval(CECOPY_POLL_TIMER); CECOPY_POLL_TIMER = null; }
     }
   } catch (e) { /* не блокируем UI */ }
@@ -310,6 +398,7 @@ async function _cecopyPollTick() {
 function _cecopyDismissCard(jobId) {
   const card = document.getElementById('ce-job-copy-' + jobId);
   if (card) card.remove();
+  _cecopyForgetJob(jobId);
 }
 
 // Рендерит/обновляет карточку копирования в ОБЩЕМ виджете #ce-job-stack
@@ -333,8 +422,8 @@ function _cecopyRenderJobCard(j) {
     stack.appendChild(card);
   }
   // Подпись аккаунта
-  const srcLogin = j.source_login || '';
-  const tgtLogin = j.target_login || '';
+  const srcLogin = j.source_login || CECOPY_JOB_META.source_login || '';
+  const tgtLogin = j.target_login || CECOPY_JOB_META.target_login || '';
   const accLabel = (srcLogin && tgtLogin)
     ? (srcLogin + ' → ' + tgtLogin)
     : (srcLogin || tgtLogin || 'аккаунт');

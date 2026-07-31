@@ -82,6 +82,7 @@ def register_copy_routes(
     repair_pending_func: Callable | None = None,  # job_id → bool: есть ли незакрытая запись в direct_delayed_repairs
     job_db_get_func: Callable | None = None,  # fallback copy_status после рестарта direct-copy.service
     copy_queue_func: Callable | None = None,  # список последних copy-джоб для вкладки «Очередь»
+    login_allowed_func: Callable[[str], tuple[bool, str]] | None = None,  # scoped content-user guard
 ) -> None:
     def _copy_ts(value):
         if hasattr(value, "timestamp"):
@@ -118,10 +119,24 @@ def register_copy_routes(
             "settling": False,
         }
 
+    def _copy_login_guard(login: str, label: str = "login"):
+        login = (login or "").strip()
+        if not login:
+            return jsonify({"error": f"{label} обязателен"}), 400
+        if login_allowed_func is None:
+            return None
+        ok, err = login_allowed_func(login)
+        if ok:
+            return None
+        return jsonify({"error": err or f"{label} вне вашего доступа"}), 403
+
     @bp.route("/api/copy_campaigns")
     @access
     def api_copy_campaigns():
         """Список кампаний источника для вкладки «Копирование кампаний»."""
+        denied = _copy_login_guard(request.args.get("login"), "login")
+        if denied is not None:
+            return denied
         return api_campaigns_func()
 
     @bp.route("/api/copy_target_prefill")
@@ -129,8 +144,9 @@ def register_copy_routes(
     def api_copy_target_prefill():
         """Префилл целевого аккаунта для копирования: домен/гео/счётчик/цель."""
         login = (request.args.get("login") or "").strip()
-        if not login:
-            return jsonify({"error": "login обязателен"}), 400
+        denied = _copy_login_guard(login, "login")
+        if denied is not None:
+            return denied
         try:
             base = account_prefill_func()
             payload = base.get_json(silent=True) if hasattr(base, "get_json") else None
@@ -189,8 +205,9 @@ def register_copy_routes(
         if target_campaigns_info_func is None:
             return jsonify({"error": "target_campaigns_info_func не подключена"}), 503
         login = (request.args.get("login") or "").strip()
-        if not login:
-            return jsonify({"error": "login обязателен"}), 400
+        denied = _copy_login_guard(login, "login")
+        if denied is not None:
+            return denied
         try:
             data = target_campaigns_info_func(login)
         except Exception as e:  # noqa: BLE001
@@ -210,8 +227,9 @@ def register_copy_routes(
         if images_upload_func is None:
             return jsonify({"error": "images_upload_func не подключена"}), 503
         target_login = (request.form.get("target_login") or "").strip()
-        if not target_login:
-            return jsonify({"error": "target_login обязателен"}), 400
+        denied = _copy_login_guard(target_login, "target_login")
+        if denied is not None:
+            return denied
         files = request.files.getlist("images")
         if not files:
             return jsonify({"error": "нет файлов"}), 400
@@ -262,6 +280,10 @@ def register_copy_routes(
         geo_mode = default_geo_mode(body, mode)
         if not source_login or not target_login:
             return jsonify({"error": "source_login и target_login обязательны"}), 400
+        for label, login in (("source_login", source_login), ("target_login", target_login)):
+            denied = _copy_login_guard(login, label)
+            if denied is not None:
+                return denied
         if not selected_ids:
             return jsonify({"error": "выберите хотя бы одну кампанию"}), 400
         if not counter_id:
@@ -425,6 +447,10 @@ def register_copy_routes(
         target_login = (body.get("target_login") or "").strip()
         if not source_login or not target_login:
             return jsonify({"error": "source_login и target_login обязательны"}), 400
+        for label, login in (("source_login", source_login), ("target_login", target_login)):
+            denied = _copy_login_guard(login, label)
+            if denied is not None:
+                return denied
         selected_ids = _parse_campaign_ids(body, as_set=True)
         try:
             data = feeds_preview_func(source_login, target_login, selected_ids)
@@ -445,6 +471,10 @@ def register_copy_routes(
         target_login = (body.get("target_login") or "").strip()
         if not source_login or not target_login:
             return jsonify({"error": "source_login и target_login обязательны"}), 400
+        for label, login in (("source_login", source_login), ("target_login", target_login)):
+            denied = _copy_login_guard(login, label)
+            if denied is not None:
+                return denied
         selected_ids = _parse_campaign_ids(body, as_set=True)
         try:
             data = feeds_check_func(source_login, target_login, selected_ids)
@@ -473,6 +503,10 @@ def register_copy_routes(
         target_domain = (body.get("target_domain") or "").strip()
         if not source_login or not target_login:
             return jsonify({"error": "source_login и target_login обязательны"}), 400
+        for label, login in (("source_login", source_login), ("target_login", target_login)):
+            denied = _copy_login_guard(login, label)
+            if denied is not None:
+                return denied
         if source_feed_id_raw is None:
             return jsonify({"error": "source_feed_id обязателен"}), 400
         try:

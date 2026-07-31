@@ -536,6 +536,10 @@ def _copy_run_job(job_id: str, body: dict) -> None:
     target_cleanup = (body.get("target_cleanup") or "none").strip()
     if target_cleanup not in ("none", "delete_drafts", "archive"):
         target_cleanup = "none"
+    cleanup_target_ids = [
+        int(x) for x in (body.get("_copy_retry_cleanup_target_ids") or [])
+        if str(x).isdigit() and int(x) > 0
+    ]
     cleanup_result: dict | None = None
     target_token = ""
     target_token_agency = ""
@@ -547,7 +551,10 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         _copy_job_upsert(job_id, progress=progress)
         _copy_job_log(job_id, f"cleanup: начало ({target_cleanup}) на {target_login}")
         target_ag_cleanup = target_token_agency or body.get("agency") or _resolve_agency_hint(target_login, "")
-        cleanup_result = _copy_target_cleanup(job_id, target_login, target_ag_cleanup, target_cleanup)
+        cleanup_result = _copy_target_cleanup(
+            job_id, target_login, target_ag_cleanup, target_cleanup,
+            campaign_ids=cleanup_target_ids or None,
+        )
         for err in (cleanup_result.get("errors") or [])[:5]:
             _copy_job_log(job_id, f"cleanup предупреждение: {err}")
         _copy_job_upsert(job_id, result={"cleanup": cleanup_result})

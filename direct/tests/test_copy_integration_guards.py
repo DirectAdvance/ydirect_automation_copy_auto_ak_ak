@@ -1,4 +1,6 @@
+from contextlib import nullcontext
 from pathlib import Path
+import re
 from types import SimpleNamespace
 import time
 
@@ -24,6 +26,7 @@ from direct.copy_service.copy_api import register_copy_api
 from direct.copy_service.copy_request import parse_feed_map, parse_image_hashes
 from direct.copy_service.copy_verify_source import build_source_profile
 from direct.copy_service.copy_verify_diff import diff_profiles
+from direct.web.routes_copy import register_copy_routes
 
 
 def test_copy_target_feed_id_prefers_preseeded_id_maps(tmp_path, monkeypatch):
@@ -117,6 +120,72 @@ def test_copy_verify_gate_blocks_top_level_verify_error():
     blockers = copy_postprocess._copy_verify_blockers({"error": "build_target_profile: boom"})
 
     assert blockers[0]["dimension"] == "VERIFY_ERROR"
+
+
+def test_content_copy_js_sends_target_cleanup():
+    js_path = Path(__file__).resolve().parents[2] / "static/direct/content_copy.js"
+    js = js_path.read_text(encoding="utf-8")
+
+    assert "target_cleanup: cleanup" in js
+    assert re.search(r"(?<!target_)cleanup:\s*cleanup", js) is None
+    assert "_cecopyAlert('Укажите счётчик Метрики')" in js
+    assert "_cecopyAlert('Цель «Все формы» обязательна')" in js
+
+
+def test_copy_routes_scope_guard_blocks_copy_start(monkeypatch):
+    app = Flask(__name__)
+    bp = Blueprint("direct", __name__, url_prefix="/direct")
+    calls = {"job_new": 0}
+
+    def access(fn):
+        return fn
+
+    def login_allowed(login):
+        if login == "allowed-login":
+            return True, ""
+        return False, f"{login} denied"
+
+    def job_new(*_args, **_kwargs):
+        calls["job_new"] += 1
+        return "job-1"
+
+    register_copy_routes(
+        bp,
+        access,
+        api_campaigns_func=lambda: None,
+        account_prefill_func=lambda: None,
+        metrika_goals_for=lambda _login: None,
+        parse_number=lambda value, default=0: int(value or default),
+        copy_default_feed_path="/feed.xml",
+        counter_foreign_owner=lambda *_args: None,
+        resolve_agency_hint=lambda *_args: "",
+        ensure_create_worker=lambda _app: None,
+        job_new=job_new,
+        copy_job_upsert=lambda *_args, **_kwargs: None,
+        create_jobs_ahead=lambda _job_id: 0,
+        create_jobs={},
+        create_jobs_lock=nullcontext(),
+        copy_jobs={},
+        copy_jobs_lock=nullcontext(),
+        feeds_preview_func=lambda *_args: {},
+        login_allowed_func=login_allowed,
+    )
+    app.register_blueprint(bp)
+    app.testing = True
+
+    response = app.test_client().post("/direct/api/copy_start", json={
+        "source_login": "denied-login",
+        "target_login": "allowed-login",
+        "campaign_ids": [1],
+        "target_domain": "example.ru",
+        "target_city": "Москва",
+        "counter_id": 1,
+        "goal_id": 2,
+    })
+
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "denied-login denied"
+    assert calls["job_new"] == 0
 
 
 def test_copy_expected_snapshot_excludes_selected_archived_v5_campaigns():
