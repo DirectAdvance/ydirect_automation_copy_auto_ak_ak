@@ -14,11 +14,13 @@ from concurrent.futures import ThreadPoolExecutor
 from ..core import campaign as cmc
 
 from .copy_geo import _COPY_R_CODE_RE, _copy_apply_geo_replacements, _copy_normalize_campaign_name, _copy_target_href
+from .copy_keyword_phrase import clean_keyword_phrase
 
 # ── DI (инъектится copy_engine.configure фан-аутом; None до инъекции) ──
 _direct_tokens = _resolve_agency_hint = _token_for_login = _v501_svc = None
 _UAC_TITLE_MAX = 56
 _UAC_TEXT_MAX = 81
+_UAC_KEYWORD_MAX_POSITIVE_WORDS = 7
 
 
 def configure(deps: dict) -> None:
@@ -79,6 +81,19 @@ def _copy_uac_geo_strings(values: list[str], geo_pairs: list[tuple[str, str]] | 
     return out
 
 
+def _copy_uac_keyword_strings(values: list[str], geo_pairs: list[tuple[str, str]] | None) -> list[str]:
+    out: list[str] = []
+    for val in values or []:
+        text = clean_keyword_phrase(
+            _copy_uac_geo_text(val, geo_pairs),
+            geo_pairs,
+            max_positive_words=_UAC_KEYWORD_MAX_POSITIVE_WORDS,
+        )
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
 def _copy_uac_limit_strings(values: list[str], max_len: int) -> list[str]:
     out: list[str] = []
     for val in values or []:
@@ -101,6 +116,69 @@ def _copy_uac_limit_strings(values: list[str], max_len: int) -> list[str]:
         if text and text not in out:
             out.append(text)
     return out
+
+
+def _copy_uac_keyword_tokens(phrase: str) -> tuple[str, list[str]]:
+    """Split inline minus-words out of a UAC keyword phrase."""
+    keep: list[str] = []
+    minus: list[str] = []
+    for raw in str(phrase or "").split():
+        token = raw.strip()
+        if not token:
+            continue
+        if token.startswith("-"):
+            word = token.lstrip("-").strip(".,;:!?()[]{}\"'«»")
+            if word:
+                minus.append(word)
+            continue
+        keep.append(token)
+    return " ".join(keep).strip(), minus
+
+
+def _copy_uac_sanitize_keywords(
+    keywords: list[str],
+    minus_keywords: list[str],
+) -> tuple[list[str], list[str]]:
+    clean_keywords: list[str] = []
+    clean_minus: list[str] = []
+    seen_keywords: set[str] = set()
+    seen_minus: set[str] = set()
+
+    def add_keyword(value: str) -> None:
+        text = clean_keyword_phrase(
+            str(value or "").strip(),
+            [],
+            max_positive_words=_UAC_KEYWORD_MAX_POSITIVE_WORDS,
+        )
+        key = text.lower()
+        if text and key not in seen_keywords:
+            seen_keywords.add(key)
+            clean_keywords.append(text)
+
+    def add_minus(value: str) -> None:
+        text = str(value or "").lstrip("-").strip(".,;:!?()[]{}\"'«»")
+        key = text.lower()
+        if text and " " not in text and key not in seen_minus:
+            seen_minus.add(key)
+            clean_minus.append(text)
+
+    for phrase in keywords or []:
+        cleaned, inline_minus = _copy_uac_keyword_tokens(str(phrase or ""))
+        add_keyword(cleaned)
+        for word in inline_minus:
+            add_minus(word)
+
+    for phrase in minus_keywords or []:
+        cleaned, inline_minus = _copy_uac_keyword_tokens(str(phrase or ""))
+        if inline_minus:
+            for word in inline_minus:
+                add_minus(word)
+            continue
+        if cleaned and cleaned == str(phrase or "").strip():
+            for token in cleaned.split():
+                add_minus(token)
+
+    return clean_keywords, clean_minus
 
 
 def _copy_uac_sitelinks(value, *, source_domain: str, target_domain: str,
@@ -514,8 +592,9 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
             sitelinks = _copy_uac_sitelinks(_copy_uac_value(d, "sitelinks", default=[]) or [],
                                             source_domain=source_domain, target_domain=target_domain,
                                             geo_pairs=geo_pairs)
-            keywords = _copy_uac_geo_strings(_copy_uac_strings(d, "keywords", limit=200), geo_pairs)
+            keywords = _copy_uac_keyword_strings(_copy_uac_strings(d, "keywords", limit=200), geo_pairs)
             minus_keywords = _copy_uac_geo_strings(_copy_uac_strings(d, "minus_keywords", limit=200), geo_pairs)
+            keywords, minus_keywords = _copy_uac_sanitize_keywords(keywords, minus_keywords)
             audiences = _copy_uac_value(d, "audiences", "interest_ids", default=[]) or []
             pricing = str(_copy_uac_value(d, "pricing", "payment_type", "paymentType", default="PER_CLICK") or "PER_CLICK")
             week_limit = _copy_uac_value(d, "week_limit", "weekly_budget", "weekBudget", default=default_budget)

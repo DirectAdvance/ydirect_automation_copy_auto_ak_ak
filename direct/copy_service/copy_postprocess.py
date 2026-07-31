@@ -75,6 +75,167 @@ def _copy_execute_image_repairs(login: str, ctx: dict, plan: dict, deps,
     return out
 
 
+def _copy_execute_adprice_repairs(cstep_ctx, plan: dict, repair_ctx: dict,
+                                  post_verify=None) -> dict:
+    """Run copy-local adPrice repair for campaigns flagged by live verification."""
+    actions = [
+        a for a in ((plan or {}).get("actions") or [])
+        if isinstance(a, dict) and a.get("action") == "adprice_repair"
+    ]
+    ids: list[int] = []
+    for action in actions:
+        try:
+            cid = int(action.get("campaign_id") or 0)
+        except (TypeError, ValueError):
+            cid = 0
+        if cid > 0 and cid not in ids:
+            ids.append(cid)
+    out = {
+        "action": "adprice_repair",
+        "ok": True,
+        "executed": 0,
+        "failed": 0,
+        "campaign_ids": ids,
+        "executed_actions": [],
+    }
+    if not ids or not actions:
+        out["note"] = "нет adprice_repair в copy repair_plan"
+        return out
+    from . import copy_steps as csteps
+    repair_out = csteps.step_prices(cstep_ctx, campaign_ids=ids)
+    out["result"] = repair_out
+    if int(repair_out.get("priced") or 0) > 0 and not repair_out.get("errors"):
+        out["executed"] = len(ids)
+        out["executed_actions"] = [{k: v for k, v in a.items()} for a in actions]
+    else:
+        out["ok"] = False
+        out["failed"] = len(ids)
+    if post_verify:
+        post_verify(out, cstep_ctx.target_login, repair_ctx)
+    return out
+
+
+_COPY_HARD_LIVE_ISSUE_CODES = {
+    "NO_IMAGES_LIVE",
+    "IMAGE_MISSING",
+    "NO_ADPRICE_LIVE",
+    "UAC_IMAGES_LOW",
+    "UAC_MEDIA_MISSING",
+    "UAC_TITLES_MISSING",
+    "UAC_TEXTS_MISSING",
+    "UAC_VIDEO_MISSING",
+    "UAC_FEED_MISSING",
+    "UAC_PRODUCT_MODEL_FILTER_MISSING",
+    "EMPTY_DEFAULT_TEXT_LIVE",
+}
+
+_COPY_VERIFY_REPORT_ONLY_DIMENSIONS = {
+    "ad_price",          # цены в copy сверяются через live NO_ADPRICE_LIVE, не source=target
+    "bid_modifiers",     # copy намеренно ставит стандарт
+    "campaign_neg_count",  # отдельного безопасного repair-шага сейчас нет
+}
+
+
+def _copy_live_blockers(live: dict | None) -> list[dict]:
+    """Return live-verification findings that must prevent a clean copy ``done``."""
+    if not isinstance(live, dict):
+        return [{"kind": "live_verification", "code": "MISSING", "message": "live_verification не выполнена"}]
+    summary = live.get("summary") if isinstance(live.get("summary"), dict) else {}
+    plan = live.get("repair_plan") if isinstance(live.get("repair_plan"), dict) else {}
+    issues = [i for i in (live.get("issues") or []) if isinstance(i, dict)]
+    actions = [a for a in (plan.get("actions") or []) if isinstance(a, dict)]
+    blockers: list[dict] = []
+    try:
+        live_errors = int((summary or {}).get("errors") or 0)
+    except (TypeError, ValueError):
+        live_errors = 0
+    if live_errors > 0:
+        error_codes = [
+            str(i.get("code") or "").strip()
+            for i in issues
+            if str(i.get("severity") or "").lower() == "error" and str(i.get("code") or "").strip()
+        ]
+        blockers.append({
+            "kind": "live_verification",
+            "code": "LIVE_ERRORS",
+            "count": live_errors,
+            "codes": sorted(set(error_codes))[:12],
+        })
+    for action in actions:
+        code = str(action.get("issue_code") or "").strip()
+        if code in _COPY_HARD_LIVE_ISSUE_CODES:
+            blockers.append({
+                "kind": "repair_plan",
+                "code": code,
+                "action": action.get("action"),
+                "campaign_id": action.get("campaign_id"),
+                "name": action.get("name"),
+            })
+    return blockers
+
+
+def _copy_verify_blockers(verify_result: dict | None) -> list[dict]:
+    """Return source→target copy_verify rows that must prevent a clean copy ``done``."""
+    if not isinstance(verify_result, dict):
+        return [{"kind": "copy_verify", "dimension": "MISSING", "status": "missing"}]
+    if verify_result.get("error"):
+        return [{
+            "kind": "copy_verify",
+            "dimension": "VERIFY_ERROR",
+            "status": "error",
+            "error": str(verify_result.get("error"))[:220],
+        }]
+    rows = verify_result.get("results") or []
+    blockers: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "")
+        if status in ("ok", "excluded_intentional"):
+            continue
+        dim = str(row.get("dimension") or "")
+        if dim in _COPY_VERIFY_REPORT_ONLY_DIMENSIONS:
+            continue
+        hint = str(row.get("repair_hint") or "")
+        if dim == "campaign_exists" and "UAC tp6/tp7" in hint:
+            continue
+        blockers.append({
+            "kind": "copy_verify",
+            "scope": row.get("scope"),
+            "dimension": dim,
+            "status": status,
+            "source": row.get("source"),
+            "target": row.get("target"),
+            "repairable": bool(row.get("repairable")),
+        })
+    return blockers
+
+
+def _copy_apply_verification_gate(rep: dict) -> None:
+    """Promote unresolved verification findings into hard postprocess errors."""
+    blockers: list[dict] = []
+    live_blockers = _copy_live_blockers(rep.get("live_verification"))
+    if live_blockers:
+        blockers.extend(live_blockers)
+    verify_blockers = _copy_verify_blockers(rep.get("copy_verify"))
+    if verify_blockers:
+        blockers.extend(verify_blockers)
+    if not blockers:
+        rep["verification_gate"] = {"ok": True, "blockers": []}
+        return
+
+    rep["verification_gate"] = {"ok": False, "blockers": blockers[:80]}
+    sample = []
+    for b in blockers[:6]:
+        if b.get("kind") == "copy_verify":
+            sample.append(f"{b.get('dimension')}={b.get('status')} {b.get('scope')}")
+        else:
+            sample.append(f"{b.get('kind')}:{b.get('code')}")
+    msg = f"verification gate: {len(blockers)} незакрытых дефектов ({'; '.join(sample)})"
+    if msg not in rep.get("errors", []):
+        rep.setdefault("errors", []).append(msg)
+
+
 def _copy_demote_optional_source_grid_errors(rep: dict, source_login: str) -> None:
     """Move source Grid read failures from hard errors to report-only warnings.
 
@@ -495,8 +656,17 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
     # 2) ShoppingAd fallback по куки. direct_copy пытается v501 ads.add; если баллов не хватило
     # или v501 отклонил, source ShoppingAd останется без maps['ads'][src_id].
     shopping_ads = ce._copy_read_json(src_dir / "shopping_ads.json")
+    listing_src_by_group: dict[str, str] = {}
+    for ad in (ce._copy_read_json(src_dir / "ads.json") or []):
+        if str(ad.get("Type") or "") != "LISTING_AD":
+            continue
+        gid = str(ad.get("AdGroupId") or "")
+        aid = str(ad.get("Id") or "")
+        if gid and aid:
+            listing_src_by_group.setdefault(gid, aid)
     shop_items = []
     shop_sources = []
+    shop_source_groups = []
     for sa in shopping_ads:
         src_ad_id = str(sa.get("Id") or "")
         if src_ad_id and src_ad_id in maps["ads"]:
@@ -532,18 +702,34 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
             item["model_field"] = "model"
         shop_items.append(item)
         shop_sources.append(src_ad_id)
+        shop_source_groups.append(str(sa.get("AdGroupId") or ""))
     if shop_items:
         try:
             new_ids = grid.add_shopping_ads(shop_items)
             mapped_new_ids = []
+            target_shop_to_source_group: dict[str, str] = {}
             for src_id, new_id in zip(shop_sources, new_ids):
                 if new_id:
                     maps["ads"][str(src_id)] = int(new_id)
                     mapped_new_ids.append(new_id)
+            for src_group, new_id in zip(shop_source_groups, new_ids):
+                if new_id and src_group:
+                    target_shop_to_source_group[str(new_id)] = src_group
             rep["shopping_added"] = len(mapped_new_ids)
             if mapped_new_ids:
                 listing = grid.add_listing_ads_by_shopping_ads(mapped_new_ids)
                 rep["listing_added"] = len(listing or [])
+                for idx, row in enumerate(listing or []):
+                    if isinstance(row, dict):
+                        new_listing_id = row.get("id")
+                        new_shop_id = row.get("shoppingAdId")
+                    else:
+                        new_listing_id = row
+                        new_shop_id = mapped_new_ids[idx] if idx < len(mapped_new_ids) else None
+                    src_group = target_shop_to_source_group.get(str(new_shop_id or ""))
+                    src_listing_id = listing_src_by_group.get(str(src_group or ""))
+                    if src_listing_id and new_listing_id:
+                        maps["ads"][str(src_listing_id)] = int(new_listing_id)
         except Exception as e:  # noqa: BLE001
             rep["errors"].append(f"shopping/listing grid: {str(e)[:220]}")
 
@@ -704,8 +890,8 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
         except Exception as e:  # noqa: BLE001
             gate = {"status": "error", "error": str(e)[:180]}
         rep["repair_gate"] = gate
+        ctx = {"login": target_login, "agency": target_agency, "body": copy_body, "results": results}
         if int((gate or {}).get("executable_now") or 0) > 0:
-            ctx = {"login": target_login, "agency": target_agency, "body": copy_body, "results": results}
             auto = rauto.execute_safe_post_create(
                 target_login,
                 ctx,
@@ -718,6 +904,24 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                 rep["live_verification"] = auto["post_repair_live_verification"]
             current_live = rep.get("live_verification") if isinstance(rep.get("live_verification"), dict) else live
             current_plan = (current_live or {}).get("repair_plan") or {}
+            adprice_actions = [
+                a for a in ((current_plan or {}).get("actions") or [])
+                if isinstance(a, dict) and a.get("action") == "adprice_repair"
+            ]
+            if adprice_actions:
+                adprice_auto = _copy_execute_adprice_repairs(
+                    cstep_ctx,
+                    current_plan,
+                    ctx,
+                    post_verify=ce._attach_post_repair_verification,
+                )
+                rep["copy_adprice_repair"] = adprice_auto
+                if adprice_auto.get("post_repair_live_verification"):
+                    rep["live_verification"] = adprice_auto["post_repair_live_verification"]
+                    current_live = rep["live_verification"]
+                    current_plan = (current_live or {}).get("repair_plan") or {}
+                if not adprice_auto.get("ok"):
+                    rep["errors"].append(f"adPrice repair: {str(adprice_auto.get('result') or adprice_auto)[:220]}")
             image_ids, _image_actions, _ = rgate.executable_images_repairs(current_plan)
             live_errors = int(((current_live or {}).get("summary") or {}).get("errors") or 0)
             if live_errors > 0 and image_ids:
@@ -741,6 +945,33 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                         rep["repair_gate"] = {"status": "error", "error": str(e)[:180]}
                 if not image_auto.get("ok"):
                     rep["errors"].append(f"images repair: {str(image_auto.get('result') or image_auto)[:220]}")
+        else:
+            current_live = rep.get("live_verification") if isinstance(rep.get("live_verification"), dict) else live
+            current_plan = (current_live or {}).get("repair_plan") or {}
+            adprice_actions = [
+                a for a in ((current_plan or {}).get("actions") or [])
+                if isinstance(a, dict) and a.get("action") == "adprice_repair"
+            ]
+            if adprice_actions:
+                adprice_auto = _copy_execute_adprice_repairs(
+                    cstep_ctx,
+                    current_plan,
+                    ctx,
+                    post_verify=ce._attach_post_repair_verification,
+                )
+                rep["copy_adprice_repair"] = adprice_auto
+                if adprice_auto.get("post_repair_live_verification"):
+                    rep["live_verification"] = adprice_auto["post_repair_live_verification"]
+                    try:
+                        rep["repair_gate"] = rgate.summarize_repair_gate(
+                            copy_body,
+                            results,
+                            (rep["live_verification"] or {}).get("repair_plan") or {},
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        rep["repair_gate"] = {"status": "error", "error": str(e)[:180]}
+                if not adprice_auto.get("ok"):
+                    rep["errors"].append(f"adPrice repair: {str(adprice_auto.get('result') or adprice_auto)[:220]}")
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"verification/repair: {str(e)[:220]}")
 
@@ -835,5 +1066,6 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
         rep["errors"].append(f"copy_repair: {str(_re)[:200]}")
 
     _copy_demote_optional_source_grid_errors(rep, body.get("source_login") or "")
+    _copy_apply_verification_gate(rep)
     rep["results"] = results
     return rep

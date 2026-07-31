@@ -14,6 +14,7 @@ from .copy_verify_utils import (
     _nolog, _rj, _rj_dict, _strip_domain,
 )
 from . import copy_verify_state as _state
+from .copy_keyword_phrase import clean_keyword_phrase
 
 
 def _repair_shared_sets(
@@ -510,6 +511,9 @@ def _repair_keywords(
             if cgm and geo_pairs:
                 p2, _n = cgm.apply_replacements(phrase, geo_pairs)
                 phrase = (p2 or "").strip() or phrase
+            phrase = clean_keyword_phrase(phrase, geo_pairs)
+            if not phrase:
+                continue
             desired.setdefault(int(tgt_g), set()).add(phrase)
         if not desired:
             continue

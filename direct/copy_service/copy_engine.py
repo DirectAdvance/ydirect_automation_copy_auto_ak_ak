@@ -230,6 +230,17 @@ def _copy_terminal_status_from_results(rows: list[dict]) -> tuple[str, str | Non
     return "error", ("; ".join(samples) + tail)[:500]
 
 
+def _copy_terminal_status_from_postprocess(rows: list[dict], cookie_post: dict | None) -> tuple[str, str | None]:
+    """Return terminal status including postprocess verification gates."""
+    status, error = _copy_terminal_status_from_results(rows)
+    post_errors = []
+    if isinstance(cookie_post, dict):
+        post_errors = [str(e).strip() for e in (cookie_post.get("errors") or []) if str(e).strip()]
+    if status == "done" and post_errors:
+        return "error", "; ".join(post_errors[:3])[:500]
+    return status, error
+
+
 def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                              src_dir: Path, workdir: Path, body: dict) -> dict:
     from .copy_postprocess import _copy_cookie_postprocess as _impl
@@ -299,6 +310,31 @@ def _copy_target_sitelinks_ready(target_login: str, target_agency: str,
         return False
     except Exception:  # noqa: BLE001
         return False
+
+
+def _copy_mark_reverify_blockers(job_id: str, verify_result: dict) -> None:
+    """Turn delayed copy_verify blockers into a terminal job error."""
+    try:
+        from .copy_postprocess import _copy_verify_blockers
+        blockers = _copy_verify_blockers(verify_result)
+    except Exception as exc:  # noqa: BLE001
+        blockers = [{"kind": "copy_verify", "dimension": "BLOCKER_CHECK_ERROR",
+                     "status": "error", "error": str(exc)[:180]}]
+    if not blockers:
+        return
+    sample = []
+    for b in blockers[:6]:
+        sample.append(f"{b.get('dimension')}={b.get('status')} {b.get('scope')}")
+    msg = f"copy_verify settled gate: {len(blockers)} незакрытых дефектов ({'; '.join(sample)})"
+    with _COPY_JOBS_LOCK:
+        j = _COPY_JOBS.get(job_id)
+        current_status = str((j or {}).get("status") or "")
+        res = dict(j["result"]) if (j and isinstance(j.get("result"), dict)) else {}
+    if current_status and current_status not in ("done", "settling"):
+        return
+    res["copy_verify_blockers"] = blockers[:80]
+    _copy_job_upsert(job_id, status="error", error=msg[:500], result=res)
+    _copy_job_log(job_id, f"⚠️ {msg}")
 
 
 def _copy_delayed_reverify(job_id: str, src_dir: Path, workdir: Path,
@@ -401,6 +437,7 @@ def _copy_delayed_reverify(job_id: str, src_dir: Path, workdir: Path,
                     _cp2["copy_verify"] = vr
                     _res2["cookie_postprocess"] = _cp2
                 _copy_job_upsert(job_id, result=_res2)
+        _copy_mark_reverify_blockers(job_id, vr)
     except Exception as e:  # noqa: BLE001
         _copy_job_log(job_id, f"copy_verify (осевший) error: {str(e)[:200]}")
     finally:
@@ -911,7 +948,7 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         if skipped_v5_snapshot:
             skipped_camps = list(skipped_camps or []) + skipped_v5_snapshot
         final_results = cookie_post.get("results") or _copy_build_results(src_dir, workdir)
-        final_status, final_error = _copy_terminal_status_from_results(final_results)
+        final_status, final_error = _copy_terminal_status_from_postprocess(final_results, cookie_post)
         _copy_job_upsert(
             job_id, status=final_status, progress=100, error=final_error,
             result={

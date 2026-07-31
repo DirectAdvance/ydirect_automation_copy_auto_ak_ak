@@ -15,7 +15,9 @@ from direct.copy_service import (
     copy_engine,
     copy_feeds,
     copy_postprocess,
+    copy_price_steps,
     copy_settings_steps,
+    copy_steps,
     copy_grid_read,
     copy_uac,
 )
@@ -41,6 +43,81 @@ def test_copy_terminal_status_is_error_when_campaign_failed():
 
     assert status == "error"
     assert "tp7 product: нет feed_id" in error
+
+
+def test_copy_terminal_status_includes_postprocess_errors():
+    status, error = copy_engine._copy_terminal_status_from_postprocess(
+        [{"ok": True, "name": "campaign"}],
+        {"errors": ["verification gate: 1 незакрытых дефектов"]},
+    )
+
+    assert status == "error"
+    assert "verification gate" in error
+
+
+def test_copy_live_gate_blocks_adprice_warning():
+    rep = {
+        "errors": [],
+        "live_verification": {
+            "summary": {"errors": 0, "warnings": 1},
+            "repair_plan": {
+                "actions": [{
+                    "action": "adprice_repair",
+                    "issue_code": "NO_ADPRICE_LIVE",
+                    "campaign_id": 101,
+                }]
+            },
+        },
+        "copy_verify": {"results": [], "summary": {"ok": 1}},
+    }
+
+    copy_postprocess._copy_apply_verification_gate(rep)
+
+    assert rep["verification_gate"]["ok"] is False
+    assert "NO_ADPRICE_LIVE" in str(rep["verification_gate"]["blockers"])
+    assert rep["errors"]
+
+
+def test_copy_verify_gate_blocks_media_and_listing_mismatches():
+    verify_result = {
+        "results": [
+            {"scope": "campaign:1→2", "dimension": "ads_with_images",
+             "status": "mismatch", "source": 5, "target": 4, "repairable": True},
+            {"scope": "campaign:1→2", "dimension": "listing_filter_signature",
+             "status": "mismatch", "source": {"g1": ["a"]}, "target": {"g2": ["b"]},
+             "repairable": False},
+            {"scope": "campaign:1→2", "dimension": "ad_price",
+             "status": "excluded_intentional", "source": None, "target": None},
+        ],
+        "summary": {"ok": 0, "mismatch": 2},
+    }
+
+    blockers = copy_postprocess._copy_verify_blockers(verify_result)
+
+    assert [b["dimension"] for b in blockers] == ["ads_with_images", "listing_filter_signature"]
+
+
+def test_copy_verify_gate_keeps_known_uac_id_map_gap_report_only():
+    verify_result = {
+        "results": [{
+            "scope": "campaign:11→MISSING",
+            "dimension": "campaign_exists",
+            "status": "missing",
+            "source": 11,
+            "target": None,
+            "repairable": False,
+            "repair_hint": "UAC tp6/tp7 не пишутся в id_maps['campaigns']",
+        }],
+        "summary": {"missing": 1},
+    }
+
+    assert copy_postprocess._copy_verify_blockers(verify_result) == []
+
+
+def test_copy_verify_gate_blocks_top_level_verify_error():
+    blockers = copy_postprocess._copy_verify_blockers({"error": "build_target_profile: boom"})
+
+    assert blockers[0]["dimension"] == "VERIFY_ERROR"
 
 
 def test_copy_expected_snapshot_excludes_selected_archived_v5_campaigns():
@@ -147,6 +224,192 @@ def test_copy_postprocess_executes_image_repair_for_live_fail(monkeypatch):
     assert calls[0][0] == "target-login"
     assert calls[0][2] == [101]
     assert out["post_repair_live_verification"]["summary"]["errors"] == 0
+
+
+def test_copy_postprocess_executes_adprice_repair_for_live_warning(monkeypatch):
+    calls = []
+
+    def fake_step_prices(ctx, campaign_ids=None):
+        calls.append((ctx, campaign_ids))
+        return {"priced": 3, "errors": []}
+
+    monkeypatch.setattr(copy_steps, "step_prices", fake_step_prices)
+    cstep_ctx = SimpleNamespace(target_login="target-login")
+    plan = {"actions": [{"action": "adprice_repair", "campaign_id": 101}]}
+
+    out = copy_postprocess._copy_execute_adprice_repairs(
+        cstep_ctx,
+        plan,
+        {"body": {}, "results": []},
+    )
+
+    assert out["ok"] is True
+    assert out["executed"] == 1
+    assert calls[0][1] == [101]
+
+
+def test_copy_price_segment_detects_common_from_campaign_name():
+    assert copy_price_steps._price_segment_from_names("Автокредит", "РСЯ - Общее - КС") == "Общее"
+    assert copy_price_steps._price_segment_from_names("01 | Changan", "РСЯ - Марки - КС") == "Марки"
+    assert copy_price_steps._price_segment_from_names("01 | Changan Uni-K", "РСЯ - Модели - КС") == "Модели"
+    assert copy_price_steps._price_segment_from_names("01 | Changan Uni-K", "legacy name") == "Модели"
+
+
+def test_copy_prices_use_feed_minimum_for_non_mark_model_segment(tmp_path):
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "ads.json").write_text(
+        '[{"Id": "1", "AdGroupId": "10"}]',
+        encoding="utf-8",
+    )
+    (src_dir / "adgroups.json").write_text(
+        '[{"Id": "10", "CampaignId": "20", "Name": "Автокредит"}]',
+        encoding="utf-8",
+    )
+    (src_dir / "campaigns.json").write_text(
+        '[{"Id": "20", "Name": "РСЯ - Общее - КС"}]',
+        encoding="utf-8",
+    )
+
+    class FakeGrid:
+        def adaptive_ads_for_update(self, campaign_ids, ad_ids):
+            assert campaign_ids == [200]
+            assert ad_ids == [100]
+            return {100: {"titles": ["t"], "bodies": ["b"], "href": "https://target.test"}}
+
+    calls = []
+    written = []
+
+    def fake_group_ad_price(prices, brand, segment):
+        calls.append((prices, brand, segment))
+        return (777000, 0) if segment == "Общее" else (0, 0)
+
+    ctx = SimpleNamespace(
+        target_login="target-login",
+        src_dir=src_dir,
+        workdir=tmp_path,
+        body={},
+        maps={"feeds": {"11": 123}, "campaigns": {"20": 200}, "ads": {"1": 100}},
+        grid=FakeGrid(),
+        feed_offer_prices=lambda login, feed_id: {"lada": (777000, 0), "haval": (990000, 0)},
+        account_offer_prices=None,
+        group_ad_price=fake_group_ad_price,
+        set_ad_prices=lambda login, items, apply_combo_button=False: written.extend(items) or len(items),
+        log=lambda _m: None,
+    )
+
+    out = copy_price_steps.step_prices(ctx)
+
+    assert calls == [({"lada": (777000, 0), "haval": (990000, 0)}, "Автокредит", "Общее")]
+    assert out["priced"] == 1
+    assert out["by_min_fallback"] == 1
+    assert out["no_price"] == 0
+    assert written[0]["current"] == 777000
+
+
+def test_copy_adaptive_creatives_remaps_multicards(monkeypatch, tmp_path):
+    class FakeSourceGrid:
+        def adaptive_ads_for_update(self, _campaign_ids, _ad_ids):
+            return {
+                11: {
+                    "titles": ["Заголовок"],
+                    "bodies": ["Текст"],
+                    "imageHashes": ["src-main"],
+                    "multicards": [
+                        {"imageHash": "src-card", "currency": None, "href": None,
+                         "price": None, "priceOld": None, "text": None}
+                    ],
+                }
+            }
+
+    calls = []
+
+    def fake_update(_login, items, campaign_ids):
+        calls.append((items, campaign_ids))
+        return len(items)
+
+    ctx = copy_steps.CopyCtx(
+        target_login="target-login",
+        target_agency="",
+        src_dir=Path(tmp_path),
+        workdir=Path(tmp_path),
+        body={},
+        maps={
+            "ads": {"11": 22},
+            "campaigns": {"101": 202},
+            "images": {"src-main": "tgt-main", "src-card": "tgt-card"},
+        },
+        grid=object(),
+        source_grid=FakeSourceGrid(),
+        update_adaptive_ads=fake_update,
+    )
+
+    out = copy_steps.step_adaptive_creatives(ctx)
+
+    assert out["updated"] == 1
+    assert out["multicards_remapped"] == 1
+    assert calls[0][0][0]["multicards"] == [
+        {"imageHash": "tgt-card", "currency": None, "href": None,
+         "price": None, "priceOld": None, "text": None}
+    ]
+
+
+def test_grid_update_adaptive_ads_preserves_multicards(monkeypatch):
+    payloads = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "data": {
+                    "updateAdaptiveTextAds": {
+                        "updatedAds": [{"id": "22"}],
+                        "validationResult": {"errors": []},
+                    }
+                }
+            }
+
+    class FakeGrid:
+        def adaptive_ads_for_update(self, _campaign_ids, _ad_ids):
+            return {
+                22: {
+                    "href": "https://example.test",
+                    "titles": ["Old title"],
+                    "bodies": ["Old body"],
+                    "imageHashes": ["tgt-main"],
+                    "creativeIds": [],
+                    "multicards": [
+                        {"imageHash": "tgt-card", "currency": None, "href": None,
+                         "price": None, "priceOld": None, "text": None}
+                    ],
+                }
+            }
+
+        def _bootstrap_csrf(self):
+            return None
+
+        def _post(self, _op, _query, variables):
+            payloads.append(variables)
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        create_set_feeds,
+        "gf",
+        SimpleNamespace(get_grid_client=lambda _login: FakeGrid()),
+        raising=False,
+    )
+
+    updated = create_set_feeds._grid_update_adaptive_ads(
+        "target-login",
+        [{"id": 22, "titles": ["New title"], "bodies": ["New body"]}],
+        campaign_ids=[202],
+        apply_combo_button=False,
+    )
+
+    assert updated == 1
+    item = payloads[0]["updateInput"]["adUpdateItems"][0]
+    assert item["multicards"][0]["imageHash"] == "tgt-card"
 
 
 def test_copy_timed_raises_on_step_timeout(monkeypatch):
@@ -867,6 +1130,27 @@ def test_copy_uac_limits_titles_after_geo_replacement():
     assert len(limited[0]) <= 56
 
 
+def test_copy_uac_sanitizes_inline_minus_keywords():
+    keywords, minus_keywords = copy_uac._copy_uac_sanitize_keywords(
+        ["купить baic -авто -машина -новый -автомобиль", "-отзывы"],
+        ["-бу", "кредит отзывы"],
+    )
+
+    assert keywords == ["купить baic"]
+    assert minus_keywords == ["авто", "машина", "новый", "автомобиль", "отзывы", "бу", "кредит"]
+
+
+def test_copy_uac_limits_keyword_words_after_geo_replacement():
+    keywords, minus_keywords = copy_uac._copy_uac_sanitize_keywords(
+        ["авито нижний новгород нижегородская область авто +с пробегом купить"],
+        [],
+    )
+
+    assert keywords == ["авито нижний новгород нижегородская область +с пробегом"]
+    assert len(keywords[0].split()) == 7
+    assert minus_keywords == []
+
+
 def test_copy_uac_geo_guard_does_not_match_city_form_inside_region_adjective():
     pairs = [("Новосибирска", "Саратова"), ("Новосибирск", "Саратов")]
 
@@ -1006,9 +1290,17 @@ def test_copy_api_result_summary_counts_current_verify_results():
             "summary": {"total": 1},
             "results": [{"dimension": "ads", "ok": False}],
         },
+        "cookie_postprocess": {
+            "verification_gate": {
+                "ok": False,
+                "blockers": [{"dimension": "ads_with_images", "status": "mismatch"}],
+            }
+        },
     })
 
     assert summary["verification"]["diff_count"] == 1
+    assert summary["verification_gate"]["ok"] is False
+    assert summary["verification_gate"]["blockers_count"] == 1
 
 
 def test_copy_verify_source_accepts_direct_items_dict_for_minus_places(tmp_path):

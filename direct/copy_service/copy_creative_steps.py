@@ -30,7 +30,8 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
     source-домен; RMW сохраняет target-кнопку). Идемпотентно, фолбэк-безопасно: нет source/target
     grid, апдейтера или маппинга — пропуск с отчётом, job не падает."""
     rep = {"src_ads_read": 0, "candidates": 0, "updated": 0, "geo_applied": 0,
-           "images_remapped": 0, "images_filled": 0, "no_target": 0, "no_content": 0, "errors": []}
+           "images_remapped": 0, "images_filled": 0, "multicards_remapped": 0,
+           "no_target": 0, "no_content": 0, "errors": []}
     if ctx.grid is None:
         rep["errors"].append("нет target grid — адаптивы пропущены")
         return rep
@@ -118,6 +119,25 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
         item = {"id": int(tgt_ad_id), "titles": new_titles, "bodies": new_bodies}
         if new_imgs:
             item["image_hashes"] = new_imgs            # RMW: пустой → сохранит target-картинки
+        new_multicards = []
+        for card in (comp.get("multicards") or []):
+            if not isinstance(card, dict):
+                continue
+            src_hash = str(card.get("imageHash") or "").strip()
+            tgt_hash = img_map.get(src_hash)
+            if not tgt_hash:
+                continue
+            new_multicards.append({
+                "imageHash": tgt_hash,
+                "currency": card.get("currency") or None,
+                "href": card.get("href") or None,
+                "price": card.get("price") or None,
+                "priceOld": card.get("priceOld") or None,
+                "text": card.get("text") or None,
+            })
+        if new_multicards:
+            item["multicards"] = new_multicards
+            rep["multicards_remapped"] += len(new_multicards)
         # отображаемая ссылка источника (linkTail) — часть контента 1:1; иначе на target останется
         # то, что переживёт full-replace (у копий это null)
         if comp.get("displayHref"):
@@ -134,7 +154,7 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
         rep["errors"].append(f"grid update adaptive: {str(e)[:200]}")
     ctx.log(f"адаптивы 1:1 (Grid, 0 баллов): контент обновлён у {rep['updated']}/{len(items)} "
             f"объявлений (гео у {rep['geo_applied']}, картинок ремаплено {rep['images_remapped']}, "
-            f"долито {rep['images_filled']}, "
+            f"долито {rep['images_filled']}, каруселей-карточек {rep['multicards_remapped']}, "
             f"без target {rep['no_target']}, без контента {rep['no_content']})")
     return rep
 
