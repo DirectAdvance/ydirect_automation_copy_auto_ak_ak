@@ -1406,9 +1406,10 @@ class GridClient:
                 f"Grid restore-strategy: кампания {campaign_id} не найдена в edit-view")
         # Убираем internal _-маркеры (в т.ч. _unsupported_strategy) — мы намеренно меняем стратегию
         base = {k: v for k, v in base.items() if not k.startswith("_")}
-        # Патчим стратегию: MULTIPLE_CPA — Grid-имя для PAY_FOR_CONVERSION_MULTIPLE_GOALS.
-        # Важно: для MULTIPLE_CPA payForConversion=false (оплата за конверсию — свойство
-        # самой стратегии MULTIPLE_CPA, не флаг внутри strategyData).
+        # Патчим стратегию: Grid read отдаёт MULTIPLE_CPA, но UpdateCampaigns принимает
+        # write-enum AUTOBUDGET_MULTIPLE_CPA (HAR direct.yandex.ru.75har.har, #79).
+        # Важно: для AUTOBUDGET_MULTIPLE_CPA payForConversion=false (оплата за конверсию —
+        # свойство самой стратегии, не флаг внутри strategyData).
         # goalId="0" — цели задаются через meaningfulGoals, не через goalId.
         # avgCpa для MULTIPLE_CPA не нужен (AUTOBUDGET_AVG_CPA-специфичное поле).
         bs = base.get("biddingStategyWithPlatforms") or {}
@@ -1424,7 +1425,7 @@ class GridClient:
         sd.setdefault("autoApplyRecommendationOptions", {"budgetIncreasePercent": None})
         sd.setdefault("isExplorationBudgetValueCustom", None)
         bs["strategyData"] = sd
-        bs["strategyName"] = "MULTIPLE_CPA"
+        bs["strategyName"] = "AUTOBUDGET_MULTIPLE_CPA"
         base["biddingStategyWithPlatforms"] = bs
         # Задаём цели: цель goal_id с CPA = avg_cpa_rub; вторую цель (прочие,
         # если avg_cpa_rub > 0) добавляем тоже чтобы дать MULTIPLE_CPA > 1 цели.
