@@ -438,6 +438,25 @@ def test_copy_image_repair_without_agent_uses_source_copy_images(monkeypatch, tm
     assert updates[0][2] == [202]
 
 
+def test_copy_general_repair_plan_excludes_copy_local_actions():
+    plan = {
+        "status": "actionable",
+        "summary": {"actions": 3},
+        "actions": [
+            {"action": "images_repair", "campaign_id": 1},
+            {"action": "adprice_repair", "campaign_id": 2},
+            {"action": "rename_campaign", "campaign_id": 3},
+        ],
+    }
+
+    general, local = copy_postprocess._copy_split_general_repair_plan(plan)
+
+    assert [a["action"] for a in general["actions"]] == ["rename_campaign"]
+    assert [a["action"] for a in local] == ["images_repair", "adprice_repair"]
+    assert general["summary"]["actions"] == 1
+    assert general["copy_local_skipped_actions"] == 2
+
+
 def test_copy_postprocess_executes_adprice_repair_for_live_warning(monkeypatch):
     calls = []
 

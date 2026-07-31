@@ -177,6 +177,31 @@ def _copy_execute_image_repairs(login: str, ctx: dict, plan: dict, deps,
     return out
 
 
+_COPY_LOCAL_REPAIR_ACTIONS = {"images_repair", "adprice_repair"}
+
+
+def _copy_split_general_repair_plan(plan: dict) -> tuple[dict, list[dict]]:
+    """Keep create-flow repair executor away from copy-local repair actions."""
+    if not isinstance(plan, dict):
+        return {}, []
+    actions = [a for a in (plan.get("actions") or []) if isinstance(a, dict)]
+    local_actions = [
+        a for a in actions
+        if str(a.get("action") or "") in _COPY_LOCAL_REPAIR_ACTIONS
+    ]
+    general_actions = [
+        a for a in actions
+        if str(a.get("action") or "") not in _COPY_LOCAL_REPAIR_ACTIONS
+    ]
+    out = dict(plan)
+    out["actions"] = general_actions
+    if "summary" in out and isinstance(out["summary"], dict):
+        out["summary"] = dict(out["summary"])
+        out["summary"]["actions"] = len(general_actions)
+    out["copy_local_skipped_actions"] = len(local_actions)
+    return out, local_actions
+
+
 def _copy_execute_adprice_repairs(cstep_ctx, plan: dict, repair_ctx: dict,
                                   post_verify=None) -> dict:
     """Run copy-local adPrice repair for campaigns flagged by live verification."""
@@ -1263,19 +1288,39 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
             gate = {"status": "error", "error": str(e)[:180]}
         rep["repair_gate"] = gate
         ctx = {"login": target_login, "agency": target_agency, "body": copy_body, "results": results}
-        if int((gate or {}).get("executable_now") or 0) > 0:
+        current_live = live if isinstance(live, dict) else {}
+        current_plan = (current_live or {}).get("repair_plan") or {}
+        general_plan, local_actions = _copy_split_general_repair_plan(current_plan)
+        if local_actions:
+            rep["copy_local_repair_actions"] = [
+                {
+                    "action": str(a.get("action") or ""),
+                    "campaign_id": a.get("campaign_id"),
+                    "issue_code": a.get("issue_code"),
+                }
+                for a in local_actions[:40]
+            ]
+        if general_plan.get("actions"):
             auto = rauto.execute_safe_post_create(
                 target_login,
                 ctx,
-                (live or {}).get("repair_plan") or {},
+                general_plan,
                 ce._repair_deps(),
                 post_verify=ce._attach_post_repair_verification,
             )
             rep["auto_repair"] = auto
             if (auto or {}).get("post_repair_live_verification"):
                 rep["live_verification"] = auto["post_repair_live_verification"]
-            current_live = rep.get("live_verification") if isinstance(rep.get("live_verification"), dict) else live
-            current_plan = (current_live or {}).get("repair_plan") or {}
+                current_live = rep["live_verification"]
+                current_plan = (current_live or {}).get("repair_plan") or {}
+        elif int((gate or {}).get("executable_now") or 0) > 0:
+            rep["auto_repair"] = {
+                "ok": True,
+                "skipped": True,
+                "reason": "copy-local repair actions are handled by copy postprocess",
+                "skipped_actions": len(local_actions),
+            }
+        if int((gate or {}).get("executable_now") or 0) > 0:
             adprice_actions = [
                 a for a in ((current_plan or {}).get("actions") or [])
                 if isinstance(a, dict) and a.get("action") == "adprice_repair"
