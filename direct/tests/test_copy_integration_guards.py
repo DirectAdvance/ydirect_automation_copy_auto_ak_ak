@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import time
@@ -436,6 +437,96 @@ def test_copy_image_repair_without_agent_uses_source_copy_images(monkeypatch, tm
     assert updates[0][0] == "target-login"
     assert updates[0][1][0]["image_hashes"] == ["tgt-img"]
     assert updates[0][2] == [202]
+
+
+def test_copy_image_repair_uploads_source_image_when_map_empty(monkeypatch, tmp_path):
+    actions = [{"action": "images_repair", "campaign_id": 202, "uses_direct_units": False}]
+    updates = []
+    uploads = []
+
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "src-img.img").write_bytes(b"fake image bytes")
+    (tmp_path / "adgroups.json").write_text(
+        '[{"Id": 1001, "CampaignId": 101}]',
+        encoding="utf-8",
+    )
+    (tmp_path / "ads.json").write_text(
+        '[{"Id": 11, "CampaignId": 101, "AdGroupId": 1001}]',
+        encoding="utf-8",
+    )
+    (tmp_path / "id_maps.json").write_text(
+        '{"campaigns":{"101":202,"303":404},"adgroups":{"1001":2002},'
+        '"ads":{"11":22},"images":{}}',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        copy_postprocess.rgate,
+        "executable_images_repairs",
+        lambda plan: ([202], actions, []),
+    )
+
+    def fail_create_pool_repair(*_args, **_kwargs):
+        raise AssertionError("copy image repair must not use create slepok pool when image map is empty")
+
+    monkeypatch.setattr(copy_postprocess.rex, "execute_images_repair", fail_create_pool_repair)
+
+    class FakeGrid:
+        def upload_image(self, path):
+            uploads.append(path)
+            return "uploaded-target-img"
+
+    class FakeSourceGrid:
+        def adaptive_ads_for_update(self, campaign_ids, ad_ids):
+            assert campaign_ids == [101]
+            assert ad_ids == [11]
+            return {
+                11: {
+                    "campaignId": 101,
+                    "titles": ["Title"],
+                    "bodies": ["Body"],
+                    "imageHashes": ["src-img"],
+                    "images": [{"imageHash": "src-img"}],
+                }
+            }
+
+    def fake_update(login, items, campaign_ids):
+        updates.append((login, items, campaign_ids))
+        return len(items)
+
+    cstep_ctx = copy_steps.CopyCtx(
+        target_login="target-login",
+        target_agency="",
+        src_dir=tmp_path,
+        workdir=tmp_path,
+        body={"_kind": "copy_campaigns"},
+        maps={
+            "campaigns": {"101": 202, "303": 404},
+            "adgroups": {"1001": 2002},
+            "ads": {"11": 22},
+            "images": {},
+        },
+        grid=FakeGrid(),
+        source_grid=FakeSourceGrid(),
+        update_adaptive_ads=fake_update,
+        log=lambda _m: None,
+    )
+
+    out = copy_postprocess._copy_execute_image_repairs(
+        "target-login",
+        {"body": {"_kind": "copy_campaigns"}, "results": []},
+        {"actions": actions},
+        object(),
+        copy_step_ctx=cstep_ctx,
+    )
+
+    saved_maps = json.loads((tmp_path / "id_maps.json").read_text(encoding="utf-8"))
+    assert out["ok"] is True
+    assert out["result"]["images_uploaded"] == 1
+    assert uploads == [str(tmp_path / "images" / "src-img.img")]
+    assert updates[0][1][0]["image_hashes"] == ["uploaded-target-img"]
+    assert saved_maps["images"] == {"src-img": "uploaded-target-img"}
+    assert saved_maps["campaigns"] == {"101": 202, "303": 404}
 
 
 def test_copy_general_repair_plan_excludes_copy_local_actions():

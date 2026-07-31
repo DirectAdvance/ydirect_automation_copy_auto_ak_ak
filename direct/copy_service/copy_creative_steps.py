@@ -10,6 +10,73 @@ from .copy_context import CopyCtx, _noop_log
 from .copy_step_utils import _chunks, _rj, _v5_add_err, _wj
 
 
+def _copy_source_image_file(ctx: CopyCtx, source_hash: str, meta: dict | None, rep: dict) -> Path | None:
+    h = str(source_hash or "").strip()
+    if not h:
+        return None
+    src_file = Path(ctx.src_dir) / "images" / f"{h}.img"
+    if src_file.exists() and src_file.stat().st_size > 0:
+        return src_file
+    url = str((meta or {}).get("preview_url") or "").strip()
+    if not url:
+        return None
+    dst = Path(ctx.workdir) / "_image_repair_cache" / f"{h}.img"
+    try:
+        if not (dst.exists() and dst.stat().st_size > 0):
+            import requests
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            with requests.get(url, stream=True, timeout=60, verify=False) as r:
+                if r.status_code != 200:
+                    rep["errors"].append(f"source image {h[:12]}: preview HTTP {r.status_code}")
+                    return None
+                with open(dst, "wb") as fh:
+                    for chunk in r.iter_content(chunk_size=1 << 16):
+                        if chunk:
+                            fh.write(chunk)
+        if dst.stat().st_size > 0:
+            rep["images_downloaded"] = int(rep.get("images_downloaded") or 0) + 1
+            return dst
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"source image {h[:12]}: download failed: {str(e)[:160]}")
+    return None
+
+
+def _copy_target_image_hash(ctx: CopyCtx, source_hash: str, meta: dict | None, rep: dict) -> str:
+    h = str(source_hash or "").strip()
+    if not h:
+        return ""
+    img_map = ctx.maps.setdefault("images", {})
+    mapped = str(img_map.get(h) or "").strip()
+    if mapped:
+        return mapped
+    upload = getattr(ctx.grid, "upload_image", None)
+    if not callable(upload):
+        return ""
+    src_file = _copy_source_image_file(ctx, h, meta, rep)
+    if not src_file:
+        return ""
+    try:
+        tgt_hash = str(upload(str(src_file)) or "").strip()
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"source image {h[:12]}: target upload failed: {str(e)[:160]}")
+        return ""
+    if not tgt_hash:
+        rep["errors"].append(f"source image {h[:12]}: target upload returned empty hash")
+        return ""
+    img_map[h] = tgt_hash
+    rep["images_uploaded"] = int(rep.get("images_uploaded") or 0) + 1
+    try:
+        maps_path = Path(ctx.workdir) / "id_maps.json"
+        persisted = _rj(maps_path)
+        if not isinstance(persisted, dict):
+            persisted = dict(ctx.maps or {})
+        persisted.setdefault("images", {}).update(img_map)
+        _wj(maps_path, persisted)
+    except Exception as e:  # noqa: BLE001
+        rep["errors"].append(f"id_maps images save: {str(e)[:160]}")
+    return tgt_hash
+
+
 def step_adaptive_creatives(ctx: CopyCtx) -> dict:
     """П.4. Сделать контент target-адаптивов 1:1 с ИСТОЧНИКОМ (заголовки/тексты/картинки),
     БЕЗ переиспользования исходного CreativeId и БЕЗ v5-баллов.
@@ -30,7 +97,8 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
     source-домен; RMW сохраняет target-кнопку). Идемпотентно, фолбэк-безопасно: нет source/target
     grid, апдейтера или маппинга — пропуск с отчётом, job не падает."""
     rep = {"src_ads_read": 0, "candidates": 0, "updated": 0, "geo_applied": 0,
-           "images_remapped": 0, "images_filled": 0, "multicards_remapped": 0,
+           "images_remapped": 0, "images_uploaded": 0, "images_downloaded": 0,
+           "images_filled": 0, "multicards_remapped": 0,
            "no_target": 0, "no_content": 0, "errors": []}
     if ctx.grid is None:
         rep["errors"].append("нет target grid — адаптивы пропущены")
@@ -101,9 +169,14 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
             new_bodies.append(out if len(out) <= 81 else _trim_clean(out, 81))    # лимит текста ≤81
         if n_geo:
             rep["geo_applied"] += 1
+        image_meta = {
+            str(im.get("imageHash") or ""): im
+            for im in (comp.get("images") or [])
+            if isinstance(im, dict) and str(im.get("imageHash") or "")
+        }
         new_imgs = []
         for h in (comp.get("imageHashes") or []):
-            th = img_map.get(h)
+            th = img_map.get(h) or _copy_target_image_hash(ctx, h, image_meta.get(str(h)), rep)
             if th:
                 new_imgs.append(th)
                 rep["images_remapped"] += 1
@@ -124,7 +197,7 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
             if not isinstance(card, dict):
                 continue
             src_hash = str(card.get("imageHash") or "").strip()
-            tgt_hash = img_map.get(src_hash)
+            tgt_hash = img_map.get(src_hash) or _copy_target_image_hash(ctx, src_hash, image_meta.get(src_hash), rep)
             if not tgt_hash:
                 continue
             new_multicards.append({

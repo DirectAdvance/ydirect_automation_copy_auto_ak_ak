@@ -129,11 +129,18 @@ def _copy_execute_source_image_repairs(login: str, ctx: dict, campaign_ids: list
     out["result"] = repair_out
     errors = [str(e) for e in (repair_out.get("errors") or []) if str(e)]
     updated = int(repair_out.get("updated") or 0)
-    if errors or updated <= 0:
+    image_changes = (
+        int(repair_out.get("images_remapped") or 0)
+        + int(repair_out.get("images_filled") or 0)
+        + int(repair_out.get("multicards_remapped") or 0)
+    )
+    if errors or updated <= 0 or image_changes <= 0:
         out["ok"] = False
         out["failed"] = len(campaign_ids)
         if errors:
             out["error"] = "; ".join(errors)[:220]
+        elif image_changes <= 0:
+            out["error"] = "source image repair не перенёс ни одной картинки"
         else:
             out["error"] = "source image repair не обновил объявления"
     else:
