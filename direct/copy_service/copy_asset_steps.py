@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -254,7 +255,8 @@ def step_attach_callouts(ctx: CopyCtx, per_campaign_cap: int = 8) -> dict:
 
     Фолбэк: если source-связь недоступна для кампании (нет файла / нет записи / пусто после
     ремапа) — вешаем union всех созданных callout-id (прежнее поведение), с логом."""
-    rep = {"per_campaign": 0, "fallback_union": 0, "attached_campaigns": 0, "errors": []}
+    rep = {"per_campaign": 0, "fallback_union": 0, "attached_campaigns": 0,
+           "skipped_read_lag": 0, "errors": []}
     if ctx.grid is None:
         rep["errors"].append("нет grid-клиента — уточнения не привязаны")
         return rep
@@ -289,9 +291,13 @@ def step_attach_callouts(ctx: CopyCtx, per_campaign_cap: int = 8) -> dict:
         if not use_ids:
             continue
         try:
-            ctx.grid.set_campaign_callouts([tgt_cid], use_ids[:per_campaign_cap])
-            rep["attached_campaigns"] += 1
-            rep[mode] += 1
+            updated = _set_campaign_callouts_copy_safe(
+                ctx.grid, tgt_cid, use_ids[:per_campaign_cap], ctx.log)
+            if updated:
+                rep["attached_campaigns"] += 1
+                rep[mode] += 1
+            else:
+                rep["skipped_read_lag"] += 1
             if mode == "fallback_union":
                 ctx.log(f"уточнения camp {tgt_cid}: source-связь недоступна → union ({len(use_ids)})")
         except Exception as e:  # noqa: BLE001
@@ -299,6 +305,22 @@ def step_attach_callouts(ctx: CopyCtx, per_campaign_cap: int = 8) -> dict:
     ctx.log(f"уточнения по кампаниям: по исходной связи {rep['per_campaign']}, "
             f"фолбэк-union {rep['fallback_union']} (всего {rep['attached_campaigns']})")
     return rep
+
+
+def _set_campaign_callouts_copy_safe(grid, campaign_id: int, callout_ids: list[int], log) -> list:
+    """Attach callouts, tolerating short Grid read lag for freshly-created campaigns."""
+    delays = (2, 5, 10)
+    for attempt in range(len(delays) + 1):
+        try:
+            return grid.set_campaign_callouts([campaign_id], callout_ids)
+        except Exception as exc:  # noqa: BLE001
+            text = str(exc)
+            if "Grid set-callouts: не удалось прочитать кампанию" not in text:
+                raise
+            if attempt >= len(delays):
+                log(f"уточнения camp {campaign_id}: Grid read-lag, пропуск до verify/repair")
+                return []
+            time.sleep(delays[attempt])
 
 
 def step_attach_sitelinks(ctx: CopyCtx) -> dict:

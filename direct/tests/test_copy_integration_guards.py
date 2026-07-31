@@ -14,6 +14,7 @@ from direct.create import create_set_feeds
 from direct.content import content_renames_routes
 from direct.copy_service import (
     copy_api,
+    copy_asset_steps,
     copy_cleanup,
     copy_engine,
     copy_feeds,
@@ -24,6 +25,7 @@ from direct.copy_service import (
     copy_grid_read,
     copy_uac,
 )
+from direct.copy_service.copy_context import CopyCtx
 from direct.copy_service.copy_api import register_copy_api
 from direct.copy_service.copy_request import parse_feed_map, parse_image_hashes
 from direct.copy_service.copy_verify_source import build_source_profile
@@ -139,6 +141,44 @@ def test_copy_postprocess_accepts_pure_uac_without_v5_campaign_mapping(tmp_path,
     assert rep["errors"] == []
     assert rep["results"] == [{"ok": True, "kind": "uac", "source_id": 10, "campaign_id": 20, "id": 20}]
     assert "v5 campaign mapping не требуется" in " ".join(logs)
+
+
+def test_copy_attach_callouts_skips_fresh_grid_read_lag(tmp_path, monkeypatch):
+    src_dir = tmp_path / "source"
+    src_dir.mkdir()
+    (src_dir / "campaign_callouts.json").write_text('{"1":["10"]}', encoding="utf-8")
+    logs = []
+
+    class FakeGrid:
+        def __init__(self):
+            self.calls = 0
+
+        def set_campaign_callouts(self, campaign_ids, callout_ids):
+            self.calls += 1
+            raise RuntimeError(
+                f"Grid set-callouts: не удалось прочитать кампанию {campaign_ids[0]}"
+            )
+
+    monkeypatch.setattr(copy_asset_steps.time, "sleep", lambda _sec: None)
+    grid = FakeGrid()
+    ctx = CopyCtx(
+        target_login="porg-target",
+        target_agency="agency",
+        src_dir=src_dir,
+        workdir=tmp_path,
+        body={},
+        maps={"campaigns": {"1": 1001}, "callouts": {"10": 2002}},
+        grid=grid,
+        log=logs.append,
+    )
+
+    rep = copy_asset_steps.step_attach_callouts(ctx)
+
+    assert rep["errors"] == []
+    assert rep["attached_campaigns"] == 0
+    assert rep["skipped_read_lag"] == 1
+    assert grid.calls == 4
+    assert "Grid read-lag" in " ".join(logs)
 
 
 def test_copy_jobs_recover_keeps_live_memory_jobs_running(monkeypatch):
