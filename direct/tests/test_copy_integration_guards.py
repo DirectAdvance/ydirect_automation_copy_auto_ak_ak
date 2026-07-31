@@ -252,6 +252,38 @@ def test_copy_selected_skip_error_for_archived_grid_only_selection():
     assert skipped_grid[0]["source"] == "grid"
 
 
+def test_copy_grid_convert_target_without_text_keeps_mixed_uac_on_normal_path():
+    rows = [
+        {"id": "1", "typename": "GdTextCampaign", "name": "tp2_cpc_site"},
+        {"id": "2", "typename": "GdTextCampaign", "name": "tp6_cpc_site — МК"},
+    ]
+
+    convert = copy_engine._copy_grid_convert_rows_for_target(
+        rows,
+        {1, 2},
+        [rows[1]],
+        {"UNIFIED_CAMPAIGN"},
+    )
+
+    assert convert == []
+
+
+def test_copy_grid_convert_target_without_text_allows_pure_text_selection():
+    rows = [
+        {"id": "1", "typename": "GdTextCampaign", "name": "tp2_cpc_site"},
+        {"id": "2", "typename": "GdUnifiedCampaign", "name": "tp5_cpc_site"},
+    ]
+
+    convert = copy_engine._copy_grid_convert_rows_for_target(
+        rows,
+        {1, 2},
+        [],
+        {"UNIFIED_CAMPAIGN"},
+    )
+
+    assert convert == rows
+
+
 def test_copy_upload_terminal_error_classifies_target_write_denied(tmp_path):
     (tmp_path / "id_maps.json").write_text('{"campaigns": {}}', encoding="utf-8")
     (tmp_path / "_upload_log.json").write_text(

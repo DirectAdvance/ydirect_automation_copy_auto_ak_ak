@@ -589,6 +589,38 @@ def _copy_grid_archived_skip_row(row: dict) -> dict:
     }
 
 
+def _copy_grid_convert_rows_for_target(
+    selected_grid_rows: list[dict],
+    active_selected_ids: set[int],
+    selected_uac_rows: list[dict],
+    target_types: set[str] | None,
+) -> list[dict]:
+    """Rows eligible for the all-Grid Text/Unified -> EPK path."""
+    if not (
+        target_types is not None
+        and "TEXT_CAMPAIGN" not in target_types
+        and "UNIFIED_CAMPAIGN" in target_types
+    ):
+        return []
+    uac_ids = {
+        int(r.get("id") or r.get("Id") or 0)
+        for r in (selected_uac_rows or [])
+        if str(r.get("id") or r.get("Id") or "").isdigit()
+    }
+    if uac_ids:
+        return []
+    rows: list[dict] = []
+    for row in selected_grid_rows or []:
+        typ = str(row.get("typename") or row.get("type") or "")
+        try:
+            cid = int(row.get("id") or row.get("Id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if cid in active_selected_ids and typ in ("GdTextCampaign", "GdUnifiedCampaign"):
+            rows.append(row)
+    return rows
+
+
 def _copy_selected_skip_error(selected_ids: set[int], selected_uac_rows: list[dict],
                               skipped_v5_snapshot: list[dict],
                               skipped_grid_snapshot: list[dict] | None = None) -> str:
@@ -826,22 +858,21 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             )
             raise RuntimeError(target_add_error)
         target_types = _copy_target_campaign_types(target_login, target_token)
-        grid_convert_rows: list[dict] = []
-        if (
-            target_types is not None
-            and "TEXT_CAMPAIGN" not in target_types
-            and "UNIFIED_CAMPAIGN" in target_types
-        ):
-            grid_convert_rows = [
-                r for r in selected_grid_rows
-                if str(r.get("typename") or r.get("type") or "") in ("GdTextCampaign", "GdUnifiedCampaign")
-            ]
-            if grid_convert_rows and len(grid_convert_rows) == len(active_selected_ids):
-                _copy_job_log(
-                    job_id,
-                    f"grid-cookie copy: target не поддерживает TEXT_CAMPAIGN, "
-                    f"конвертирую {len(grid_convert_rows)} Text/Unified campaigns в ЕПК",
-                )
+        grid_convert_rows = _copy_grid_convert_rows_for_target(
+            selected_grid_rows, active_selected_ids, selected_uac_rows, target_types
+        )
+        if grid_convert_rows and len(grid_convert_rows) == len(active_selected_ids):
+            _copy_job_log(
+                job_id,
+                f"grid-cookie copy: target не поддерживает TEXT_CAMPAIGN, "
+                f"конвертирую {len(grid_convert_rows)} Text/Unified campaigns в ЕПК",
+            )
+        elif selected_uac_rows and target_types is not None and "TEXT_CAMPAIGN" not in target_types:
+            _copy_job_log(
+                job_id,
+                "grid-cookie copy: смешанный выбор Text + UAC/Master — "
+                "оставляю штатный v5+UAC путь",
+            )
         early_expected_snapshot: int | None = None
         early_skipped_v5_snapshot: list[dict] = []
         if _v5_campaigns_for_expected is not None:
