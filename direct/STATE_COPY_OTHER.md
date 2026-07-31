@@ -17,8 +17,8 @@
 **Проверено:** `py_compile` целевых copy/create/grid модулей OK; focused pytest по price-segment,
 минимуму фида и adprice-repair — `4 passed`; `git diff --check` OK. Код закоммичен в
 `neurodirectologist` ветку `ydirect_automation_copy_auto_ak_ak` (`ad03b743`) и экспортирован в
-`DirectAdvance/ydirect_automation_copy_auto_ak_ak` main (`c8a7511`). Live-copy на проде на момент
-записи не перепроверялся.
+`DirectAdvance/ydirect_automation_copy_auto_ak_ak` main. Live-copy на проде на момент записи не
+перепроверялся.
 
 ## ✅ РЕЗУЛЬТАТ: копия 1:1 достигнута ФАКТОМ (проверено v5 API + Grid)
 
