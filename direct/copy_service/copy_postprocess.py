@@ -524,6 +524,18 @@ def _copy_recover_campaign_maps_by_name(target_login: str, cookie: str, src_dir:
     return {"recovered": len(recovered), "errors": errors}
 
 
+def _copy_uac_results_from_body(body: dict) -> list[dict]:
+    """Successful UAC/Grid results created outside v5 phase_upload."""
+    rows = body.get("_copy_uac_results") if isinstance(body, dict) else None
+    if not isinstance(rows, list):
+        return []
+    out: list[dict] = []
+    for row in rows:
+        if isinstance(row, dict) and row.get("ok") and row.get("campaign_id"):
+            out.append(row)
+    return out
+
+
 def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                              src_dir: Path, workdir: Path, body: dict) -> dict:
     """Cookie/Grid fallback after direct_copy upload: callouts, ShoppingAd, ListingAd, verification, repair."""
@@ -548,6 +560,7 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
     maps.setdefault("feeds", {})
     maps.setdefault("callouts", {})
     maps.setdefault("promotions", {})
+    uac_results = _copy_uac_results_from_body(body)
 
     try:
         client = cmc.build_client(target_login, account=(target_agency or None))
@@ -558,6 +571,14 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
         return rep
 
     if not maps.get("campaigns"):
+        src_campaigns = ce._copy_read_json(src_dir / "campaigns.json")
+        if not src_campaigns and uac_results:
+            rep["results"] = uac_results
+            ce._copy_job_log(
+                job_id,
+                f"id_maps: pure UAC/Grid copy — v5 campaign mapping не требуется ({len(uac_results)} кампаний)",
+            )
+            return rep
         recover = _copy_recover_campaign_maps_by_name(
             target_login, cookie, src_dir, maps, log=(lambda m: ce._copy_job_log(job_id, m)))
         rep["campaign_map_recovery"] = recover

@@ -103,6 +103,44 @@ def test_copy_feed_filters_retry_drops_unavailable_fields_until_success():
     assert updated == 2
 
 
+def test_copy_postprocess_accepts_pure_uac_without_v5_campaign_mapping(tmp_path, monkeypatch):
+    src_dir = tmp_path / "source"
+    src_dir.mkdir()
+    (src_dir / "campaigns.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "id_maps.json").write_text('{"campaigns":{}}', encoding="utf-8")
+
+    logs = []
+
+    class FakeSession:
+        headers = {"Cookie": "Session_id=fake"}
+
+    class FakeClient:
+        sess = FakeSession()
+
+    monkeypatch.setattr(copy_postprocess.cmc, "build_client", lambda *_args, **_kwargs: FakeClient())
+    monkeypatch.setattr(copy_postprocess.gf, "GridClient", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(copy_engine, "_copy_job_log", lambda _job_id, msg: logs.append(msg))
+
+    rep = copy_postprocess._copy_cookie_postprocess(
+        "job-uac",
+        "porg-target",
+        "agency",
+        src_dir,
+        tmp_path,
+        {
+            "source_login": "porg-source",
+            "_copy_uac_results": [
+                {"ok": True, "kind": "uac", "source_id": 10, "campaign_id": 20, "id": 20},
+                {"ok": False, "kind": "uac", "source_id": 11, "error": "boom"},
+            ],
+        },
+    )
+
+    assert rep["errors"] == []
+    assert rep["results"] == [{"ok": True, "kind": "uac", "source_id": 10, "campaign_id": 20, "id": 20}]
+    assert "v5 campaign mapping не требуется" in " ".join(logs)
+
+
 def test_copy_jobs_recover_keeps_live_memory_jobs_running(monkeypatch):
     executed = []
 
