@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .copy_context import CopyCtx, _noop_log
-from .copy_keyword_phrase import clean_keyword_phrase
+from .copy_keyword_phrase import DIRECT_KEYWORD_MAX_POSITIVE_WORDS, clean_keyword_phrase
 from .copy_step_utils import _chunks, _rj, _v5_add_err, _wj
 
 
@@ -82,7 +82,11 @@ def step_keywords(ctx: CopyCtx, grid_batch: int = 1000, v5_batch: int = 900) -> 
             if _n_geo:
                 phrase = _phrase_geo.strip() or phrase
                 _kw_geo_count += 1
-        phrase = clean_keyword_phrase(phrase, _geo_pairs_kw)
+        phrase = clean_keyword_phrase(
+            phrase,
+            _geo_pairs_kw,
+            max_positive_words=DIRECT_KEYWORD_MAX_POSITIVE_WORDS,
+        )
         if not phrase:
             rep["skipped_no_group"] += 1
             continue

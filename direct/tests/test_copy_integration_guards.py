@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 from types import SimpleNamespace
 import time
@@ -21,6 +20,7 @@ from direct.copy_service import (
     copy_settings_steps,
     copy_steps,
     copy_grid_read,
+    copy_grid_unified,
     copy_uac,
 )
 from direct.copy_service.copy_api import register_copy_api
@@ -55,6 +55,24 @@ def test_copy_terminal_status_includes_postprocess_errors():
 
     assert status == "error"
     assert "verification gate" in error
+
+
+def test_copy_demotes_nonfatal_source_image_upload_errors():
+    rep = {
+        "errors": [
+            "source image RAvUo2CZkUvp: target upload returned empty hash",
+            "source image wrenWHX0MZUS: target preview upload failed: boom",
+            "verification gate: 1 незакрытых дефектов",
+        ],
+    }
+
+    copy_postprocess._copy_demote_nonfatal_image_upload_errors(rep)
+
+    assert rep["errors"] == ["verification gate: 1 незакрытых дефектов"]
+    assert rep["warnings"] == [
+        "source image RAvUo2CZkUvp: target upload returned empty hash",
+        "source image wrenWHX0MZUS: target preview upload failed: boom",
+    ]
 
 
 def test_copy_attach_callouts_retries_grid_campaign_edit_row_lag(tmp_path, monkeypatch):
@@ -116,106 +134,6 @@ def test_copy_live_gate_blocks_adprice_warning():
     assert rep["errors"]
 
 
-def test_copy_postprocess_accepts_pure_uac_without_v5_campaign_mapping(tmp_path, monkeypatch):
-    src_dir = tmp_path / "source"
-    src_dir.mkdir()
-    (src_dir / "campaigns.json").write_text("[]", encoding="utf-8")
-    (tmp_path / "id_maps.json").write_text('{"campaigns":{}}', encoding="utf-8")
-    logs = []
-
-    monkeypatch.setattr(copy_engine, "_copy_job_log", lambda _job_id, msg: logs.append(msg))
-
-    rep = copy_postprocess._copy_cookie_postprocess(
-        "job-uac",
-        "porg-target",
-        "agency",
-        src_dir,
-        tmp_path,
-        {
-            "source_login": "porg-source",
-            "_copy_uac_results": [
-                {"ok": True, "kind": "uac", "source_id": 10, "campaign_id": 20, "id": 20},
-                {"ok": False, "kind": "uac", "source_id": 11, "error": "boom"},
-            ],
-        },
-    )
-
-    assert rep["errors"] == []
-    assert rep["results"] == [{"ok": True, "kind": "uac", "source_id": 10, "campaign_id": 20, "id": 20}]
-    assert "v5 campaign mapping не требуется" in " ".join(logs)
-
-
-def test_copy_postprocess_v5_visibility_gate_blocks_missing_target_objects(monkeypatch):
-    logs = []
-    calls = []
-
-    def fake_v5_call(service, _method, _token, _login, _params):
-        calls.append(service)
-        if service == "campaigns":
-            return {"result": {"Campaigns": []}}
-        if service == "adgroups":
-            return {"result": {"AdGroups": []}}
-        raise AssertionError(service)
-
-    monkeypatch.setattr(
-        copy_postprocess,
-        "_engine",
-        lambda: SimpleNamespace(
-            _copy_job_log=lambda _job_id, msg: logs.append(msg),
-            _v5_err=lambda j: str(j.get("error")),
-        ),
-    )
-    ctx = SimpleNamespace(
-        target_login="porg-target",
-        target_token="token",
-        v5_call=fake_v5_call,
-        maps={"campaigns": {"101": 713204818}, "adgroups": {"201": 9001, "202": 9002}},
-    )
-    rep = {"errors": []}
-
-    ok = copy_postprocess._copy_apply_v5_visibility_gate("job-v5", rep, ctx)
-
-    assert ok is False
-    assert calls == ["campaigns", "adgroups"]
-    assert rep["target_v5_visibility"]["campaigns_seen"] == 0
-    assert rep["target_v5_visibility"]["adgroups_seen"] == 0
-    assert "campaigns 0/1, adgroups 0/2" in rep["errors"][0]
-    assert "postprocess skipped" in logs[0]
-
-
-def test_copy_postprocess_v5_visibility_gate_allows_visible_target_objects(monkeypatch):
-    calls = []
-
-    def fake_v5_call(service, _method, _token, _login, params):
-        calls.append((service, params["SelectionCriteria"]["Ids"]))
-        if service == "campaigns":
-            return {"result": {"Campaigns": [{"Id": 713204818}]}}
-        if service == "adgroups":
-            return {"result": {"AdGroups": [{"Id": 9001}]}}
-        raise AssertionError(service)
-
-    monkeypatch.setattr(
-        copy_postprocess,
-        "_engine",
-        lambda: SimpleNamespace(_copy_job_log=lambda *_args: None, _v5_err=lambda j: str(j.get("error"))),
-    )
-    ctx = SimpleNamespace(
-        target_login="porg-target",
-        target_token="token",
-        v5_call=fake_v5_call,
-        maps={"campaigns": {"101": 713204818}, "adgroups": {"201": 9001}},
-    )
-    rep = {"errors": []}
-
-    ok = copy_postprocess._copy_apply_v5_visibility_gate("job-v5", rep, ctx)
-
-    assert ok is True
-    assert rep["errors"] == []
-    assert rep["target_v5_visibility"]["campaigns_seen"] == 1
-    assert rep["target_v5_visibility"]["adgroups_seen"] == 1
-    assert calls == [("campaigns", [713204818]), ("adgroups", [9001])]
-
-
 def test_copy_verify_gate_blocks_media_and_listing_mismatches():
     verify_result = {
         "results": [
@@ -273,6 +191,72 @@ def test_copy_expected_snapshot_excludes_selected_archived_v5_campaigns():
 
     assert expected == 25
     assert [x["Id"] for x in skipped] == [26, 27, 28]
+
+
+def test_copy_marks_grid_post_campaigns_as_unsupported_skips():
+    rows = [
+        {
+            "id": "713257258",
+            "name": "tp8_cpc_site_ct0000_aon_n000_r0002_ct018_ag001_g00 — Посевы Telegram",
+            "typename": "GdPostCampaign",
+            "status": "DRAFT",
+        },
+        {
+            "id": "713254333",
+            "name": "tp2_cpc_site — Поиск",
+            "typename": "GdUnifiedCampaign",
+            "status": "DRAFT",
+        },
+        {
+            "id": "713254324",
+            "name": "tp7_cpc_site_ct0000_aon_n000_r0002_ct010_ag001_g00 — ТК",
+            "typename": "GdTextCampaign",
+            "status": "DRAFT",
+        },
+    ]
+
+    skipped = copy_engine._copy_unsupported_grid_only_skips(
+        rows,
+        {713257258, 713254333, 713254324},
+        {713254333},
+    )
+
+    assert [x["Id"] for x in skipped] == [713257258]
+    assert skipped[0]["reason"] == "unsupported_grid_post"
+
+
+def test_copy_run_job_finishes_when_only_grid_post_campaign_selected(monkeypatch):
+    upserts = []
+    logs = []
+    row = {
+        "id": "713257258",
+        "name": "tp8_cpc_site_ct0000_aon_n000_r0002_ct018_ag001_g00 — Посевы Telegram",
+        "typename": "GdPostCampaign",
+        "status": "DRAFT",
+    }
+
+    monkeypatch.setattr(copy_engine, "_copy_job_upsert", lambda _job_id, **fields: upserts.append(fields) or fields)
+    monkeypatch.setattr(copy_engine, "_copy_job_log", lambda _job_id, msg: logs.append(msg))
+    monkeypatch.setattr(copy_engine, "_copy_selected_grid_campaigns", lambda _login, _ids: [row])
+    monkeypatch.setattr(copy_engine, "_resolve_agency_hint", lambda _login, _agency='': "victoryagency14")
+    monkeypatch.setattr(copy_engine, "_direct_tokens", lambda: {"victoryagency14": "token"})
+    monkeypatch.setattr(copy_engine, "_token_for_login", lambda *_args: ("token", "victoryagency14"))
+    monkeypatch.setattr(copy_engine, "_v5_call", lambda *_args, **_kwargs: {"result": {"Campaigns": []}})
+    monkeypatch.setattr(copy_engine, "_direct_copy_module", lambda: SimpleNamespace(SKIP_CAMPAIGN_NAMES=set()))
+
+    copy_engine._copy_run_job("job-post", {
+        "source_login": "porg-4ealp4ry",
+        "target_login": "porg-4ealp4ry",
+        "campaign_ids": [713257258],
+        "agency": "victoryagency14",
+    })
+
+    final = upserts[-1]
+    assert final["status"] == "done"
+    assert final["total"] == 0
+    assert final["result"]["selected"] == 1
+    assert final["result"]["skipped_campaigns"][0]["reason"] == "unsupported_grid_post"
+    assert any("unsupported_grid_post" in msg for msg in logs)
 
 
 def test_direct_copy_caps_text_ads_per_group_before_add():
@@ -364,190 +348,6 @@ def test_copy_postprocess_executes_image_repair_for_live_fail(monkeypatch):
     assert out["post_repair_live_verification"]["summary"]["errors"] == 0
 
 
-def test_copy_image_repair_without_agent_uses_source_copy_images(monkeypatch, tmp_path):
-    actions = [{"action": "images_repair", "campaign_id": 202, "uses_direct_units": False}]
-    updates = []
-
-    (tmp_path / "adgroups.json").write_text(
-        '[{"Id": 1001, "CampaignId": 101}]',
-        encoding="utf-8",
-    )
-    (tmp_path / "ads.json").write_text(
-        '[{"Id": 11, "CampaignId": 101, "AdGroupId": 1001}]',
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(
-        copy_postprocess.rgate,
-        "executable_images_repairs",
-        lambda plan: ([202], actions, []),
-    )
-
-    def fail_create_pool_repair(*_args, **_kwargs):
-        raise AssertionError("copy image repair must not use create slepok pool when agent is empty")
-
-    monkeypatch.setattr(copy_postprocess.rex, "execute_images_repair", fail_create_pool_repair)
-
-    class FakeSourceGrid:
-        def adaptive_ads_for_update(self, campaign_ids, ad_ids):
-            assert campaign_ids == [101]
-            assert ad_ids == [11]
-            return {
-                11: {
-                    "campaignId": 101,
-                    "titles": ["Title"],
-                    "bodies": ["Body"],
-                    "imageHashes": ["src-img"],
-                }
-            }
-
-    def fake_update(login, items, campaign_ids):
-        updates.append((login, items, campaign_ids))
-        return len(items)
-
-    cstep_ctx = copy_steps.CopyCtx(
-        target_login="target-login",
-        target_agency="",
-        src_dir=tmp_path,
-        workdir=tmp_path,
-        body={"_kind": "copy_campaigns"},
-        maps={
-            "campaigns": {"101": 202, "303": 404},
-            "adgroups": {"1001": 2002},
-            "ads": {"11": 22, "33": 44},
-            "images": {"src-img": "tgt-img"},
-        },
-        grid=object(),
-        source_grid=FakeSourceGrid(),
-        update_adaptive_ads=fake_update,
-        log=lambda _m: None,
-    )
-
-    out = copy_postprocess._copy_execute_image_repairs(
-        "target-login",
-        {"body": {"_kind": "copy_campaigns"}, "results": []},
-        {"actions": actions},
-        object(),
-        copy_step_ctx=cstep_ctx,
-    )
-
-    assert out["ok"] is True
-    assert out["copy_source_images"] is True
-    assert out["executed"] == 1
-    assert updates[0][0] == "target-login"
-    assert updates[0][1][0]["image_hashes"] == ["tgt-img"]
-    assert updates[0][2] == [202]
-
-
-def test_copy_image_repair_uploads_source_image_when_map_empty(monkeypatch, tmp_path):
-    actions = [{"action": "images_repair", "campaign_id": 202, "uses_direct_units": False}]
-    updates = []
-    uploads = []
-
-    (tmp_path / "images").mkdir()
-    (tmp_path / "images" / "src-img.img").write_bytes(b"fake image bytes")
-    (tmp_path / "adgroups.json").write_text(
-        '[{"Id": 1001, "CampaignId": 101}]',
-        encoding="utf-8",
-    )
-    (tmp_path / "ads.json").write_text(
-        '[{"Id": 11, "CampaignId": 101, "AdGroupId": 1001}]',
-        encoding="utf-8",
-    )
-    (tmp_path / "id_maps.json").write_text(
-        '{"campaigns":{"101":202,"303":404},"adgroups":{"1001":2002},'
-        '"ads":{"11":22},"images":{}}',
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(
-        copy_postprocess.rgate,
-        "executable_images_repairs",
-        lambda plan: ([202], actions, []),
-    )
-
-    def fail_create_pool_repair(*_args, **_kwargs):
-        raise AssertionError("copy image repair must not use create slepok pool when image map is empty")
-
-    monkeypatch.setattr(copy_postprocess.rex, "execute_images_repair", fail_create_pool_repair)
-
-    class FakeGrid:
-        def upload_image(self, path):
-            uploads.append(path)
-            return "uploaded-target-img"
-
-    class FakeSourceGrid:
-        def adaptive_ads_for_update(self, campaign_ids, ad_ids):
-            assert campaign_ids == [101]
-            assert ad_ids == [11]
-            return {
-                11: {
-                    "campaignId": 101,
-                    "titles": ["Title"],
-                    "bodies": ["Body"],
-                    "imageHashes": ["src-img"],
-                    "images": [{"imageHash": "src-img"}],
-                }
-            }
-
-    def fake_update(login, items, campaign_ids):
-        updates.append((login, items, campaign_ids))
-        return len(items)
-
-    cstep_ctx = copy_steps.CopyCtx(
-        target_login="target-login",
-        target_agency="",
-        src_dir=tmp_path,
-        workdir=tmp_path,
-        body={"_kind": "copy_campaigns"},
-        maps={
-            "campaigns": {"101": 202, "303": 404},
-            "adgroups": {"1001": 2002},
-            "ads": {"11": 22},
-            "images": {},
-        },
-        grid=FakeGrid(),
-        source_grid=FakeSourceGrid(),
-        update_adaptive_ads=fake_update,
-        log=lambda _m: None,
-    )
-
-    out = copy_postprocess._copy_execute_image_repairs(
-        "target-login",
-        {"body": {"_kind": "copy_campaigns"}, "results": []},
-        {"actions": actions},
-        object(),
-        copy_step_ctx=cstep_ctx,
-    )
-
-    saved_maps = json.loads((tmp_path / "id_maps.json").read_text(encoding="utf-8"))
-    assert out["ok"] is True
-    assert out["result"]["images_uploaded"] == 1
-    assert uploads == [str(tmp_path / "images" / "src-img.img")]
-    assert updates[0][1][0]["image_hashes"] == ["uploaded-target-img"]
-    assert saved_maps["images"] == {"src-img": "uploaded-target-img"}
-    assert saved_maps["campaigns"] == {"101": 202, "303": 404}
-
-
-def test_copy_general_repair_plan_excludes_copy_local_actions():
-    plan = {
-        "status": "actionable",
-        "summary": {"actions": 3},
-        "actions": [
-            {"action": "images_repair", "campaign_id": 1},
-            {"action": "adprice_repair", "campaign_id": 2},
-            {"action": "rename_campaign", "campaign_id": 3},
-        ],
-    }
-
-    general, local = copy_postprocess._copy_split_general_repair_plan(plan)
-
-    assert [a["action"] for a in general["actions"]] == ["rename_campaign"]
-    assert [a["action"] for a in local] == ["images_repair", "adprice_repair"]
-    assert general["summary"]["actions"] == 1
-    assert general["copy_local_skipped_actions"] == 2
-
-
 def test_copy_postprocess_executes_adprice_repair_for_live_warning(monkeypatch):
     calls = []
 
@@ -629,7 +429,8 @@ def test_copy_prices_use_feed_minimum_for_non_mark_model_segment(tmp_path):
     assert written[0]["current"] == 777000
 
 
-def test_copy_adaptive_creatives_remaps_multicards(monkeypatch, tmp_path):
+def _adaptive_ctx_with_multicards(tmp_path, src_cards, calls, images):
+    """CopyCtx с одним адаптивным объявлением и заданной каруселью источника."""
     class FakeSourceGrid:
         def adaptive_ads_for_update(self, _campaign_ids, _ad_ids):
             return {
@@ -637,43 +438,67 @@ def test_copy_adaptive_creatives_remaps_multicards(monkeypatch, tmp_path):
                     "titles": ["Заголовок"],
                     "bodies": ["Текст"],
                     "imageHashes": ["src-main"],
-                    "multicards": [
-                        {"imageHash": "src-card", "currency": None, "href": None,
-                         "price": None, "priceOld": None, "text": None}
-                    ],
+                    "multicards": src_cards,
                 }
             }
-
-    calls = []
 
     def fake_update(_login, items, campaign_ids):
         calls.append((items, campaign_ids))
         return len(items)
 
-    ctx = copy_steps.CopyCtx(
+    return copy_steps.CopyCtx(
         target_login="target-login",
         target_agency="",
         src_dir=Path(tmp_path),
         workdir=Path(tmp_path),
         body={},
-        maps={
-            "ads": {"11": 22},
-            "campaigns": {"101": 202},
-            "images": {"src-main": "tgt-main", "src-card": "tgt-card"},
-        },
+        maps={"ads": {"11": 22}, "campaigns": {"101": 202}, "images": images},
         grid=object(),
         source_grid=FakeSourceGrid(),
         update_adaptive_ads=fake_update,
     )
 
+
+def _card(image_hash):
+    return {"imageHash": image_hash, "currency": None, "href": None,
+            "price": None, "priceOld": None, "text": None}
+
+
+def test_copy_adaptive_creatives_remaps_multicards(monkeypatch, tmp_path):
+    calls = []
+    # Карусель минимально допустимого размера: Grid принимает только 2..10 карточек.
+    ctx = _adaptive_ctx_with_multicards(
+        tmp_path,
+        [_card("src-card-1"), _card("src-card-2")],
+        calls,
+        {"src-main": "tgt-main", "src-card-1": "tgt-card-1", "src-card-2": "tgt-card-2"},
+    )
+
     out = copy_steps.step_adaptive_creatives(ctx)
 
     assert out["updated"] == 1
-    assert out["multicards_remapped"] == 1
-    assert calls[0][0][0]["multicards"] == [
-        {"imageHash": "tgt-card", "currency": None, "href": None,
-         "price": None, "priceOld": None, "text": None}
-    ]
+    assert out["multicards_remapped"] == 2
+    assert calls[0][0][0]["multicards"] == [_card("tgt-card-1"), _card("tgt-card-2")]
+
+
+def test_copy_adaptive_creatives_drops_single_multicard(monkeypatch, tmp_path):
+    """Одна карточка — не карусель: Grid отвергает размер <2 вместе со ВСЕМ item'ом
+    (`SIZE_MUST_BE_IN_INTERVAL` {minSize:2,maxSize:10}), поэтому ключ не отправляем,
+    иначе не доедут и заголовки/тексты/картинки того же объявления."""
+    calls = []
+    ctx = _adaptive_ctx_with_multicards(
+        tmp_path,
+        [_card("src-card-1")],
+        calls,
+        {"src-main": "tgt-main", "src-card-1": "tgt-card-1"},
+    )
+
+    out = copy_steps.step_adaptive_creatives(ctx)
+
+    assert "multicards" not in calls[0][0][0]
+    assert out["multicards_remapped"] == 0
+    assert out["multicards_skipped"] == 1
+    assert calls[0][0][0]["titles"] == ["Заголовок"]   # остальной контент всё равно уходит
 
 
 def test_grid_update_adaptive_ads_preserves_multicards(monkeypatch):
@@ -703,7 +528,9 @@ def test_grid_update_adaptive_ads_preserves_multicards(monkeypatch):
                     "creativeIds": [],
                     "multicards": [
                         {"imageHash": "tgt-card", "currency": None, "href": None,
-                         "price": None, "priceOld": None, "text": None}
+                         "price": None, "priceOld": None, "text": None},
+                        {"imageHash": "tgt-card-2", "currency": None, "href": None,
+                         "price": None, "priceOld": None, "text": None},
                     ],
                 }
             }
@@ -718,7 +545,13 @@ def test_grid_update_adaptive_ads_preserves_multicards(monkeypatch):
     monkeypatch.setattr(
         create_set_feeds,
         "gf",
-        SimpleNamespace(get_grid_client=lambda _login: FakeGrid()),
+        # нормализатор карусели берём НАСТОЯЩИЙ: подмена его заглушкой скрыла бы гейт [2..10]
+        SimpleNamespace(
+            get_grid_client=lambda _login: FakeGrid(),
+            grid_multicards_for_write=grid_finalize.grid_multicards_for_write,
+            GRID_MULTICARDS_MIN=grid_finalize.GRID_MULTICARDS_MIN,
+            GRID_MULTICARDS_MAX=grid_finalize.GRID_MULTICARDS_MAX,
+        ),
         raising=False,
     )
 
@@ -803,6 +636,45 @@ def test_copy_selected_grid_campaigns_times_out_to_empty(monkeypatch):
 
     assert rows == []
     assert time.monotonic() - started < 0.1
+
+
+def test_copy_grid_create_full_strips_nested_graphql_typenames(monkeypatch):
+    captured = []
+    dirty_variables = {
+        "input": {
+            "campaignAddItems": [{
+                "unifiedCampaign": {
+                    "__typename": "GdUnifiedCampaign",
+                    "notification": {
+                        "smsSettings": {
+                            "smsTime": {
+                                "__typename": "GdTimeInterval",
+                                "startTime": {"__typename": "GdTime", "hour": 9, "minute": 0},
+                                "endTime": {"__typename": "GdTime", "hour": 21, "minute": 0},
+                            }
+                        }
+                    },
+                }
+            }]
+        }
+    }
+
+    def fake_base_mutate(self, op, query, variables):  # noqa: ARG001
+        captured.append(variables)
+        return {"ok": True}
+
+    def fake_create_full(login, **_kwargs):
+        cl = copy_grid_unified.gc.GridCreateClient(login, cookie="stub=1")
+        return cl._mutate("AddCampaigns", "q", dirty_variables)
+
+    monkeypatch.setattr(copy_grid_unified.gc.GridCreateClient, "_mutate", fake_base_mutate)
+    monkeypatch.setattr(copy_grid_unified.gc, "create_full", fake_create_full)
+
+    assert copy_grid_unified._copy_create_full_sanitized(
+        "porg-test", campaign_spec={}, groups=[], region_ids=[], href="") == {"ok": True}
+    sent = captured[0]["input"]["campaignAddItems"][0]["unifiedCampaign"]
+    assert "__typename" not in str(sent)
+    assert sent["notification"]["smsSettings"]["smsTime"]["endTime"] == {"hour": 21, "minute": 0}
 
 
 def test_copy_cleanup_uac_list_timeout_is_non_critical(monkeypatch):
@@ -1874,6 +1746,27 @@ def test_grid_post_reauth_login_page_does_not_recurse():
         raise AssertionError("expected RuntimeError")
 
     assert len(posts) == 2
+
+
+def test_grid_client_accepts_refresh_explicit_cookie_and_refreshes(monkeypatch):
+    calls = []
+
+    def fake_pick(login, force_refresh=False):
+        calls.append((login, force_refresh))
+        return "fresh-cookie"
+
+    monkeypatch.setattr(grid_finalize.cmc, "pick_working_cookie", fake_pick)
+    client = grid_finalize.GridClient(
+        "login",
+        cookie="old-cookie",
+        refresh_explicit_cookie=True,
+    )
+    client._bootstrap_csrf = lambda: setattr(client, "csrf", "fresh-csrf")
+
+    client._reauth()
+
+    assert client.cookie == "fresh-cookie"
+    assert calls == [("login", True)]
 
 
 def test_grid_read_post_force_refreshes_on_html_login_page(monkeypatch):

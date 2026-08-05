@@ -11,6 +11,11 @@
 > Правка, не уехавшая в репозиторий, считается незавершённой: у следующей сессии/агента свежесть
 > сверяется по этому репо.
 
+> **Исключение:** задачи Agent Board, созданные из упавшего `copy_campaigns`, не пушат в copy-git.
+> Они работают в isolated checkout `/var/lib/agent-board/copy-runner/tasks/<task_id>/home/seoadvanced`,
+> а проверенную правку переносят в Mutagen checkout `/opt/scripts/home/seoadvanced/direct` под
+> `AGENT_BOARD_COPY_PUBLISH_LOCK`. Mac заберёт эти изменения через Mutagen после включения.
+
 ---
 
 ## Что делает сервис
@@ -145,6 +150,26 @@ POST /api/copy_start
 ---
 
 ## Как запустить / подебажить
+
+### Agent Board для упавших copy jobs
+
+1. `direct-copy.service` переводит failed copy job в `error`.
+2. `agent_board_bridge.notify_copy_job_error()` создаёт задачу в `/services/agent-board/` и пишет
+   `agent_board_task_id` в исходную `direct_automation.jobs`.
+3. Agent Board runner запускает Codex в отдельном checkout:
+   `/var/lib/agent-board/copy-runner/tasks/<task_id>/home/seoadvanced`.
+4. Агент чинит root cause, проверяет в isolated checkout и переносит только copy-scope файлы в
+   `/opt/scripts/home/seoadvanced/direct` под `AGENT_BOARD_COPY_PUBLISH_LOCK`.
+5. `git push` из такой Agent Board задачи запрещён. Канон evidence — UI Agent Board + md-отчёт
+   `agent_board_reports/<task_id>.md`.
+6. После статуса Agent Board `done` retry-daemon в `direct-copy.service` создаёт повторную
+   `copy_campaigns` job по исходным параметрам. Если ошибка campaign-specific, retry может быть
+   scoped на failed campaigns и соответствующие target drafts; иначе повторяется весь scope.
+7. Исходная failed job связывается с повтором через `copy_retry_job_id`. Если повтор опять падает,
+   bridge создаёт новую Agent Board задачу уже по новой failed job.
+
+Руками создавать дубль copy job после Agent Board `done` не нужно. Ручной дубль допустим только если
+retry-daemon явно не сработал и причина понятна.
 
 ### ⛔ ЗАПРЕТ рестарта при активной джобе копирования (правило Семёна 2026-07-30)
 

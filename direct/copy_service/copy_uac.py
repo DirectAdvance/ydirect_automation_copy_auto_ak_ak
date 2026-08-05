@@ -14,13 +14,13 @@ from concurrent.futures import ThreadPoolExecutor
 from ..core import campaign as cmc
 
 from .copy_geo import _COPY_R_CODE_RE, _copy_apply_geo_replacements, _copy_normalize_campaign_name, _copy_target_href
-from .copy_keyword_phrase import clean_keyword_phrase
+from .copy_keyword_phrase import DIRECT_KEYWORD_MAX_POSITIVE_WORDS, clean_keyword_phrase
 
 # ── DI (инъектится copy_engine.configure фан-аутом; None до инъекции) ──
 _direct_tokens = _resolve_agency_hint = _token_for_login = _v501_svc = None
 _UAC_TITLE_MAX = 56
 _UAC_TEXT_MAX = 81
-_UAC_KEYWORD_MAX_POSITIVE_WORDS = 7
+_UAC_KEYWORD_MAX_POSITIVE_WORDS = DIRECT_KEYWORD_MAX_POSITIVE_WORDS
 
 
 def configure(deps: dict) -> None:
@@ -40,6 +40,44 @@ def _copy_uac_value(row: dict, *keys, default=None):
         if val not in (None, "", []):
             return val
     return default
+
+
+def _copy_uac_source_audiences(d: dict) -> list[str]:
+    """Извлечь id аудиторных целей (интересов) из detail источника (баг 4, расследование 2026-08-04).
+
+    Раньше читалось из плоских ``audiences``/``interest_ids`` (``_copy_uac_value(d, "audiences",
+    "interest_ids")``) — эти ключи в РЕАЛЬНОМ ответе UAC не встречаются, интересы всегда получались
+    пустыми, даже если у источника были живые аудитории. Реальная форма (см.
+    ``clients/uac_read._count_audiences``, живой разбор 2026-07-30): цели лежат в
+    ``ca_retargeting_condition.condition_rules[].goals[].id`` (верхний ``ca_retargeting_condition.
+    goals`` и плоские ``audiences``/``interest_ids`` — запасные формы на случай другого ответа UAC)."""
+    ids: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw) -> None:
+        gid = str((raw or {}).get("id") or "") if isinstance(raw, dict) else str(raw or "").strip()
+        if gid and gid not in seen:
+            seen.add(gid)
+            ids.append(gid)
+
+    cond = d.get("ca_retargeting_condition")
+    if isinstance(cond, dict):
+        goals = cond.get("goals")
+        if isinstance(goals, list):
+            for g in goals:
+                _add(g)
+        rules = cond.get("condition_rules")
+        if isinstance(rules, list):
+            for rule in rules:
+                for g in ((rule or {}).get("goals") or []) if isinstance(rule, dict) else []:
+                    _add(g)
+    if not ids:
+        for key in ("audiences", "interest_ids"):
+            value = d.get(key)
+            if isinstance(value, list):
+                for a in value:
+                    _add(a)
+    return ids
 
 
 def _copy_uac_strings(value, *keys: str, limit: int = 8) -> list[str]:
@@ -182,7 +220,8 @@ def _copy_uac_sanitize_keywords(
 
 
 def _copy_uac_sitelinks(value, *, source_domain: str, target_domain: str,
-                        geo_pairs: list[tuple[str, str]] | None = None) -> list[dict]:
+                        geo_pairs: list[tuple[str, str]] | None = None,
+                        target_site_type: str = "") -> list[dict]:
     out = []
     for item in (value or []):
         if not isinstance(item, dict):
@@ -192,7 +231,11 @@ def _copy_uac_sitelinks(value, *, source_domain: str, target_domain: str,
         desc = _copy_uac_geo_text(item.get("description") or item.get("Description") or "", geo_pairs)
         if not title:
             continue
-        out.append({"title": title, "href": _copy_target_href(href, source_domain, target_domain), "description": desc})
+        out.append({
+            "title": title,
+            "href": _copy_target_href(href, source_domain, target_domain, target_site_type=target_site_type),
+            "description": desc,
+        })
     return out
 
 
@@ -250,6 +293,139 @@ def _copy_uac_create_live_guard(source_detail: dict, target_detail: dict, spec) 
     if source_hashes and getattr(spec, "content_ids", None) and target_hashes != source_hashes:
         errors.append("image_hashes mismatch")
     return errors
+
+
+# Какую долю отправленных минус-слов кабинет обязан сохранить, чтобы перенос считался
+# состоявшимся. НЕ 100%: Директ приводит минус-слова к своим формам и СХЛОПЫВАЕТ совпавшие,
+# поэтому их всегда чуть меньше отправленного (живой замер: 60→58, 31→30, 29→28 — 95-97%).
+# Порог ловит настоящий отказ переноса (ноль вместо сорока, половина вместо всех), а не
+# штатное схлопывание форм.
+_UAC_MINUS_KEEP_RATIO = 0.7
+
+
+def _copy_uac_verify_rows(source_detail: dict, live_detail: dict, spec, *,
+                          source_id, target_id) -> list[dict]:
+    """Измерения сверки для одной скопированной UAC-кампании (tp6/tp7).
+
+    Зачем отдельно от ``_copy_uac_create_live_guard``: тот решает, принять ли создание
+    (несовпало — кампания падает), но НИЧЕГО не оставляет в ``copy_verify``. Для v5-пути
+    строится 25 измерений D1-D19, для чистого UAC — ноль, и джоба показывала «сверка не
+    выполнялась» даже там, где guard всё проверил. Эти строки делают проверку видимой и
+    добавляют то, чего guard не смотрит: счётчик, цель, регионы, фид, бюджет.
+
+    Сверяем НАМЕРЕНИЕ (``spec``) с тем, что UAC реально сохранил (``live_detail``), а не
+    источник с целью: счётчик, цель, гео и фид у копии намеренно ДРУГИЕ — это и есть смысл
+    копирования в новый кабинет. С источником сравниваем только контент (картинки).
+
+    Поле, которого нет в ответе UAC, даёт ``unreadable`` — fail-safe: отсутствие данных не
+    выдаётся за расхождение (и не поднимает has_issues).
+    """
+    scope = f"uac:{target_id or source_id}"
+    rows: list[dict] = []
+
+    def _row(dimension: str, status: str, source, target, hint: str = "") -> None:
+        rows.append({
+            "scope": scope, "dimension": dimension, "status": status,
+            "source": source, "target": target, "repairable": False,
+            "repair_hint": hint,
+        })
+
+    def _cmp(dimension: str, expected, actual, *, hint: str = "") -> None:
+        if actual is None:
+            _row(dimension, "unreadable", expected, None,
+                 hint or "поле не пришло в ответе UAC /campaign/<id>")
+            return
+        _row(dimension, "ok" if expected == actual else "mismatch", expected, actual, hint)
+
+    def _num(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _ids(value):
+        if not isinstance(value, list):
+            return None
+        out = []
+        for item in value:
+            num = _num(item)
+            if num is not None:
+                out.append(num)
+        return sorted(out)
+
+    # ── контент: то же, что проверяет guard, но записанное как измерение ──
+    # ОБЕ стороны прогоняем через _copy_uac_strings: он схлопывает дубли и режет по limit.
+    # Сырой spec против нормализованного live давал ложное расхождение на любом списке
+    # с повтором — сравнивать нужно одинаково нормализованные значения.
+    for key in ("titles", "texts", "keywords"):
+        raw_expected = list(getattr(spec, key, None) or [])
+        cap = max(200, len(raw_expected))
+        expected = _copy_uac_strings(raw_expected, limit=cap)
+        actual = _copy_uac_strings(live_detail, key, limit=cap) if live_detail else None
+        _cmp(f"uac_{key}", expected, actual)
+
+    source_hashes = _copy_uac_image_hashes(source_detail)
+    target_hashes = _copy_uac_image_hashes(live_detail)
+    # картинки — единственное, что сверяется с ИСТОЧНИКОМ: они переносятся 1:1 по хэшам
+    _cmp("uac_images", len(source_hashes), len(target_hashes) if live_detail else None,
+         hint="хэши картинок переносятся 1:1; расхождение = часть не перезалилась")
+
+    # ── то, чего guard не смотрел ──
+    # Формы полей взяты из живого ответа UAC /campaign/<id> (probe 2026-08-05, porg-rgwzgo57):
+    # counters=[110881389] — СПИСОК; goals=[{goal_id:…, goal_type:…}] — список словарей;
+    # feed_id=null у МК (фид есть только у товарных). Скалярное чтение давало unreadable
+    # на всех 26 кампаниях прогона a7c535bd9ba6.
+    counters_live = _copy_uac_value(live_detail, "counters", "counter_ids", default=None)
+    expected_counter = _num(getattr(spec, "counter_id", None))
+    if isinstance(counters_live, list):
+        counter_ids = _ids(counters_live) or []
+        _cmp("uac_counter", True, expected_counter in counter_ids if expected_counter else None,
+             hint=f"счётчики кампании: {counter_ids}")
+    else:
+        _cmp("uac_counter", expected_counter, _num(counters_live))
+
+    goals_live = _copy_uac_value(live_detail, "goals", default=None)
+    expected_goal = _num(getattr(spec, "goal_id", None))
+    if isinstance(goals_live, list):
+        goal_ids = sorted({
+            _num(g.get("goal_id") if isinstance(g, dict) else g)
+            for g in goals_live
+            if _num(g.get("goal_id") if isinstance(g, dict) else g) is not None
+        })
+        _cmp("uac_goal", True, expected_goal in goal_ids if expected_goal else None,
+             hint=f"цели кампании: {goal_ids}")
+    else:
+        _cmp("uac_goal", expected_goal, _num(goals_live))
+
+    _cmp("uac_regions", _ids(getattr(spec, "region_ids", None) or []),
+         _ids(_copy_uac_value(live_detail, "regions", "region_ids", "regionIds")))
+
+    # Фид: у МК (tp6) его нет вовсе — spec и live оба пустые, это НЕ «не прочитано».
+    expected_feed = _num(getattr(spec, "feed_id", None))
+    live_feed = _num(_copy_uac_value(live_detail, "feed_id", "listings_feed_id", "feedId"))
+    if not expected_feed and live_feed is None:
+        _row("uac_feed", "ok", None, None, "кампания без фида (МК) — сверять нечего")
+    else:
+        _cmp("uac_feed", expected_feed, live_feed)
+    # Минус-слова сверяем ПО ОБЪЁМУ, а не пословно: сопоставить строки нельзя в принципе.
+    # Живой замер (porg-rgwzgo57, 2026-08-05): «екатеринбург» хранится как «екатеринбурге»,
+    # «машины» → «машина», «электроскутеры» → «электроскутер», «новый» → «нова»/«ново»,
+    # «Лада» → «лад»; стоп-слова «в»/«на»/«от» → «!в»/«!на»/«!от». Нормализация Директа
+    # непрозрачна и схлопывает совпавшие формы, поэтому и побуквенное сравнение (13 ложных
+    # «потерь» из 375), и сравнение по общей основе (порог в 5 символов не берёт «нов»)
+    # дают ложную тревогу на КАЖДОЙ кампании — а измерение, которое всегда красное,
+    # перестают читать. Ловим то, что действительно проверяемо: минус-слова доехали и их
+    # примерно столько же.
+    raw_minus = _copy_uac_strings(list(getattr(spec, "minus_keywords", None) or []), limit=500)
+    if live_detail is None:
+        _cmp("uac_minus_keywords", len(raw_minus), None)
+    else:
+        stored = len(_copy_uac_strings(live_detail, "minus_keywords", limit=500))
+        enough = stored >= round(len(raw_minus) * _UAC_MINUS_KEEP_RATIO)
+        _row("uac_minus_keywords", "ok" if enough else "mismatch", len(raw_minus), stored,
+             "Директ хранит минус-слова в своих формах и схлопывает совпавшие — точного "
+             f"равенства не ждём; порог переноса {int(_UAC_MINUS_KEEP_RATIO * 100)}% отправленных")
+    return rows
 
 
 def _copy_uac_media_urls(row: dict, *, want: str) -> list[str]:
@@ -337,12 +513,13 @@ def _copy_uac_content_media_urls(row: dict, *, want: str) -> list[str]:
     return urls
 
 
-def _copy_uac_campaign_href(row: dict, *, fallback_href: str, source_domain: str, target_domain: str) -> str:
+def _copy_uac_campaign_href(row: dict, *, fallback_href: str, source_domain: str, target_domain: str,
+                            target_site_type: str = "") -> str:
     src_href = str(_copy_uac_value(
         row, "href", "target_url", "targetUrl", "direct_url", "directUrl", default="") or "").strip()
     if not src_href:
         return fallback_href
-    copied = _copy_target_href(src_href, source_domain, target_domain)
+    copied = _copy_target_href(src_href, source_domain, target_domain, target_site_type=target_site_type)
     return copied or fallback_href
 
 
@@ -515,6 +692,10 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
 
     default_cpa = int(body.get("cpa") or 2000)
     default_budget = int(body.get("week_budget") or body.get("budget") or 5000)
+    # Баг 2/5 (расследование 2026-08-04): целевой site_type для path-ремапа в _copy_target_href
+    # (см. copy_engine._copy_run_job — считается один раз на job в body["_copy_target_site_type"]).
+    # Пусто/не найдено → _copy_target_href остаётся no-op, прежнее поведение.
+    target_site_type = str(body.get("_copy_target_site_type") or "").strip()
 
     # image_mode=upload: картинки берём из ЦЕЛЕВОГО аккаунта (уже залиты copy_other._copy_images_upload).
     # Иначе upload_content качает файл источника → одинаковый хэш и бренд-тема источника во всех копиях.
@@ -591,11 +772,11 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
             )
             sitelinks = _copy_uac_sitelinks(_copy_uac_value(d, "sitelinks", default=[]) or [],
                                             source_domain=source_domain, target_domain=target_domain,
-                                            geo_pairs=geo_pairs)
+                                            geo_pairs=geo_pairs, target_site_type=target_site_type)
             keywords = _copy_uac_keyword_strings(_copy_uac_strings(d, "keywords", limit=200), geo_pairs)
             minus_keywords = _copy_uac_geo_strings(_copy_uac_strings(d, "minus_keywords", limit=200), geo_pairs)
             keywords, minus_keywords = _copy_uac_sanitize_keywords(keywords, minus_keywords)
-            audiences = _copy_uac_value(d, "audiences", "interest_ids", default=[]) or []
+            audiences = _copy_uac_source_audiences(d)
             pricing = str(_copy_uac_value(d, "pricing", "payment_type", "paymentType", default="PER_CLICK") or "PER_CLICK")
             week_limit = _copy_uac_value(d, "week_limit", "weekly_budget", "weekBudget", default=default_budget)
             cpa = default_cpa
@@ -628,15 +809,26 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
             if feed_map and _sf and _sf in feed_map:
                 eff_target_feed = feed_map[_sf]
             feed_id = int(eff_target_feed or 0) if is_product else None
-            # Детерминированный round-robin: у каждой i-й МК свои 5 картинок из архива цели.
+            # Детерминированный round-robin: у каждой i-й МК свои картинки из архива цели.
+            # Баг 1 (расследование 2026-08-04): раньше всегда брали ровно 5 слотов через
+            # `% len(tgt_img_urls)` — при < 5 уникальных картинок в архиве это молча ДУБЛИРОВАЛО
+            # одну картинку вместо честных 5 разных (репорт «4 из 5 картинок в МК»). Теперь берём
+            # не больше уникальных, чем реально есть, и явно логируем недостачу.
             if tgt_img_urls:
-                _img = [tgt_img_urls[(cidx * 5 + k) % len(tgt_img_urls)] for k in range(5)]
+                _img_n = min(5, len(tgt_img_urls))
+                _img = [tgt_img_urls[(cidx * _img_n + k) % len(tgt_img_urls)] for k in range(_img_n)]
+                if _img_n < 5:
+                    rep["errors"].append(
+                        f"{name}: в целевом архиве только {len(tgt_img_urls)} картинок "
+                        f"(нужно 5) — кампания создана с {_img_n}"
+                    )
                 _content_ids: list[str] = []
             else:
                 _content_ids = []
                 _img = _copy_uac_target_image_urls(d)
             copy_href = _copy_uac_campaign_href(
-                d, fallback_href=target_href, source_domain=source_domain, target_domain=target_domain)
+                d, fallback_href=target_href, source_domain=source_domain, target_domain=target_domain,
+                target_site_type=target_site_type)
             # socdem источника, иначе датакласс молча подставит дефолт age_18 вместо возраста источника.
             _sd = _copy_uac_value(d, "socdem", default={}) or {}
             if not isinstance(_sd, dict):
@@ -682,7 +874,11 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
                 display_name=name,
                 pricing=pricing,
                 keywords=keywords,
-                minus_keywords=minus_keywords or ["отзывы"],
+                # Баг 3 (расследование 2026-08-04): было `minus_keywords or ["отзывы"]` — пустой
+                # список минус-слов ИСТОЧНИКА (валидный результат, не ошибка парсинга) трактовался
+                # как «нужен дефолт» и подставлял «отзывы», которого в источнике не было. Копия 1:1
+                # обязана переносить ровно то, что было — включая пустой список.
+                minus_keywords=minus_keywords,
                 sitelinks=sitelinks,
                 content_ids=_content_ids,
                 image_urls=_img,
@@ -737,6 +933,11 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
                 "name": name,
                 "kind": "uac",
                 "source_id": src_id,
+                # измерения сверки этой кампании — без них чистый UAC-прогон выглядит
+                # как «сверка не выполнялась», хотя live guard выше всё проверил
+                "verify_rows": _copy_uac_verify_rows(
+                    details_by_src.get(src_id) or {}, live, spec,
+                    source_id=src_id, target_id=int(cid)),
             }, ""
         except Exception as e:  # noqa: BLE001
             msg = str(e)[:260]

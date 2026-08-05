@@ -5,6 +5,13 @@
 > Правим локально в `home/seoadvanced`, репо — зеркало-экспорт. **Любая локальная правка сразу
 > отправляется в git:** `python3 tools/copy_service_git.py export` (commit + push зоны copy).
 
+> **Agent Board failed-copy исключение:** задачи из упавших `copy_campaigns` не пушат в copy-git.
+> Runner выдаёт isolated checkout `/var/lib/agent-board/copy-runner/tasks/<task_id>/home/seoadvanced`,
+> проверенная правка переносится в Mutagen checkout `/opt/scripts/home/seoadvanced/direct` под
+> `AGENT_BOARD_COPY_PUBLISH_LOCK`. После `done` Agent Board retry-daemon `direct-copy.service`
+> сам создаёт повторную `copy_campaigns` job и связывает её через `copy_retry_job_id`; руками дубль
+> не создавать без отдельной причины.
+
 Сессии 2026-07-16 → 2026-07-17.
 
 ## Сессия 2026-07-31 — copy adPrice: минимум фида для `Общее`/прочих СТ

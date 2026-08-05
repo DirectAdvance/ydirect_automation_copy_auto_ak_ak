@@ -31,7 +31,7 @@ from .job_repository import (
     _JOB_DB_LAST,
     _jobs_db_init, _job_db_save, _job_db_get, _job_db_active_by_login,
     _job_db_set_status, _job_control_set, _jobs_db_mark_stale_running,
-    _deferred_db_init, _deferred_set_status, _deferred_bump_resume_at,
+    _deferred_db_init, _deferred_save, _deferred_set_status, _deferred_bump_resume_at,
     _delayed_repair_db_init, _delayed_repair_set_status, _delayed_content_repair_save,
     _supersede_delayed_repairs_for_login, _ready_logins_db_init, _ready_login_upsert,
     _ready_login_remove,
@@ -70,6 +70,7 @@ _CREATE_SET_SLA_PER_CAMPAIGN_SEC = int(os.environ.get("DIRECT_CREATE_SET_SLA_PER
 _CREATE_SET_SLA_MIN_SEC = int(os.environ.get("DIRECT_CREATE_SET_SLA_MIN_SEC", "900"))
 _CREATE_FINALIZE_TIMEOUT = int(os.environ.get("DIRECT_CREATE_FINALIZE_TIMEOUT", "900"))
 _CREATE_WATCHDOG_POLL = 30
+_CREATE_WATCHDOG_TICK_LOCK = threading.Lock()   # single-flight: один тик watchdog одновременно
 _DCR_DETACH_PARENT = os.environ.get("DIRECT_DCR_DETACH_PARENT", "1") not in ("0", "false", "False", "no")
 _CREATE_DRAIN = {"on": False}
 _WORKER_POLLER = {"started": False}
@@ -133,6 +134,8 @@ _create_set_live_verification = _run_spec_audit_and_fix = _finalize_queue_module
 _delete_drafts_core = _create_set_response = _auto_queue_recreate_after_done = _missing
 _prefetch_start = _missing
 _set_llm_heartbeat_job = _missing
+_rule_sets = _missing
+_enabled_minus_words = _missing
 
 
 def _direct_role() -> str:
@@ -144,11 +147,12 @@ def _worker_scope() -> str:
     """Какие джобы обслуживает воркер-процесс (Фаза 2 разделения слепков):
       'create' (дефолт) — создание РК/докрутка/delete_drafts (direct-create-worker.service);
       'slepki'          — ТОЛЬКО edit-джобы структуры/контента слепков (direct-slepki-worker.service).
+      'copy'            — ТОЛЬКО copy_campaigns (direct-copy.service).
     Разделяет claim/recover ОДНОЙ общей таблицы direct_automation_jobs между двумя воркерами, чтобы
     деплой кода слепков рестартил только slepki-worker, а create-worker не трогал очередь слепков и
     наоборот (структурная изоляция, как kind<>'copy_campaigns' у direct-copy.service)."""
     s = (os.environ.get("DIRECT_WORKER_SCOPE") or "create").strip().lower()
-    return s if s in ("create", "slepki") else "create"
+    return s if s in ("create", "slepki", "copy") else "create"
 
 
 _EDIT_KINDS_SQL: list = sorted(_sed._EDIT_KINDS)   # неизменный набор → считаем один раз на импорте
@@ -157,6 +161,27 @@ _EDIT_KINDS_SQL: list = sorted(_sed._EDIT_KINDS)   # неизменный наб
 def _edit_kinds_list() -> list:
     """edit-виды джоб слепков (kind-колонка) для SQL-фильтров claim/recover (psycopg2 = ANY(%s))."""
     return _EDIT_KINDS_SQL
+
+
+def _worker_kind_predicate() -> str:
+    scope = _worker_scope()
+    if scope == "copy":
+        return "AND coalesce(kind,'') = 'copy_campaigns' "
+    if scope == "slepki":
+        return "AND coalesce(kind,'') = ANY(%s) "
+    return "AND coalesce(kind,'') <> 'copy_campaigns' AND NOT (coalesce(kind,'') = ANY(%s)) "
+
+
+def _worker_kind_params() -> tuple:
+    return () if _worker_scope() == "copy" else (_edit_kinds_list(),)
+
+
+def _worker_is_create_scope() -> bool:
+    return _worker_scope() == "create"
+
+
+def _worker_can_poll_db_queue() -> bool:
+    return _direct_role() == "worker" or _worker_scope() == "copy"
 
 def _worker_request_drain() -> None:
     """SIGTERM handler в worker_main: включить drain и разбудить всех ждущих воркеров."""
@@ -588,10 +613,30 @@ def _create_watchdog_tick() -> None:
     _jobs_db_mark_stale_running(_CREATE_RUNNING_TIMEOUT)
     _agency_gate_sweep()                                  # освободить слоты агентств крашнутых/терминальных джоб
 
+def _create_watchdog_tick_async() -> None:
+    """Тик в отдельном потоке, но НЕ БОЛЬШЕ ОДНОГО одновременно.
+
+    Тик выносится из loop'а, чтобы залипшая БД не останавливала `_jobs_purge_old`. Без
+    single-flight каждые `_CREATE_WATCHDOG_POLL` секунд рождался новый поток поверх залипшего:
+    потоки копились, а два одновременных тика могли дважды свалить одну и ту же зависшую джобу
+    и дважды поставить delayed repair.
+    """
+    if not _CREATE_WATCHDOG_TICK_LOCK.acquire(blocking=False):
+        return
+
+    def _run() -> None:
+        try:
+            _create_watchdog_tick()
+        finally:
+            _CREATE_WATCHDOG_TICK_LOCK.release()
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def _create_watchdog_loop() -> None:
     while True:
         try:
-            _create_watchdog_tick()
+            _create_watchdog_tick_async()
             _jobs_purge_old()
         except Exception:  # noqa: BLE001
             pass
@@ -1103,6 +1148,45 @@ def _parent_absorb_child_progress(parent_jid: str, child_jid: str, created: int,
     except Exception:  # noqa: BLE001 — вливание best-effort
         pass
 
+def _parent_mark_complete_if_live_full(parent_jid: str, login: str, body: dict) -> bool:
+    """Clear stale abort metadata when child resumes made every planned position live."""
+    try:
+        parent = _job_db_get(parent_jid) or {}
+        total = int(parent.get("total") or 0)
+        if not total or str(parent.get("status") or "") != "done" or int(parent.get("failed") or 0) > 0:
+            return False
+        items = (body or {}).get("items") or []
+        if not items:
+            return False
+        rows = _grid_list_campaigns(login) or []
+        names = {str(r.get("name") or "").strip() for r in rows if r.get("name")}
+        if not names:
+            return False
+        missing = [it for it in items
+                   if not _position_live_in_names(str((it or {}).get("name") or ""), names)]
+        if missing:
+            return False
+        def _m(job, result):
+            job["done"] = total
+            job["created"] = max(int(job.get("created") or 0), total)
+            job["failed"] = 0
+            job["status"] = "done"
+            job["error"] = None
+            if result.get("abort_reason") == "llm_unavailable":
+                result.pop("abort_reason", None)
+            if "LLM-гейт" in str(result.get("error") or ""):
+                result.pop("error", None)
+            result["agent_board_resume_status"] = "done"
+            result["live_completion"] = {
+                "planned": len(items),
+                "missing": 0,
+                "checked_at": int(time.time()),
+            }
+            return True
+        return bool(_parent_update(parent_jid, _m))
+    except Exception:  # noqa: BLE001 - cleanup is best-effort only
+        return False
+
 def _merge_resume_into_parent(jid: str, job_final: dict, body: dict) -> None:
     """Финальное вливание дочерней добивки (докрутка/доставка/recreate) в родительскую карточку
     (Семён 2026-07-06/07: «по карточке видно сколько создалось/добилось/готово»). Дельтами через
@@ -1115,6 +1199,25 @@ def _merge_resume_into_parent(jid: str, job_final: dict, body: dict) -> None:
     _parent_absorb_child_progress(
         parent_jid, jid, int(job_final.get("created") or 0),
         int(job_final.get("failed") or 0), _du, final=True)
+    try:
+        parent = _job_db_get(parent_jid) or {}
+        total = int(parent.get("total") or 0)
+        created = int(parent.get("created") or 0)
+        failed = int(parent.get("failed") or 0)
+        pbody = parent.get("body") or {}
+        if isinstance(pbody, str):
+            try:
+                pbody = json.loads(pbody)
+            except Exception:  # noqa: BLE001
+                pbody = {}
+        if total and failed <= 0 and _parent_mark_complete_if_live_full(
+            parent_jid, parent.get("login") or "", pbody
+        ):
+            return
+        if total and (failed > 0 or created < total):
+            _requeue_missing_positions_once(parent_jid, parent.get("login") or "", pbody)
+    except Exception:  # noqa: BLE001 - parent merge is done; requeue is best-effort
+        pass
 
 def _cancel_children_of(parent_jid: str) -> int:
     """Отмена родителя каскадом гасит его активные дочерние джобы (докрутка/доставка/recreate)
@@ -1272,8 +1375,19 @@ def _run_delayed_content_repair(row: dict) -> None:
         # осел, поэтому недобор «build ⇄ кабинет» здесь дефект (error + repair-кандидат), а не
         # «демон ещё доливает» (warn in-job). Без явного phase дефолт "in_job" глушил бы
         # BUILD_LIVE_UNDERCOUNT до warn во ВСЕЙ отложенной ветке (ревью этапа 1, находка A1-б).
+        try:
+            _rules = _rule_sets(
+                body.get("site_type") or body.get("eff_site") or body.get("type_site") or "",
+                body.get("city") or "*",
+            )
+        except Exception:
+            _rules = {}
+        # GLOBAL_MINUS_NEVER_REACHES_CAMPAIGN (ERRORS_JOURNAL 2026-08-05): без global_minus_words
+        # GLOBAL_MINUS_CAMPAIGN_MISSING никогда не срабатывает (exp["global_minus_words"] пуст).
+        # tp-охват (tp2-tp5, не tp1, не tp6/7) — внутри grid_content_verifier.verify_grid_content.
         lv = _create_set_live_verification(login, results_tree, agency=agency, use_v5=False,
-                                           phase="delayed")
+                                           expected_rules=_rules, phase="delayed",
+                                           global_minus_words=_enabled_minus_words())
         pl = (lv or {}).get("repair_plan") or {}
         summ = rgate.summarize_repair_gate(body, results_tree, pl)
         # ВСЕ in-place действия, которые реально исполняет execute_all_in_place (keywords_repair /
@@ -1748,11 +1862,117 @@ def _deferred_enqueue_now(app, did: str) -> tuple | None:
     _deferred_set_status(did, "resumed", "запущено вручную (куки/сейчас) — поставлено в очередь (приоритет)")
     return jid, len(items), login, ag
 
+def _schedule_agent_board_create_content_resumes(app, *, limit: int = 3) -> int:
+    """Plan deferred resume rows for create jobs whose Agent Board content task is done.
+
+    Agent Board supplies ready JSON content, but actual campaign creation must still go
+    through the normal create worker. Saving a deferred row reuses the existing
+    idempotent resume path: active-deferred dedup, priority child job, and parent
+    progress merge via ``_resume_of``.
+    """
+    try:
+        from ..agent_board_bridge import (
+            create_content_agent_resumes_ready,
+            mark_create_content_agent_resume_deferred,
+        )
+    except Exception:  # noqa: BLE001
+        return 0
+    try:
+        rows = create_content_agent_resumes_ready(_victory_conn_rw, limit=limit)
+    except Exception:  # noqa: BLE001
+        return 0
+    planned = 0
+    for row in rows:
+        try:
+            parent_jid = str(row.get("job_id") or "").strip()
+            login = str(row.get("login") or "").strip()
+            if not parent_jid or not login:
+                continue
+            if _job_db_active_by_login(login):
+                continue
+            body = row.get("body") or {}
+            if isinstance(body, str):
+                try:
+                    body = json.loads(body)
+                except Exception:  # noqa: BLE001
+                    continue
+            item_names = [str(x).strip() for x in (row.get("_agent_board_item_names") or []) if str(x).strip()]
+            content = row.get("_agent_board_content") or {}
+            all_items = body.get("items") or []
+            target = None
+            for item_name in item_names:
+                target = next((dict(it) for it in all_items
+                               if str((it or {}).get("name") or "").strip() == item_name), None)
+                if target:
+                    break
+            if not target:
+                continue
+            for key in ("titles", "texts", "sitelinks", "title2"):
+                if content.get(key):
+                    target[key] = content[key]
+            stage_task_id = ""
+            try:
+                _stage_tasks.ensure_schema(_victory_conn_rw)
+                stage_task_id = _stage_tasks.enqueue(
+                    _stage_tasks.STAGE_CONTENT,
+                    {
+                        "agent_board_task_id": int(row.get("agent_board_task_id") or 0),
+                        "content_payload": content,
+                        "parent_job_id": parent_jid,
+                        "item_name": target.get("name") or "",
+                    },
+                    parent_job_id=parent_jid,
+                    item_name=target.get("name") or "",
+                    login=login,
+                    agency=(row.get("agency") or body.get("agency") or ""),
+                    dedupe_key=f"content:{parent_jid}:{target.get('name') or ''}",
+                )
+            except Exception as exc:  # noqa: BLE001 - stage audit must not block create resume
+                print(f"[create-agent-board-resume] content-stage enqueue skipped: {str(exc)[:160]}",
+                      flush=True)
+            resume_body = dict(body)
+            resume_body["items"] = [target]
+            resume_body["_resume_via_token"] = True
+            resume_body["_agent_board_content_resume"] = True
+            resume_body["_agent_board_content_task_id"] = int(row.get("agent_board_task_id") or 0)
+            if stage_task_id:
+                resume_body["_content_stage_task_id"] = stage_task_id
+            did = _deferred_save(
+                login,
+                (row.get("agency") or body.get("agency") or ""),
+                resume_body,
+                [target],
+                parent_jid,
+                resume_count=0,
+                resume_at=None,
+            )
+            if not did:
+                continue
+            mark_create_content_agent_resume_deferred(
+                _victory_conn_rw,
+                parent_jid,
+                did,
+                task_id=int(row.get("agent_board_task_id") or 0),
+                item_names=[target.get("name") or ""],
+            )
+            planned += 1
+            print(f"[create-agent-board-resume] parent={parent_jid} deferred={did} "
+                  f"task=#{row.get('agent_board_task_id')} item={str(target.get('name') or '')[:120]}",
+                  flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[create-agent-board-resume] skipped: {type(exc).__name__}: {str(exc)[:160]}",
+                  flush=True)
+    return planned
+
 def _resume_daemon_loop(app) -> None:
     """Фоновый демон: раз в ~10 мин докручивает остатки, у которых наступил resume_at и есть баллы."""
     import psycopg2.extras
     while True:
         rows = []
+        try:
+            _schedule_agent_board_create_content_resumes(app)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             conn = _victory_conn_rw()
             try:
@@ -2104,6 +2324,15 @@ def _copy_worker_result_from_copy_job(copy_job: dict) -> dict:
     return out
 
 
+def _copy_worker_db_bootstrap() -> None:
+    """Best-effort DB bootstrap for direct-copy.service without blocking Flask bind."""
+    try:
+        _jobs_db_init()                                   # схема таблицы (mirror прогресса копирования)
+        _copy_jobs_recover()                              # crash-cleanup ТОЛЬКО своих copy-джоб
+    except Exception as e:  # noqa: BLE001
+        print(f"[copy-startup] db bootstrap skipped: {str(e)[:160]}", flush=True)
+
+
 def _copy_agent_retry_daemon_loop(app) -> None:
     """When a linked Agent Board task is done, requeue the failed copy job once."""
     while True:
@@ -2149,15 +2378,6 @@ def _ensure_copy_agent_retry_daemon(app) -> None:
             return
         _COPY_AGENT_RETRY_DAEMON["started"] = True
     threading.Thread(target=_copy_agent_retry_daemon_loop, args=(app,), daemon=True).start()
-
-
-def _copy_worker_db_bootstrap() -> None:
-    """Best-effort DB bootstrap for direct-copy.service without blocking Flask bind."""
-    try:
-        _jobs_db_init()                                   # схема таблицы (mirror прогресса копирования)
-        _copy_jobs_recover()                              # crash-cleanup ТОЛЬКО своих copy-джоб
-    except Exception as e:  # noqa: BLE001
-        print(f"[copy-startup] db bootstrap skipped: {str(e)[:160]}", flush=True)
 
 
 def _write_gate_owner(job_kind: str) -> str:
@@ -2391,6 +2611,10 @@ def _create_worker_loop(app):
                     if data:
                         j["created"] = data.get("created", j["created"])
                         j["failed"] = data.get("failed", j["failed"])
+                    if isinstance(data, dict):
+                        _stage_metrics = _stage_timing.snapshot(jid, reset=True)
+                        if _stage_metrics:
+                            data.setdefault("stage_metrics", _stage_metrics)
                     _st, _err = terminal_status_for_job(j.get("kind"), data, cancelled=bool(j.get("cancel")))
                     j["status"] = _st
                     if _err:
@@ -2592,9 +2816,10 @@ def _ensure_copy_worker(app):
     в собственной in-memory очереди этого процесса.
 
     Умышленно НЕ поднимает create-set инфраструктуру: НЕТ _jobs_db_recover (деструктивен для
-    общей таблицы), НЕТ startup-sweep пустых черновиков, НЕТ resume/delayed-repair демонов и НЕТ
-    web-posted поллера. Поэтому рестарт этого сервиса НИКОГДА не трогает очередь создания РК, а
-    рестарт direct.service не трогает копирование (его recover исключает kind='copy_campaigns')."""
+    общей таблицы), НЕТ startup-sweep пустых черновиков, НЕТ resume/delayed-repair демонов.
+    DB-поллер включён только в scope='copy' и забирает только kind='copy_campaigns'. Поэтому рестарт
+    этого сервиса НИКОГДА не трогает очередь создания РК, а рестарт direct.service не трогает
+    копирование (его recover исключает kind='copy_campaigns')."""
     with _CREATE_JOBS_LOCK:
         if _CREATE_WORKER["started"]:
             return
@@ -2602,10 +2827,11 @@ def _ensure_copy_worker(app):
     threading.Thread(target=_copy_worker_db_bootstrap, daemon=True).start()
     _ensure_create_watchdog()                             # heartbeat зависших джоб (по in-memory этого процесса)
     _ensure_copy_agent_retry_daemon(app)                  # Agent Board done → повтор failed copy job
-    threading.Thread(target=_create_watchdog_tick, daemon=True).start()
+    _create_watchdog_tick()
     workers = int(_CREATE_WORKERS or _create_workers_count())
     for _ in range(workers):                              # параллельно по разным агентствам
         threading.Thread(target=_create_worker_loop, args=(app,), daemon=True).start()
+    _ensure_worker_poller(app)                            # DB queued copy_campaigns → in-memory copy queue
 
 
 def _slepki_jobs_recover() -> None:
@@ -2666,8 +2892,9 @@ def _worker_claim_web_jobs() -> list:
         conn = _victory_conn_rw()
         try:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            # scope='copy'   → берём ТОЛЬКО copy_campaigns (direct-copy.service);
             # scope='slepki' → берём ТОЛЬКО edit-джобы слепков (kind ∈ _EDIT_KINDS);
-            # scope='create' (дефолт) → берём всё КРОМЕ copy_campaigns и edit-видов слепков.
+            # scope='create' → берём всё КРОМЕ copy_campaigns и edit-видов слепков.
             # ⛔ kind <> 'copy_campaigns': очередь КОПИРОВАНИЯ принадлежит direct-copy.service и
             # исполняется им же (DIRECT_ROLE=all). Без этого фильтра воркер СОЗДАНИЯ забирал
             # copy-джобы себе — со своим стейл-кэшем модуля direct_copy и своим in-memory
@@ -2676,11 +2903,7 @@ def _worker_claim_web_jobs() -> list:
             # ⛔ NOT (kind = ANY edit): edit-джобы слепков с 2026-07-17 обслуживает отдельный
             # direct-slepki-worker.service (Фаза 2). Раньше изоляция держалась ТОЛЬКО на env
             # DIRECT_ROLE; теперь она структурная — по kind в общей таблице.
-            _ek = _edit_kinds_list()
-            if _worker_scope() == "slepki":
-                _kind_pred = "AND coalesce(kind,'') = ANY(%s) "
-            else:
-                _kind_pred = "AND coalesce(kind,'') <> 'copy_campaigns' AND NOT (coalesce(kind,'') = ANY(%s)) "
+            _kind_pred = _worker_kind_predicate()
             cur.execute(
                 "UPDATE direct_automation.jobs SET status='claimed', updated_at=now() "
                 "WHERE job_id IN ("
@@ -2689,7 +2912,7 @@ def _worker_claim_web_jobs() -> list:
                 "       " + _kind_pred +
                 "     ORDER BY (coalesce(body->>'_priority','')='true') DESC, created_at "
                 "     LIMIT 10 FOR UPDATE SKIP LOCKED) "
-                "RETURNING job_id, login, total, body", (_ek,))
+                "RETURNING job_id, login, total, body", _worker_kind_params())
             rows = cur.fetchall() or []
             conn.commit()
             return rows
@@ -2760,7 +2983,7 @@ def _worker_expire_awaiting_feed() -> None:
     """web-роль поставила ожидание решения по фиду; дедлайн истёк → запускаем без фида (worker-время)."""
     # awaiting_feed_decision бывает ТОЛЬКО у создания РК — slepki-worker не трогает эти строки
     # (Фаза 2: изоляция scope, иначе slepki-процесс писал бы в чужие create-джобы каждые 2с).
-    if _worker_scope() == "slepki":
+    if not _worker_is_create_scope():
         return
     try:
         conn = _victory_conn_rw()
@@ -2787,20 +3010,17 @@ def _worker_apply_controls() -> None:
     scope-фильтр ОБЯЗАТЕЛЕН (Фаза 2): без него slepki-worker читал бы control ЧУЖИХ create-джоб,
     не находил их в своей памяти (j=None) и всё равно обнулял control → create-worker не видел
     cancel и отменённая джоба продолжала исполняться (гонка двух поллеров). Каждый воркер трогает
-    только control джоб СВОЕГО scope: slepki → edit-виды; create → всё кроме copy_campaigns/edit."""
+    только control джоб СВОЕГО scope: copy → copy_campaigns; slepki → edit-виды;
+    create → всё кроме copy_campaigns/edit."""
     import psycopg2.extras
-    _ek = _edit_kinds_list()
-    if _worker_scope() == "slepki":
-        _ctl_pred = "AND coalesce(kind,'') = ANY(%s)"
-    else:
-        _ctl_pred = "AND coalesce(kind,'') <> 'copy_campaigns' AND NOT (coalesce(kind,'') = ANY(%s))"
+    _ctl_pred = _worker_kind_predicate()
     rows = []
     try:
         conn = _victory_conn_rw()
         try:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             cur.execute("SELECT job_id, control FROM direct_automation.jobs "
-                        "WHERE control IS NOT NULL " + _ctl_pred, (_ek,))
+                        "WHERE control IS NOT NULL " + _ctl_pred, _worker_kind_params())
             rows = cur.fetchall() or []
         finally:
             conn.close()
@@ -2862,14 +3082,10 @@ def _worker_reclaim_stuck_claimed() -> None:
             cur = conn.cursor()
             # scope-гард: возвращаем в очередь ТОЛЬКО claimed СВОЕГО scope, чтобы create-worker и
             # slepki-worker не дёргали чужие зависшие claimed (иначе гонка «вернул→чужой ре-клеймит»).
-            _ek = _edit_kinds_list()
-            if _worker_scope() == "slepki":
-                _stale_pred = "AND coalesce(kind,'') = ANY(%s)"
-            else:
-                _stale_pred = "AND coalesce(kind,'') <> 'copy_campaigns' AND NOT (coalesce(kind,'') = ANY(%s))"
+            _stale_pred = _worker_kind_predicate()
             cur.execute("SELECT job_id FROM direct_automation.jobs "
                         "WHERE status='claimed' AND updated_at < now() - interval '5 minutes' "
-                        + _stale_pred, (_ek,))
+                        + _stale_pred, _worker_kind_params())
             stale = [r[0] for r in (cur.fetchall() or []) if r[0] not in known]
             if stale:
                 cur.execute("UPDATE direct_automation.jobs SET status='queued', "
@@ -2954,9 +3170,12 @@ def _worker_poll_loop(app) -> None:
         time.sleep(_WORKER_POLL_SEC)
 
 def _ensure_worker_poller(app) -> None:
-    """Стартует БД-поллер web-posted джоб. Только worker-роль (в 'all' постановка идёт in-memory,
-    web-posted джоб нет; в 'web' воркеров нет)."""
-    if _direct_role() != "worker":
+    """Стартует БД-поллер web-posted джоб.
+
+    worker-роль нужна create/slepki-процессам. copy-scope разрешён и при DIRECT_ROLE=all:
+    direct-copy.service одновременно принимает HTTP-запросы и владеет copy-очередью.
+    """
+    if not _worker_can_poll_db_queue():
         return
     with _CREATE_JOBS_LOCK:
         if _WORKER_POLLER["started"]:

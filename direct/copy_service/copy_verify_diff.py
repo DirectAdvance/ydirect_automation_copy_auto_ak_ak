@@ -78,6 +78,23 @@ def diff_profiles(src_profile: Dict[str, dict],
             return _EXCLUDED
         return _MISMATCH
 
+    def _target_extra_optional_status(source: Any, target: Any) -> str:
+        """Extra target-only optional assets are not a failed copy.
+
+        The settled gate must catch loss from source to target. Some postprocess
+        steps can leave harmless target-only enrichments (campaign-level sitelinks,
+        videos, listing filters) even when the source count was zero; those should
+        stay visible in the report without blocking the retry loop.
+        """
+        if source == target:
+            return _OK
+        try:
+            if int(source or 0) == 0 and int(target or 0) > 0:
+                return _EXCLUDED
+        except (TypeError, ValueError):
+            pass
+        return _MISMATCH
+
     def _hint_with_ad_cap(base: str, status: str) -> str:
         if status == _EXCLUDED:
             return (
@@ -256,10 +273,18 @@ def diff_profiles(src_profile: Dict[str, dict],
                                 repairable=True,
                                 repair_hint="campaigns_edit_rows не вернул campaign-level быстрые ссылки"))
         else:
+            _st8c = _OK if s8c == t8c else _MISMATCH
+            if not s8c and t8c and bool(s8) and bool(t8):
+                _st8c = _EXCLUDED
             results.append(_row(scope, "sitelinks_campaign_level_present",
-                                _OK if s8c == t8c else _MISMATCH, s8c, t8c,
-                                repairable=True,
-                                repair_hint="step_attach_sitelinks переносит inheritableSitelinkSet 1:1 по campaign"))
+                                _st8c, s8c, t8c,
+                                repairable=(_st8c != _EXCLUDED),
+                                repair_hint=(
+                                    "target-only campaign-level sitelinks are accepted when "
+                                    "overall sitelinks_present matches"
+                                    if _st8c == _EXCLUDED
+                                    else "step_attach_sitelinks переносит inheritableSitelinkSet 1:1 по campaign"
+                                )))
 
         s8a = src_c.get("ad_sitelinks_count")
         t8a = tgt_c.get("ad_sitelinks_count")
@@ -348,6 +373,8 @@ def diff_profiles(src_profile: Dict[str, dict],
                                             "target adaptive_ads_for_update не прочитан"))
         else:
             _st13 = _status_with_ad_cap(src_c, "ads_with_video", s13, t13)
+            if _st13 == _MISMATCH:
+                _st13 = _target_extra_optional_status(s13, t13)
             results.append(_row(scope, "ads_with_video",
                                 _st13, s13, t13,
                                 repairable=(_st13 != _EXCLUDED),
@@ -479,9 +506,9 @@ def diff_profiles(src_profile: Dict[str, dict],
                                     repair_hint="direct_copy.phase_upload должен создать ListingAd 1в1"))
         elif t19l is not None and t19l > 0:
             results.append(_row(scope, "listing_filter_count",
-                                _MISMATCH, 0, t19l,
+                                _target_extra_optional_status(0, t19l), 0, t19l,
                                 repairable=False,
-                                repair_hint="На цели LISTING_AD без источника — лишние объявления"))
+                                repair_hint="Target-only ListingAd filters are reported but do not block copy"))
 
         src_listing_sig = _project_group_signatures(
             src_c.get("listing_filter_signatures_by_group")

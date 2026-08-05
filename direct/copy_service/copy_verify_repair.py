@@ -14,7 +14,7 @@ from .copy_verify_utils import (
     _nolog, _rj, _rj_dict, _strip_domain,
 )
 from . import copy_verify_state as _state
-from .copy_keyword_phrase import clean_keyword_phrase
+from .copy_keyword_phrase import DIRECT_KEYWORD_MAX_POSITIVE_WORDS, clean_keyword_phrase
 
 
 def _repair_shared_sets(
@@ -470,9 +470,10 @@ def _repair_keywords(
         for i in range(0, len(seq), n):
             yield seq[i:i + n]
 
-    def _live_kw(tgt_cid: int) -> Dict[int, set]:
-        """{tgt_gid: {phrase_lower}} — живые ключи цели по кампании (постранично)."""
+    def _live_kw(tgt_cid: int) -> tuple[Dict[int, set], int]:
+        """({tgt_gid: {phrase_lower}}, live_count) — живые ключи цели по кампании."""
         out: Dict[int, set] = {}
+        total = 0
         offset = 0
         while True:
             j = _state._v5_call("keywords", "get", token, target_login, {
@@ -481,13 +482,14 @@ def _repair_keywords(
                 "Page": {"Limit": 10000, "Offset": offset},
             })
             batch = (j.get("result") or {}).get("Keywords") or []
+            total += len(batch)
             for kw in batch:
                 out.setdefault(int(kw.get("AdGroupId") or 0), set()).add(
                     str(kw.get("Keyword") or "").strip().lower())
             if len(batch) < 10000:
                 break
             offset += 10000
-        return out
+        return out, total
 
     for row in rows_kw:
         scope = row.get("scope", "")
@@ -511,16 +513,33 @@ def _repair_keywords(
             if cgm and geo_pairs:
                 p2, _n = cgm.apply_replacements(phrase, geo_pairs)
                 phrase = (p2 or "").strip() or phrase
-            phrase = clean_keyword_phrase(phrase, geo_pairs)
+            phrase = clean_keyword_phrase(
+                phrase,
+                geo_pairs,
+                max_positive_words=DIRECT_KEYWORD_MAX_POSITIVE_WORDS,
+            )
             if not phrase:
                 continue
             desired.setdefault(int(tgt_g), set()).add(phrase)
         if not desired:
             continue
         try:
-            live = _live_kw(tgt_cid)
+            live, live_total = _live_kw(tgt_cid)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"repair_keywords {tgt_cid}: live get: {str(exc)[:150]}")
+            continue
+        try:
+            source_total = int(row.get("source") or 0)
+        except (TypeError, ValueError):
+            source_total = 0
+        if source_total > 0 and live_total >= source_total:
+            row["target"] = live_total
+            if live_total == source_total:
+                row["status"] = _OK
+            log(
+                f"repair keywords {tgt_cid}: пропуск — live_count={live_total} "
+                f">= source_count={source_total}"
+            )
             continue
         to_add = [
             {"AdGroupId": gid, "Keyword": ph}
@@ -529,9 +548,24 @@ def _repair_keywords(
             if ph.strip().lower() not in live.get(gid, set())
         ]
         if not to_add:
+            row["target"] = live_total
+            if source_total > 0 and live_total == source_total:
+                row["status"] = _OK
             continue
         added = 0
-        for batch in _chunks(to_add, 900):
+        batches_sent = 0
+        cursor = 0
+        while cursor < len(to_add):
+            if source_total > 0:
+                deficit = source_total - live_total
+                if deficit <= 0:
+                    break
+                batch_size = min(900, deficit)
+            else:
+                batch_size = 900
+            batch = to_add[cursor:cursor + batch_size]
+            cursor += batch_size
+            batches_sent += 1
             try:
                 j = _state._v5_call("keywords", "add", token, target_login, {"Keywords": batch})
             except Exception as exc:  # noqa: BLE001
@@ -544,16 +578,22 @@ def _repair_keywords(
             for ar in ((j.get("result") or {}).get("AddResults") or []):
                 if isinstance(ar, dict) and ar.get("Id"):
                     added += 1
+            try:
+                live, live_total = _live_kw(tgt_cid)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"repair_keywords {tgt_cid}: post-add live get: {str(exc)[:150]}")
+                break
         if added:
             repairs.append({"scope": scope, "dimension": "keyword_count",
-                            "action": "add_keywords", "added": added})
-            try:
-                row["target"] = int(row.get("target") or 0) + added
-                if str(row.get("target")) == str(row.get("source")):
-                    row["status"] = _OK
-            except (TypeError, ValueError):
-                pass
-            log(f"repair keywords {tgt_cid}: дозалито {added} (недоставало {len(to_add)})")
+                            "action": "add_keywords", "added": added,
+                            "live_count": live_total, "batches": batches_sent})
+            row["target"] = live_total
+            if source_total > 0 and live_total == source_total:
+                row["status"] = _OK
+            log(
+                f"repair keywords {tgt_cid}: дозалито {added}, "
+                f"live_count={live_total}, source_count={source_total or 'unknown'}"
+            )
 
 
 def run_copy_repair(

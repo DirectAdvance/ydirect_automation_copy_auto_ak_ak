@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import Callable, Optional
 
+from ..clients import grid_finalize as gf
 from .copy_context import CopyCtx, _noop_log
 from .copy_step_utils import _chunks, _rj, _v5_add_err, _wj
 
@@ -112,7 +113,7 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
     grid, апдейтера или маппинга — пропуск с отчётом, job не падает."""
     rep = {"src_ads_read": 0, "candidates": 0, "updated": 0, "geo_applied": 0,
            "images_remapped": 0, "images_uploaded": 0, "images_downloaded": 0,
-           "images_filled": 0, "multicards_remapped": 0,
+           "images_filled": 0, "multicards_remapped": 0, "multicards_skipped": 0,
            "no_target": 0, "no_content": 0, "errors": []}
     if ctx.grid is None:
         rep["errors"].append("нет target grid — адаптивы пропущены")
@@ -223,8 +224,15 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
                 "text": card.get("text") or None,
             })
         if new_multicards:
-            item["multicards"] = new_multicards
-            rep["multicards_remapped"] += len(new_multicards)
+            # Часть карточек могла отвалиться на ремапе хэша (нет картинки на цели). Остаток
+            # вне [2..10] Grid не примет и отвергнет ВЕСЬ item — тогда карусель не шлём, чтобы
+            # тексты/картинки/цена объявления всё-таки доехали.
+            _cards = gf.grid_multicards_for_write(new_multicards)
+            if _cards is None:
+                rep["multicards_skipped"] += len(new_multicards)
+            else:
+                item["multicards"] = _cards
+                rep["multicards_remapped"] += len(_cards)
         # отображаемая ссылка источника (linkTail) — часть контента 1:1; иначе на target останется
         # то, что переживёт full-replace (у копий это null)
         if comp.get("displayHref"):

@@ -4,10 +4,35 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 from ..clients import grid_create as gc
 from ..clients import grid_finalize as gf
 from ..core import campaign as cmc
+
+
+def _copy_strip_graphql_typenames(value: Any):
+    """Drop GraphQL read-only metadata before copy-service reuses Grid rows as mutation input."""
+    if isinstance(value, dict):
+        return {k: _copy_strip_graphql_typenames(v) for k, v in value.items() if k != "__typename"}
+    if isinstance(value, list):
+        return [_copy_strip_graphql_typenames(v) for v in value]
+    return value
+
+
+class _CopyGridCreateClient(gc.GridCreateClient):
+    def _mutate(self, op: str, query: str, variables: dict) -> dict:
+        return super()._mutate(op, query, _copy_strip_graphql_typenames(variables))
+
+
+def _copy_create_full_sanitized(*args, **kwargs) -> dict:
+    """Run gc.create_full with copy-service input sanitizer on every Grid mutation."""
+    orig_client = gc.GridCreateClient
+    gc.GridCreateClient = _CopyGridCreateClient
+    try:
+        return gc.create_full(*args, **kwargs)
+    finally:
+        gc.GridCreateClient = orig_client
 
 
 def _engine():
@@ -294,7 +319,9 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
         old_cid = int(camp["id"])
         old_name = str(camp.get("name") or "")
         new_name = ce._copy_normalize_campaign_name(old_name, replacements, target_r_code)
-        base_href = ce._copy_target_href(((camp.get("additionalData") or {}).get("href")), src_domain, target_domain)
+        base_href = ce._copy_target_href(
+            ((camp.get("additionalData") or {}).get("href")), src_domain, target_domain,
+            target_site_type=str(body.get("_copy_target_site_type") or ""))
         src_groups = groups_by_campaign.get(old_cid) or []
         if not src_groups:
             results.append({"ok": False, "source_id": old_cid, "name": new_name, "error": "нет групп в Grid snapshot"})
@@ -317,7 +344,9 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
             href = base_href
             for ad in text_ads:
                 if ad.get("href"):
-                    href = ce._copy_target_href(ad.get("href"), src_domain, target_domain)
+                    href = ce._copy_target_href(
+                        ad.get("href"), src_domain, target_domain,
+                        target_site_type=str(body.get("_copy_target_site_type") or ""))
                 image_hashes += ce._copy_grid_ad_image_hashes(ad)
                 if ad.get("__typename") == "GdTextAd":
                     titles += [ad.get("title"), ad.get("titleExtension")]
@@ -354,7 +383,7 @@ def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: li
                 _src_budget = max(1, int(float(str(_src_budget_raw)))) if _src_budget_raw else 7000
             except (TypeError, ValueError):
                 _src_budget = 7000
-            rep = gc.create_full(
+            rep = _copy_create_full_sanitized(
                 target_login,
                 campaign_spec=ce._copy_grid_campaign_spec(new_name, counter_id, goal_id,
                                                        weekly_budget=_src_budget),

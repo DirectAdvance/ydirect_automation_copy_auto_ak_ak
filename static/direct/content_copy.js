@@ -172,9 +172,16 @@ function _cecopyUpdateSelectedNote() {
 }
 
 // ── Префилл целевого аккаунта ─────────────────────────────────────────────────
+// Выбор логина в дропдауне вызывает префилл сам (_cecopyDropdown), а следом blur даёт
+// ещё и onchange инпута — оба запроса (prefill + target_campaigns) уходили дважды.
+// Гейт по последнему обработанному логину: повтор для того же значения не нужен.
+let _CECOPY_PREFILL_LOGIN = null;
+
 async function ceCopyLoadTargetPrefill() {
   const login = ((document.getElementById('cecopy-target-login') || {}).value || '').trim();
   const note = document.getElementById('cecopy-target-note');
+  if (login && login === _CECOPY_PREFILL_LOGIN) return;
+  _CECOPY_PREFILL_LOGIN = login || null;
   _cecopyLoadTargetInfo(login);
   if (!login) { if (note) note.textContent = ''; return; }
   if (note) note.textContent = 'Подставляю данные…';
@@ -280,9 +287,13 @@ function _cecopyRestoreJob() {
   } catch (e) {}
 }
 
-// ── Попап ошибок запуска (Метрика/цель) — стиль сайта вместо alert() ──────────
+// ── Модалка запуска: сообщение (одна кнопка) или подтверждение (две) ──────────
 // Разметки в шаблоне для copy-вкладки нет, поэтому строим .ceimg-modal (те же
 // классы, что у "Замены изображения") один раз и переиспользуем узел.
+// uiConfirm из copy_common.js здесь недоступен — на странице контент-редактора
+// этот файл не подключён (см. шапку модуля), поэтому подтверждение своё.
+let _CECOPY_MODAL_RESOLVE = null;
+
 function _cecopyEnsureAlertModal() {
   let el = document.getElementById('cecopy-alert-modal');
   if (el) return el;
@@ -303,23 +314,71 @@ function _cecopyEnsureAlertModal() {
       '</div>' +
       '<div class="ceimg-modal-hint" id="cecopy-alert-text" style="margin-top:14px"></div>' +
       '<div class="ceimg-modal-foot">' +
+        '<button type="button" class="ce-btn small" id="cecopy-alert-cancel" hidden>Отмена</button>' +
         '<button type="button" class="ce-btn small" id="cecopy-alert-ok">Понятно</button>' +
       '</div>' +
     '</div>';
   document.body.appendChild(el);
-  const close = () => { el.hidden = true; };
+  // Крестик, фон и Escape = отказ: закрыть окно подтверждения «мимо кнопок» не должно
+  // означать согласие на удаление кампаний.
+  const close = ok => {
+    el.hidden = true;
+    const resolve = _CECOPY_MODAL_RESOLVE;
+    _CECOPY_MODAL_RESOLVE = null;
+    if (resolve) resolve(Boolean(ok));
+  };
   el.addEventListener('click', e => {
-    if (e.target.closest('[data-cecopy-alert-close]') || e.target.closest('#cecopy-alert-close') || e.target.closest('#cecopy-alert-ok')) close();
+    if (e.target.closest('#cecopy-alert-ok')) { close(true); return; }
+    if (e.target.closest('[data-cecopy-alert-close]') || e.target.closest('#cecopy-alert-close')
+        || e.target.closest('#cecopy-alert-cancel')) close(false);
   });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !el.hidden) close(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !el.hidden) close(false); });
   return el;
 }
 
-function _cecopyAlert(message) {
+// Показ модалки. Возвращает Promise<boolean>: true — нажали подтверждающую кнопку.
+function _cecopyModal({ title, message, warn, confirmText, cancelText }) {
   const el = _cecopyEnsureAlertModal();
+  const head = document.getElementById('cecopy-alert-title');
   const txt = document.getElementById('cecopy-alert-text');
-  if (txt) txt.textContent = message;
+  const ok = document.getElementById('cecopy-alert-ok');
+  const cancel = document.getElementById('cecopy-alert-cancel');
+  if (head) head.textContent = title || 'Нельзя запустить копирование';
+  if (txt) {
+    txt.innerHTML = _cecopyEsc(message || '').replace(/\n/g, '<br>')
+      + (warn ? '<div style="margin-top:10px;color:#ff7b72"><b>' + _cecopyEsc(warn) + '</b></div>' : '');
+  }
+  if (ok) ok.textContent = confirmText || 'Понятно';
+  if (cancel) {
+    cancel.hidden = !cancelText;
+    cancel.textContent = cancelText || 'Отмена';
+  }
   el.hidden = false;
+  return new Promise(resolve => { _CECOPY_MODAL_RESOLVE = resolve; });
+}
+
+function _cecopyAlert(message) {
+  return _cecopyModal({ message });
+}
+
+// Подтверждение очистки цели — то же, что uiConfirm на /direct/automation/copy:
+// показать аккаунт и ЧТО именно произойдёт, удаление подсветить как необратимое.
+function _cecopyConfirmCleanup(cleanup, targetLogin) {
+  if (cleanup === 'none') return Promise.resolve(true);
+  const info = CECOPY_TARGET_INFO || {};
+  const isDelete = cleanup === 'delete_drafts';
+  const action = isDelete
+    ? 'удалить ' + (info.draft_count || '?') + ' черновик(ов) — необратимо!'
+    : 'отправить в архив ' + (info.archivable_count || '?')
+      + ' кампаний (обратимо через unarchive в интерфейсе).';
+  return _cecopyModal({
+    title: 'Подтвердите действие',
+    message: 'Перед копированием будет выполнено:\n\nАккаунт: ' + targetLogin
+             + (isDelete ? '' : '\n\nДействие: ' + action),
+    warn: isDelete ? action : null,
+    confirmText: 'Подтвердить',
+    cancelText: 'Отмена',
+  });
 }
 
 // ── Запуск копирования ────────────────────────────────────────────────────────
@@ -338,6 +397,8 @@ async function ceCopyStart() {
   if (!goal) { _cecopyAlert('Цель «Все формы» обязательна'); return; }
   if (!domain) { alert('Укажите домен целевого аккаунта'); return; }
   if (!city && !region) { alert('Укажите город или регион целевого аккаунта'); return; }
+  // Очистка цели необратима (delete_drafts) — спрашиваем ДО постановки задачи в очередь.
+  if (!await _cecopyConfirmCleanup(cleanup, tgtLogin)) return;
   const btn = document.getElementById('cecopy-start-btn');
   if (btn) btn.disabled = true;
   const msg = document.getElementById('cecopy-msg');
@@ -415,6 +476,25 @@ function _cecopyDismissCard(jobId) {
   _cecopyForgetJob(jobId);
 }
 
+// Короткая подпись итога сверки для карточки: расхождения / сверки не было / чисто.
+// has_issues и has_issues_unknown кладёт бэкенд (copy_service/copy_verify_issues.py);
+// «сверки не было» — штатный исход для чистого UAC (tp6/tp7): измерений D1-D19 там нет,
+// и ноль расхождений из нуля измерений не должен читаться как «сверено чисто».
+function _cecopyIssuesText(result) {
+  if (!result || typeof result !== 'object') return '';
+  const issues = result.has_issues;
+  if (issues && typeof issues === 'object') {
+    if (issues.not_copied) return ' · ⚠ не скопировано ни одной кампании из ' + issues.selected;
+    const parts = [];
+    if (issues.mismatch) parts.push('расхождений ' + issues.mismatch);
+    if (issues.missing) parts.push('не найдено ' + issues.missing);
+    const dims = Object.keys(issues.dimensions || {}).slice(0, 3).join(', ');
+    return ' · ⚠ сверка: ' + (parts.join(', ') || 'замечания') + (dims ? ' (' + dims + ')' : '');
+  }
+  if (result.has_issues_unknown) return ' · ⚠ сверка не выполнялась';
+  return ' · сверка: OK';
+}
+
 // Рендерит/обновляет карточку копирования в ОБЩЕМ виджете #ce-job-stack
 // (те же CSS-классы, что у content-job, id-префикс ce-job-copy- чтобы не конфликтовать).
 function _cecopyRenderJobCard(j) {
@@ -475,6 +555,10 @@ function _cecopyRenderJobCard(j) {
   } else if (verify && verify.summary) {
     const diffCount = Number(verify.diff_count || 0);
     checkText = diffCount ? (' · copy_verify: расхождений ' + diffCount) : ' · copy_verify: OK';
+  } else {
+    // /direct/api/copy_status отдаёт сырой job (result), а не result_summary внешнего API —
+    // берём итог сверки из has_issues/has_issues_unknown, иначе «Готово» молчит о расхождениях.
+    checkText = _cecopyIssuesText(j.result);
   }
 
   if (st === 'queued') {

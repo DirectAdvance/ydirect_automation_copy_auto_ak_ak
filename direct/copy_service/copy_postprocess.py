@@ -238,9 +238,22 @@ def _copy_execute_adprice_repairs(cstep_ctx, plan: dict, repair_ctx: dict,
     from . import copy_steps as csteps
     repair_out = csteps.step_prices(cstep_ctx, campaign_ids=ids)
     out["result"] = repair_out
-    if int(repair_out.get("priced") or 0) > 0 and not repair_out.get("errors"):
+    priced = int(repair_out.get("priced") or 0)
+    scanned = int(repair_out.get("ads_scanned") or 0)
+    no_price = int(repair_out.get("no_price") or 0)
+    feed_rows = repair_out.get("feeds") or []
+    no_target_price = (
+        priced == 0
+        and scanned > 0
+        and no_price >= scanned
+        and bool(feed_rows)
+        and not repair_out.get("errors")
+    )
+    if (priced > 0 and not repair_out.get("errors")) or no_target_price:
         out["executed"] = len(ids)
         out["executed_actions"] = [{k: v for k, v in a.items()} for a in actions]
+        if no_target_price:
+            out["note"] = "target-фид не дал цену для этих групп; adPrice оставлен пустым"
     else:
         out["ok"] = False
         out["failed"] = len(ids)
@@ -252,7 +265,6 @@ def _copy_execute_adprice_repairs(cstep_ctx, plan: dict, repair_ctx: dict,
 _COPY_HARD_LIVE_ISSUE_CODES = {
     "NO_IMAGES_LIVE",
     "IMAGE_MISSING",
-    "NO_ADPRICE_LIVE",
     "UAC_IMAGES_LOW",
     "UAC_MEDIA_MISSING",
     "UAC_TITLES_MISSING",
@@ -266,8 +278,74 @@ _COPY_HARD_LIVE_ISSUE_CODES = {
 _COPY_VERIFY_REPORT_ONLY_DIMENSIONS = {
     "ad_price",          # цены в copy сверяются через live NO_ADPRICE_LIVE, не source=target
     "bid_modifiers",     # copy намеренно ставит стандарт
-    "campaign_neg_count",  # отдельного безопасного repair-шага сейчас нет
+    "campaign_neg_count",  # копируем то, что было в источнике; глобальные правила создания сюда не применяются
 }
+
+_COPY_HARD_VERIFY_DIMENSIONS = {
+    "adgroup_count",
+    "keyword_count",
+    "adaptive_titles_count",
+    "adaptive_bodies_count",
+    "sitelinks_present",
+    "sitelinks_campaign_level_present",
+    "sitelinks_ad_level_count",
+    "ads_with_images",
+    "strategy_name",
+    "ads_with_video",
+    "minus_places",
+    "shopping_filter_count",
+    "listing_filter_count",
+}
+
+# Расхождение реальное, но джобу не роняем: перенос идёт отдельным шагом постпроцесса и
+# доседает после done, поэтому «красный» статус давал бы ложную тревогу на каждой копии.
+# Такие строки попадают в has_issues (copy_verify_issues) и видны в карточке и очереди.
+_COPY_SOFT_VERIFY_DIMENSIONS = {
+    "callout_count",              # step_attach_callouts, привязка индексируется с задержкой
+    "promo_attached",             # step_attach_promos
+    "site_monitoring",            # v5 Settings.ENABLE_SITE_MONITORING
+    "utm_tracking",               # Grid bannerHrefParams
+    "audiences",                  # Grid GdRetargeting, авто-writer'а нет
+    "button_cta",                 # отдельного repair-шага нет
+    "shopping_filter_signature",  # чинится run_copy_repair, но незакрытое — не блокер
+    "listing_filter_signature",
+    "shared_set_count",           # чинится _repair_shared_sets
+    # гео-измерения (copy_verify_geo): у v5-пути приходят excluded_intentional, но статус
+    # зависит от ветки копирования — классифицируем явно, чтобы не попали в «неизвестные»
+    "geo_kw_source_residual",
+    "geo_neg_target_blocked",
+    # UAC tp6/tp7: у _copy_verify_blockers для него отдельное исключение по repair_hint
+    "campaign_exists",
+    # измерения UAC-копий (copy_uac._copy_uac_verify_rows). Не блокеры: расхождение контента
+    # уже роняет саму кампанию в _copy_uac_create_live_guard ДО этих строк, а здесь они
+    # нужны как видимый факт проверки и как покрытие того, что guard не смотрит.
+    "uac_titles", "uac_texts", "uac_keywords", "uac_images",
+    "uac_counter", "uac_goal", "uac_regions", "uac_feed", "uac_minus_keywords",
+}
+
+# Все три множества вместе — полный список известных измерений. Раньше классификация была
+# ДВУХчастной (хард + report-only), и всё остальное молча проваливалось мимо обоих условий:
+# так «✅ готово» получала джоба с 47 расхождениями. Новое измерение, не попавшее ни в одно
+# множество, теперь заметно — см. _copy_unclassified_verify_dimensions.
+_COPY_KNOWN_VERIFY_DIMENSIONS = (
+    _COPY_HARD_VERIFY_DIMENSIONS | _COPY_SOFT_VERIFY_DIMENSIONS | _COPY_VERIFY_REPORT_ONLY_DIMENSIONS
+)
+
+
+def _copy_unclassified_verify_dimensions(verify_result: dict | None) -> list[str]:
+    """Измерения сверки, не отнесённые ни к хард, ни к мягким, ни к report-only.
+
+    Пустой список — норма. Непустой означает, что в diff_profiles появилось измерение,
+    про которое никто не решил, блокирует оно копирование или нет; такое измерение
+    молчаливо игнорировалось бы гейтом.
+    """
+    rows = (verify_result or {}).get("results") or []
+    unknown = {
+        str(r.get("dimension") or "")
+        for r in rows
+        if isinstance(r, dict) and str(r.get("dimension") or "") not in _COPY_KNOWN_VERIFY_DIMENSIONS
+    }
+    return sorted(d for d in unknown if d)
 
 
 def _copy_live_blockers(live: dict | None) -> list[dict]:
@@ -289,12 +367,14 @@ def _copy_live_blockers(live: dict | None) -> list[dict]:
             for i in issues
             if str(i.get("severity") or "").lower() == "error" and str(i.get("code") or "").strip()
         ]
-        blockers.append({
-            "kind": "live_verification",
-            "code": "LIVE_ERRORS",
-            "count": live_errors,
-            "codes": sorted(set(error_codes))[:12],
-        })
+        hard_error_codes = sorted({c for c in error_codes if c in _COPY_HARD_LIVE_ISSUE_CODES})
+        if hard_error_codes:
+            blockers.append({
+                "kind": "live_verification",
+                "code": "LIVE_ERRORS",
+                "count": len([c for c in error_codes if c in _COPY_HARD_LIVE_ISSUE_CODES]),
+                "codes": hard_error_codes[:12],
+            })
     for action in actions:
         code = str(action.get("issue_code") or "").strip()
         if code in _COPY_HARD_LIVE_ISSUE_CODES:
@@ -330,6 +410,8 @@ def _copy_verify_blockers(verify_result: dict | None) -> list[dict]:
         dim = str(row.get("dimension") or "")
         if dim in _COPY_VERIFY_REPORT_ONLY_DIMENSIONS:
             continue
+        if status == "unreadable" or dim not in _COPY_HARD_VERIFY_DIMENSIONS:
+            continue
         hint = str(row.get("repair_hint") or "")
         if dim == "campaign_exists" and "UAC tp6/tp7" in hint:
             continue
@@ -345,15 +427,35 @@ def _copy_verify_blockers(verify_result: dict | None) -> list[dict]:
     return blockers
 
 
-def _copy_apply_verification_gate(rep: dict) -> None:
+def _copy_apply_verification_gate(rep: dict, *, include_copy_verify: bool = True) -> None:
     """Promote unresolved verification findings into hard postprocess errors."""
     blockers: list[dict] = []
     live_blockers = _copy_live_blockers(rep.get("live_verification"))
     if live_blockers:
         blockers.extend(live_blockers)
-    verify_blockers = _copy_verify_blockers(rep.get("copy_verify"))
-    if verify_blockers:
-        blockers.extend(verify_blockers)
+    verify_blockers: list[dict] = []
+    if include_copy_verify:
+        verify_blockers = _copy_verify_blockers(rep.get("copy_verify"))
+        if verify_blockers:
+            blockers.extend(verify_blockers)
+    elif isinstance(rep.get("copy_verify"), dict):
+        # copy_verify runs before Direct finishes indexing freshly attached assets/settings.
+        # Keep the early diff visible, but make the delayed settled reverify the hard gate.
+        verify_blockers = _copy_verify_blockers(rep.get("copy_verify"))
+        if verify_blockers:
+            rep["copy_verify_gate_deferred"] = {
+                "ok": False,
+                "blockers_count": len(verify_blockers),
+                "blockers": verify_blockers[:80],
+            }
+    # Неклассифицированное измерение = дыра в гейте: оно не блокирует и никем не объявлено
+    # безопасным. Кладём ОТДЕЛЬНЫМ ключом, а НЕ в rep["errors"]: непустой errors переводит
+    # джобу в terminal error (_copy_terminal_status_from_postprocess) и дёргает Agent-Board-мост,
+    # а это диагностика классификации, а не дефект копии.
+    unclassified = _copy_unclassified_verify_dimensions(rep.get("copy_verify"))
+    if unclassified:
+        rep["verify_unclassified_dimensions"] = unclassified
+
     if not blockers:
         rep["verification_gate"] = {"ok": True, "blockers": []}
         return
@@ -406,6 +508,38 @@ def _copy_demote_optional_source_grid_errors(rep: dict, source_login: str) -> No
     if warnings:
         rep["warnings"] = warnings
 
+
+def _copy_demote_nonfatal_image_upload_errors(rep: dict) -> None:
+    """Keep transient source-image upload misses from failing an otherwise copied job.
+
+    The adaptive creative step may try to improve fidelity by uploading a source
+    image into the target account. Direct sometimes accepts the request but
+    returns no hash. The step then leaves the target's existing image set intact;
+    verification remains responsible for turning any real media loss into a hard
+    failure.
+    """
+    errors = list(rep.get("errors") or [])
+    if not errors:
+        return
+    kept: list[str] = []
+    warnings = list(rep.get("warnings") or [])
+    for err in errors:
+        text = str(err)
+        if text.startswith("source image ") and (
+            "target upload returned empty hash" in text
+            or "target preview upload failed:" in text
+            or "target upload failed:" in text
+            or "preview HTTP " in text
+            or "download failed:" in text
+        ):
+            warnings.append(text)
+        else:
+            kept.append(text)
+    rep["errors"] = kept
+    if warnings:
+        rep["warnings"] = warnings
+
+
 def _prefetch_copy_verify_grid_cache(target_login: str, target_agency: str, grid, maps: dict, ctx, log) -> dict:
     """Read target verify snapshots concurrently with thread-local Grid clients."""
     del target_agency  # агентство здесь не нужно: читаем по уже рабочей target-cookie
@@ -430,7 +564,7 @@ def _prefetch_copy_verify_grid_cache(target_login: str, target_agency: str, grid
     base_cookie = getattr(grid, "cookie", "") or ""
 
     def _target_grid():
-        return gf.GridClient(target_login, cookie=base_cookie)
+        return gf.GridClient(target_login, cookie=base_cookie, refresh_explicit_cookie=True)
 
     def _counts():
         from ..clients import grid_read as gr  # lazy sibling import
@@ -836,7 +970,7 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
     try:
         client = cmc.build_client(target_login, account=(target_agency or None))
         cookie = client.sess.headers.get("Cookie") or ""
-        grid = gf.GridClient(target_login, cookie=cookie)
+        grid = gf.GridClient(target_login, cookie=cookie, refresh_explicit_cookie=True)
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"cookie init: {str(e)[:220]}")
         return rep
@@ -883,7 +1017,9 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
         if _src_login:
             _src_ag = ce._resolve_agency_hint(_src_login, "")
             _src_cli2 = cmc.build_client(_src_login, account=(_src_ag or None))
-            cstep_ctx.source_grid = gf.GridClient(_src_login, cookie=(_src_cli2.sess.headers.get("Cookie") or ""))
+            cstep_ctx.source_grid = gf.GridClient(
+                _src_login, cookie=(_src_cli2.sess.headers.get("Cookie") or ""),
+                refresh_explicit_cookie=True)
             _src_ctx = ce._copy_ctx(_src_login)
             _geo_mode_pp = (body.get("geo_mode") or "replace").strip()
             _mode_pp = (body.get("mode") or "auto").strip()
@@ -1002,7 +1138,8 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                         _npid, _perr = pc.add(
                             type=_pdef.get("type") or "DISCOUNT",
                             description=_pdef.get("description") or "акция",
-                            href=ce._copy_target_href(_pdef.get("href"), _src_dom, _tgt_dom),
+                            href=ce._copy_target_href(_pdef.get("href"), _src_dom, _tgt_dom,
+                                                      target_site_type=str(body.get("_copy_target_site_type") or "")),
                             amount=_pdef.get("amount"), unit=_pdef.get("unit"),
                             prefix=_pdef.get("prefix"), promocode=_pdef.get("promocode"),
                             start=_pdef.get("startDate"), finish=_pdef.get("finishDate"))
@@ -1025,7 +1162,8 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                     pid, perr = pc.add(
                         type=p.get("Type") or "DISCOUNT",
                         description=p.get("Description") or p.get("Name") or "акция",
-                        href=ce._copy_target_href(p.get("Href"), _src_dom, _tgt_dom),
+                        href=ce._copy_target_href(p.get("Href"), _src_dom, _tgt_dom,
+                                                  target_site_type=str(body.get("_copy_target_site_type") or "")),
                         amount=p.get("Amount"), unit=p.get("AmountUnit"),
                         prefix=p.get("AmountPrefix"), promocode=p.get("Promocode"),
                         start=p.get("StartDate"), finish=p.get("EndDate"))
@@ -1478,19 +1616,29 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                 {"scope": r.get("scope"), "dimension": r.get("dimension"),
                  "status": r.get("status")}
                 for r in (_cv_report.get("results") or [])
-                if r.get("repairable") and r.get("status") not in ("ok", "excluded_intentional")
+                if r.get("repairable")
+                and r.get("status") not in ("ok", "excluded_intentional", "unreadable")
+                and str(r.get("dimension") or "") in _COPY_HARD_VERIFY_DIMENSIONS
             ]
             if _unresolved:
                 rep["verify_unresolved"] = _unresolved
                 _dims = sorted({str(u["dimension"]) for u in _unresolved})
                 _msg = (f"verify: {len(_unresolved)} расхождений НЕ закрыто авторемонтом "
                         f"({', '.join(_dims[:6])})")
-                rep["errors"].append(_msg)
-                ce._copy_job_log(job_id, f"⚠️ {_msg}")
+                if body.get("_copy_skip_delayed_reverify"):
+                    rep["errors"].append(_msg)
+                    ce._copy_job_log(job_id, f"⚠️ {_msg}")
+                else:
+                    rep.setdefault("warnings", []).append(_msg)
+                    ce._copy_job_log(job_id, f"copy_verify: ранние расхождения отложены до осевшей пересверки: {_msg}")
     except Exception as _re:  # noqa: BLE001
         rep["errors"].append(f"copy_repair: {str(_re)[:200]}")
 
     _copy_demote_optional_source_grid_errors(rep, body.get("source_login") or "")
-    _copy_apply_verification_gate(rep)
+    _copy_demote_nonfatal_image_upload_errors(rep)
+    _copy_apply_verification_gate(
+        rep,
+        include_copy_verify=bool(body.get("_copy_skip_delayed_reverify")),
+    )
     rep["results"] = results
     return rep

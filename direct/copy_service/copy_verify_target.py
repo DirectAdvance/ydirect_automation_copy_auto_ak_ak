@@ -157,7 +157,7 @@ def build_target_profile(target_login: str,
         if _grid is None:
             client = cmc.build_client(target_login)
             cookie = client.sess.headers.get("Cookie") or ""
-            _grid = gf.GridClient(target_login, cookie=cookie)
+            _grid = gf.GridClient(target_login, cookie=cookie, refresh_explicit_cookie=True)
         # GridReadClient можно строить из той же куки, что и _grid
         _grc = gr.GridReadClient(target_login, cookie=_grid.cookie)
     except Exception as e:

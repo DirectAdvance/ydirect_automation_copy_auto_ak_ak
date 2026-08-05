@@ -14,6 +14,7 @@ from ..clients import grid_finalize as gf
 # ── DI (инъектится copy_engine.configure фан-аутом; None до инъекции) ──
 _grid_list_campaigns = None
 _COPY_SELECTED_GRID_LIST_TIMEOUT_SEC = 25
+_COPY_SELECTED_GRID_TARGETED_TIMEOUT_SEC = 25
 _COPY_GRID_READ_RETRY_CHUNK = 10
 
 
@@ -22,9 +23,11 @@ def configure(deps: dict) -> None:
     globals().update(deps)
 
 
-def _copy_selected_grid_campaigns(login: str, selected_ids: set[int]) -> list[dict]:
+def _copy_selected_grid_campaigns_with_meta(login: str, selected_ids: set[int]) -> tuple[list[dict], dict]:
     if not selected_ids:
-        return []
+        return [], {"ok": True, "selected": 0, "read": 0}
+    rows = []
+    list_error = ""
     try:
         executor = ThreadPoolExecutor(max_workers=1)
         try:
@@ -32,11 +35,13 @@ def _copy_selected_grid_campaigns(login: str, selected_ids: set[int]) -> list[di
                 timeout=_COPY_SELECTED_GRID_LIST_TIMEOUT_SEC
             )
         except FuturesTimeout:
-            return []
+            rows = []
+            list_error = f"grid_list_campaigns timeout>{_COPY_SELECTED_GRID_LIST_TIMEOUT_SEC}s"
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
-    except Exception:
-        return []
+    except Exception as exc:
+        rows = []
+        list_error = str(exc)[:240] or exc.__class__.__name__
     out = []
     for row in rows or []:
         try:
@@ -45,6 +50,98 @@ def _copy_selected_grid_campaigns(login: str, selected_ids: set[int]) -> list[di
             cid = 0
         if cid in selected_ids:
             out.append(row)
+    found_ids = {int(r.get("id") or 0) for r in out if str(r.get("id") or "").isdigit()}
+    missing_ids = set(selected_ids) - found_ids
+    if missing_ids and not list_error:
+        try:
+            out.extend(_copy_selected_grid_campaigns_targeted(login, missing_ids))
+        except Exception:
+            pass
+    found_ids = {int(r.get("id") or 0) for r in out if str(r.get("id") or "").isdigit()}
+    missing_ids = set(selected_ids) - found_ids
+    if list_error and missing_ids:
+        return out, {
+            "ok": False,
+            "selected": len(selected_ids),
+            "read": len(out),
+            "missing": len(missing_ids),
+            "error": list_error,
+        }
+    return out, {"ok": True, "selected": len(selected_ids), "read": len(out)}
+
+
+def _copy_selected_grid_campaigns(login: str, selected_ids: set[int]) -> list[dict]:
+    rows, _meta = _copy_selected_grid_campaigns_with_meta(login, selected_ids)
+    return rows
+
+
+def _copy_selected_grid_campaigns_targeted(login: str, selected_ids: set[int]) -> list[dict]:
+    """Bounded fallback for selected Grid-only campaigns missed by broad list."""
+    if not selected_ids:
+        return []
+
+    def _read() -> list[dict]:
+        snap = _copy_grid_read_selected(login, selected_ids)
+        out: list[dict] = []
+        for row in snap.get("campaigns") or []:
+            cid = _safe_row_id(row, "id")
+            if cid in selected_ids:
+                out.append({
+                    "id": str(cid),
+                    "name": row.get("name") or "",
+                    "typename": row.get("__typename") or row.get("typename") or row.get("type") or "",
+                    "status": row.get("status") or {},
+                })
+        return out
+
+    try:
+        executor = ThreadPoolExecutor(max_workers=1)
+        try:
+            return executor.submit(_read).result(timeout=_COPY_SELECTED_GRID_TARGETED_TIMEOUT_SEC)
+        except FuturesTimeout:
+            return []
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        return []
+
+
+def _copy_selected_grid_campaigns_by_id(login: str, selected_ids: set[int]) -> list[dict]:
+    """Read selected campaign rows by exact Grid campaignIdIn filter.
+
+    The broad Grid list can omit hidden, archived, or Grid-only rows. This narrow query is
+    used only as a classifier fallback before declaring selected ids missing.
+    """
+    ids = [str(int(x)) for x in selected_ids if int(x) > 0]
+    if not ids:
+        return []
+    from ..clients.grid_read import GridReadClient
+
+    reader = GridReadClient(login)
+    inp = {
+        "filter": {"campaignIdIn": ids},
+        "statRequirements": {"preset": "TODAY", "goalIds": [], "useCampaignGoalIds": True},
+        "limitOffset": {"limit": max(1, len(ids)), "offset": 0},
+        "orderBy": [{"order": "ASC", "field": "ID"}],
+    }
+    query = (
+        "query CopyCampRows($login:String!,$inp:GdCampaignsContainerInput!){"
+        "client(searchBy:{login:$login}){campaigns(input:$inp){rowset{"
+        "id name __typename status{primaryStatus archived}}}}}"
+    )
+    data = reader._post("CopyCampRows", query, {"login": login, "inp": inp})
+    rows = ((((data.get("data") or {}).get("client") or {})
+             .get("campaigns") or {}).get("rowset") or [])
+    out = []
+    for campaign in rows or []:
+        status = campaign.get("status") or {}
+        out.append({
+            "id": campaign.get("id"),
+            "name": campaign.get("name"),
+            "typename": campaign.get("__typename"),
+            "status": status.get("primaryStatus") or "",
+            "archived": bool(status.get("archived")),
+        })
     return out
 
 
@@ -86,7 +183,7 @@ def _copy_grid_read_selected(login: str, selected_ids: set[int]) -> dict:
     )
     ads = _copy_grid_read_ad_rows(reader, login, q_ads, inp_common, ids)
 
-    groups = gf.GridClient(login, cookie=reader.cookie).groups_for_edit(ids)
+    groups = gf.GridClient(login, cookie=reader.cookie, refresh_explicit_cookie=True).groups_for_edit(ids)
     return {"campaigns": campaigns, "groups": groups, "ads": ads}
 
 

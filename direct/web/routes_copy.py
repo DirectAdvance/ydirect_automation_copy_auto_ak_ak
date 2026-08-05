@@ -82,6 +82,7 @@ def register_copy_routes(
     repair_pending_func: Callable | None = None,  # job_id → bool: есть ли незакрытая запись в direct_delayed_repairs
     job_db_get_func: Callable | None = None,  # fallback copy_status после рестарта direct-copy.service
     copy_queue_func: Callable | None = None,  # список последних copy-джоб для вкладки «Очередь»
+    metrika_pair_problem: Callable | None = None,  # (counter, goal, login) -> (kind, msg) | None
     login_allowed_func: Callable[[str], tuple[bool, str]] | None = None,  # scoped content-user guard
     archived_campaign_ids_func: Callable | None = None,  # login, ids, agency -> set[int] archived by v5
 ) -> None:
@@ -367,6 +368,13 @@ def register_copy_routes(
             target_feed_url.startswith("/") or target_feed_url.startswith(("http://", "https://"))
         ):
             return jsonify({"error": "целевой фид должен быть абсолютным URL или путём от корня сайта"}), 400
+        # Счётчик И цель проверяем вместе: перепутанный кабинет обычно даёт чужую пару целиком.
+        # «Не удалось проверить» — это НЕ «проверено и чисто»: fail-open здесь означал бы залить
+        # кабинет с целью другого клиента, поэтому отвечаем 503 и просим повторить.
+        pair_problem = metrika_pair_problem(counter_id, goal_id, target_login) if metrika_pair_problem else None
+        if pair_problem:
+            kind, message = pair_problem
+            return jsonify({"error": message}), (400 if kind == "error" else 503)
         owner = counter_foreign_owner(counter_id, target_login)
         if owner:
             return jsonify({

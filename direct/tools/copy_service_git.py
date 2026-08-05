@@ -28,6 +28,7 @@ TOKEN_ENV_NAMES = ("GIT_TOKEN", "GITHUB_TOKEN", "GH_TOKEN")
 INCLUDE_GLOBS = (
     # Код сервиса копирования.
     "direct/copy_service/*.py",
+    "direct/clients/grid_finalize.py",
     "direct/copy_main.py",
     "direct/core/queue_server.py",
     "direct/web/routes_copy.py",
@@ -36,8 +37,9 @@ INCLUDE_GLOBS = (
     "direct/COPY_README.md",
     "direct/STATE_COPY_OTHER.md",
     # Тесты зоны.
-    "direct/tests/test_copy_integration_guards.py",
-    "direct/tests/test_copy_retry_scoped.py",
+    # Глоб, а не перечисление: новые тесты зоны (test_copy_uac_verify_rows,
+    # test_copy_verify_issues) иначе молча не попадают в экспорт.
+    "direct/tests/test_copy_*.py",
     "direct/tests/test_direct_copy_transient_retry.py",
     # UI вкладки /direct/automation/copy.
     "templates/direct/copy.html",

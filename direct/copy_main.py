@@ -16,10 +16,11 @@ This process owns only:
   • recover основного процесса исключает kind='copy_campaigns'.
 The main Direct automation app remains in direct-create.service on port 5020.
 """
+from __future__ import annotations
+
 import json
 import os
 import sys
-import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -29,6 +30,8 @@ from flask import Blueprint, Flask, redirect, session
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+os.environ.setdefault("DIRECT_WORKER_SCOPE", "copy")
 
 for _p in Path(__file__).resolve().parents:
     if (_p / ".secret" / "loader.py").exists():
@@ -43,7 +46,6 @@ from direct.core import automation_runtime as _runtime  # noqa: E402,F401
 from direct import account_service as accounts  # noqa: E402
 from direct.create import blueprint_metrika as metrika  # noqa: E402
 from direct.copy_service import copy_engine  # noqa: E402
-from direct.copy_service.copy_access import login_allowed_for_directologists  # noqa: E402
 from direct.core import queue_server as queue  # noqa: E402
 from direct.clients import yandex_gateway as yandex  # noqa: E402
 from direct.web.routes_copy import register_copy_routes  # noqa: E402
@@ -109,76 +111,8 @@ def _copy_queue_allowed_directologists() -> list[str] | None:
     return []
 
 
-def _copy_login_allowed(login: str) -> tuple[bool, str]:
-    """Scope copy source/target logins for non-admin content users."""
-    if session.get("is_admin") or session.get("content_admin"):
-        return True, ""
-    try:
-        from direct.core.direct_repository import victory_conn
-
-        return login_allowed_for_directologists(
-            victory_conn,
-            login,
-            _copy_queue_allowed_directologists(),
-        )
-    except Exception as exc:  # noqa: BLE001
-        return False, f"не удалось проверить доступ к аккаунту {login}: {str(exc)[:160]}"
-
-
-def _copy_grid_row_is_archived(row: dict) -> bool:
-    status = row.get("status")
-    if isinstance(status, dict):
-        primary = str(status.get("primaryStatus") or status.get("status") or "").upper()
-        archived = bool(status.get("archived"))
-    else:
-        primary = str(status or "").upper()
-        archived = bool(row.get("archived"))
-    state = str(row.get("state") or row.get("State") or "").upper()
-    return archived or primary == "ARCHIVED" or state == "ARCHIVED"
-
-
-def _copy_archived_campaign_ids(login: str, ids: list[int], agency: str = "") -> set[int]:
-    """Return selected campaign IDs archived in v5 or cookie-backed Grid."""
-    ids = [int(x) for x in (ids or []) if str(x).isdigit() and int(x) > 0]
-    if not login or not ids:
-        return set()
-    token, _agency = accounts._token_for_login(
-        login,
-        agency or yandex.resolve_agency_hint(login, ""),
-        accounts._direct_tokens(),
-    )
-    if not token:
-        return set()
-    archived: set[int] = set()
-    for i in range(0, len(ids), 1000):
-        chunk = ids[i:i + 1000]
-        data = accounts._v5_call("campaigns", "get", token, login, {
-            "SelectionCriteria": {"Ids": chunk},
-            "FieldNames": ["Id", "State", "Status"],
-        })
-        for row in ((data.get("result") or {}).get("Campaigns") or []):
-            state = str(row.get("State") or "").upper()
-            status = str(row.get("Status") or "").upper()
-            if state == "ARCHIVED" or status == "ARCHIVED":
-                archived.add(int(row.get("Id") or 0))
-    wanted = set(ids)
-    try:
-        for row in yandex.grid_list_campaigns(login):
-            try:
-                cid = int(row.get("id") or row.get("Id") or 0)
-            except (TypeError, ValueError):
-                continue
-            if cid in wanted and _copy_grid_row_is_archived(row):
-                archived.add(cid)
-    except Exception:
-        # Grid/cookie is authoritative for Master/Product statuses, but the campaign-list page
-        # should still load when cookies are temporarily unavailable; runtime copy has its own guard.
-        pass
-    return archived
-
-
 def _copy_repair_pending(job_id: str) -> bool:
-    """True если для copy-job есть незавершённая запись в direct_automation.delayed_repairs.
+    """True если для copy-job есть незавершённая запись в public.direct_delayed_repairs.
 
     Persistent добивка (kind='content_repair') создаётся queue_server после done copy-job
     (_schedule_delayed_content_repair_after_done) и выполняется демоном direct-create-worker.
@@ -193,7 +127,7 @@ def _copy_repair_pending(job_id: str) -> bool:
         try:
             cur = conn.cursor()
             cur.execute(
-                "SELECT 1 FROM direct_automation.delayed_repairs "
+                "SELECT 1 FROM public.direct_delayed_repairs "
                 "WHERE parent_job_id = %s "
                 "  AND status IN ('waiting', 'running') "
                 "LIMIT 1",
@@ -234,37 +168,12 @@ def _copy_api_idempotency_lookup(idempotency_key: str) -> dict | None:
         return None
 
 
-def _copy_ts(value):
-    if hasattr(value, "timestamp"):
-        try:
-            return value.timestamp()
-        except Exception:  # noqa: BLE001
-            return None
-    return value
-
-
-def _copy_elapsed_seconds(row: dict) -> int | None:
-    status = str(row.get("status") or "")
-    terminal = {"done", "error", "cancelled", "interrupted"}
-    started_at = _copy_ts(row.get("started_at")) or _copy_ts(row.get("created_at"))
-    if not started_at:
-        return None
-    if status == "running":
-        return max(0, int(time.time() - float(started_at)))
-    if status in terminal:
-        finished_at = _copy_ts(row.get("updated_at"))
-        if finished_at:
-            return max(0, int(float(finished_at) - float(started_at)))
-    return None
-
-
 def _copy_queue_jobs() -> list[dict]:
     """Последние 200 copy-джоб из direct_automation.jobs для вкладки «Очередь».
     Возвращает список dict с полями: job_id, status, total, done, created, failed,
     error, created_at, source_login, target_login, elapsed.
     При недоступности Victory возвращает пустой список."""
     allowed_directologists = _copy_queue_allowed_directologists()
-    username = (session.get("username") or "").strip()
     try:
         import psycopg2.extras
         from direct.core.direct_repository import victory_conn
@@ -275,7 +184,11 @@ def _copy_queue_jobs() -> list[dict]:
             if allowed_directologists is None:
                 cur.execute(
                     "SELECT job_id, login, status, total, done, created, failed, "
-                    "       error, created_at, updated_at, started_at, body "
+                    "       error, created_at, body, "
+                    # только два подполя result, а не весь JSON: у copy-джобы result — это
+                    # снапшот+сверка+per-campaign результаты, 200 таких строк тянуть незачем
+                    "       result->'has_issues' AS has_issues, "
+                    "       result->'has_issues_unknown' AS has_issues_unknown "
                     "FROM direct_automation.jobs "
                     "WHERE kind='copy_campaigns' "
                     "ORDER BY created_at DESC LIMIT 200"
@@ -287,17 +200,19 @@ def _copy_queue_jobs() -> list[dict]:
             else:
                 cur.execute(
                     "SELECT j.job_id, j.login, j.status, j.total, j.done, j.created, j.failed, "
-                    "       j.error, j.created_at, j.updated_at, j.started_at, j.body "
+                    "       j.error, j.created_at, j.body, "
+                    "       j.result->'has_issues' AS has_issues, "
+                    "       j.result->'has_issues_unknown' AS has_issues_unknown "
                     "FROM direct_automation.jobs j "
                     "WHERE j.kind='copy_campaigns' "
-                    "  AND (EXISTS ("
+                    "  AND EXISTS ("
                     "    SELECT 1 FROM public.local_gsheet_sites s "
                     "    WHERE s.direction='Авто' "
                     "      AND s.directologist = ANY(%s) "
                     "      AND s.login_key IN (j.body->>'source_login', COALESCE(j.body->>'target_login', j.login))"
-                    "  ) OR j.body->>'created_by' = %s OR j.body->>'_copy_retry_original_user' = %s) "
+                    "  ) "
                     "ORDER BY j.created_at DESC LIMIT 200",
-                    (allowed_directologists, username, username),
+                    (allowed_directologists,),
                 )
             rows = [dict(r) for r in cur.fetchall()]
         finally:
@@ -311,8 +226,12 @@ def _copy_queue_jobs() -> list[dict]:
         source_login = body.get("source_login") or ""
         target_login = body.get("target_login") or r.get("login") or ""
         created_by = body.get("created_by") or body.get("username") or body.get("_actor") or ""
-        original_created_by = body.get("_copy_retry_original_user") or ""
-        created_at = _copy_ts(r.get("created_at"))
+        created_at = r.get("created_at")
+        if hasattr(created_at, "timestamp"):
+            try:
+                created_at = created_at.timestamp()
+            except Exception:  # noqa: BLE001
+                created_at = None
         result.append({
             "job_id": r.get("job_id"),
             "status": r.get("status"),
@@ -325,8 +244,11 @@ def _copy_queue_jobs() -> list[dict]:
             "source_login": source_login,
             "target_login": target_login,
             "created_by": created_by,
-            "original_created_by": original_created_by,
-            "elapsed": _copy_elapsed_seconds(r),
+            "elapsed": None,
+            # итог сверки: разбивка расхождений / «сверки не было» (copy_verify_issues.py).
+            # Без них строка «✅ готово» в очереди молчит о десятках расхождений.
+            "has_issues": r.get("has_issues") or None,
+            "has_issues_unknown": bool(r.get("has_issues_unknown")),
         })
     return result
 
@@ -372,6 +294,7 @@ def create_app() -> Flask:
         parse_number=_parse_number,
         copy_default_feed_path=copy_engine._COPY_DEFAULT_FEED_PATH,
         counter_foreign_owner=metrika._counter_foreign_owner,
+        metrika_pair_problem=metrika._metrika_pair_problem,
         resolve_agency_hint=yandex.resolve_agency_hint,
         ensure_create_worker=queue._ensure_copy_worker,
         job_new=queue._job_new,
@@ -391,8 +314,6 @@ def create_app() -> Flask:
         repair_pending_func=_copy_repair_pending,  # persistent добивка direct_delayed_repairs
         job_db_get_func=queue._job_db_get,
         copy_queue_func=_copy_queue_jobs,           # список джоб для вкладки «Очередь»
-        login_allowed_func=_copy_login_allowed,
-        archived_campaign_ids_func=_copy_archived_campaign_ids,
     )
     # Программный API /api/v1/copy для внешних клиентов (auth по X-API-Key, fail-closed).
     register_copy_api(

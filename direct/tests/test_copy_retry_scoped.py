@@ -2,6 +2,69 @@ import json
 
 from direct.core import queue_server
 from direct.copy_service import copy_cleanup
+from direct.copy_service import copy_jobs
+
+
+def test_copy_scope_claims_only_copy_campaigns_web_jobs(monkeypatch):
+    captured = {}
+
+    class FakeCursor:
+        def execute(self, sql, params=()):
+            captured["sql"] = sql
+            captured["params"] = params
+
+        def fetchall(self):
+            return [{"job_id": "copy1", "login": "target", "total": 1, "body": {}}]
+
+    class FakeConn:
+        def cursor(self, **_kwargs):
+            return FakeCursor()
+
+        def commit(self):
+            captured["committed"] = True
+
+        def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setenv("DIRECT_ROLE", "all")
+    monkeypatch.setenv("DIRECT_WORKER_SCOPE", "copy")
+    monkeypatch.setattr(queue_server, "_victory_conn_rw", lambda: FakeConn())
+
+    rows = queue_server._worker_claim_web_jobs()
+
+    assert rows[0]["job_id"] == "copy1"
+    assert captured["params"] == ()
+    assert "coalesce(kind,'') = 'copy_campaigns'" in captured["sql"]
+    assert "coalesce(kind,'') <> 'copy_campaigns'" not in captured["sql"]
+    assert queue_server._worker_can_poll_db_queue()
+
+
+def test_copy_jobs_recover_preserves_web_posted_queued_jobs(monkeypatch):
+    calls = []
+
+    class FakeCursor:
+        def execute(self, sql, params=()):
+            calls.append((sql, params))
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            calls.append(("COMMIT", ()))
+
+        def close(self):
+            calls.append(("CLOSE", ()))
+
+    monkeypatch.setattr(copy_jobs, "_COPY_JOBS", {})
+    monkeypatch.setattr(copy_jobs, "_victory_conn_rw", lambda: FakeConn())
+
+    copy_jobs._copy_jobs_recover()
+
+    statements = "\n".join(sql for sql, _params in calls)
+    assert "status='running' OR (status='queued' AND coalesce(body->>'_web_posted','') <> 'true')" in statements
+    assert "status='claimed'" in statements
+    assert "coalesce(body->>'_web_posted','')='true'" in statements
 
 
 def test_copy_retry_body_keeps_only_failed_campaigns_and_cleanup_targets(tmp_path):

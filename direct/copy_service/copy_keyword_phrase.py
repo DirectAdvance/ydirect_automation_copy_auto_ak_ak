@@ -5,6 +5,11 @@ import re
 
 
 _SPACE_RE = re.compile(r"\s+")
+DIRECT_KEYWORD_MAX_POSITIVE_WORDS = 7
+_DANGLING_PREPOSITIONS = {
+    "без", "в", "во", "для", "до", "за", "из", "к", "ко", "на", "над", "о", "об", "от", "по",
+    "под", "при", "про", "с", "со", "у", "через",
+}
 
 
 def _plain_word(token: str) -> str:
@@ -29,6 +34,11 @@ def _target_geo_words(geo_pairs: list[tuple[str, str]] | None) -> list[list[str]
 
 def _positive_word_count(tokens: list[str]) -> int:
     return sum(1 for token in tokens if token and not token.startswith("-"))
+
+
+def _is_dangling_positive_token(token: str) -> bool:
+    plain = _plain_word(token)
+    return bool(token.startswith("+") or plain in _DANGLING_PREPOSITIONS)
 
 
 def _drop_target_geo_form_once(tokens: list[str], target_forms: list[list[str]]) -> tuple[list[str], bool]:
@@ -71,8 +81,8 @@ def _limit_positive_words(
         out.append(token)
         positives += 1
 
-    # Avoid ending UAC keyword phrases with a dangling forced preposition like "+с".
-    if out and out[-1].startswith("+"):
+    # Avoid ending keyword phrases with a dangling preposition like "+с" or "в".
+    if out and _is_dangling_positive_token(out[-1]):
         next_positive = None
         for token in limited:
             if token in out or token.startswith("-"):
@@ -80,10 +90,13 @@ def _limit_positive_words(
             next_positive = token
             break
         if next_positive and _positive_word_count(out) >= max_positive_words:
-            for idx in range(len(out) - 2, -1, -1):
-                if not out[idx].startswith("-"):
-                    out.pop(idx)
-                    break
+            if str(out[-1]).startswith("+"):
+                for idx in range(len(out) - 2, -1, -1):
+                    if not out[idx].startswith("-"):
+                        out.pop(idx)
+                        break
+            else:
+                out.pop()
             out.append(next_positive)
     return out
 

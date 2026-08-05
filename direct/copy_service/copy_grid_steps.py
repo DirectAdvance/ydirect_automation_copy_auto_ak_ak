@@ -104,7 +104,7 @@ def _copy_grid_unified_steps(job_id: str, body: dict, target_login: str, target_
     try:
         tgt_uac = cmc.build_client(target_login, account=(target_agency or None))
         tgt_cookie = tgt_uac.sess.headers.get("Cookie") or ""
-        grid = gf.GridClient(target_login, cookie=tgt_cookie)
+        grid = gf.GridClient(target_login, cookie=tgt_cookie, refresh_explicit_cookie=True)
     except Exception as e:  # noqa: BLE001
         rep["errors"].append(f"target cookie init: {str(e)[:200]}")
         return rep
@@ -113,7 +113,9 @@ def _copy_grid_unified_steps(job_id: str, body: dict, target_login: str, target_
         try:
             _src_ag = _resolve_agency_hint(source_login, "")
             _src_uac = cmc.build_client(source_login, account=(_src_ag or None))
-            source_grid = gf.GridClient(source_login, cookie=(_src_uac.sess.headers.get("Cookie") or ""))
+            source_grid = gf.GridClient(
+                source_login, cookie=(_src_uac.sess.headers.get("Cookie") or ""),
+                refresh_explicit_cookie=True)
         except Exception as e:  # noqa: BLE001
             rep["errors"].append(f"source cookie init: {str(e)[:180]}")
     try:
@@ -188,7 +190,8 @@ def _copy_grid_unified_steps(job_id: str, body: dict, target_login: str, target_
                     type=_pdef.get("type") or "DISCOUNT",
                     description=_pdef.get("description") or "акция",
                     href=_copy_target_href(_pdef.get("href"),
-                                          _src_domain_for_promo, _tgt_domain_for_promo),
+                                          _src_domain_for_promo, _tgt_domain_for_promo,
+                                          target_site_type=str(body.get("_copy_target_site_type") or "")),
                     amount=_pdef.get("amount"),
                     unit=_pdef.get("unit"),
                     prefix=_pdef.get("prefix"),

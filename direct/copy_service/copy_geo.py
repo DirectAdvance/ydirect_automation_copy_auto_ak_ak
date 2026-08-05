@@ -236,7 +236,46 @@ def _copy_domain_from_href(href: str | None) -> str:
     return (m.group(1).lower() if m else "").strip()
 
 
-def _copy_target_href(href: str | None, source_domain: str, target_domain: str) -> str:
+def _copy_remap_site_type_path_prefix(path: str, target_site_type: str) -> str:
+    """Заменить ведущий сегмент пути (``/auto/...`` vs ``/catalog/...``) под целевой site_type.
+
+    Копия 1:1 раньше переносила путь источника буквально — у сайтов типа «С пробегом» структура
+    ``/catalog/{brand}/{model}``, у остальных (Мультибренд/Монобренд/Мульти+БУ) — ``/auto/{brand}/
+    {model}`` (см. ``model_urls._SITE_TYPE_URL_TPL`` — единый источник правды с генерацией контента,
+    шаблоны не дублируются здесь). Источник ведущего сегмента для АКТУАЛЬНОГО источника (source
+    site_type) в этой функции не известен, поэтому правило узкое и безопасное: меняем первый сегмент
+    ТОЛЬКО если он уже входит в набор известных префиксов из ``_SITE_TYPE_URL_TPL`` и целевой
+    site_type даёт ДРУГОЙ префикс; иначе путь не трогаем (site_type не найден/не определён — no-op,
+    прежнее поведение)."""
+    if not target_site_type:
+        return path
+    try:
+        from .. import model_urls as _mu  # noqa: PLC0415 — локальный импорт, без циклов
+        from .. import kontent_pack as _kp  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 — модуль недоступен → путь как есть
+        return path
+    tpl = _mu._SITE_TYPE_URL_TPL.get(_kp.base_site_type(target_site_type))
+    if not tpl:
+        return path
+    target_prefix = tpl.split("{", 1)[0].strip("/").split("/", 1)[0]
+    known_prefixes = {
+        v.split("{", 1)[0].strip("/").split("/", 1)[0]
+        for v in _mu._SITE_TYPE_URL_TPL.values() if v
+    }
+    if not target_prefix:
+        return path
+    segments = path.split("/")
+    if len(segments) < 2 or not segments[1]:   # segments[0] == "" для абсолютного пути
+        return path
+    current_prefix = segments[1]
+    if current_prefix == target_prefix or current_prefix not in known_prefixes:
+        return path
+    segments[1] = target_prefix
+    return "/".join(segments)
+
+
+def _copy_target_href(href: str | None, source_domain: str, target_domain: str,
+                      target_site_type: str = "") -> str:
     """Доменно-агностичная трансформация URL объявления/ссылки в целевой домен (баг 3).
 
     Раньше: наивный ``href.replace(source_domain, target)`` по ОДНОМУ инференс-домену — если href
@@ -245,7 +284,13 @@ def _copy_target_href(href: str | None, source_domain: str, target_domain: str) 
       • хост источника или его ПОДДОМЕН (тот же бизнес, сменил домен) → target-хост + path/query/fragment;
       • ЧУЖОЙ хост (Яндекс-«Подборка»/турбо/маркетплейс — path на клиентском домене не существует) →
         голый target (без мусорного пути, иначе 404).
-    Относительный URL (без хоста) и пустой target — не трогаем."""
+    Относительный URL (без хоста) и пустой target — не трогаем.
+
+    ``target_site_type`` (опционально, баг 2/5 расследования 2026-08-04): если задан и известен
+    ``model_urls._SITE_TYPE_URL_TPL`` — ведущий сегмент пути ремапится под целевую структуру сайта
+    (``/auto/`` → ``/catalog/`` и т.п.). Не задан/не найден → путь не трогаем, прежнее поведение.
+    Путь также схлопывает повторные слэши (``//`` → ``/``) — независимая защита от 404 на двойном
+    слэше, перенесённом буквально из href источника."""
     from urllib.parse import urlsplit, urlunsplit
     href = str(href or "").strip()
     target = str(target_domain or "").strip()
@@ -269,4 +314,6 @@ def _copy_target_href(href: str | None, source_domain: str, target_domain: str) 
     same_business = bool(src) and (host == src or host.endswith("." + src))
     if src and not same_business:
         return target_abs
-    return urlunsplit((scheme, target_host, parts.path, parts.query, parts.fragment))
+    path = _copy_remap_site_type_path_prefix(parts.path, target_site_type)
+    path = re.sub(r"/{2,}", "/", path)
+    return urlunsplit((scheme, target_host, path, parts.query, parts.fragment))

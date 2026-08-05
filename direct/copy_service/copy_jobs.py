@@ -78,7 +78,9 @@ def _copy_job_log(job_id: str, message: str) -> None:
 
 
 def _copy_jobs_recover() -> None:
-    """Старт copy-сервиса (direct-copy.service): осиротевшие copy-джобы (running/queued) → interrupted.
+    """Старт copy-сервиса (direct-copy.service): осиротевшие copy-джобы → interrupted.
+
+    Web-posted queued сохраняем: DB-поллер direct-copy.service заберёт их после старта.
     Трогает ТОЛЬКО kind='copy_campaigns' — очередь создания РК в direct.service не задета.
     Авто-докрутку не делаем: повторный «Копировать» сам пропустит уже созданное (суффикс _vNN)."""
     try:
@@ -94,13 +96,18 @@ def _copy_jobs_recover() -> None:
             if live_ids:
                 cur.execute(
                     "UPDATE direct_automation.jobs SET status='interrupted', updated_at=now() "
-                    "WHERE kind='copy_campaigns' AND status IN ('running','queued') "
+                    "WHERE kind='copy_campaigns' "
+                    "AND (status='running' OR (status='queued' AND coalesce(body->>'_web_posted','') <> 'true')) "
                     "AND NOT (job_id = ANY(%s))",
                     (list(live_ids),),
                 )
             else:
                 cur.execute("UPDATE direct_automation.jobs SET status='interrupted', updated_at=now() "
-                            "WHERE kind='copy_campaigns' AND status IN ('running','queued')")
+                            "WHERE kind='copy_campaigns' "
+                            "AND (status='running' OR (status='queued' AND coalesce(body->>'_web_posted','') <> 'true'))")
+            cur.execute("UPDATE direct_automation.jobs SET status='queued', updated_at=now() "
+                        "WHERE kind='copy_campaigns' AND status='claimed' "
+                        "AND coalesce(body->>'_web_posted','')='true'")
             conn.commit()
         finally:
             conn.close()
