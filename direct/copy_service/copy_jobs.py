@@ -95,17 +95,17 @@ def _copy_jobs_recover() -> None:
             cur = conn.cursor()
             if live_ids:
                 cur.execute(
-                    "UPDATE direct_automation.jobs SET status='interrupted', updated_at=now() "
+                    "UPDATE victoryads_direct_automation.jobs SET status='interrupted', updated_at=now() "
                     "WHERE kind='copy_campaigns' "
                     "AND (status='running' OR (status='queued' AND coalesce(body->>'_web_posted','') <> 'true')) "
                     "AND NOT (job_id = ANY(%s))",
                     (list(live_ids),),
                 )
             else:
-                cur.execute("UPDATE direct_automation.jobs SET status='interrupted', updated_at=now() "
+                cur.execute("UPDATE victoryads_direct_automation.jobs SET status='interrupted', updated_at=now() "
                             "WHERE kind='copy_campaigns' "
                             "AND (status='running' OR (status='queued' AND coalesce(body->>'_web_posted','') <> 'true'))")
-            cur.execute("UPDATE direct_automation.jobs SET status='queued', updated_at=now() "
+            cur.execute("UPDATE victoryads_direct_automation.jobs SET status='queued', updated_at=now() "
                         "WHERE kind='copy_campaigns' AND status='claimed' "
                         "AND coalesce(body->>'_web_posted','')='true'")
             conn.commit()

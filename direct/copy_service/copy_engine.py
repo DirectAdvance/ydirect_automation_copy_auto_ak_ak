@@ -451,7 +451,7 @@ def _copy_reverify_settled_startup_scan(*, limit: int = 20) -> list[str]:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 """SELECT job_id, result
-                   FROM direct_automation.jobs
+                   FROM victoryads_direct_automation.jobs
                    WHERE kind='copy_campaigns'
                      AND status='done'
                      AND result ? 'copy_verify_settled'
@@ -496,7 +496,7 @@ def _copy_reverify_settled_startup_scan(*, limit: int = 20) -> list[str]:
         try:
             upd_cur = upd_conn.cursor()
             upd_cur.execute(
-                "UPDATE direct_automation.jobs SET status='error', error=%s, result=%s, updated_at=now() "
+                "UPDATE victoryads_direct_automation.jobs SET status='error', error=%s, result=%s, updated_at=now() "
                 "WHERE job_id=%s AND kind='copy_campaigns' AND status='done'",
                 (msg[:500], json.dumps(new_result, ensure_ascii=False), job_id),
             )

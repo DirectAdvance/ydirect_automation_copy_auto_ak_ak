@@ -287,7 +287,7 @@ def _jobs_db_recover() -> None:
             # иначе (а) затрём чужой статус, (б) синтетический login='slepki-edit' попал бы в
             # sweep пустых черновиков (он не реальный аккаунт Директа).
             _ek = _edit_kinds_list()
-            cur.execute("SELECT DISTINCT login FROM direct_automation.jobs "
+            cur.execute("SELECT DISTINCT login FROM victoryads_direct_automation.jobs "
                         "WHERE status IN ('queued','running') AND login IS NOT NULL "
                         "  AND coalesce(kind,'') <> 'copy_campaigns' "
                         "  AND NOT (coalesce(kind,'') = ANY(%s)) "
@@ -298,7 +298,7 @@ def _jobs_db_recover() -> None:
             # исполнять ни один воркер, они ждут клейма поллером. Пометив их interrupted, мы бы
             # потеряли постановку сразу после рестарта воркера. Гасим только «свои» in-memory queued
             # (их в БД пишет _job_new всех ролей кроме web) и любые running.
-            cur.execute("UPDATE direct_automation.jobs SET status='interrupted', updated_at=now() "
+            cur.execute("UPDATE victoryads_direct_automation.jobs SET status='interrupted', updated_at=now() "
                         "WHERE (status='running' "
                         "       OR (status='queued' AND coalesce(body->>'_web_posted','') <> 'true')) "
                         "  AND coalesce(kind,'') <> 'copy_campaigns' "
@@ -308,7 +308,7 @@ def _jobs_db_recover() -> None:
             # безопасно вернуть в 'queued' для повторного клейма (дубля нет: set_plan пропустит созданное).
             # kind-гард как у соседних стейтментов: recover создания НЕ трогает чужую очередь
             # копирования (иначе рестарт create-воркера вернул бы claimed copy-джобу в queued).
-            cur.execute("UPDATE direct_automation.jobs SET status='queued', updated_at=now() "
+            cur.execute("UPDATE victoryads_direct_automation.jobs SET status='queued', updated_at=now() "
                         "WHERE status='claimed' "
                         "  AND coalesce(kind,'') <> 'copy_campaigns' "
                         "  AND NOT (coalesce(kind,'') = ANY(%s))", (_ek,))
@@ -318,19 +318,19 @@ def _jobs_db_recover() -> None:
             # уже созданные кампании; финал докрутки пометит строку done (не зациклится на рестартах).
             # resume_count += 1 + кап < _RESUME_MAX: «ядовитый» набор (всегда падает) не перезапускается
             # бесконечно при каждом рестарте — после _RESUME_MAX оживлений остаётся 'resumed' (брошен).
-            cur.execute("UPDATE direct_automation.deferred_creates "
+            cur.execute("UPDATE victoryads_direct_automation.deferred_creates "
                         "SET status='waiting', resume_at=now(), updated_at=now(), "
                         "    resume_count = resume_count + 1 "
                         "WHERE status='resumed' AND updated_at < now() - make_interval(hours => %s) "
                         "  AND COALESCE(resume_count,0) < %s",
                         (int(_DEFERRED_STALE_HOURS), int(_RESUME_MAX)))
             # СТАРУЮ историю не храним: завершённые джобы старше TTL — удаляем сразу при старте.
-            cur.execute("DELETE FROM direct_automation.jobs WHERE status = ANY(%s) "
+            cur.execute("DELETE FROM victoryads_direct_automation.jobs WHERE status = ANY(%s) "
                         "AND updated_at < now() - make_interval(secs => %s)",
                         (list(_JOB_TERMINAL), _JOB_HISTORY_TTL))
             conn.commit()
             # поднять только СВЕЖИЕ джобы (активные + завершённые за последние TTL) — историю не копим
-            cur.execute("SELECT * FROM direct_automation.jobs "
+            cur.execute("SELECT * FROM victoryads_direct_automation.jobs "
                         "WHERE status NOT IN ('done','error','cancelled','interrupted') "
                         "   OR updated_at > now() - make_interval(secs => %s) "
                         "ORDER BY updated_at DESC LIMIT 50", (_JOB_HISTORY_TTL,))
@@ -423,7 +423,7 @@ def _jobs_purge_old() -> None:
         conn = _victory_conn_rw()
         try:
             cur = conn.cursor()
-            cur.execute("DELETE FROM direct_automation.jobs WHERE status = ANY(%s) "
+            cur.execute("DELETE FROM victoryads_direct_automation.jobs WHERE status = ANY(%s) "
                         "AND updated_at < now() - make_interval(secs => %s)",
                         (list(_JOB_TERMINAL), _JOB_HISTORY_TTL))
             conn.commit()
@@ -991,7 +991,7 @@ def _delayed_repair_reschedule(did: str, row: dict, remaining: int) -> bool:
         try:
             cur = conn.cursor()
             cur.execute("""
-                UPDATE direct_automation.delayed_repairs
+                UPDATE victoryads_direct_automation.delayed_repairs
                    SET status='waiting', attempts=attempts+1,
                        run_at=now() + (%s || ' seconds')::interval,
                        note='повтор добивки (остаток ' || %s || ')',
@@ -1021,7 +1021,7 @@ def _delayed_content_repair_requeue_after_watchdog(did: str) -> bool:
         try:
             cur = conn.cursor()
             cur.execute("""
-                UPDATE direct_automation.delayed_repairs
+                UPDATE victoryads_direct_automation.delayed_repairs
                    SET status     = 'waiting',
                        attempts   = attempts + 1,
                        run_at     = now() + (%s || ' seconds')::interval,
@@ -1237,7 +1237,7 @@ def _cancel_children_of(parent_jid: str) -> int:
         try:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             cur.execute("""
-                SELECT job_id, status FROM direct_automation.jobs
+                SELECT job_id, status FROM victoryads_direct_automation.jobs
                  WHERE status NOT IN ('done','error','cancelled','interrupted')
                    AND (body->>'_resume_of'=%s OR body->>'_requeue_of'=%s
                         OR body->>'_repair_parent_job_id'=%s)
@@ -1624,7 +1624,7 @@ def _delayed_repair_daemon_loop(app) -> None:
             try:
                 _wcur = _wconn.cursor()
                 _wcur.execute("""
-                    UPDATE direct_automation.delayed_repairs
+                    UPDATE victoryads_direct_automation.delayed_repairs
                        SET status='failed',
                            note='watchdog: stuck running >' || %s || ' мин',
                            updated_at=now()
@@ -1699,7 +1699,7 @@ def _delayed_repair_daemon_loop(app) -> None:
             try:
                 cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
                 cur.execute("""
-                    SELECT * FROM direct_automation.delayed_repairs
+                    SELECT * FROM victoryads_direct_automation.delayed_repairs
                      WHERE status='waiting' AND run_at <= now()
                      ORDER BY run_at LIMIT 3
                 """)
@@ -1828,7 +1828,7 @@ def _deferred_enqueue_now(app, did: str) -> tuple | None:
         conn = _victory_conn_rw()
         try:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cur.execute("SELECT * FROM direct_automation.deferred_creates WHERE id=%s", (did,))
+            cur.execute("SELECT * FROM victoryads_direct_automation.deferred_creates WHERE id=%s", (did,))
             row = cur.fetchone()
         finally:
             conn.close()
@@ -1981,7 +1981,7 @@ def _resume_daemon_loop(app) -> None:
             conn = _victory_conn_rw()
             try:
                 cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-                cur.execute("SELECT * FROM direct_automation.deferred_creates "
+                cur.execute("SELECT * FROM victoryads_direct_automation.deferred_creates "
                             "WHERE status='waiting' AND resume_at <= now() ORDER BY resume_at LIMIT 5")
                 rows = cur.fetchall()
             finally:
@@ -2469,7 +2469,7 @@ def _agency_gate_claim(agency: str, job_id: str, job_kind: str = "") -> bool:
         try:
             cur = conn.cursor()
             cur.execute(
-                "INSERT INTO direct_automation.agency_active (agency, job_id, started_at) "
+                "INSERT INTO victoryads_direct_automation.agency_active (agency, job_id, started_at) "
                 "VALUES (%s, %s, now()) ON CONFLICT (agency) DO NOTHING RETURNING agency",
                 (agency, job_id))
             got = cur.fetchone() is not None
@@ -2507,7 +2507,7 @@ def _agency_gate_release(agency: str, job_id: str) -> None:
         _write_gate.gate_cb_on_success()
         try:
             cur = conn.cursor()
-            cur.execute("DELETE FROM direct_automation.agency_active WHERE agency=%s AND job_id=%s",
+            cur.execute("DELETE FROM victoryads_direct_automation.agency_active WHERE agency=%s AND job_id=%s",
                         (agency, job_id))
             conn.commit()
         finally:
@@ -2532,14 +2532,14 @@ def _agency_gate_sweep() -> None:
         _write_gate.gate_cb_on_success()
         try:
             cur = conn.cursor()
-            cur.execute("SELECT pg_try_advisory_xact_lock(hashtext('direct_automation.agency_active_sweep'))")
+            cur.execute("SELECT pg_try_advisory_xact_lock(hashtext('victoryads_direct_automation.agency_active_sweep'))")
             row = cur.fetchone()
             if not row or not row[0]:
                 conn.rollback()
                 return
             cur.execute(
-                "DELETE FROM direct_automation.agency_active a WHERE NOT EXISTS ("
-                "  SELECT 1 FROM direct_automation.jobs j "
+                "DELETE FROM victoryads_direct_automation.agency_active a WHERE NOT EXISTS ("
+                "  SELECT 1 FROM victoryads_direct_automation.jobs j "
                 "   WHERE j.job_id = a.job_id AND j.status IN ('running','claimed'))")
             conn.commit()
         finally:
@@ -2911,9 +2911,9 @@ def _slepki_jobs_recover() -> None:
         conn = _victory_conn_rw()
         try:
             cur = conn.cursor()
-            cur.execute("UPDATE direct_automation.jobs SET status='interrupted', updated_at=now() "
+            cur.execute("UPDATE victoryads_direct_automation.jobs SET status='interrupted', updated_at=now() "
                         "WHERE status='running' AND coalesce(kind,'') = ANY(%s)", (_ek,))
-            cur.execute("UPDATE direct_automation.jobs SET status='queued', updated_at=now() "
+            cur.execute("UPDATE victoryads_direct_automation.jobs SET status='queued', updated_at=now() "
                         "WHERE status='claimed' AND coalesce(kind,'') = ANY(%s)", (_ek,))
             conn.commit()
         finally:
@@ -2970,9 +2970,9 @@ def _worker_claim_web_jobs() -> list:
             # DIRECT_ROLE; теперь она структурная — по kind в общей таблице.
             _kind_pred = _worker_kind_predicate()
             cur.execute(
-                "UPDATE direct_automation.jobs SET status='claimed', updated_at=now() "
+                "UPDATE victoryads_direct_automation.jobs SET status='claimed', updated_at=now() "
                 "WHERE job_id IN ("
-                "    SELECT job_id FROM direct_automation.jobs "
+                "    SELECT job_id FROM victoryads_direct_automation.jobs "
                 "     WHERE status='queued' AND coalesce(body->>'_web_posted','')='true' "
                 "       " + _kind_pred +
                 "     ORDER BY (coalesce(body->>'_priority','')='true') DESC, created_at "
@@ -3055,7 +3055,7 @@ def _worker_expire_awaiting_feed() -> None:
         try:
             cur = conn.cursor()
             cur.execute(
-                "UPDATE direct_automation.jobs "
+                "UPDATE victoryads_direct_automation.jobs "
                 "SET status='queued', "
                 "    body = jsonb_set(body - '_feed_deadline', '{_skip_feed_types}', "
                 "                     '[\"product\",\"master\"]'::jsonb), "
@@ -3084,7 +3084,7 @@ def _worker_apply_controls() -> None:
         conn = _victory_conn_rw()
         try:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cur.execute("SELECT job_id, control FROM direct_automation.jobs "
+            cur.execute("SELECT job_id, control FROM victoryads_direct_automation.jobs "
                         "WHERE control IS NOT NULL " + _ctl_pred, _worker_kind_params())
             rows = cur.fetchall() or []
         finally:
@@ -3118,7 +3118,7 @@ def _worker_apply_controls() -> None:
             conn = _victory_conn_rw()
             try:
                 cur = conn.cursor()
-                cur.execute("UPDATE direct_automation.jobs SET control=NULL WHERE job_id=%s", (jid,))
+                cur.execute("UPDATE victoryads_direct_automation.jobs SET control=NULL WHERE job_id=%s", (jid,))
                 conn.commit()
             finally:
                 conn.close()
@@ -3148,12 +3148,12 @@ def _worker_reclaim_stuck_claimed() -> None:
             # scope-гард: возвращаем в очередь ТОЛЬКО claimed СВОЕГО scope, чтобы create-worker и
             # slepki-worker не дёргали чужие зависшие claimed (иначе гонка «вернул→чужой ре-клеймит»).
             _stale_pred = _worker_kind_predicate()
-            cur.execute("SELECT job_id FROM direct_automation.jobs "
+            cur.execute("SELECT job_id FROM victoryads_direct_automation.jobs "
                         "WHERE status='claimed' AND updated_at < now() - interval '5 minutes' "
                         + _stale_pred, _worker_kind_params())
             stale = [r[0] for r in (cur.fetchall() or []) if r[0] not in known]
             if stale:
-                cur.execute("UPDATE direct_automation.jobs SET status='queued', "
+                cur.execute("UPDATE victoryads_direct_automation.jobs SET status='queued', "
                             "updated_at=now() WHERE status='claimed' AND job_id = ANY(%s)", (stale,))
                 conn.commit()
                 print(f"[claimed-watchdog] зависшие claimed возвращены в очередь: {stale}", flush=True)
@@ -3192,7 +3192,7 @@ def _monitor_stuck_edit_queue() -> None:
         conn = _victory_conn_rw()
         try:
             cur = conn.cursor()
-            cur.execute("SELECT count(*) FROM direct_automation.jobs "
+            cur.execute("SELECT count(*) FROM victoryads_direct_automation.jobs "
                         "WHERE status='queued' AND coalesce(body->>'_web_posted','')='true' "
                         "  AND coalesce(kind,'') = ANY(%s) "
                         "  AND updated_at < now() - make_interval(secs => %s)",

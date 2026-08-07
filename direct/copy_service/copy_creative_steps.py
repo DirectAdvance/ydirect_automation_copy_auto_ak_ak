@@ -11,6 +11,24 @@ from .copy_context import CopyCtx, _noop_log
 from .copy_step_utils import _chunks, _rj, _v5_add_err, _wj
 
 
+_IMAGE_ORIGIN_BASE = "https://direct.yandex.ru/images/direct"
+
+
+def _copy_source_image_original_url(source_hash: str, meta: dict | None) -> str:
+    """URL ОРИГИНАЛА картинки источника из ``mdsGroupId`` + хэша.
+
+    ``preview_url`` из Grid — это ресайз (``formats[]`` даёт x80…x1200, выбирается ~300px).
+    Директ такой файл на загрузку не принимает: `ImageDefectIds.Gen.IMAGE_SIZE_IS_NOT_ALLOWED`,
+    хэш не выдаётся, картинка молча теряется — так у копии оставалась ОДНА картинка из пяти
+    (инцидент porg-rzecobed → porg-jx2usvm6, 2026-08-06: 152 объявления по 1 картинке вместо 3–5).
+    Оригинал = тот же URL без суффикса формата; проверено live 2026-08-07: v5
+    ``adimages.OriginalUrl`` == ``…/images/direct/<mdsGroupId>/<hash>`` (1424×1424).
+    """
+    gid = str((meta or {}).get("mdsGroupId") or "").strip()
+    h = str(source_hash or "").strip()
+    return f"{_IMAGE_ORIGIN_BASE}/{gid}/{h}" if (gid and h) else ""
+
+
 def _copy_source_image_file(ctx: CopyCtx, source_hash: str, meta: dict | None, rep: dict,
                             *, prefer_preview: bool = False) -> Path | None:
     h = str(source_hash or "").strip()
@@ -19,28 +37,61 @@ def _copy_source_image_file(ctx: CopyCtx, source_hash: str, meta: dict | None, r
     src_file = Path(ctx.src_dir) / "images" / f"{h}.img"
     if not prefer_preview and src_file.exists() and src_file.stat().st_size > 0:
         return src_file
-    url = str((meta or {}).get("preview_url") or "").strip()
-    if not url:
+    # Порядок кандидатов: оригинал → превью. Превью остаётся только запасным (и единственным
+    # при prefer_preview=True — второй заход вызывающего после отказа на первом файле).
+    preview = str((meta or {}).get("preview_url") or "").strip()
+    original = _copy_source_image_original_url(h, meta)
+    candidates = [("preview", preview)] if prefer_preview else [("original", original),
+                                                                ("preview", preview)]
+    candidates = [(kind, url) for kind, url in candidates if url]
+    if not candidates:
         return None
-    dst = Path(ctx.workdir) / "_image_repair_cache" / f"{h}.img"
-    try:
-        if not (dst.exists() and dst.stat().st_size > 0):
-            import requests
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            with requests.get(url, stream=True, timeout=60, verify=False) as r:
-                if r.status_code != 200:
-                    rep["errors"].append(f"source image {h[:12]}: preview HTTP {r.status_code}")
-                    return None
-                with open(dst, "wb") as fh:
-                    for chunk in r.iter_content(chunk_size=1 << 16):
-                        if chunk:
-                            fh.write(chunk)
-        if dst.stat().st_size > 0:
-            rep["images_downloaded"] = int(rep.get("images_downloaded") or 0) + 1
-            return dst
-    except Exception as e:  # noqa: BLE001
-        rep["errors"].append(f"source image {h[:12]}: download failed: {str(e)[:160]}")
+    import requests
+    for kind, url in candidates:
+        dst = Path(ctx.workdir) / "_image_repair_cache" / f"{h}.{kind}.img"
+        try:
+            if not (dst.exists() and dst.stat().st_size > 0):
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                with requests.get(url, stream=True, timeout=60, verify=False) as r:
+                    if r.status_code != 200:
+                        rep["errors"].append(f"source image {h[:12]}: {kind} HTTP {r.status_code}")
+                        continue
+                    with open(dst, "wb") as fh:
+                        for chunk in r.iter_content(chunk_size=1 << 16):
+                            if chunk:
+                                fh.write(chunk)
+            if dst.stat().st_size > 0:
+                rep["images_downloaded"] = int(rep.get("images_downloaded") or 0) + 1
+                return dst
+        except Exception as e:  # noqa: BLE001
+            rep["errors"].append(f"source image {h[:12]}: {kind} download failed: {str(e)[:160]}")
     return None
+
+
+def _copy_target_library_hashes(ctx: CopyCtx) -> set:
+    """Хэши картинок, уже загруженных в TARGET-аккаунт (v5 ``adimages.get``, один раз на job).
+
+    Хэш картинки контент-адресный: если такая же картинка в цели уже есть, её МОЖНО ставить
+    объявлению как есть — переаплоад не нужен (и падал именно он). Тот же приём уже применяет
+    ``copy_images._copy_image_remapper``; постпроцессный шаг адаптивов его не делал и уходил
+    в заведомо лишнюю загрузку.
+    """
+    cached = getattr(ctx, "_target_library_hashes", None)
+    if cached is not None:
+        return cached
+    out: set = set()
+    try:
+        if callable(ctx.v5_call) and ctx.target_token:
+            data = ctx.v5_call("adimages", "get", ctx.target_token, ctx.target_login,
+                               {"SelectionCriteria": {}, "FieldNames": ["AdImageHash"]}) or {}
+            for im in ((data.get("result") or {}).get("AdImages") or []):
+                hh = str(im.get("AdImageHash") or "").strip()
+                if hh:
+                    out.add(hh)
+    except Exception:  # noqa: BLE001 — библиотека недоступна → работаем как раньше (переаплоад)
+        out = set()
+    setattr(ctx, "_target_library_hashes", out)
+    return out
 
 
 def _copy_target_image_hash(ctx: CopyCtx, source_hash: str, meta: dict | None, rep: dict) -> str:
@@ -51,6 +102,10 @@ def _copy_target_image_hash(ctx: CopyCtx, source_hash: str, meta: dict | None, r
     mapped = str(img_map.get(h) or "").strip()
     if mapped:
         return mapped
+    if h in _copy_target_library_hashes(ctx):   # такая картинка в цели уже есть — ставим 1:1
+        img_map[h] = h
+        rep["images_reused"] = int(rep.get("images_reused") or 0) + 1
+        return h
     failed_uploads = getattr(ctx, "_image_upload_failed", set())
     if h in failed_uploads:
         return ""
@@ -112,7 +167,7 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
     source-домен; RMW сохраняет target-кнопку). Идемпотентно, фолбэк-безопасно: нет source/target
     grid, апдейтера или маппинга — пропуск с отчётом, job не падает."""
     rep = {"src_ads_read": 0, "candidates": 0, "updated": 0, "geo_applied": 0,
-           "images_remapped": 0, "images_uploaded": 0, "images_downloaded": 0,
+           "images_remapped": 0, "images_uploaded": 0, "images_downloaded": 0, "images_reused": 0,
            "images_filled": 0, "multicards_remapped": 0, "multicards_skipped": 0,
            "no_target": 0, "no_content": 0, "errors": []}
     if ctx.grid is None:
@@ -195,6 +250,11 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
             if th:
                 new_imgs.append(th)
                 rep["images_remapped"] += 1
+            else:
+                # Потеря картинки НЕ должна быть тихой: РСЯ-объявление с 1 картинкой вместо 5
+                # выглядит «успешно скопированным» и в live-верификации (NO_IMAGES_LIVE ловит
+                # только полный ноль). Считаем и поднимаем наверх отдельной строкой ошибок.
+                rep["images_dropped"] = int(rep.get("images_dropped") or 0) + 1
         if img_pool:
             for _ in range(len(img_pool)):
                 if len(new_imgs) >= 5:
@@ -239,6 +299,10 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
             item["display_href"] = comp["displayHref"]
         items.append(item)
 
+    if rep.get("images_dropped"):
+        rep["errors"].append(
+            f"картинки: {rep['images_dropped']} хэшей источника не удалось поставить в цель "
+            f"(объявления остались с неполным набором картинок)")
     if not items:
         ctx.log("адаптивы: нет объявлений с маппингом/контентом — пропуск")
         return rep
@@ -252,6 +316,8 @@ def step_adaptive_creatives(ctx: CopyCtx) -> dict:
         rep["errors"].append(f"grid update adaptive: {str(e)[:200]}")
     ctx.log(f"адаптивы 1:1 (Grid, 0 баллов): контент обновлён у {rep['updated']}/{len(items)} "
             f"объявлений (гео у {rep['geo_applied']}, картинок ремаплено {rep['images_remapped']}, "
+            f"переиспользовано из библиотеки цели {rep['images_reused']}, "
+            f"потеряно {rep.get('images_dropped') or 0}, "
             f"долито {rep['images_filled']}, каруселей-карточек {rep['multicards_remapped']}, "
             f"без target {rep['no_target']}, без контента {rep['no_content']})")
     return rep

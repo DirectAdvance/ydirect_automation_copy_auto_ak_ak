@@ -154,7 +154,7 @@ def _copy_api_idempotency_lookup(idempotency_key: str) -> dict | None:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             cur.execute(
                 "SELECT job_id, login, status, total, kind, agency, body "
-                "FROM direct_automation.jobs "
+                "FROM victoryads_direct_automation.jobs "
                 "WHERE kind='copy_campaigns' "
                 "  AND body->>'_copy_api_idempotency_key' = %s "
                 "ORDER BY created_at DESC LIMIT 1",
@@ -169,7 +169,7 @@ def _copy_api_idempotency_lookup(idempotency_key: str) -> dict | None:
 
 
 def _copy_queue_jobs() -> list[dict]:
-    """Последние 200 copy-джоб из direct_automation.jobs для вкладки «Очередь».
+    """Последние 200 copy-джоб из victoryads_direct_automation.jobs для вкладки «Очередь».
     Возвращает список dict с полями: job_id, status, total, done, created, failed,
     error, created_at, source_login, target_login, elapsed.
     При недоступности Victory возвращает пустой список."""
@@ -189,7 +189,7 @@ def _copy_queue_jobs() -> list[dict]:
                     # снапшот+сверка+per-campaign результаты, 200 таких строк тянуть незачем
                     "       result->'has_issues' AS has_issues, "
                     "       result->'has_issues_unknown' AS has_issues_unknown "
-                    "FROM direct_automation.jobs "
+                    "FROM victoryads_direct_automation.jobs "
                     "WHERE kind='copy_campaigns' "
                     "ORDER BY created_at DESC LIMIT 200"
                 )
@@ -203,7 +203,7 @@ def _copy_queue_jobs() -> list[dict]:
                     "       j.error, j.created_at, j.body, "
                     "       j.result->'has_issues' AS has_issues, "
                     "       j.result->'has_issues_unknown' AS has_issues_unknown "
-                    "FROM direct_automation.jobs j "
+                    "FROM victoryads_direct_automation.jobs j "
                     "WHERE j.kind='copy_campaigns' "
                     "  AND EXISTS ("
                     "    SELECT 1 FROM public.local_gsheet_sites s "
@@ -347,9 +347,15 @@ def create_app() -> Flask:
     app.register_blueprint(copy_api_bp)
 
     app.register_blueprint(bp)
-    # Agent Board done -> copy retry must not wait for the next manual copy_start.
-    # Start the isolated copy worker/retry daemon with the service process itself.
-    queue._ensure_copy_worker(app)
+    # Исполнение copy-джоб живёт в отдельном процессе (direct-copy-worker.service): пока воркер
+    # был встроен сюда, любой рестарт web обрывал копирование кабинета на середине — отсюда запрет
+    # «не рестартовать direct-copy при непустой очереди». Web теперь только кладёт джобу и читает
+    # статус. Встроенный режим оставлен на аварийный случай: DIRECT_COPY_EMBEDDED_WORKER=1
+    # поднимет воркер прямо здесь (например, если отдельный юнит не запущен).
+    if (os.environ.get("DIRECT_COPY_EMBEDDED_WORKER") or "").strip() == "1":
+        print("[direct-copy] встроенный copy-воркер включён (DIRECT_COPY_EMBEDDED_WORKER=1)",
+              flush=True)
+        queue._ensure_copy_worker(app)
     return app
 
 

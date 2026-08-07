@@ -1361,9 +1361,9 @@ def test_notify_copy_job_error_creates_agent_board_task(monkeypatch):
             return False
 
         def execute(self, sql, params=None):
-            if "SELECT * FROM direct_automation.jobs" in sql:
+            if "SELECT * FROM victoryads_direct_automation.jobs" in sql:
                 self._select = True
-            if "UPDATE direct_automation.jobs SET agent_board_task_id" in sql:
+            if "UPDATE victoryads_direct_automation.jobs SET agent_board_task_id" in sql:
                 calls["update"] = params
 
         def fetchone(self):
@@ -1475,7 +1475,7 @@ def test_copy_jobs_ready_for_agent_retry_waits_for_published_task(monkeypatch):
     assert [r["job_id"] for r in ready] == ["failed-copy-1"]
     select_sql = next(sql for sql in executed if "FROM candidates j" in sql)
     assert "JOIN agent_board.tasks" not in select_sql
-    assert "LEFT JOIN direct_automation.jobs r" in select_sql
+    assert "LEFT JOIN victoryads_direct_automation.jobs r" in select_sql
 
 
 def test_mark_copy_retry_started_allows_replacing_interrupted_retry(monkeypatch):
