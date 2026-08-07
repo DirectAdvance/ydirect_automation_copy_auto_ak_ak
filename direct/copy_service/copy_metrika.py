@@ -68,17 +68,36 @@ def _copy_apply_metrika(login: str, token: str, src_dir: Path, workdir: Path,
         strategy = type_data.get("BiddingStrategy") or {}
         # PAY_FOR_CONVERSION_MULTIPLE_GOALS: v5 не принимает без счётчика+целей (4000/8000).
         # Стратегия будет восстановлена через Grid в _copy_cookie_postprocess — здесь пропускаем.
-        _has_pfcmg = any(
-            (strategy.get(side) or {}).get("BiddingStrategyType") == "PAY_FOR_CONVERSION_MULTIPLE_GOALS"
+        # ЛЮБАЯ *_MULTIPLE_GOALS, а не только PAY_FOR_CONVERSION: v5 не принимает их без
+        # счётчика+целей и отклоняет ВЕСЬ item — вместе со счётчиком, ради которого апдейт
+        # и делается. Из-за этого копии porg-c6rxuenb получили счётчик ИСТОЧНИКА (104132068)
+        # вместо целевого, а шаг отчитался `updated: 12` (2026-08-07). Стратегия всё равно
+        # восстанавливается позже через Grid в постпроцессе.
+        _has_multi_goal = any(
+            str((strategy.get(side) or {}).get("BiddingStrategyType") or "").endswith("_MULTIPLE_GOALS")
             for side in ("Search", "Network")
         )
-        if strategy and not _has_pfcmg:
+        if strategy and not _has_multi_goal:
             body[struct_key]["BiddingStrategy"] = _copy_rewrite_strategy_goal(strategy, goal_id)
         try:
             j = _v5_call("campaigns", "update", token, login, {"Campaigns": [body]})
             if "error" in j:
                 warned += 1
                 _copy_job_log(job_id, f"метрика update {c.get('Name') or src_id}: {_v5_err(j)[:220]}")
+                continue
+            # ⚠️ v5 кладёт отказ по КАЖДОЙ кампании в UpdateResults[].Errors, а не в top-level
+            # `error`. Без этой проверки отклонённый апдейт считался успешным: шаг рапортовал
+            # `updated: 12`, а на кампаниях оставался счётчик источника (инцидент 2026-08-07).
+            _item_errors = [
+                e for _res in (((j.get("result") or {}).get("UpdateResults") or []))
+                for e in (_res.get("Errors") or [])
+            ]
+            if _item_errors:
+                warned += 1
+                _first = _item_errors[0]
+                _copy_job_log(job_id, f"метрика update {c.get('Name') or src_id}: отклонено v5 — "
+                                      f"{_first.get('Code')} {str(_first.get('Message') or '')[:100]} "
+                                      f"{str(_first.get('Details') or '')[:120]}")
                 continue
             updated += 1
         except Exception as e:  # noqa: BLE001

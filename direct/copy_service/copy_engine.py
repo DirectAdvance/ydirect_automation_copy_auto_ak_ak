@@ -19,13 +19,9 @@ from pathlib import Path
 from ..core import campaign as cmc
 from ..clients import grid_create as gc
 from ..clients import grid_finalize as gf
-# Прямой импорт клиента-соседа (как grid_create/grid_finalize): проба остатка баллов —
-# не инъекция очереди, а тот же слой доступа к Директу. Цикла нет.
-from ..clients.yandex_gateway import UNITS_PER_CAMPAIGN as _UNITS_PER_CAMPAIGN, v5_units as _v5_units
 from ..repair import repair_auto as rauto
 from ..repair import repair_gate as rgate
 from .copy_request import parse_feed_map, parse_image_hashes
-from .copy_verify_issues import annotate_copy_job_issues
 from ..llm_providers import _m3_complete, _m3_llm_probe
 
 _HERE = Path(__file__).resolve().parent
@@ -54,7 +50,7 @@ def configure(deps: dict) -> None:
     globals().update(deps)
     for _sub in (copy_jobs, copy_geo, copy_snapshot, copy_images, copy_metrika,
                  copy_feeds, copy_grid_read, copy_uac, copy_cleanup, copy_grid_steps,
-                 copy_grid_unified, copy_postprocess):
+                 copy_grid_unified, copy_grid_post, copy_postprocess):
         try:
             _sub.configure(deps)
         except Exception:  # noqa: BLE001 — фан-аут best-effort, не валит основную инъекцию
@@ -77,6 +73,62 @@ def _direct_copy_module():
     spec.loader.exec_module(mod)
     _DIRECT_COPY_MOD = mod
     return mod
+
+
+def _copy_patch_direct_copy_strategy_fallback(dc) -> bool:
+    """Расширить fallback стратегий direct_copy на v5 multi-goal варианты.
+
+    Внешний ``direct_copy.strategy_fallback`` понижает часть стратегий перед campaigns.add,
+    но не знает про ``*_MULTIPLE_GOALS`` (AVERAGE_CPA_MULTIPLE_GOALS,
+    PAY_FOR_CONVERSION_MULTIPLE_GOALS и т.п.): v5 отвергает их без валидной связки
+    счётчик+цели, весь ``campaigns.add`` падает, ``id_maps.campaigns`` остаётся пустым — и
+    дальше ВСЕ кампании числятся «not mapped by direct_copy» (лайв 06.08: porg-c6rxuenb,
+    12 из 12 кампаний с AVERAGE_CPA_MULTIPLE_GOALS).
+
+    Оборачиваем оригинал: если он сам стратегию не понизил, а сторона Search/Network всё ещё
+    ``*_MULTIPLE_GOALS`` — даунгрейдим в WB_MAXIMUM_CLICKS. Реальная стратегия
+    восстанавливается пост-фактум (метрика-докрутка / Grid-restore). Идемпотентно.
+    """
+    orig = getattr(dc, "strategy_fallback", None)
+    if not callable(orig) or getattr(orig, "_copy_service_multi_goal_patch", False):
+        return False
+
+    def _weekly_spend_limit(block: dict) -> int:
+        for value in block.values():
+            if not isinstance(value, dict):
+                continue
+            try:
+                weekly = int(value.get("WeeklySpendLimit") or 0)
+            except (TypeError, ValueError):
+                weekly = 0
+            if weekly > 0:
+                return weekly
+        return 300_000_000
+
+    def patched(strategy: dict) -> tuple[dict, bool]:
+        safe, downgraded = orig(strategy)
+        if downgraded:
+            return safe, downgraded
+        safe = json.loads(json.dumps(safe or {}))
+        patched_any = False
+        for side in ("Search", "Network"):
+            block = safe.get(side)
+            if not isinstance(block, dict):
+                continue
+            btype = str(block.get("BiddingStrategyType") or "").strip().upper()
+            if not btype.endswith("_MULTIPLE_GOALS"):
+                continue
+            safe[side] = {
+                "BiddingStrategyType": "WB_MAXIMUM_CLICKS",
+                "WbMaximumClicks": {"WeeklySpendLimit": _weekly_spend_limit(block)},
+            }
+            patched_any = True
+        return safe, patched_any
+
+    patched._copy_service_multi_goal_patch = True
+    patched._copy_service_original = orig
+    dc.strategy_fallback = patched
+    return True
 
 
 def _copy_enrich_body_context(body: dict, source_login: str, target_login: str) -> None:
@@ -109,6 +161,49 @@ def _copy_enrich_body_context(body: dict, source_login: str, target_login: str) 
         )
 
 
+def _copy_fill_missing_target_geo(body: dict, target_login: str, mode: str, geo_mode: str) -> tuple[str, str, bool]:
+    """Backfill old/internal copy jobs queued without target_city/target_region."""
+    target_city = (body.get("target_city") or "").strip()
+    target_region = (body.get("target_region") or "").strip()
+    if target_city or target_region or mode == "other" or geo_mode == "keep":
+        return target_city, target_region, False
+
+    target_ctx = _copy_ctx(target_login)
+    target_city = (target_ctx.get("city") or "").strip()
+    target_region = (target_ctx.get("region") or "").strip()
+    if target_city:
+        body["target_city"] = target_city
+    if target_region:
+        body["target_region"] = target_region
+    return target_city, target_region, bool(target_city or target_region)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # _REGION_ALIASES / _REGION_ALIASES_NORM / _norm_region_alias_key перенесены в copy_geo.py
 # (распил): их использует _copy_geo_replacements там же. Ре-экспорт — ниже в блоке copy_geo.
 
@@ -118,15 +213,86 @@ def _copy_geo_filter_negatives(minus_list: list, replacements: list) -> list:
     return _impl(minus_list, replacements)
 
 
+
+
+
+
+
+
+
+
 def _copy_rcode_to_region(r_code: str) -> str:
     from .copy_grid_unified import _copy_rcode_to_region as _impl
     return _impl(r_code)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def _copy_grid_unified_campaigns(job_id: str, body: dict, selected_grid_rows: list[dict],
                                  workdir: Path) -> dict:
     from .copy_grid_unified import _copy_grid_unified_campaigns as _impl
     return _impl(job_id, body, selected_grid_rows, workdir)
+
+
+def _copy_grid_post_campaigns(job_id: str, body: dict, selected_grid_rows: list[dict],
+                              workdir: Path) -> dict:
+    from .copy_grid_post import _copy_grid_post_campaigns as _impl
+    return _impl(job_id, body, selected_grid_rows, workdir)
+
+
+def _copy_is_post_grid_row(row: dict) -> bool:
+    from .copy_grid_post import _copy_is_post_grid_row as _impl
+    return _impl(row)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def _copy_timed(job_id: str, label: str, fn):
@@ -159,61 +325,42 @@ def _copy_terminal_status_from_postprocess(rows: list[dict], cookie_post: dict |
     return status, error
 
 
+def _copy_is_uac_only_without_v5_snapshot(meta: dict, selected_uac_rows: list[dict],
+                                          selected_ids: set[int]) -> bool:
+    """True when all remaining selected campaigns are copied by the UAC leg.
+
+    UAC campaigns do not produce direct_copy id_maps["campaigns"]. Running the v5/Grid
+    postprocess for this shape masks the real UAC result with a misleading id_maps error.
+    """
+    if int((meta or {}).get("campaigns") or 0) != 0 or not selected_ids:
+        return False
+    uac_ids = {
+        int(r.get("id") or 0) for r in (selected_uac_rows or [])
+        if str(r.get("id") or "").strip().isdigit()
+    }
+    return bool(uac_ids) and set(selected_ids).issubset(uac_ids)
+
+
 def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
                              src_dir: Path, workdir: Path, body: dict) -> dict:
     from .copy_postprocess import _copy_cookie_postprocess as _impl
     return _impl(job_id, target_login, target_agency, src_dir, workdir, body)
 
 
-# Пустой снимок для случая, когда копировать оказалось нечего: ключи те же, что кладёт
-# _copy_filter_snapshot, чтобы UI и разборы result не спотыкались об отсутствующие поля.
-_EMPTY_SNAPSHOT_META = {
-    "campaigns": 0, "adgroups": 0, "ads": 0, "keywords": 0,
-    "sitelinks": 0, "callouts": 0, "vcards": 0, "adimages_used": 0,
-    "promotions": 0, "shared_sets": 0, "bidmodifiers": 0, "feeds": 0,
-    "retargeting_lists": 0, "dropped_empty_adgroups": 0,
-}
 
 
-def _copy_finish_all_skipped(job_id: str, *, source_login: str, target_login: str,
-                             selected_count: int, skipped: list[dict], workdir: Path) -> None:
-    """Закрыть джобу, в которой отсеялись ВСЕ выбранные кампании (копировать нечего).
 
-    Статус остаётся ``done``: ``error`` здесь запускает Agent-Board-мост и авто-retry
-    (`agent_board_bridge.copy_jobs_ready_for_agent_retry` берёт copy-джобы ровно по
-    ``status='error'``), а повтор отсеет те же кампании — получился бы цикл на ровном месте.
-    Поэтому «ничего не скопировано» видно НЕ через статус, а через ``has_issues``: та же
-    механика, что у create-очереди (`create/create_job_status.annotate_job_issues`), и UI
-    рисует по ней «готово с замечаниями» вместо чистой галочки.
-    """
-    reasons: dict[str, int] = {}
-    for row in skipped or []:
-        reason = str((row or {}).get("reason") or "не указана")
-        reasons[reason] = reasons.get(reason, 0) + 1
-    _copy_job_log(
-        job_id,
-        f"копировать нечего: отсеяны все {selected_count} выбранных кампаний "
-        + "; ".join(f"{k} × {v}" for k, v in reasons.items())
-    )
-    _copy_job_upsert(
-        job_id, status="done", progress=100, total=0, error=None,
-        result={
-            "source_login": source_login,
-            "target_login": target_login,
-            "selected": selected_count,
-            "snapshot": dict(_EMPTY_SNAPSHOT_META),
-            "results": [],
-            "skipped_campaigns": list(skipped or []),
-            "workdir": str(workdir),
-            "has_issues": {
-                "not_copied": selected_count,
-                "selected": selected_count,
-                "skip_reasons": reasons,
-            },
-            # сверять было нечего — не выдаём отсутствие расхождений за чистую сверку
-            "has_issues_unknown": True,
-        },
-    )
+
+
+
+
+
+
+
+
+
+
+
 
 
 # verify-after-settle: in-job copy_verify бежит ДО статуса done, а привязки (sitelinks/промо/
@@ -288,75 +435,85 @@ def _copy_mark_reverify_blockers(job_id: str, verify_result: dict) -> None:
     res["copy_verify_blockers"] = blockers[:80]
     _copy_job_upsert(job_id, status="error", error=msg[:500], result=res)
     _copy_job_log(job_id, f"⚠️ {msg}")
+
+
+def _copy_reverify_settled_startup_scan(*, limit: int = 20) -> list[str]:
+    """Startup backstop: close done copy jobs whose settled verify hard gate never ran."""
     if not _victory_conn_rw:
-        return
+        return []
+    import psycopg2.extras
+
+    from .copy_postprocess import _copy_verify_blockers
+    from ..agent_board_bridge import notify_copy_job_error
+
+    conn = _victory_conn_rw()
     try:
-        from ..agent_board_bridge import notify_copy_job_error
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT job_id, result
+                   FROM direct_automation.jobs
+                   WHERE kind='copy_campaigns'
+                     AND status='done'
+                     AND result ? 'copy_verify_settled'
+                     AND updated_at >= now() - interval '24 hours'
+                   ORDER BY updated_at ASC
+                   LIMIT %s""",
+                (max(1, min(int(limit), 20)),),
+            )
+            rows = [dict(r) for r in cur.fetchall() or []]
+        conn.commit()
+    finally:
+        conn.close()
 
-        task_id = notify_copy_job_error(_victory_conn_rw, job_id)
-        if task_id:
-            _copy_job_log(job_id, f"Agent Board task #{task_id} created for settled copy error")
-    except Exception as exc:  # noqa: BLE001 - delayed verifier must not hide the settled error.
-        _copy_job_log(job_id, f"Agent Board notify failed for settled copy error: {str(exc)[:160]}")
-
-
-def _copy_check_target_units(job_id: str, target_login: str, target_token: str,
-                             v5_campaign_count: int) -> None:
-    """Хватит ли баллов Директа на цели ДО заливки. Нет — стоп, пока ничего не создано.
-
-    Иначе 152 (баллы кончились) всплывает на середине ``phase_upload`` и оставляет кабинет
-    наполовину собранным: часть кампаний создана, часть нет, докрутка не отработала.
-
-    Считаем только v5-кампании: UAC/tp6/tp7 идут по куки через Grid и баллов не тратят
-    (``uac_copy.uses_direct_units = False``). Оценка грубая — ``UNITS_PER_CAMPAIGN`` это
-    средняя стоимость позиции, а не точный прайс метода; занижать её нельзя, поэтому
-    берём ту же константу, что и остальной проект.
-
-    Прочитать остаток не удалось (нет токена, сеть, обрыв) — НЕ блокируем: сама заливка
-    всё равно упрётся в 152 и отдаст внятную ошибку, а падать на недоступности пробы
-    значило бы ломать копирование из-за диагностики.
-    """
-    if not v5_campaign_count or not target_token:
-        return
-    try:
-        units = _v5_units(target_token, target_login)
-    except Exception as exc:  # noqa: BLE001
-        _copy_job_log(job_id, f"баллы цели: проба не удалась ({str(exc)[:120]}) — продолжаю")
-        return
-    if not units:
-        _copy_job_log(job_id, "баллы цели: остаток не прочитан (заголовок Units пуст) — продолжаю")
-        return
-    rest = int(units.get("rest") or 0)
-    need = v5_campaign_count * _UNITS_PER_CAMPAIGN
-    _copy_job_log(job_id, f"баллы цели: остаток {rest}, нужно ≈{need} на {v5_campaign_count} v5-кампаний")
-    if rest < need:
-        raise RuntimeError(
-            f"на аккаунте {target_login} не хватает баллов Директа: остаток {rest}, "
-            f"нужно ≈{need} на {v5_campaign_count} кампаний. Копирование не начато — "
-            f"дождитесь обновления баллов и запустите заново"
-        )
-
-
-def _copy_store_settled_verify(job_id: str, verify_result: dict) -> None:
-    """Записать осевшую сверку в result джобы и пересчитать по ней разбивку замечаний.
-
-    Вызывается и после первой осевшей сверки, и после каждого круга ре-лечения — итог
-    последнего круга и есть правда, поэтому ``has_issues`` каждый раз переставляется заново.
-    ``cookie_postprocess.copy_verify`` перезаписывается тем же значением: UI (`_cvAggregate`)
-    читает оттуда и без этого показывал бы раннюю, ещё не осевшую сверку.
-    """
-    with _COPY_JOBS_LOCK:
-        job = _COPY_JOBS.get(job_id)
-        result = dict(job["result"]) if (job and isinstance(job.get("result"), dict)) else None
-    if result is None:
-        return
-    result["copy_verify_settled"] = verify_result
-    postprocess = result.get("cookie_postprocess")
-    if isinstance(postprocess, dict):
-        postprocess = dict(postprocess)
-        postprocess["copy_verify"] = verify_result
-        result["cookie_postprocess"] = postprocess
-    _copy_job_upsert(job_id, result=annotate_copy_job_issues(result))
+    touched: list[str] = []
+    for row in rows:
+        job_id = str(row.get("job_id") or "")
+        if not job_id:
+            continue
+        with _COPY_JOBS_LOCK:
+            is_alive = job_id in _COPY_JOBS
+        if is_alive:
+            continue
+        result = row.get("result") if isinstance(row.get("result"), dict) else {}
+        verify_result = result.get("copy_verify_settled")
+        if not isinstance(verify_result, dict):
+            continue
+        try:
+            blockers = _copy_verify_blockers(verify_result)
+        except Exception as exc:  # noqa: BLE001
+            blockers = [{"kind": "copy_verify", "dimension": "BLOCKER_CHECK_ERROR",
+                         "status": "error", "error": str(exc)[:180]}]
+        if not blockers:
+            continue
+        dims = sorted({str(b.get("dimension") or "") for b in blockers})
+        print(f"[copy-startup-reverify] {job_id}: {len(blockers)} unresolved blockers, "
+              f"dimensions={dims}", flush=True)
+        sample = [f"{b.get('dimension')}={b.get('status')} {b.get('scope')}" for b in blockers[:6]]
+        msg = f"copy_verify settled gate (startup scan): {len(blockers)} незакрытых дефектов ({'; '.join(sample)})"
+        new_result = dict(result)
+        new_result["copy_verify_blockers"] = blockers[:80]
+        upd_conn = _victory_conn_rw()
+        try:
+            upd_cur = upd_conn.cursor()
+            upd_cur.execute(
+                "UPDATE direct_automation.jobs SET status='error', error=%s, result=%s, updated_at=now() "
+                "WHERE job_id=%s AND kind='copy_campaigns' AND status='done'",
+                (msg[:500], json.dumps(new_result, ensure_ascii=False), job_id),
+            )
+            applied = upd_cur.rowcount > 0
+            upd_conn.commit()
+        finally:
+            upd_conn.close()
+        if not applied:
+            continue
+        touched.append(job_id)
+        try:
+            task_id = notify_copy_job_error(_victory_conn_rw, job_id)
+            if task_id:
+                print(f"[copy-agent-board] startup-reverify task #{task_id} created for {job_id}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[copy-agent-board] startup-reverify notify failed {job_id}: {str(exc)[:160]}", flush=True)
+    return touched
 
 
 def _copy_delayed_reverify(job_id: str, src_dir: Path, workdir: Path,
@@ -385,9 +542,7 @@ def _copy_delayed_reverify(job_id: str, src_dir: Path, workdir: Path,
             try:
                 _src_ag_rv = _resolve_agency_hint(source_login, "")
                 _src_cli_rv = cmc.build_client(source_login, account=(_src_ag_rv or None))
-                _src_grid_rv = gf.GridClient(
-                    source_login, cookie=(_src_cli_rv.sess.headers.get("Cookie") or ""),
-                    refresh_explicit_cookie=True)
+                _src_grid_rv = gf.GridClient(source_login, cookie=(_src_cli_rv.sess.headers.get("Cookie") or ""))
             except Exception as _sge:  # noqa: BLE001 — без source_grid профиль источника уйдёт в fallback
                 _copy_job_log(job_id, f"copy_verify (осевший): source_grid не пересобран ({str(_sge)[:120]})")
         from . import copy_verify as cv
@@ -401,7 +556,17 @@ def _copy_delayed_reverify(job_id: str, src_dir: Path, workdir: Path,
         _copy_job_log(job_id, f"copy_verify (осевший, +{_waited}s): "
                               f"ok={_s.get('ok')}, mismatch={_s.get('mismatch')}, "
                               f"unreadable={_s.get('unreadable')}")
-        _copy_store_settled_verify(job_id, vr)
+        with _COPY_JOBS_LOCK:
+            j = _COPY_JOBS.get(job_id)
+            _res = dict(j["result"]) if (j and isinstance(j.get("result"), dict)) else None
+        if _res is not None:
+            _res["copy_verify_settled"] = vr
+            _cp = _res.get("cookie_postprocess")
+            if isinstance(_cp, dict):
+                _cp = dict(_cp)
+                _cp["copy_verify"] = vr        # UI (_cvAggregate) читает отсюда → покажет осевшее
+                _res["cookie_postprocess"] = _cp
+            _copy_job_upsert(job_id, result=_res)
 
         # ── Ре-лечение вырезанных ключей/ссылок (после окна вырезания) ───────────
         # Осевшая сверка выше могла пройти ДО вырезания (ключи ещё на месте → mismatch=0), а Яндекс
@@ -440,7 +605,17 @@ def _copy_delayed_reverify(job_id: str, src_dir: Path, workdir: Path,
             _s2 = vr.get("summary") or {}
             _copy_job_log(job_id, f"copy_verify (ре-лечение, круг {_hround + 1}): "
                                   f"ok={_s2.get('ok')}, mismatch={_s2.get('mismatch')}")
-            _copy_store_settled_verify(job_id, vr)
+            with _COPY_JOBS_LOCK:
+                j2 = _COPY_JOBS.get(job_id)
+                _res2 = dict(j2["result"]) if (j2 and isinstance(j2.get("result"), dict)) else None
+            if _res2 is not None:
+                _res2["copy_verify_settled"] = vr
+                _cp2 = _res2.get("cookie_postprocess")
+                if isinstance(_cp2, dict):
+                    _cp2 = dict(_cp2)
+                    _cp2["copy_verify"] = vr
+                    _res2["cookie_postprocess"] = _cp2
+                _copy_job_upsert(job_id, result=_res2)
         _copy_mark_reverify_blockers(job_id, vr)
     except Exception as e:  # noqa: BLE001
         _copy_job_log(job_id, f"copy_verify (осевший) error: {str(e)[:200]}")
@@ -490,7 +665,13 @@ def _copy_expected_snapshot_count(selected_ids: set[int], selected_uac_rows: lis
 
 def _copy_unsupported_grid_only_skips(selected_grid_rows: list[dict], selected_ids: set[int],
                                       v5_native_ids: set[int]) -> list[dict]:
-    """Known Grid-only campaign types that copy-service does not recreate yet."""
+    """Known Grid-only campaign types that copy-service does not recreate yet.
+
+    v5-visible campaigns must stay on the v5 snapshot path even when Grid gives a broad
+    typename. UAC/tp6/tp7 are handled by the dedicated Grid/UAC branch. Post campaigns
+    (tp8/tp9/tp10, GdPostCampaign) are Grid-only and unsupported here; treating them as
+    unknown v5 ids produces a false "snapshot incomplete" failure.
+    """
     skipped: list[dict] = []
     for row in selected_grid_rows or []:
         try:
@@ -516,62 +697,78 @@ def _copy_unsupported_grid_only_skips(selected_grid_rows: list[dict], selected_i
     return skipped
 
 
-def _copy_missing_source_skips(selected_ids: set[int], selected_grid_rows: list[dict],
-                               v5_campaigns: list[dict] | None) -> list[dict]:
-    """Selected source ids that neither v5 nor Grid can read anymore.
-
-    This is not a copyable source campaign. Treating it as an expected v5 snapshot row
-    produces a misleading "snapshot incomplete" retry loop.
-    """
-    if v5_campaigns is None:
-        return []
-    grid_ids = set()
-    for row in selected_grid_rows or []:
-        try:
-            grid_ids.add(int(row.get("id") or 0))
-        except (TypeError, ValueError):
-            pass
-    v5_ids = set()
-    for c in v5_campaigns or []:
-        try:
-            v5_ids.add(int(c.get("Id") or 0))
-        except (TypeError, ValueError):
-            pass
-    missing_ids = sorted(int(x) for x in (set(selected_ids) - grid_ids - v5_ids) if int(x) > 0)
-    return [{
-        "Id": cid,
-        "Name": "",
-        "Type": "UNKNOWN",
-        "State": "MISSING",
-        "Status": None,
-        "reason": "source_campaign_missing",
-    } for cid in missing_ids]
-
-
-def _copy_grid_classification_required_error(selected_ids: set[int], selected_grid_meta: dict,
-                                             v5_campaigns: list[dict] | None) -> str:
-    """Fail before partial v5 snapshot when Grid is required to classify selected campaigns."""
-    if selected_grid_meta.get("ok") is not False or v5_campaigns is None:
+def _copy_target_feed_blocker_for_uac(
+    target_login: str,
+    target_agency: str,
+    selected_uac_rows: list[dict],
+) -> str:
+    """Return a terminal user-facing blocker for product UAC copy without target feeds."""
+    has_product_uac = any(
+        str(row.get("name") or "").strip().lower().startswith("tp7_")
+        for row in selected_uac_rows or []
+    )
+    if not has_product_uac:
         return ""
-    v5_ids: set[int] = set()
-    for campaign in v5_campaigns or []:
-        try:
-            campaign_id = int(campaign.get("Id") or 0)
-        except (TypeError, ValueError):
-            continue
-        if campaign_id in selected_ids:
-            v5_ids.add(campaign_id)
-    missing_ids = sorted(selected_ids - v5_ids)
-    if not missing_ids:
+    try:
+        target_feeds = _grid_feeds(target_login, target_agency) or []
+    except Exception:  # noqa: BLE001
         return ""
-    sample = ", ".join(str(campaign_id) for campaign_id in missing_ids[:12])
-    tail = f", ... ещё {len(missing_ids) - 12}" if len(missing_ids) > 12 else ""
-    grid_error = str(selected_grid_meta.get("error") or "Grid list unavailable").strip()
+    if target_feeds:
+        return ""
     return (
-        "grid-классификация источника недоступна: "
-        f"Direct API видит {len(v5_ids)}/{len(selected_ids)} выбранных кампаний, "
-        f"ещё {len(missing_ids)} требуют Grid/UAC классификации ({sample}{tail}); {grid_error}"
-    )[:500]
+        f"на аккаунте {target_login} нет фидов: товарные tp7/UAC-кампании "
+        "нельзя скопировать без feed_id/listings_feed_id"
+    )
+
+
+def _copy_source_auth_bruteforce(dc, source_login: str, primary_account: str,
+                                 extra_accounts, job_id: str):
+    """AuthContext на источник с перебором ВСЕХ агентских кук (не только job-агентства).
+
+    ``dc.find_working_auth`` пробует все операторские токены, но лишь ОДНУ переданную
+    cookie_account и при промахе делает ``sys.exit`` → ``SystemExit`` (не ловится
+    ``except Exception`` вызывающего). Cookie-only источники (нет операторского токена;
+    доступ только по агентской куке) при неверном резолве агентства падали насмерть
+    «Ни один токен/кука не дал доступ к <login>» — даже когда куку УПРАВЛЯЮЩЕГО агентства
+    можно найти перебором (лайв 07.08: porg-5ri2mjj под y-direct-victory, job-агентство
+    совпадало с первым заходом → старый ретрай по job-агентству ре-рейзил).
+
+    Порядок: сначала полный ``find_working_auth`` по primary (токены + primary-кука); при
+    любом провале — перебор оставшихся агентских кук НАПРЯМУЮ (без повторного перебора
+    токенов), тем же probe-ом ``campaigns.get``, что и внутри ``find_working_auth``.
+    """
+    try:
+        return dc.find_working_auth(source_login, cookie_account=primary_account or None)
+    except (SystemExit, Exception) as first_err:  # noqa: BLE001 — SystemExit из sys.exit тоже
+        first_txt = str(first_err)[:160]
+    tried = {(primary_account or "").strip().lower()}
+    probed: list[str] = []
+    for acc in extra_accounts:
+        acc = (acc or "").strip()
+        if not acc or acc.lower() in tried:
+            continue
+        tried.add(acc.lower())
+        probed.append(acc)
+        try:
+            auth_cookie = dc.AuthContext("", cookie_account=acc)
+            auth_cookie.using_cookie = True
+            res = dc.direct_call(
+                "campaigns", "get",
+                {"SelectionCriteria": {}, "FieldNames": ["Id"], "Page": {"Limit": 1}},
+                auth=auth_cookie, client_login=source_login, attempts=1,
+            )
+        except (SystemExit, Exception):  # noqa: BLE001 — нет такой куки/сети → следующее агентство
+            continue
+        if isinstance(res, dict) and "__error__" not in res:
+            _copy_job_log(
+                job_id,
+                f"pull источника {source_login}: доступ по куке агентства '{acc}' (перебор кук)",
+            )
+            return auth_cookie
+    raise RuntimeError(
+        f"источник {source_login}: ни токен, ни перебор агентских кук "
+        f"({', '.join(probed) or '—'}) не дал доступа [{first_txt}]"
+    )
 
 
 def _copy_run_job(job_id: str, body: dict) -> None:
@@ -590,6 +787,15 @@ def _copy_run_job(job_id: str, body: dict) -> None:
     target_agency_hint = (body.get("agency") or "").strip()
     provided_image_hashes = parse_image_hashes(body)
     _copy_enrich_body_context(body, source_login, target_login)
+    target_city, target_region, _geo_backfilled = _copy_fill_missing_target_geo(
+        body, target_login, mode, geo_mode
+    )
+    if _geo_backfilled:
+        _copy_job_log(
+            job_id,
+            f"гео: target_city/target_region восстановлены из контекста аккаунта "
+            f"({target_city or '-'} / {target_region or '-'})",
+        )
     # Пофидовая замена (source_feed_id → target_feed_id, только существующие фиды target-аккаунта).
     # Пусто → поведение как раньше (единый target_feed_url / авто-пересоздание URL-фидов).
     # mode="other": явный feed_map клиента имеет приоритет; если его нет, строим auto-match.
@@ -634,6 +840,9 @@ def _copy_run_job(job_id: str, body: dict) -> None:
     cleanup_result: dict | None = None
     target_token = ""
     target_token_agency = ""
+    skipped_missing_source: list[dict] = []
+    skipped_grid_snapshot: list[dict] = []
+    skipped_v5_snapshot: list[dict] = []
 
     def _run_target_cleanup(progress: int = 45) -> None:
         nonlocal cleanup_result
@@ -681,10 +890,7 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         workdir = Path(tempfile.mkdtemp(prefix=f"direct-copy-{job_id[:8]}-", dir=str(tmp_root)))
         src_dir = workdir / "source"
         _copy_job_upsert(job_id, status="running", progress=5, workdir=str(workdir))
-        dc = _direct_copy_module()
-        selected_grid_rows, selected_grid_meta = _copy_selected_grid_campaigns_with_meta(source_login, selected_ids)
-        if selected_grid_meta.get("ok") is False:
-            _copy_job_log(job_id, f"grid selected unavailable: {selected_grid_meta.get('error')}")
+        selected_grid_rows = _copy_selected_grid_campaigns(source_login, selected_ids)
         selected_uac_rows = [r for r in selected_grid_rows if _copy_is_uac_grid_row(r)]
         if selected_uac_rows:
             _copy_job_log(job_id, f"uac selected: {len(selected_uac_rows)} кампаний через Grid/UAC")
@@ -710,55 +916,29 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         except Exception as _ex:  # noqa: BLE001 — кросс-чек best-effort; при сбое остаётся прежняя grid-логика
             _v5_campaigns_for_expected = None
             _copy_job_log(job_id, f"v5-кросс-чек типов недоступен ({str(_ex)[:80]}) — grid-классификация как есть")
-        _grid_required_error = _copy_grid_classification_required_error(
-            selected_ids, selected_grid_meta, _v5_campaigns_for_expected
-        )
-        if _grid_required_error:
-            raise RuntimeError(_grid_required_error)
-        _missing_source_probe_ok = True
-        if _v5_campaigns_for_expected is not None:
-            _grid_seen_ids = {
-                int(r.get("id") or 0) for r in (selected_grid_rows or [])
-                if str(r.get("id") or "").strip().isdigit()
-            }
-            _v5_seen_ids = {
-                int(c.get("Id") or 0) for c in (_v5_campaigns_for_expected or [])
-                if str(c.get("Id") or "").strip().isdigit()
-            }
-            _unknown_ids = set(selected_ids) - _grid_seen_ids - _v5_seen_ids
-            if _unknown_ids:
-                try:
-                    _precise_rows = _copy_selected_grid_campaigns_by_id(source_login, _unknown_ids)
-                except Exception as _ex:  # noqa: BLE001
-                    _precise_rows = []
-                    _missing_source_probe_ok = False
-                    _copy_job_log(job_id, f"snapshot: точечный Grid-read неизвестных id недоступен ({str(_ex)[:120]})")
-                if _precise_rows:
-                    _precise_seen = {
-                        int(r.get("id") or 0) for r in _precise_rows
-                        if str(r.get("id") or "").strip().isdigit()
-                    }
-                    selected_grid_rows.extend([
-                        r for r in _precise_rows
-                        if int(r.get("id") or 0) in _precise_seen - _grid_seen_ids
-                    ])
-                    selected_uac_rows = [r for r in selected_grid_rows if _copy_is_uac_grid_row(r)]
+        selected_post_rows = [
+            r for r in selected_grid_rows
+            if _copy_is_post_grid_row(r)
+            and int(r.get("id") or 0) not in _v5_native
+        ]
+        if selected_post_rows and len(selected_post_rows) == len(selected_ids):
+            _copy_job_log(job_id, f"Post campaigns без Direct API/v5 snapshot: {len(selected_post_rows)} через Grid-cookie")
+            _run_target_cleanup(progress=35)
+            post_res = _copy_grid_post_campaigns(job_id, body, selected_post_rows, workdir)
+            if cleanup_result is not None:
+                post_res["cleanup"] = cleanup_result
+            status = "done" if not post_res.get("errors") else "error"
+            _copy_job_upsert(
+                job_id,
+                status=status,
+                progress=100,
+                result=post_res,
+                error=("; ".join(str(e.get("error") or e) for e in (post_res.get("errors") or [])[:3])[:500]
+                       if post_res.get("errors") else None),
+            )
+            return
+
         skipped_grid_snapshot = _copy_unsupported_grid_only_skips(selected_grid_rows, selected_ids, _v5_native)
-        skipped_missing_source = (
-            _copy_missing_source_skips(selected_ids, selected_grid_rows, _v5_campaigns_for_expected)
-            if _missing_source_probe_ok else []
-        )
-        if skipped_missing_source:
-            skipped_ids = {int(x["Id"]) for x in skipped_missing_source if x.get("Id")}
-            sample = ", ".join(f"{x.get('Id')}:{x.get('reason')}" for x in skipped_missing_source[:8])
-            _copy_job_log(job_id, f"snapshot: пропущены отсутствующие/недоступные source-кампании: {sample}")
-            selected_ids = set(selected_ids) - skipped_ids
-            selected_grid_rows = [
-                r for r in selected_grid_rows
-                if int(r.get("id") or 0) not in skipped_ids
-            ]
-            selected_uac_rows = [r for r in selected_grid_rows if _copy_is_uac_grid_row(r)]
-            _copy_job_upsert(job_id, total=len(selected_ids))
         if skipped_grid_snapshot:
             skipped_ids = {int(x["Id"]) for x in skipped_grid_snapshot if x.get("Id")}
             sample = ", ".join(f"{x.get('Id')}:{x.get('reason')}" for x in skipped_grid_snapshot[:8])
@@ -771,23 +951,25 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             selected_uac_rows = [r for r in selected_grid_rows if _copy_is_uac_grid_row(r)]
             _copy_job_upsert(job_id, total=len(selected_ids))
             if not selected_ids:
-                _copy_finish_all_skipped(
-                    job_id,
-                    source_login=source_login, target_login=target_login,
-                    selected_count=original_selected_count,
-                    skipped=skipped_missing_source + skipped_grid_snapshot,
-                    workdir=workdir,
+                meta = {
+                    "campaigns": 0, "adgroups": 0, "ads": 0, "keywords": 0,
+                    "sitelinks": 0, "callouts": 0, "vcards": 0, "adimages_used": 0,
+                    "promotions": 0, "shared_sets": 0, "bidmodifiers": 0, "feeds": 0,
+                    "retargeting_lists": 0, "dropped_empty_adgroups": 0,
+                }
+                _copy_job_upsert(
+                    job_id, status="done", progress=100, total=0, error=None,
+                    result={
+                        "source_login": source_login,
+                        "target_login": target_login,
+                        "selected": original_selected_count,
+                        "snapshot": meta,
+                        "results": [],
+                        "skipped_campaigns": skipped_grid_snapshot,
+                        "workdir": str(workdir),
+                    },
                 )
                 return
-        elif skipped_missing_source and not selected_ids:
-            _copy_finish_all_skipped(
-                job_id,
-                source_login=source_login, target_login=target_login,
-                selected_count=original_selected_count,
-                skipped=skipped_missing_source,
-                workdir=workdir,
-            )
-            return
         selected_unified_rows = [
             r for r in selected_grid_rows
             if str(r.get("typename") or r.get("type") or "") == "GdUnifiedCampaign"
@@ -809,12 +991,39 @@ def _copy_run_job(job_id: str, body: dict) -> None:
                        if grid_res.get("errors") else None),
             )
             return
+        dc = _direct_copy_module()
+        if _copy_patch_direct_copy_strategy_fallback(dc):
+            _copy_job_log(job_id, "direct_copy: расширен fallback стратегий *_MULTIPLE_GOALS для campaigns.add")
         _copy_job_log(job_id, f"pull источника {source_login}")
+        # Агентство источника: сначала личная привязка логина (gsheet/override), затем — агентство
+        # джобы (body['agency'], та же victory-связка, что и у target). Без job-fallback cookie-only
+        # источники (нет операторского токена, доступ только по агентской куке) резолвились в сам
+        # логин как cookie_account → find_working_auth не находил куку и падал «Не удалось получить
+        # куку для <login>» (лайв 07.08: porg-5ri2mjj под y-direct-victory). Так же, как target ниже.
+        _src_agency_hint = _resolve_agency_hint(source_login, "") or target_agency_hint
         source_token, source_agency = _token_for_login(
-            source_login, _resolve_agency_hint(source_login, ""), _direct_tokens()
+            source_login, _src_agency_hint, _direct_tokens()
         )
-        source_cookie_account = source_agency or _resolve_agency_hint(source_login, "") or source_login
-        src_auth = dc.find_working_auth(source_login, cookie_account=source_cookie_account)
+        source_cookie_account = (
+            source_agency or _resolve_agency_hint(source_login, "") or target_agency_hint or source_login
+        )
+        # find_working_auth пробует все токены, но лишь ОДНУ переданную cookie_account и при промахе
+        # делает sys.exit (SystemExit, не Exception). Cookie-only источники (нет операторского токена,
+        # доступ только по агентской куке) при неверном резолве агентства падали насмерть «Ни один
+        # токен/кука не дал доступ к <login>» — даже когда куку УПРАВЛЯЮЩЕГО агентства можно найти
+        # перебором (лайв 07.08: porg-5ri2mjj под y-direct-victory; job-агентство совпало с первым
+        # заходом → прежний ретрай по job-агентству ре-рейзил и не помогал). Перебираем ВСЕ известные
+        # агентские куки (managing-агентство приоритетом, затем DEFAULT_COOKIE_ACCOUNTS), как советовал
+        # admin («куки перебором»). Идемпотентно, happy-path (первый заход по primary) не меняется.
+        _src_cookie_candidates = [
+            source_cookie_account,
+            (target_agency_hint or "").strip(),
+            _resolve_agency_hint(source_login, ""),
+            *getattr(cmc, "DEFAULT_COOKIE_ACCOUNTS", ()),
+        ]
+        src_auth = _copy_source_auth_bruteforce(
+            dc, source_login, source_cookie_account, _src_cookie_candidates, job_id
+        )
         _copy_direct_last_touch = {"ts": 0.0, "progress": 5}
 
         def _copy_direct_heartbeat(label: str) -> None:
@@ -840,9 +1049,7 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             try:
                 from . import copy_steps as _csteps
                 _src_cli = cmc.build_client(source_login, account=(source_agency or None))
-                _src_grid = gf.GridClient(
-                    source_login, cookie=(_src_cli.sess.headers.get("Cookie") or ""),
-                    refresh_explicit_cookie=True)
+                _src_grid = gf.GridClient(source_login, cookie=(_src_cli.sess.headers.get("Cookie") or ""))
                 _asset_pull["report"] = _csteps.pull_source_campaign_assets(
                     _src_grid, list(selected_ids), src_dir, log=(lambda m: _copy_job_log(job_id, m)))
             except Exception as e:  # noqa: BLE001
@@ -891,7 +1098,6 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             target_agency_hint or _resolve_agency_hint(target_login, ""),
             _direct_tokens(),
         )
-        _copy_check_target_units(job_id, target_login, target_token, int(meta.get("campaigns") or 0))
         target_cookie_account = (
             target_token_agency or target_agency_hint or _resolve_agency_hint(target_login, "") or target_login
         )
@@ -920,6 +1126,14 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             target_token_agency or target_agency_hint or _resolve_agency_hint(target_login, ""),
         )
         use_feed_map = bool(feed_map_valid)
+        target_feed_blocker = _copy_target_feed_blocker_for_uac(
+            target_login,
+            target_token_agency or target_agency_hint or _resolve_agency_hint(target_login, ""),
+            selected_uac_rows,
+        )
+        if target_feed_blocker:
+            _copy_job_log(job_id, f"preflight error: {target_feed_blocker}")
+            raise RuntimeError(target_feed_blocker)
 
         # Task 4: пропустить кампании с фидами без замены (только если feed_map задан)
         if feed_map_valid:
@@ -937,6 +1151,7 @@ def _copy_run_job(job_id: str, body: dict) -> None:
             target_city=target_city,
             target_region=target_region,
             geo_mode=geo_mode,
+            geo_region_ids=body.get("geo_region_ids") or [],
         )
         _copy_job_upsert(job_id, preflight=audit)
         for msg in audit.get("warnings") or []:
@@ -1117,6 +1332,48 @@ def _copy_run_job(job_id: str, body: dict) -> None:
                     _copy_job_log(job_id, f"uac copy warning: {err}")
             _copy_job_log(job_id, f"uac copy done: {uac_copy.get('created') or 0} created")
             _copy_job_upsert(job_id, progress=88)   # UAC завершён, ещё не done — обновляем оценку
+        if _copy_is_uac_only_without_v5_snapshot(meta, selected_uac_rows, selected_ids):
+            final_results = list(uac_copy.get("results") or [])
+            final_status, final_error = _copy_terminal_status_from_results(final_results)
+            skipped_camps = _copy_read_json(src_dir / "campaigns_skipped.json")
+            if skipped_missing_source:
+                skipped_camps = list(skipped_camps or []) + skipped_missing_source
+            if skipped_grid_snapshot:
+                skipped_camps = list(skipped_camps or []) + skipped_grid_snapshot
+            if skipped_v5_snapshot:
+                skipped_camps = list(skipped_camps or []) + skipped_v5_snapshot
+            _copy_job_log(
+                job_id,
+                "cookie postprocess: пропущен для UAC-only copy без v5 snapshot "
+                f"(uac results: {len(final_results)})",
+            )
+            _copy_job_upsert(
+                job_id, status=final_status, progress=100, error=final_error,
+                result={
+                    "source_login": source_login,
+                    "target_login": target_login,
+                    "selected": original_selected_count,
+                    "snapshot": meta,
+                    "metrika": metrika_res,
+                    "uac_copy": uac_copy,
+                    "cookie_postprocess": {
+                        "skipped": True,
+                        "reason": "uac_only_without_v5_snapshot",
+                        "errors": [],
+                    },
+                    "results": final_results,
+                    "skipped_campaigns": skipped_camps,
+                    "live_verification": None,
+                    "repair_gate": None,
+                    "auto_repair": None,
+                    "preflight": audit,
+                    "context_rewrite": rewrite_meta,
+                    "target_feed_url": target_feed_abs,
+                    "workdir": str(workdir),
+                    "cleanup": cleanup_result,
+                },
+            )
+            return
         _copy_job_log(job_id, "cookie postprocess: уточнения / ShoppingAd / ListingAd / live-check / auto-repair")
         cookie_post = _copy_cookie_postprocess(job_id, target_login, target_agency or "", src_dir, workdir, body)
         if cookie_post.get("errors"):
@@ -1126,45 +1383,33 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         if live_status:
             _copy_job_log(job_id, f"live verification: {live_status}")
         skipped_camps = _copy_read_json(src_dir / "campaigns_skipped.json")
-        if skipped_missing_source:
-            skipped_camps = list(skipped_camps or []) + skipped_missing_source
         if skipped_grid_snapshot:
             skipped_camps = list(skipped_camps or []) + skipped_grid_snapshot
         if skipped_v5_snapshot:
             skipped_camps = list(skipped_camps or []) + skipped_v5_snapshot
         final_results = cookie_post.get("results") or _copy_build_results(src_dir, workdir)
         final_status, final_error = _copy_terminal_status_from_postprocess(final_results, cookie_post)
-        # has_issues / has_issues_unknown: расхождения сверки, которые не роняют джобу в error,
-        # обязаны быть видны в карточке — иначе «✅ готово» читается как «сверено чисто».
-        final_result = annotate_copy_job_issues({
-            "source_login": source_login,
-            "target_login": target_login,
-            "selected": original_selected_count,
-            "snapshot": meta,
-            "metrika": metrika_res,
-            "uac_copy": uac_copy,
-            # Измерения UAC живут ОТДЕЛЬНЫМ ключом, а не внутри copy_verify: осевшая
-            # пере-сверка перезаписывает copy_verify целиком через run_copy_verification,
-            # которая про UAC не знает, и строки бы пропали после первого же круга.
-            "uac_verify": [
-                row
-                for res in (uac_copy.get("results") or [])
-                for row in ((res or {}).get("verify_rows") or [])
-            ],
-            "cookie_postprocess": cookie_post,
-            "results": final_results,
-            "skipped_campaigns": skipped_camps,
-            "live_verification": cookie_post.get("live_verification"),
-            "repair_gate": cookie_post.get("repair_gate"),
-            "auto_repair": cookie_post.get("auto_repair"),
-            "preflight": audit,
-            "context_rewrite": rewrite_meta,
-            "target_feed_url": target_feed_abs,
-            "workdir": str(workdir),
-            "cleanup": cleanup_result,
-        })
-        _copy_job_upsert(job_id, status=final_status, progress=100, error=final_error,
-                         result=final_result)
+        _copy_job_upsert(
+            job_id, status=final_status, progress=100, error=final_error,
+            result={
+                "source_login": source_login,
+                "target_login": target_login,
+                "selected": original_selected_count,
+                "snapshot": meta,
+                "metrika": metrika_res,
+                "uac_copy": uac_copy,
+                "cookie_postprocess": cookie_post,
+                "results": final_results,
+                "skipped_campaigns": skipped_camps,
+                "live_verification": cookie_post.get("live_verification"),
+                "repair_gate": cookie_post.get("repair_gate"),
+                "auto_repair": cookie_post.get("auto_repair"),
+                "preflight": audit,
+                "context_rewrite": rewrite_meta,
+                "target_feed_url": target_feed_abs,
+                "workdir": str(workdir),
+                "cleanup": cleanup_result,
+            })
         # verify-after-settle: отложенная пере-сверка после оседания dcr-привязок (см. выше).
         # settling=True → фронт видит «идёт добивка» вместо финала и не останавливает таймер.
         # _copy_delayed_reverify сбрасывает settling=False в finally при любом исходе.
@@ -1196,10 +1441,14 @@ def _copy_run_job(job_id: str, body: dict) -> None:
         pass
 
 
+
+
+
+
 # Модульные имена для DI-фан-аута в configure() (см. выше).
 from . import copy_jobs, copy_geo, copy_snapshot, copy_images, copy_metrika  # noqa: E402,F401
 from . import copy_feeds, copy_grid_read, copy_uac, copy_cleanup, copy_grid_steps  # noqa: E402,F401
-from . import copy_grid_unified, copy_postprocess  # noqa: E402,F401
+from . import copy_grid_unified, copy_grid_post, copy_postprocess  # noqa: E402,F401
 
 from .copy_jobs import (  # noqa: E402,F401  (ре-экспорт распила)
     _COPY_JOBS, _COPY_JOBS_LOCK, _copy_job_upsert, _copy_mirror_create_job, _copy_job_log, _copy_jobs_recover,
@@ -1227,7 +1476,7 @@ from .copy_feeds import (  # noqa: E402,F401  (ре-экспорт распил�
 )
 
 from .copy_grid_read import (  # noqa: E402,F401  (ре-экспорт распила)
-    _copy_selected_grid_campaigns, _copy_selected_grid_campaigns_with_meta, _copy_selected_grid_campaigns_by_id, _copy_grid_read_selected, _copy_grid_campaign_spec,
+    _copy_selected_grid_campaigns, _copy_grid_read_selected, _copy_grid_campaign_spec,
 )
 
 from .copy_uac import (  # noqa: E402,F401  (ре-экспорт распила)

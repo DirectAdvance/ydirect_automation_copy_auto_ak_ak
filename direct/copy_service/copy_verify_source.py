@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from ..core import campaign as cmc
 from ..clients import grid_finalize as gf
 from ..clients import grid_read as gr
+from .copy_asset_steps import _CALLOUT_PER_CAMPAIGN_CAP_DEFAULT as _CALLOUT_CAP
 from .copy_verify_utils import (
     _OK, _MISMATCH, _MISSING, _UNREADABLE, _EXCLUDED,
     _feed_filter_signature, _nolog, _read_audience_signatures_grid,
@@ -94,6 +95,17 @@ def build_source_profile(src_dir: Any,
             row.get("titles") or row.get("bodies") or row.get("imageHashes") or
             row.get("creativeIds") or row.get("button")
         )
+
+    def _ad_uses_adaptive_text_metrics(ad: dict) -> bool:
+        # Товарные/каталожные/смарт-объявления не участвуют в adaptive text metrics
+        # (titles/bodies/images/video/button) ни через Grid, ни через TextAd-fallback —
+        # target-профиль их тоже не считает в этих размерностях (copy_verify_target.py
+        # исключает SHOPPING_AD/SMART_AD/LISTING_AD из adaptive_total). Раньше хелпер
+        # только выключал Grid-ветку, а TextAd/img_count_by_ad fallback ниже всё равно мог
+        # засчитать товарное объявление в ads_with_images → завышение против честного 0
+        # у источника.
+        ad_type = str(ad.get("Type") or "").upper()
+        return ad_type not in ("SHOPPING_AD", "LISTING_AD", "SMART_AD")
 
     # ── Индексы для быстрого lookup ──────────────────────────────────────────
     ags_by_camp: Dict[str, list] = {}
@@ -197,8 +209,14 @@ def build_source_profile(src_dir: Any,
         # D7: callouts. If campaign-level source links were unreadable, writer falls back to
         # the union from callouts.json for every mapped campaign; verifier must compare against
         # the same intended target state, not the empty campaign_callouts.json file.
+        # FIX C (2026-08-05): writer caps каждую кампанию per_campaign_cap уточнений
+        # (copy_asset_steps.py step_attach_callouts, use_ids[:per_campaign_cap]) — источник с
+        # 10 уточнениями штатно копируется как 8. Сравниваем ожидаемое (capped) значение, а не
+        # сырое количество источника (66 ложных mismatch на кампаниях с >cap уточнениями).
+        # Цель НИЖЕ capped-ожидания остаётся реальным расхождением (min не завышает ожидание).
         callout_ids = campaign_callouts.get(cid) or []
-        callout_count = len(callout_ids) if campaign_callouts else fallback_callouts_count
+        _raw_callout_count = len(callout_ids) if campaign_callouts else fallback_callouts_count
+        callout_count = min(_raw_callout_count, _CALLOUT_CAP)
 
         # D8: sitelinks. Быстрые ссылки бывают на двух независимых уровнях:
         # campaign-level (Grid inheritableSitelinkSet) и ad-level
@@ -236,17 +254,31 @@ def build_source_profile(src_dir: Any,
         ads_with_images = 0
         ads_with_video = 0
         ads_with_button = 0
+        # Latent-bug guard (found on review): hasButton has no TextAd fallback at all —
+        # if Grid snapshot has no payload for ANY eligible ad of this campaign,
+        # ads_with_button stays 0 not because there are no buttons, but because button
+        # state was never read. Track how many eligible ads actually got measured so the
+        # diff layer can tell "genuinely 0" from "unknown" and never bless a target that
+        # merely differs from an unread source (see ads_with_button_readable below).
+        ads_button_eligible = 0
+        ads_button_measured = 0
 
         for ad in camp_ads_list:
             aid_str = str(ad.get("Id") or "")
             if not aid_str:
                 continue
+            if not _ad_uses_adaptive_text_metrics(ad):
+                continue
+            ads_button_eligible += 1
             try:
                 aid_int = int(aid_str)
             except ValueError:
                 aid_int = 0
 
-            if grid_snapshot and _grid_ad_has_payload(grid_snapshot.get(aid_int)):
+            if (
+                grid_snapshot
+                and _grid_ad_has_payload(grid_snapshot.get(aid_int))
+            ):
                 gs = grid_snapshot[aid_int]
                 if gs.get("titles"):
                     ads_with_titles += 1
@@ -256,6 +288,7 @@ def build_source_profile(src_dir: Any,
                     ads_with_images += 1
                 if gs.get("hasVideo"):
                     ads_with_video += 1
+                ads_button_measured += 1
                 if gs.get("hasButton"):
                     ads_with_button += 1
             else:
@@ -267,7 +300,12 @@ def build_source_profile(src_dir: Any,
                     ads_with_texts += 1
                 if ta.get("AdImageHash") or img_count_by_ad.get(aid_str, 0) > 0:
                     ads_with_images += 1
-                # hasVideo / hasButton недоступны без Grid-источника
+                # hasVideo / hasButton недоступны без Grid-источника — ads_button_measured
+                # НЕ инкрементируется, ads_with_button остаётся честным недосчётом.
+
+        # 0 eligible ads → 0 buttons is a true fact (nothing to have a button on);
+        # eligible ads exist but none of them was actually measured via Grid → unknown.
+        ads_with_button_readable = ads_button_eligible == 0 or ads_button_measured > 0
 
         # D19: товарные/каталожные объявления. SHOPPING_AD берём из детального
         # shopping_ads.json, LISTING_AD — из общего ads.json (v5 не отдаёт для него детальный
@@ -341,6 +379,10 @@ def build_source_profile(src_dir: Any,
             "ads_with_video": ads_with_video,
             # D14: button — только если grid_snapshot передан
             "ads_with_button": ads_with_button,
+            # D14: True если хотя бы один подходящий ad реально измерен через Grid
+            # (или подходящих ads нет вовсе); False = hasButton неизвестен для ВСЕХ ads
+            # кампании — 0 не значит "нет кнопок", diff должен читать это как unreadable
+            "ads_with_button_readable": ads_with_button_readable,
             # D15: adPrice — excluded (берётся из фида цели)
             # D16
             "tracking_norm": tracking_norm,

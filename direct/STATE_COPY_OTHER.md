@@ -14,6 +14,28 @@
 
 Сессии 2026-07-16 → 2026-07-17.
 
+## Сессия 2026-08-07 — copy_verify D12: ложный strategy_name mismatch (Agent Board #183)
+
+**Симптом:** copy porg-x7wkhs7d→porg-c6rxuenb осел на verification-gate «12 незакрытых дефектов»,
+все — `strategy_name=mismatch` на исправно созданных РСЯ-кампаниях (build ok, 444 ads/111 groups).
+
+**Root-cause:** `build_source_profile` берёт `strategy_name` из v5 `BiddingStrategyType`
+(Search-first → у РСЯ это `SERVING_OFF`), а `build_target_profile` брал его из Grid
+`strategyData.strategyName` — это **write-enum** (`AUTOBUDGET`/`AUTOBUDGET_AVG_CPA`/`DEFAULT_`),
+ДРУГАЯ номенклатура. Сверка v5-имени против Grid-имени → вечный ложный mismatch, gate осаживал
+корректную копию.
+
+**Фикс:** `copy_service/copy_verify_target.py` — цель тоже читает strategy_name с v5-поверхности
+(`_strategy_name_from_campaign(camp_v5)`), Grid strategyData больше не подставляется; в v5-fallback
+добавлен `UnifiedAdCampaignFieldNames:[BiddingStrategy]` (симметрия с источником по UAC). Если v5 у
+цели не прочитался → strategy_name="" → diff даёт UNREADABLE (fail-safe), а не ложный MISMATCH.
+Настоящее расхождение стратегии (разные v5-типы) по-прежнему ловится.
+
+**Проверено:** py_compile OK; регресс-тест
+`test_build_target_profile_strategy_name_uses_v5_not_grid_write_enum` — red на баге (тек «AUTOBUDGET»)
+/ green на фиксе («SERVING_OFF»); полный `test_copy_integration_guards.py` = 77 passed (8 упавших —
+предсуществующий дрейф зон: run_rename-сигнатура и пр., моего кода не касаются).
+
 ## Сессия 2026-07-31 — copy adPrice: минимум фида для `Общее`/прочих СТ
 
 **Сделано:** `copy_price_steps.step_prices` теперь определяет price-сегмент по имени группы и

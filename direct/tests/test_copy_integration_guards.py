@@ -1,10 +1,12 @@
 from pathlib import Path
 from types import SimpleNamespace
+import ast
+import inspect
 import time
 
 from flask import Blueprint, Flask
 
-from direct import agent_board_bridge
+from direct import agent_board_bridge, uac_verifier
 from direct.core import queue_server
 from direct.clients import grid_read, grid_finalize
 from direct.create import create_set_feeds
@@ -20,6 +22,7 @@ from direct.copy_service import (
     copy_settings_steps,
     copy_steps,
     copy_grid_read,
+    copy_snapshot,
     copy_grid_unified,
     copy_uac,
 )
@@ -27,6 +30,36 @@ from direct.copy_service.copy_api import register_copy_api
 from direct.copy_service.copy_request import parse_feed_map, parse_image_hashes
 from direct.copy_service.copy_verify_source import build_source_profile
 from direct.copy_service.copy_verify_diff import diff_profiles
+from direct.copy_service.copy_verify_target import build_target_profile
+from direct.copy_service import copy_verify_state
+
+
+def test_copy_timed_heartbeats_while_waiting(monkeypatch):
+    upserts = []
+    logs = []
+
+    monkeypatch.setattr(copy_postprocess, "_COPY_TIMED_HEARTBEAT_SEC", 0.01)
+    monkeypatch.setattr(
+        copy_postprocess,
+        "_engine",
+        lambda: SimpleNamespace(
+            _copy_job_log=lambda _job_id, msg: logs.append(msg),
+            _copy_job_upsert=lambda _job_id, **fields: upserts.append(fields) or {},
+        ),
+    )
+
+    result = copy_postprocess._copy_timed(
+        "copy-job",
+        "slow-grid-step",
+        lambda: time.sleep(0.04) or {"ok": True},
+        timeout_sec=1,
+    )
+
+    assert result == {"ok": True}
+    assert len(upserts) >= 2
+    assert all(fields == {} for fields in upserts)
+    assert logs[0] == "[timing] slow-grid-step: start"
+    assert logs[-1].startswith("[timing] slow-grid-step:")
 
 
 def test_copy_target_feed_id_prefers_preseeded_id_maps(tmp_path, monkeypatch):
@@ -36,6 +69,94 @@ def test_copy_target_feed_id_prefers_preseeded_id_maps(tmp_path, monkeypatch):
     monkeypatch.setattr(copy_feeds, "_feed_key", lambda value: value)
 
     assert copy_feeds._copy_target_feed_id("target", "agency", Path(tmp_path), "example.ru") == 12345
+
+
+def test_copy_target_feed_id_falls_back_to_existing_listing_feed(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        copy_feeds,
+        "_grid_feeds",
+        lambda *_args, **_kwargs: [
+            {
+                "id": "3595536",
+                "name": "buauto196.site — yandex-used-auto",
+                "url": "https://buauto196.site/yandex-used-auto.xml",
+                "listings": [{"id": "mark_28", "name": "Haval с пробегом"}],
+            },
+        ],
+    )
+    monkeypatch.setattr(copy_feeds, "_filter_allowed_feed_rows", lambda _rows: [])
+    monkeypatch.setattr(copy_feeds, "_feed_key", lambda value: str(value or "").lower())
+
+    assert copy_feeds._copy_target_feed_id("target", "agency", Path(tmp_path), "buauto196.site") == 3595536
+
+
+def test_copy_uac_product_uses_single_feed_map_target_when_detail_has_no_feed():
+    assert copy_uac._copy_uac_effective_feed_id(
+        None,
+        None,
+        {"3568864": 3595536, "3568865": 3595536},
+        is_product=True,
+    ) == 3595536
+
+
+def test_copy_uac_product_does_not_guess_ambiguous_feed_map_target():
+    assert copy_uac._copy_uac_effective_feed_id(
+        None,
+        None,
+        {"3568864": 3595536, "3568865": 3595537},
+        is_product=True,
+    ) is None
+
+
+def test_copy_target_feed_blocker_for_uac_reports_empty_target_account(monkeypatch):
+    monkeypatch.setattr(copy_engine, "_grid_feeds", lambda _login, _agency: [])
+
+    msg = copy_engine._copy_target_feed_blocker_for_uac(
+        "porg-qxmt4z2y",
+        "y-direct-victory",
+        [{"name": "tp7_cpa_site_ct0000"}],
+    )
+
+    assert "на аккаунте porg-qxmt4z2y нет фидов" in msg
+
+
+def test_copy_target_feed_blocker_for_uac_ignores_non_product_uac(monkeypatch):
+    monkeypatch.setattr(copy_engine, "_grid_feeds", lambda _login, _agency: [])
+
+    assert copy_engine._copy_target_feed_blocker_for_uac(
+        "target",
+        "agency",
+        [{"name": "tp6_cpa_site_ct0000"}],
+    ) == ""
+
+
+def test_copy_missing_target_feeds_error_does_not_create_agent_task():
+    row = {
+        "error": "на аккаунте porg-qxmt4z2y нет фидов: товарные tp7/UAC-кампании нельзя скопировать",
+        "result": {},
+    }
+
+    assert agent_board_bridge._copy_error_is_user_blocker(row) is True
+
+
+def test_copy_unreachable_source_login_does_not_create_agent_task():
+    """Недоступный логин источника кодом не чинится → терминальная ошибка очереди, не борд-задача."""
+    bruteforce = {
+        "error": ("источник porg-5ri2mjj: ни токен, ни перебор агентских кук "
+                  "(victoryagency-direct1618440, victorylotsofads1) не дал доступа"),
+        "result": {},
+    }
+    engine = {
+        "error": "",
+        "result": {"error": "!! Ни один токен/кука не дал доступ к 'porg-5ri2mjj'."},
+    }
+
+    assert agent_board_bridge._copy_error_is_user_blocker(bruteforce) is True
+    assert agent_board_bridge._copy_error_is_user_blocker(engine) is True
+    # Реальные баги копирования по-прежнему уходят на Agent Board.
+    assert agent_board_bridge._copy_error_is_user_blocker(
+        {"error": "verification gate: 10 незакрытых дефектов", "result": {}}
+    ) is False
 
 
 def test_copy_terminal_status_is_error_when_campaign_failed():
@@ -57,6 +178,43 @@ def test_copy_terminal_status_includes_postprocess_errors():
     assert "verification gate" in error
 
 
+def test_copy_uac_only_without_v5_snapshot_skips_cookie_postprocess():
+    assert copy_engine._copy_is_uac_only_without_v5_snapshot(
+        {"campaigns": 0},
+        [{"id": "712042120"}, {"id": "712098943"}],
+        {712042120, 712098943},
+    ) is True
+
+
+def test_copy_uac_mixed_with_v5_snapshot_keeps_cookie_postprocess():
+    assert copy_engine._copy_is_uac_only_without_v5_snapshot(
+        {"campaigns": 1},
+        [{"id": "712042120"}],
+        {712042120, 712215402},
+    ) is False
+
+
+def test_copy_run_job_skip_accumulators_initialized_before_try():
+    src = inspect.getsource(copy_engine._copy_run_job)
+    tree = ast.parse(src)
+    fn = tree.body[0]
+    first_try_idx = next(i for i, stmt in enumerate(fn.body) if isinstance(stmt, ast.Try))
+    assigned_before_try = set()
+    for stmt in fn.body[:first_try_idx]:
+        if isinstance(stmt, ast.Assign):
+            assigned_before_try.update(
+                target.id for target in stmt.targets if isinstance(target, ast.Name)
+            )
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            assigned_before_try.add(stmt.target.id)
+
+    assert {
+        "skipped_missing_source",
+        "skipped_grid_snapshot",
+        "skipped_v5_snapshot",
+    }.issubset(assigned_before_try)
+
+
 def test_copy_demotes_nonfatal_source_image_upload_errors():
     rep = {
         "errors": [
@@ -73,6 +231,45 @@ def test_copy_demotes_nonfatal_source_image_upload_errors():
         "source image RAvUo2CZkUvp: target upload returned empty hash",
         "source image wrenWHX0MZUS: target preview upload failed: boom",
     ]
+
+
+def test_copy_uac_result_rows_carry_images_pool_for_live_verifier():
+    """Copy UAC result row несёт `images_pool` → короткий пул целевых картинок
+    даёт warn UAC_IMAGES_POOL_SHORT, а не hard UAC_IMAGES_LOW (иначе verification gate
+    роняет job porg-7hr5pmk6→porg-m6m222et: 5×repair_plan:UAC_IMAGES_LOW).
+
+    Тянем поле ровно так, как это делает live_verifier (created_campaigns → c['result']),
+    чтобы правка copy_uac и её чтение в верификаторе не разъехались.
+    """
+    from direct.core.campaign_result import created_campaigns
+    from direct import uac_verifier
+
+    src = Path(__file__).resolve().parents[1].joinpath(
+        "copy_service/copy_uac.py").read_text(encoding="utf-8")
+    # Имя локальной переменной пула — деталь реализации; тест сторожит КОНТРАКТ: ключ
+    # `images_pool` физически попадает в result-строку UAC. Раньше здесь стояло имя из
+    # первой редакции патча (`img_pool_by_cidx`), а опубликована была версия с `_images_pool`
+    # — тест падал на живом коде, который работает правильно.
+    assert '"images_pool": int(' in src
+
+    name = "tp6_cpc_site — МК - Общие - Автотаргетинг - Свердловская область"
+    row = {"ok": True, "id": 713359541, "campaign_id": 713359541,
+           "name": name, "kind": "uac", "source_id": 712882538, "images_pool": 3}
+    c = created_campaigns([row])[0]
+    assert c["kind"] == "uac"
+    pool = (c.get("result") or {}).get("images_pool")
+    assert pool == 3
+
+    detail = {"status": "draft", "pricing": "PER_CLICK", "titles": 5, "texts": 3,
+              "sitelinks": 8, "content": 3, "images": 3, "week_limit": 1000,
+              "limit_period": "week", "regions": 1, "counters": 1, "goals": 1,
+              "has_tracking_params": True}
+    issues, repair = uac_verifier.verify_uac_detail(
+        name, 713359541, detail, {"images_pool": pool})
+    codes = {i["code"] for i in issues}
+    assert "UAC_IMAGES_LOW" not in codes
+    assert "UAC_IMAGES_POOL_SHORT" in codes
+    assert not [r for r in repair if r.get("kind") == "recreate_or_resume_campaign"]
 
 
 def test_copy_attach_callouts_retries_grid_campaign_edit_row_lag(tmp_path, monkeypatch):
@@ -134,6 +331,21 @@ def test_copy_live_gate_blocks_adprice_warning():
     assert rep["errors"]
 
 
+def test_copy_demotes_verified_adaptive_partial_error():
+    rep = {
+        "errors": ["grid update adaptive: обновлено 278/285 объявлений"],
+        "live_verification": {"status": "pass", "issues": []},
+        "copy_verify": {"results": [], "summary": {"ok": 3}},
+    }
+
+    copy_postprocess._copy_demote_verified_adaptive_partial_errors(rep)
+    copy_postprocess._copy_apply_verification_gate(rep)
+
+    assert rep["errors"] == []
+    assert rep["warnings"] == ["grid update adaptive: обновлено 278/285 объявлений"]
+    assert rep["verification_gate"]["ok"] is True
+
+
 def test_copy_verify_gate_blocks_media_and_listing_mismatches():
     verify_result = {
         "results": [
@@ -193,6 +405,24 @@ def test_copy_expected_snapshot_excludes_selected_archived_v5_campaigns():
     assert [x["Id"] for x in skipped] == [26, 27, 28]
 
 
+def test_copy_expected_snapshot_excludes_uac_rows_with_dunder_typename():
+    selected = set(range(1, 49))
+    uac_rows = [
+        {"id": str(i), "__typename": "GdUacCampaign", "name": f"МК {i}"}
+        for i in range(23, 49)
+    ]
+
+    selected_uac = [row for row in uac_rows if copy_uac._copy_is_uac_grid_row(row)]
+    expected, skipped = copy_engine._copy_expected_snapshot_count(selected, selected_uac, [
+        {"Id": i, "Name": f"camp {i}", "Type": "TEXT_CAMPAIGN", "State": "ON", "Status": "ACCEPTED"}
+        for i in range(1, 23)
+    ])
+
+    assert len(selected_uac) == 26
+    assert expected == 22
+    assert skipped == []
+
+
 def test_copy_marks_grid_post_campaigns_as_unsupported_skips():
     rows = [
         {
@@ -225,7 +455,7 @@ def test_copy_marks_grid_post_campaigns_as_unsupported_skips():
     assert skipped[0]["reason"] == "unsupported_grid_post"
 
 
-def test_copy_run_job_finishes_when_only_grid_post_campaign_selected(monkeypatch):
+def test_copy_run_job_routes_only_grid_post_campaign_to_post_copy(monkeypatch):
     upserts = []
     logs = []
     row = {
@@ -242,7 +472,22 @@ def test_copy_run_job_finishes_when_only_grid_post_campaign_selected(monkeypatch
     monkeypatch.setattr(copy_engine, "_direct_tokens", lambda: {"victoryagency14": "token"})
     monkeypatch.setattr(copy_engine, "_token_for_login", lambda *_args: ("token", "victoryagency14"))
     monkeypatch.setattr(copy_engine, "_v5_call", lambda *_args, **_kwargs: {"result": {"Campaigns": []}})
-    monkeypatch.setattr(copy_engine, "_direct_copy_module", lambda: SimpleNamespace(SKIP_CAMPAIGN_NAMES=set()))
+    monkeypatch.setattr(
+        copy_engine,
+        "_direct_copy_module",
+        lambda: (_ for _ in ()).throw(AssertionError("post copy must not load v5 pull module")),
+    )
+    monkeypatch.setattr(
+        copy_engine,
+        "_copy_grid_post_campaigns",
+        lambda job_id, body, rows, workdir: {
+            "ok": True,
+            "copy_depth": "grid_cookie_post",
+            "results": [{"ok": True, "source_id": rows[0]["id"], "campaign_id": 999}],
+            "errors": [],
+            "workdir": str(workdir),
+        },
+    )
 
     copy_engine._copy_run_job("job-post", {
         "source_login": "porg-4ealp4ry",
@@ -253,10 +498,9 @@ def test_copy_run_job_finishes_when_only_grid_post_campaign_selected(monkeypatch
 
     final = upserts[-1]
     assert final["status"] == "done"
-    assert final["total"] == 0
-    assert final["result"]["selected"] == 1
-    assert final["result"]["skipped_campaigns"][0]["reason"] == "unsupported_grid_post"
-    assert any("unsupported_grid_post" in msg for msg in logs)
+    assert final["result"]["copy_depth"] == "grid_cookie_post"
+    assert final["result"]["results"][0]["campaign_id"] == 999
+    assert any("Post campaigns без Direct API/v5 snapshot" in msg for msg in logs)
 
 
 def test_direct_copy_caps_text_ads_per_group_before_add():
@@ -429,8 +673,7 @@ def test_copy_prices_use_feed_minimum_for_non_mark_model_segment(tmp_path):
     assert written[0]["current"] == 777000
 
 
-def _adaptive_ctx_with_multicards(tmp_path, src_cards, calls, images):
-    """CopyCtx с одним адаптивным объявлением и заданной каруселью источника."""
+def test_copy_adaptive_creatives_remaps_multicards(monkeypatch, tmp_path):
     class FakeSourceGrid:
         def adaptive_ads_for_update(self, _campaign_ids, _ad_ids):
             return {
@@ -438,67 +681,77 @@ def _adaptive_ctx_with_multicards(tmp_path, src_cards, calls, images):
                     "titles": ["Заголовок"],
                     "bodies": ["Текст"],
                     "imageHashes": ["src-main"],
-                    "multicards": src_cards,
+                    "multicards": [
+                        {"imageHash": "src-card", "currency": None, "href": None,
+                         "price": None, "priceOld": None, "text": None}
+                    ],
                 }
             }
+
+    calls = []
 
     def fake_update(_login, items, campaign_ids):
         calls.append((items, campaign_ids))
         return len(items)
 
-    return copy_steps.CopyCtx(
+    ctx = copy_steps.CopyCtx(
         target_login="target-login",
         target_agency="",
         src_dir=Path(tmp_path),
         workdir=Path(tmp_path),
         body={},
-        maps={"ads": {"11": 22}, "campaigns": {"101": 202}, "images": images},
+        maps={
+            "ads": {"11": 22},
+            "campaigns": {"101": 202},
+            "images": {"src-main": "tgt-main", "src-card": "tgt-card"},
+        },
         grid=object(),
         source_grid=FakeSourceGrid(),
         update_adaptive_ads=fake_update,
     )
 
+    out = copy_steps.step_adaptive_creatives(ctx)
 
-def _card(image_hash):
-    return {"imageHash": image_hash, "currency": None, "href": None,
-            "price": None, "priceOld": None, "text": None}
+    assert out["updated"] == 1
+    assert out["multicards_remapped"] == 1
+    assert calls[0][0][0]["multicards"] == [
+        {"imageHash": "tgt-card", "currency": None, "href": None,
+         "price": None, "priceOld": None, "text": None}
+    ]
 
 
-def test_copy_adaptive_creatives_remaps_multicards(monkeypatch, tmp_path):
-    calls = []
-    # Карусель минимально допустимого размера: Grid принимает только 2..10 карточек.
-    ctx = _adaptive_ctx_with_multicards(
-        tmp_path,
-        [_card("src-card-1"), _card("src-card-2")],
-        calls,
-        {"src-main": "tgt-main", "src-card-1": "tgt-card-1", "src-card-2": "tgt-card-2"},
+def test_copy_adaptive_creatives_partial_grid_update_is_warning(tmp_path):
+    class FakeSourceGrid:
+        def adaptive_ads_for_update(self, _campaign_ids, _ad_ids):
+            return {
+                11: {"titles": ["Заголовок"], "bodies": ["Текст"]},
+                12: {"titles": ["Заголовок 2"], "bodies": ["Текст 2"]},
+            }
+
+    def fake_update(_login, _items, _campaign_ids):
+        raise RuntimeError("обновлено 1/2 объявлений")
+
+    ctx = copy_steps.CopyCtx(
+        target_login="target-login",
+        target_agency="",
+        src_dir=Path(tmp_path),
+        workdir=Path(tmp_path),
+        body={},
+        maps={
+            "ads": {"11": 22, "12": 23},
+            "campaigns": {"101": 202},
+            "images": {},
+        },
+        grid=object(),
+        source_grid=FakeSourceGrid(),
+        update_adaptive_ads=fake_update,
     )
 
     out = copy_steps.step_adaptive_creatives(ctx)
 
     assert out["updated"] == 1
-    assert out["multicards_remapped"] == 2
-    assert calls[0][0][0]["multicards"] == [_card("tgt-card-1"), _card("tgt-card-2")]
-
-
-def test_copy_adaptive_creatives_drops_single_multicard(monkeypatch, tmp_path):
-    """Одна карточка — не карусель: Grid отвергает размер <2 вместе со ВСЕМ item'ом
-    (`SIZE_MUST_BE_IN_INTERVAL` {minSize:2,maxSize:10}), поэтому ключ не отправляем,
-    иначе не доедут и заголовки/тексты/картинки того же объявления."""
-    calls = []
-    ctx = _adaptive_ctx_with_multicards(
-        tmp_path,
-        [_card("src-card-1")],
-        calls,
-        {"src-main": "tgt-main", "src-card-1": "tgt-card-1"},
-    )
-
-    out = copy_steps.step_adaptive_creatives(ctx)
-
-    assert "multicards" not in calls[0][0][0]
-    assert out["multicards_remapped"] == 0
-    assert out["multicards_skipped"] == 1
-    assert calls[0][0][0]["titles"] == ["Заголовок"]   # остальной контент всё равно уходит
+    assert out["errors"] == []
+    assert "grid update adaptive partial" in out["warnings"][0]
 
 
 def test_grid_update_adaptive_ads_preserves_multicards(monkeypatch):
@@ -528,9 +781,7 @@ def test_grid_update_adaptive_ads_preserves_multicards(monkeypatch):
                     "creativeIds": [],
                     "multicards": [
                         {"imageHash": "tgt-card", "currency": None, "href": None,
-                         "price": None, "priceOld": None, "text": None},
-                        {"imageHash": "tgt-card-2", "currency": None, "href": None,
-                         "price": None, "priceOld": None, "text": None},
+                         "price": None, "priceOld": None, "text": None}
                     ],
                 }
             }
@@ -545,13 +796,7 @@ def test_grid_update_adaptive_ads_preserves_multicards(monkeypatch):
     monkeypatch.setattr(
         create_set_feeds,
         "gf",
-        # нормализатор карусели берём НАСТОЯЩИЙ: подмена его заглушкой скрыла бы гейт [2..10]
-        SimpleNamespace(
-            get_grid_client=lambda _login: FakeGrid(),
-            grid_multicards_for_write=grid_finalize.grid_multicards_for_write,
-            GRID_MULTICARDS_MIN=grid_finalize.GRID_MULTICARDS_MIN,
-            GRID_MULTICARDS_MAX=grid_finalize.GRID_MULTICARDS_MAX,
-        ),
+        SimpleNamespace(get_grid_client=lambda _login: FakeGrid()),
         raising=False,
     )
 
@@ -565,6 +810,66 @@ def test_grid_update_adaptive_ads_preserves_multicards(monkeypatch):
     assert updated == 1
     item = payloads[0]["updateInput"]["adUpdateItems"][0]
     assert item["multicards"][0]["imageHash"] == "tgt-card"
+
+
+def test_grid_update_adaptive_ads_chunks_and_retries_partial_updated_ads(monkeypatch):
+    posted_batches = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, rows):
+            self._rows = rows
+
+        def json(self):
+            return {
+                "data": {
+                    "updateAdaptiveTextAds": {
+                        "updatedAds": self._rows,
+                        "validationResult": None,
+                    }
+                }
+            }
+
+    class FakeGrid:
+        def adaptive_ads_for_update(self, _campaign_ids, ad_ids):
+            return {
+                int(aid): {
+                    "href": "https://example.test",
+                    "titles": ["Old title"],
+                    "bodies": ["Old body"],
+                    "imageHashes": [],
+                    "creativeIds": [],
+                }
+                for aid in ad_ids
+            }
+
+        def _bootstrap_csrf(self):
+            return None
+
+        def _post(self, _op, _query, variables):
+            items = variables["updateInput"]["adUpdateItems"]
+            ids = [str(it["id"]) for it in items]
+            posted_batches.append(ids)
+            if len(ids) == 35:
+                return FakeResponse([{"id": aid} for aid in ids[:28]] + [None for _ in ids[28:]])
+            return FakeResponse([{"id": aid} for aid in ids])
+
+    monkeypatch.setattr(
+        create_set_feeds,
+        "gf",
+        SimpleNamespace(get_grid_client=lambda _login: FakeGrid()),
+        raising=False,
+    )
+
+    items = [{"id": i, "titles": [f"Title {i}"], "bodies": [f"Body {i}"]}
+             for i in range(1, 286)]
+    updated = create_set_feeds._grid_update_adaptive_ads(
+        "target-login", items, campaign_ids=[202], apply_combo_button=False)
+
+    assert updated == 285
+    assert [len(batch) for batch in posted_batches[:6]] == [50, 50, 50, 50, 50, 35]
+    assert posted_batches[6:] == [[str(i)] for i in range(279, 286)]
 
 
 def test_copy_timed_raises_on_step_timeout(monkeypatch):
@@ -820,6 +1125,60 @@ def test_copy_verify_accepts_direct_three_ad_cap_for_legacy_group():
     assert by_dim["adaptive_titles_count"]["repairable"] is False
 
 
+def test_build_target_profile_strategy_name_uses_v5_not_grid_write_enum(monkeypatch):
+    """D12 strategy_name сверяется на v5-поверхности, как источник.
+
+    Регрессия porg-x7wkhs7d→porg-c6rxuenb (2026-08): цель брала strategy_name из Grid
+    strategyData.strategyName (write-enum AUTOBUDGET/AUTOBUDGET_AVG_CPA/DEFAULT_), а источник —
+    из v5 BiddingStrategyType (SERVING_OFF). Разные номенклатуры → verification-gate осаживал
+    исправно скопированные РСЯ-кампании ложным strategy_name mismatch. Цель обязана брать v5.
+    """
+    from unittest.mock import MagicMock
+
+    tgt_cid = 713362669
+
+    def fake_v5_call(service, method, token, login, params):
+        if service == "campaigns" and method == "get":
+            return {"result": {"Campaigns": [{
+                "Id": tgt_cid,
+                "Type": "TEXT_CAMPAIGN",
+                "TextCampaign": {"BiddingStrategy": {
+                    "Search": {"BiddingStrategyType": "SERVING_OFF"},
+                    "Network": {"BiddingStrategyType": "AVERAGE_CPC"},
+                }},
+            }]}}
+        return {"result": {}}
+
+    saved = (copy_verify_state._v5_call,
+             copy_verify_state._token_for_login,
+             copy_verify_state._direct_tokens)
+    copy_verify_state.configure({
+        "_v5_call": fake_v5_call,
+        "_token_for_login": lambda *_a, **_k: ("tok", ""),
+        "_direct_tokens": lambda: {},
+    })
+    try:
+        profile = build_target_profile(
+            "porg-c6rxuenb",
+            {"campaigns": {"713336659": tgt_cid}, "ads": {}},
+            grid=MagicMock(),
+            cached_counts={tgt_cid: {}},
+            # Grid write-enum, который РАНЬШЕ протекал в профиль и ломал сверку:
+            cached_edit_rows={tgt_cid: {"strategyData": {"strategyName": "AUTOBUDGET"}}},
+            cached_invariants={tgt_cid: {}},
+            cached_adaptive={},
+        )
+    finally:
+        copy_verify_state.configure({
+            "_v5_call": saved[0],
+            "_token_for_login": saved[1],
+            "_direct_tokens": saved[2],
+        })
+
+    # v5 BiddingStrategyType (Search-first) — та же поверхность, что у источника.
+    assert profile[str(tgt_cid)]["strategy_name"] == "SERVING_OFF"
+
+
 def test_copy_auto_feed_map_falls_back_to_existing_listing_feed(monkeypatch):
     def fake_grid_feeds(login, _agency):
         if login == "source":
@@ -919,6 +1278,37 @@ def test_copy_enrich_body_context_preserves_explicit_values(monkeypatch):
     assert body == {"agent": "pavlov", "site_type": "Мультибренд"}
 
 
+def test_copy_fill_missing_target_geo_from_account_context(monkeypatch):
+    monkeypatch.setattr(
+        copy_engine,
+        "_copy_ctx",
+        lambda login: {"city": "Уфа", "region": "Республика Башкортостан"} if login == "porg-c6rxuenb" else {},
+    )
+    body = {"target_city": "", "target_region": ""}
+
+    city, region, filled = copy_engine._copy_fill_missing_target_geo(
+        body, "porg-c6rxuenb", "auto", "replace"
+    )
+
+    assert (city, region, filled) == ("Уфа", "Республика Башкортостан", True)
+    assert body["target_city"] == "Уфа"
+    assert body["target_region"] == "Республика Башкортостан"
+
+
+def test_copy_fill_missing_target_geo_keeps_other_keep_empty(monkeypatch):
+    calls = []
+    monkeypatch.setattr(copy_engine, "_copy_ctx", lambda login: calls.append(login) or {"city": "Уфа"})
+    body = {}
+
+    city, region, filled = copy_engine._copy_fill_missing_target_geo(
+        body, "porg-c6rxuenb", "other", "keep"
+    )
+
+    assert (city, region, filled) == ("", "", False)
+    assert calls == []
+    assert "target_city" not in body
+
+
 def test_copy_agent_board_task_description_mentions_auto_retry():
     desc = agent_board_bridge._copy_job_task_description({
         "job_id": "copy123",
@@ -993,8 +1383,8 @@ def test_notify_copy_job_error_creates_agent_board_task(monkeypatch):
     monkeypatch.setattr(
         agent_board_bridge,
         "_create_agent_task",
-        lambda title, desc, *, requested_by: calls.update(
-            task=(title, desc, requested_by)
+        lambda title, desc, *, requested_by, initiated_by="": calls.update(
+            task=(title, desc, requested_by, initiated_by)
         ) or 123,
     )
 
@@ -1002,14 +1392,30 @@ def test_notify_copy_job_error_creates_agent_board_task(monkeypatch):
 
     assert task_id == 123
     assert calls["update"] == (123, "failed-copy")
-    title, desc, requested_by = calls["task"]
+    title, desc, requested_by, initiated_by = calls["task"]
     assert "source-login" in title
     assert "target-login" in title
     assert requested_by == "tester"
+    assert initiated_by == "tester"
+    assert "Инициатор копирования: tester" in desc
     assert "После `done` copy-service автоматически поставит повторную" in desc
 
 
-def test_copy_jobs_ready_for_agent_retry_reads_done_tasks_separately(monkeypatch):
+def test_copy_initiator_prefers_original_user_over_retry_robot():
+    """В цепочке авто-повторов created_by = робот, имя человека живёт в _copy_retry_original_user."""
+    retry_row = {"body": {"created_by": "agent-board-auto", "_copy_retry_original_user": "terehov"}}
+    assert agent_board_bridge._copy_initiator(retry_row) == "terehov"
+    assert agent_board_bridge._copy_initiator({"body": {"created_by": "terehov"}}) == "terehov"
+    assert agent_board_bridge._copy_initiator({"body": {"created_by": "agent-board-auto"}}) == ""
+
+
+def test_copy_jobs_ready_for_agent_retry_waits_for_published_task(monkeypatch):
+    """Повтор копирования ставится только по ОПУБЛИКОВАННОЙ задаче Board, а не по `done`.
+
+    Раньше тест сторожил `_agent_board_done_task_meta`. Условие ужесточили осознанно:
+    у #167 задача была `done`, а публикация патча заблокирована конфликтом — повторы уходили
+    на НЕИЗМЕНЁННЫЙ код и падали той же ошибкой по кругу (2026-08-06).
+    """
     rows = [
         {
             "job_id": "failed-copy-1",
@@ -1060,8 +1466,8 @@ def test_copy_jobs_ready_for_agent_retry_reads_done_tasks_separately(monkeypatch
     monkeypatch.setattr(agent_board_bridge, "ensure_copy_job_agent_columns", lambda _factory: None)
     monkeypatch.setattr(
         agent_board_bridge,
-        "_agent_board_done_task_meta",
-        lambda task_ids: {77: {"id": 77, "status": "done"}},
+        "_agent_board_published_copy_task_meta",
+        lambda task_ids: {77: {"id": 77, "status": "published"}},
     )
 
     ready = agent_board_bridge.copy_jobs_ready_for_agent_retry(lambda: FakeConn(), limit=5)
@@ -1139,7 +1545,10 @@ def test_copy_retry_body_strips_old_job_markers_and_cleans_drafts():
     assert body["_copy_retry_original_user"] == "scherbakova"
     assert body["_copy_retry_of"] == "failed1"
     assert body["_copy_retry_agent_board_task_id"] == 77
-    assert body["target_cleanup"] == "delete_drafts"
+    # ⛔ Своих target-id не известно → чистить НЕЧЕГО. Раньше тут ожидался `delete_drafts`,
+    # и ровно это поведение 2026-08-06 снесло в кабинете клиента ВСЕ черновики: удачные копии
+    # и чужую «Системную кампанию eLama». Чистка обязана быть адресной.
+    assert body["target_cleanup"] == "none"
     assert body["campaign_ids"] == [11, 22]
     assert "_job_id" not in body
     assert "_web_posted" not in body
@@ -1324,6 +1733,48 @@ def test_copy_uac_limits_titles_after_geo_replacement():
     assert len(limited[0]) <= 56
 
 
+def test_copy_uac_pads_short_title_and_text_payloads_to_live_minimums():
+    titles = copy_uac._copy_uac_pad_strings(
+        ["Купить Chery в Екатеринбурге"],
+        copy_uac._UAC_FALLBACK_TITLES,
+        need=5,
+        max_len=copy_uac._UAC_TITLE_MAX,
+    )
+    texts = copy_uac._copy_uac_pad_strings(
+        [],
+        copy_uac._UAC_FALLBACK_TEXTS,
+        need=3,
+        max_len=copy_uac._UAC_TEXT_MAX,
+    )
+
+    assert len(titles) == 5
+    assert len(texts) == 3
+    assert len({t.casefold() for t in titles}) == 5
+    issues, _repair = uac_verifier.verify_uac_detail(
+        "tp6_cpa_site — РСЯ - Общие - Ключевики - Свердловская область",
+        713321700,
+        {
+            "status": "draft",
+            "pricing": "PER_CONVERSION",
+            "week_limit": 5000,
+            "limit_period": "week",
+            "counters": 1,
+            "goals": 1,
+            "regions": 1,
+            "has_tracking_params": True,
+            "titles": len(titles),
+            "texts": len(texts),
+            "sitelinks": 8,
+            "images": 5,
+            "content": 5,
+        },
+        {"images_pool": 5},
+    )
+    codes = {i["code"] for i in issues}
+    assert "UAC_TITLES_MISSING" not in codes
+    assert "UAC_TEXTS_MISSING" not in codes
+
+
 def test_copy_uac_sanitizes_inline_minus_keywords():
     keywords, minus_keywords = copy_uac._copy_uac_sanitize_keywords(
         ["купить baic -авто -машина -новый -автомобиль", "-отзывы"],
@@ -1375,6 +1826,33 @@ def test_copy_uac_geo_guard_accepts_target_region_and_r_code():
     name = "tp6_cpc_site_ct0097_aon_n000_r0121_ct001_ag011_g00"
 
     assert copy_uac._copy_uac_geo_guard(name, ["geely monjaro Екатеринбург"], pairs, "r0121") == []
+
+
+def test_copy_snapshot_preflight_accepts_other_change_region_ids_without_text_geo(tmp_path):
+    (tmp_path / "campaigns.json").write_text(
+        '[{"Id": 713336659, "Name": "campaign", "Type": "TEXT_CAMPAIGN"}]',
+        encoding="utf-8",
+    )
+    (tmp_path / "adgroups.json").write_text(
+        '[{"Id": 1, "Name": "group", "RegionIds": [54]}]',
+        encoding="utf-8",
+    )
+    (tmp_path / "ads.json").write_text(
+        '[{"Id": 2, "AdGroupId": 1}]',
+        encoding="utf-8",
+    )
+    (tmp_path / "shopping_ads.json").write_text("[]", encoding="utf-8")
+
+    audit = copy_snapshot._copy_snapshot_preflight(
+        tmp_path,
+        target_feed_url="",
+        target_city="",
+        target_region="",
+        geo_mode="change",
+        geo_region_ids=[54],
+    )
+
+    assert "целевое гео пустое" not in audit["critical"]
 
 
 def test_copy_uac_create_live_guard_accepts_persisted_target_spec():
@@ -1462,6 +1940,66 @@ def test_uac_client_uploads_video_urls_when_image_content_ids_are_preseeded(monk
     assert ("create", {"content_ids": ["image-content-id", "video-content-id"]}) in calls
 
 
+def test_copy_uac_rebuilds_client_once_on_linkinfo_need_reset(monkeypatch):
+    from direct.clients import uac_read
+
+    class FakeReader:
+        def __init__(self, login):
+            self.login = login
+
+        def campaign_detail(self, _cid):
+            return {
+                "href": "https://source.example/car",
+                "titles": ["Title"],
+                "texts": ["Text"],
+                "keywords": ["keyword"],
+                "minus_keywords": [],
+                "contents": [],
+            }
+
+    class ExpiredClient:
+        def create_master_campaign(self, _spec, *, launch=False):
+            raise RuntimeError('[linkinfo] HTTP 401: {"text":"need_reset","description":"Истек срок действия сессии"}')
+
+    class FreshClient:
+        def create_master_campaign(self, _spec, *, launch=False):
+            return "713"
+
+        def _request(self, *_args, **_kwargs):
+            return {"result": {}}
+
+    calls = []
+
+    def fake_build_client(login, *, account=None, force_refresh=False):
+        calls.append((login, account, force_refresh))
+        return FreshClient() if force_refresh else ExpiredClient()
+
+    monkeypatch.setattr(uac_read, "UacReadClient", FakeReader)
+    monkeypatch.setattr(copy_uac.cmc, "build_client", fake_build_client)
+    monkeypatch.setattr(copy_uac, "_copy_uac_create_live_guard", lambda *_args, **_kwargs: [])
+
+    rep = copy_uac._copy_uac_campaigns(
+        "source",
+        "target",
+        "agency-main",
+        [{"id": 712, "name": "tp6_test", "typename": "uac"}],
+        {"target_domain": "target.example", "_copy_source_domain": "source.example"},
+        target_href="https://target.example",
+        region_ids=[121],
+        counter_id=1,
+        goal_id=2,
+        target_feed_id=None,
+    )
+
+    assert rep["errors"] == []
+    assert rep["created"] == 1
+    assert rep["results"][0]["campaign_id"] == 713
+    assert calls == [
+        ("target", "agency-main", False),
+        ("target", "agency-main", True),
+    ]
+
+
 def test_parse_feed_map_keeps_numeric_mapping_only():
     assert parse_feed_map({"feed_map": {"011": "222", "bad": "333", "44": "0", "55": 666}}) == {
         "11": 222,
@@ -1539,6 +2077,44 @@ def test_copy_verify_source_falls_back_to_text_ad_when_grid_row_has_no_payload(t
     assert profile["11"]["ads_with_titles"] == 1
     assert profile["11"]["ads_with_texts"] == 1
     assert profile["11"]["ads_with_images"] == 1
+
+
+def test_copy_verify_source_does_not_count_shopping_grid_payload_as_adaptive(tmp_path):
+    (tmp_path / "campaigns.json").write_text('[{"Id": 11}]', encoding="utf-8")
+    (tmp_path / "adgroups.json").write_text('[{"Id": 101, "CampaignId": 11}]', encoding="utf-8")
+    (tmp_path / "ads.json").write_text(
+        '[{"Id": 1001, "CampaignId": 11, "AdGroupId": 101, "Type": "SHOPPING_AD"}]',
+        encoding="utf-8",
+    )
+    (tmp_path / "shopping_ads.json").write_text(
+        '[{"Id": 1001, "CampaignId": 11, "AdGroupId": 101, "Type": "SHOPPING_AD", '
+        '"ShoppingAd": {"FeedFilterConditions": []}}]',
+        encoding="utf-8",
+    )
+    for name in [
+        "keywords.json",
+        "bidmodifiers.json",
+        "adimages.json",
+    ]:
+        (tmp_path / name).write_text("[]", encoding="utf-8")
+
+    profile = build_source_profile(
+        tmp_path,
+        grid_snapshot={
+            1001: {
+                "id": 1001,
+                "campaignId": 11,
+                "titles": ["Chery"],
+                "bodies": ["В наличии"],
+                "imageHashes": ["hash"],
+            },
+        },
+    )
+
+    assert profile["11"]["ads_with_titles"] == 0
+    assert profile["11"]["ads_with_texts"] == 0
+    assert profile["11"]["ads_with_images"] == 0
+    assert profile["11"]["shopping_count"] == 1
 
 
 def _weekly_clicks_edit_row(avg_bid=None):
@@ -2206,3 +2782,124 @@ def test_public_copy_api_rejects_mixed_geo_region_ids_for_change(monkeypatch):
     assert response.get_json()["error_code"] == "INVALID_GEO"
     assert "geo_region_ids[1]" in response.get_json()["error"]
     assert called["ensure"] is False
+
+
+def test_rmw_update_drops_duplicated_titles_and_bodies():
+    """Grid валит ВЕСЬ item на дубле заголовка — дубли обязаны отсеиваться до отправки."""
+    from direct.create import create_set_feeds
+
+    assert create_set_feeds._dedup_grid_texts(
+        ["Купить BMW", "Купить BMW", " Купить BMW ", "Кредит"]
+    ) == ["Купить BMW", "Кредит"]
+    # Регистр не приводим: для Директа это разные заголовки.
+    assert create_set_feeds._dedup_grid_texts(["BMW X5", "bmw x5"]) == ["BMW X5", "bmw x5"]
+    assert create_set_feeds._dedup_grid_texts(["", None, "  "]) == []
+
+
+def test_rmw_update_sends_deduplicated_titles(monkeypatch):
+    from direct.create import create_set_feeds
+
+    sent: list[dict] = []
+
+    class FakeGrid:
+        def adaptive_ads_for_update(self, _cids, _ad_ids):
+            return {11: {"href": "https://target.ru", "titles": ["Дубль", "Дубль"],
+                         "bodies": ["Текст", "Текст"], "imageHashes": []}}
+
+        def _bootstrap_csrf(self):
+            return None
+
+        def _post(self, _op, _query, variables):
+            batch = variables["updateInput"]["adUpdateItems"]
+            sent.extend(batch)
+
+            class R:
+                status_code = 200
+
+                @staticmethod
+                def json():
+                    return {"data": {"updateAdaptiveTextAds": {
+                        "updatedAds": [{"id": item["id"]} for item in batch],
+                        "validationResult": {"errors": []},
+                    }}}
+
+            return R()
+
+    monkeypatch.setattr(
+        create_set_feeds,
+        "gf",
+        SimpleNamespace(get_grid_client=lambda _login: FakeGrid()),
+        raising=False,
+    )
+
+    updated = create_set_feeds._grid_update_adaptive_ads(
+        "target-login", [{"id": 11}], campaign_ids=[202], apply_combo_button=False
+    )
+
+    assert updated == 1
+    assert sent[0]["titles"] == ["Дубль"]
+    assert sent[0]["bodies"] == ["Текст"]
+
+
+def test_agent_board_tasks_go_straight_to_claude_opus(monkeypatch):
+    """Задачи из очередей Директа создаются сразу на Claude: у Codex лимит под 95%."""
+    from direct import agent_board_bridge
+
+    captured = {}
+
+    class FakeAgentDb:
+        @staticmethod
+        def init_tables():
+            return None
+
+        @staticmethod
+        def create_task(**kwargs):
+            captured.update(kwargs)
+            return {"id": 777}
+
+    import sys
+    import types
+
+    module = types.ModuleType("agent_board")
+    module.db = FakeAgentDb
+    monkeypatch.setitem(sys.modules, "agent_board", module)
+    monkeypatch.setitem(sys.modules, "agent_board.db", FakeAgentDb)
+
+    task_id = agent_board_bridge._create_agent_task("t", "d", requested_by="Ilyin")
+
+    assert task_id == 777
+    assert captured["assigned_agent"] == "claude-code"
+    assert captured["model"] == "opus"
+    assert captured["requested_by"] == "Ilyin"
+
+
+def test_copy_patches_direct_copy_fallback_for_average_cpa_multiple_goals():
+    """v5 отвергает *_MULTIPLE_GOALS в campaigns.add → id_maps пустой → «not mapped»."""
+    def original(strategy):
+        return strategy, False
+
+    dc = SimpleNamespace(strategy_fallback=original)
+
+    assert copy_engine._copy_patch_direct_copy_strategy_fallback(dc) is True
+    safe, downgraded = dc.strategy_fallback({
+        "Search": {
+            "BiddingStrategyType": "AVERAGE_CPA_MULTIPLE_GOALS",
+            "AverageCpaMultipleGoals": {
+                "WeeklySpendLimit": 5_000_000_000,
+                "ExplorationBudget": {
+                    "MinimumExplorationBudget": 5_000_000_000,
+                    "IsMinimumExplorationBudgetCustom": "NO",
+                },
+            },
+        },
+        "Network": {"BiddingStrategyType": "NETWORK_DEFAULT"},
+    })
+
+    assert downgraded is True
+    assert safe["Search"] == {
+        "BiddingStrategyType": "WB_MAXIMUM_CLICKS",
+        "WbMaximumClicks": {"WeeklySpendLimit": 5_000_000_000},
+    }
+    # Network без multi-goal не трогаем; повторный патч — no-op (идемпотентность).
+    assert safe["Network"] == {"BiddingStrategyType": "NETWORK_DEFAULT"}
+    assert copy_engine._copy_patch_direct_copy_strategy_fallback(dc) is False

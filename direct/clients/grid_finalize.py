@@ -18,6 +18,7 @@ import json
 import re
 import threading
 import time
+from datetime import date
 from pathlib import Path
 
 import requests
@@ -124,6 +125,27 @@ def _strip_graphql_typenames(value):
     if isinstance(value, list):
         return [_strip_graphql_typenames(v) for v in value]
     return value
+
+
+def _num_or_none(value):
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _unique_positive_ids(values) -> list[int]:
+    ids: list[int] = []
+    for raw in values or []:
+        try:
+            cid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if cid > 0 and cid not in ids:
+            ids.append(cid)
+    return ids
 
 
 # ── Картинки Grid: превью и write-shape наследуемых наборов ─────────────────────────────────
@@ -234,6 +256,24 @@ def _grid_multicards_write(raw_multicards) -> list[dict]:
             "text": card.get("text") or None,
         })
     return out
+
+
+def _permalink_with_phone_inherit(raw: dict | None = None) -> dict:
+    """Browser-shaped campaign contacts policy for ad full-replace payloads.
+
+    HAR direct.yandex.ru.76har.har (2026-08-06) confirmed that the UI setting
+    "Использовать контакты, заданные в кампании" is written as
+    ``permalinkWithPhone: {policy: "INHERIT"}`` on the ad update item.
+    """
+    pwp = raw.get("permalinkWithPhone") if isinstance(raw, dict) else None
+    if isinstance(pwp, dict) and str(pwp.get("policy") or "").upper() == "OVERRIDE":
+        out = {"policy": "OVERRIDE"}
+        if pwp.get("permalinkId") is not None:
+            out["permalinkId"] = pwp.get("permalinkId")
+        if pwp.get("phoneId") is not None:
+            out["phoneId"] = pwp.get("phoneId")
+        return out
+    return {"policy": "INHERIT"}
 
 
 def _grid_inheritable_write(raw, value_key: str | None) -> dict | None:
@@ -1160,6 +1200,124 @@ class GridClient:
             apply_base=lambda cid, base: base.__setitem__("disabledPlaces", list(clean_hosts)),
         )
 
+    def read_post_campaign_settings(self, campaign_ids: list[int]) -> dict[int, dict]:
+        """Read tp8/tp9/tp10 GdPostCampaign settings used by autorules."""
+        out: dict[int, dict] = {}
+        for cid, row in self.campaigns_edit_rows(campaign_ids).items():
+            strategy = row.get("strategy") if isinstance(row.get("strategy"), dict) else {}
+            budget = strategy.get("budget") if isinstance(strategy.get("budget"), dict) else {}
+            platforms = strategy.get("platforms") if isinstance(strategy.get("platforms"), dict) else {}
+            out[int(cid)] = {
+                "name": row.get("name") or "",
+                "status_primary": row.get("primaryStatus") or row.get("status") or "",
+                "disabledPlaces": list(row.get("disabledPlaces") or []),
+                "budget_sum": _num_or_none(budget.get("sum")),
+                "bid": _num_or_none(strategy.get("bid") or strategy.get("avgBid")),
+                "platforms": {str(k): bool(v) for k, v in platforms.items()},
+            }
+        return out
+
+    def update_post_campaigns(self, campaign_ids: list[int], mutate) -> list:
+        """Narrow UpdateCampaigns for GdPostCampaign autorules."""
+        ids = _unique_positive_ids(campaign_ids)
+        if not ids:
+            return []
+        rows = self.campaigns_edit_rows(ids)
+        q = ("mutation UpdateCampaigns($input:GdUpdateCampaignsInput!$login:String!){"
+             "updateCampaigns(input:$input){updatedCampaigns{id}"
+             "validationResult{errors{code params path}warnings{code params path}}}"
+             "getClientMutationId(input:{login:$login}){mutationId}}")
+        items: list[dict] = []
+        for cid in ids:
+            row = rows.get(cid)
+            if not row:
+                raise GridFinalizeError(f"Grid post update: не удалось прочитать кампанию {cid}")
+            base = self._post_campaign_update_from_edit_row(row)
+            mutate(cid, base)
+            items.append({"postCampaign": base})
+        data = self._post_json_retry("UpdateCampaigns", q, {
+            "login": self.login,
+            "input": {"campaignUpdateItems": items},
+        })
+        res = (data.get("data") or {}).get("updateCampaigns") or {}
+        vr = res.get("validationResult") or {}
+        if data.get("errors") or vr.get("errors"):
+            raise GridFinalizeError(
+                "Grid post update: " + json.dumps(
+                    data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
+        return res.get("updatedCampaigns") or []
+
+    def suspend_campaigns(self, campaign_ids: list[int]) -> list:
+        ids = _unique_positive_ids(campaign_ids)
+        if not ids:
+            return []
+        self._bootstrap_csrf()
+        q = ("mutation SuspendCampaigns($input:GdCampaignIdsListInput!){"
+             "suspendCampaigns(input:$input){updatedCampaigns{id}"
+             "validationResult{errors{code params path}warnings{code params path}}}}")
+        data = self._post_json_retry("suspendCampaigns", q, {"input": {"campaignIds": [str(cid) for cid in ids]}})
+        res = (data.get("data") or {}).get("suspendCampaigns") or {}
+        vr = res.get("validationResult") or {}
+        if data.get("errors") or vr.get("errors"):
+            raise GridFinalizeError(
+                "Grid suspendCampaigns: " + json.dumps(
+                    data.get("errors") or vr.get("errors"), ensure_ascii=False)[:400])
+        return res.get("updatedCampaigns") or []
+
+    @staticmethod
+    def _post_campaign_update_from_edit_row(row: dict) -> dict:
+        strategy = row.get("strategy") if isinstance(row.get("strategy"), dict) else {}
+        platforms = strategy.get("platforms") if isinstance(strategy.get("platforms"), dict) else {}
+        budget = strategy.get("budget") if isinstance(strategy.get("budget"), dict) else {}
+        bid = _num_or_none(strategy.get("bid") or strategy.get("avgBid")) or 200
+        budget_sum = _num_or_none(budget.get("sum")) or 0
+        notification = row.get("notification") if isinstance(row.get("notification"), dict) else {}
+        sms_settings = notification.get("smsSettings") if isinstance(notification.get("smsSettings"), dict) else {}
+        sms_time = sms_settings.get("smsTime") or {
+            "startTime": {"hour": 9, "minute": 0},
+            "endTime": {"hour": 21, "minute": 0},
+        }
+        return _strip_graphql_typenames({
+            "id": str(row.get("id") or ""),
+            "name": row.get("name") or "",
+            "isS2sTrackingEnabled": bool(row.get("isS2sTrackingEnabled")),
+            "biddingStategyWithPlatforms": {
+                "platforms": dict(platforms),
+                "strategyName": "AUTOBUDGET",
+                "strategyData": {
+                    "goalId": str(strategy.get("goalId") or ((strategy.get("strategyData") or {}).get("goalId")) or ""),
+                    "bid": str(int(round(float(bid)))),
+                    "payForShows": bool(strategy.get("payForShows")),
+                    "sum": str(int(round(float(budget_sum)))),
+                    "budgetType": "WEEKLY",
+                },
+            },
+            "attributionModel": row.get("attributionModel") or "AUTOMATIC",
+            "metrikaCounters": [int(x) for x in (row.get("metrikaCounters") or []) if str(x).isdigit()],
+            "meaningfulGoals": row.get("meaningfulGoals") or [],
+            "startDate": row.get("startDate") or date.today().isoformat(),
+            "endDate": row.get("endDate"),
+            "disabledPlaces": list(row.get("disabledPlaces") or []),
+            "bannerHrefParams": row.get("bannerHrefParams") or "",
+            "broadMatch": row.get("broadMatch") or _BROAD_MATCH_DEFAULT,
+            "dayBudget": str(int(float(row.get("dayBudget") or 0))),
+            "enableCompanyInfo": bool(row.get("enableCompanyInfo")),
+            "excludePausedCompetingAds": bool(row.get("excludePausedCompetingAds")),
+            "hasAddMetrikaTagToUrl": bool(row.get("hasAddMetrikaTagToUrl")),
+            "hasAddOpenstatTagToUrl": bool(row.get("hasAddOpenstatTagToUrl")),
+            "hasExtendedGeoTargeting": bool(row.get("hasExtendedGeoTargeting")),
+            "hasSiteMonitoring": bool(row.get("hasSiteMonitoring")),
+            "hasTitleSubstitute": bool(row.get("hasTitleSubstitution") or row.get("hasTitleSubstitute")),
+            "notification": {
+                "smsSettings": {"smsTime": sms_time, "enableEvents": []},
+                "emailSettings": {
+                    "stopByReachDailyBudget": bool((notification.get("emailSettings") or {}).get("stopByReachDailyBudget")),
+                    "email": (notification.get("emailSettings") or {}).get("email") or "",
+                },
+            },
+            "timeTarget": row.get("timeTarget"),
+        })
+
     def campaigns_edit_rows(self, campaign_ids: list[int]) -> dict[int, dict]:
         """Сырые строки CampaignsEditData ПО КУКЕ (0 v5-баллов) → ``{cid: row}``.
 
@@ -1246,7 +1404,17 @@ class GridClient:
                 raise GridFinalizeError(
                     "Grid read-campaign-invariants: " + json.dumps(data.get("errors"), ensure_ascii=False)[:400])
             for row in rows:
-                if row.get("__typename") != "GdUnifiedCampaign":
+                # FIX A (2026-08-05): copy создаёт кампании через v5 campaigns.add → в Grid они
+                # приходят как GdTextCampaign, НЕ GdUnifiedCampaign. Старый жёсткий фильтр на
+                # GdUnifiedCampaign отбрасывал 100% скопированных кампаний → invariants ВСЕГДА
+                # {} для них (482 ложных copy_verify строк, 66% всего шума). Принимаем любой
+                # Gd*Campaign-типа ряд; ниже поля читаются через ``"поле" in row`` presence-гейт
+                # (не через сам факт GdUnifiedCampaign), поэтому tri-state не ломается: у
+                # GdTextCampaign (grid_campaigns_edit_data.graphql, fragment TextCampaign) НЕТ
+                # inheritableCallouts/inheritableSitelinkSet — эти поля так и останутся None
+                # (unreadable), а НЕ будут коэрснуты в 0/False.
+                if not str(row.get("__typename") or "").startswith("Gd") or \
+                        not str(row.get("__typename") or "").endswith("Campaign"):
                     continue
                 try:
                     cid = int(row.get("id") or 0)
@@ -1343,8 +1511,15 @@ class GridClient:
 
     def restore_pay_for_conversion_strategy(self, campaign_id: int, goal_id: int,
                                               weekly_rub: float,
-                                              avg_cpa_rub: float = 0) -> list:
-        """Восстановить стратегию PAY_FOR_CONVERSION_MULTIPLE_GOALS через Grid updateCampaigns.
+                                              avg_cpa_rub: float = 0,
+                                              goals: list | None = None) -> list:
+        """Восстановить multi-goal стратегию (`AUTOBUDGET_MULTIPLE_CPA`) через Grid updateCampaigns.
+
+        `goals` — ПОЛНЫЙ список целей источника для копии 1:1:
+        `[{"goal_id": 592999081, "value_rub": 2000, "is_metrika_source_of_value": False}, …]`.
+        Нужен, потому что `PriorityGoals` источника обычно содержит НЕСКОЛЬКО целей, а пара
+        `goal_id`/`avg_cpa_rub` описывает ровно одну: копия с одной целью вместо двух — уже не 1:1.
+        Не передан — поведение прежнее, цель строится из `goal_id`/`avg_cpa_rub`.
 
         Применяется как постпроцесс копирования: кампания была создана с WB_MAXIMUM_CLICKS (v5
         не принимает PAY_FOR_CONVERSION_MULTIPLE_GOALS без счётчика+целей), а затем здесь
@@ -1389,13 +1564,24 @@ class GridClient:
         base["biddingStategyWithPlatforms"] = bs
         # Задаём цели: цель goal_id с CPA = avg_cpa_rub; вторую цель (прочие,
         # если avg_cpa_rub > 0) добавляем тоже чтобы дать MULTIPLE_CPA > 1 цели.
-        mg = []
-        if goal_id and int(goal_id) > 0:
-            goal_item = {"goalId": str(int(goal_id)), "conversionStrategy": "AVERAGE_CPA",
-                         "isMetrikaSourceOfValue": False}
-            if avg_cpa_rub and avg_cpa_rub > 0:
-                goal_item["value"] = str(int(avg_cpa_rub))
-            mg.append(goal_item)
+        # Форма цели подтверждена live-интроспекцией 2026-08-07 (`GdMeaningfulGoalRequestInput`):
+        # ровно `goalId` (Long, NON_NULL), `conversionValue` (BigDecimal), `conversionValueType`
+        # (enum, единственное значение PERCENT) и `isMetrikaSourceOfValue` (Boolean).
+        # ⛔ Полей `conversionStrategy` и `value` в этом типе НЕТ — Grid отвечает
+        # «field name 'conversionStrategy' that is not defined for input object type».
+        # Прежняя форма живьём падала на всех 12 кампаниях; юнит-тест этого не ловил,
+        # потому что бьёт по заглушке `_post`, а не по схеме.
+        def _goal_item(gid: int, value_rub: float, metrika_source: bool) -> dict:
+            item: dict = {"goalId": int(gid), "isMetrikaSourceOfValue": bool(metrika_source)}
+            if value_rub and float(value_rub) > 0:
+                item["conversionValue"] = int(float(value_rub))
+            return item
+
+        mg = [_goal_item(int(_g.get("goal_id") or 0), _g.get("value_rub") or 0,
+                         _g.get("is_metrika_source_of_value"))
+              for _g in (goals or []) if int(_g.get("goal_id") or 0) > 0]
+        if not mg and goal_id and int(goal_id) > 0:
+            mg.append(_goal_item(int(goal_id), avg_cpa_rub or 0, False))
         base["meaningfulGoals"] = mg
         q = ("mutation UpdateCampaigns($input:GdUpdateCampaignsInput!$login:String!){"
              "updateCampaigns(input:$input){updatedCampaigns{id}"
@@ -1919,6 +2105,7 @@ class GridClient:
         items = []
         for s in shopping_ad_ids:
             item = {"id": str(s), "permalinkId": None, "phoneId": None,
+                    "permalinkWithPhone": {"policy": "INHERIT"},
                     "fieldsToUseAsBody": None, "fieldsToUseAsName": None,
                     "feedId": str(feed_id), "bodies": [text], "hrefParams": "",
                     "inheritableCallouts": {"policy": "INHERIT"},
@@ -1993,6 +2180,7 @@ class GridClient:
         for it in items:
             entry = {
                 "adGroupId": str(it["adgroup_id"]), "permalinkId": None, "phoneId": None,
+                "permalinkWithPhone": {"policy": "INHERIT"},
                 "fieldsToUseAsBody": None, "fieldsToUseAsName": None,
                 "feedId": str(it["feed_id"]), "bodies": [], "hrefParams": "",
                 "inheritableCallouts": {"policy": "INHERIT"},
@@ -2230,7 +2418,7 @@ class GridClient:
                     _lnf_conds.extend(it["extra_conds"])
                 _u.append({
                     "id": str(_item_id),
-                    "permalinkWithPhone": {"policy": "CLEAR"},
+                    "permalinkWithPhone": _permalink_with_phone_inherit(it),
                     "fieldsToUseAsBody": None, "fieldsToUseAsName": None,
                     "feedId": str(it["feed_id"]),
                     "feedFilter": {"tab": "CONDITION", "conditions": _lnf_conds},
@@ -2336,7 +2524,7 @@ class GridClient:
                 "bodies": list(it.get("bodies") or []),
                 "hrefParams": "",
                 "fieldsToUseAsBody": None, "fieldsToUseAsName": None,
-                "permalinkWithPhone": {"policy": "CLEAR"},
+                "permalinkWithPhone": _permalink_with_phone_inherit(it),
                 "inheritableCallouts": {"policy": "INHERIT"},
                 "inheritableSitelinkSet": {"policy": "INHERIT"},
             })
@@ -2622,10 +2810,9 @@ class GridClient:
                 # видео-креативы вызывающего (напр. из adaptive_ads_for_update.creativeIds) —
                 # раньше жёсткий [] стирал видео при чистке картинок (ревью 03.07 #13)
                 "creativeIds": [str(c) for c in (it.get("creativeIds") or []) if c],
-                # визитка: as-is из RMW-чтения (adaptive_ads_for_update), None = прежнее поведение
-                # для вызывающих, которые состояние объявления не читают
-                "permalinkId": it.get("permalinkId") or None,
-                "phoneId": it.get("phoneId") or None,
+                # Контакты в объявлении: HAR direct.yandex.ru.76har.har пишет это объектом
+                # permalinkWithPhone, а не плоскими permalinkId/phoneId.
+                "permalinkWithPhone": _permalink_with_phone_inherit(it),
                 "erirAdDescription": None,
                 # ad-level наборы: мутация REPLACE'ит payload целиком, поэтому хардкод INHERIT
                 # СТИРАЛ ad-level набор быстрых ссылок (policy OVERRIDE) — браузер в том же вызове
@@ -2825,6 +3012,7 @@ class GridClient:
                         row.get("inheritableCallouts"), "calloutIds"),
                     "permalinkId": pwp.get("permalinkId"),
                     "phoneId": pwp.get("phoneId"),
+                    "permalinkWithPhone": row.get("permalinkWithPhone"),
                 }
         return out
 
@@ -3001,19 +3189,7 @@ class GridClient:
             # покрывает только ветку «оба непусты»), поэтому не опираемся на неё вовсе:
             # состав payload теперь ОДИН для всех объявлений и равен браузерному.
             # adPrice: GdAdPriceInput (nullable, интроспекция 2026-07-19) → явный null валиден.
-            pwp = it.get("permalinkWithPhone")
-            if isinstance(pwp, dict) and pwp.get("policy"):
-                item["permalinkWithPhone"] = {
-                    k: v for k, v in {
-                        "policy": str(pwp.get("policy")),
-                        "permalinkId": pwp.get("permalinkId"),
-                        "phoneId": pwp.get("phoneId"),
-                    }.items() if v is not None
-                }
-            else:
-                # визитки нет → ровно то, что шлёт браузер (``policy`` внутри объекта
-                # NON_NULL, поэтому пустой объект слать нельзя)
-                item["permalinkWithPhone"] = {"policy": "CLEAR"}
+            item["permalinkWithPhone"] = _permalink_with_phone_inherit(it)
             if it.get("displayHref"):
                 item["displayHref"] = str(it["displayHref"])
             if it.get("logoImageHash"):
@@ -3143,8 +3319,7 @@ class GridClient:
                 "bodies": list(it.get("bodies") or []),
                 "imageHashes": list(it.get("imageHashes") or []),
                 "creativeIds": [str(c) for c in (it.get("creativeIds") or []) if c],
-                "permalinkId": it.get("permalinkId") or None,
-                "phoneId": it.get("phoneId") or None,
+                "permalinkWithPhone": _permalink_with_phone_inherit(it),
                 "erirAdDescription": None,
                 "inheritableCallouts": (it.get("inheritableCallouts")
                                         if isinstance(it.get("inheritableCallouts"), dict)

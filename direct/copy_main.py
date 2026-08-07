@@ -226,6 +226,13 @@ def _copy_queue_jobs() -> list[dict]:
         source_login = body.get("source_login") or ""
         target_login = body.get("target_login") or r.get("login") or ""
         created_by = body.get("created_by") or body.get("username") or body.get("_actor") or ""
+        # Авто-повтор после починки на Agent Board пишет created_by='agent-board-auto', а автора
+        # исходного запуска сохраняет в _copy_retry_original_user (queue_server._copy_retry_body_from_failed).
+        # Без этого поля очередь показывает только бота, и непонятно, чьё копирование он доводит.
+        # Зеркалит content_jobs.original_username — там же имя колонки, которое ждёт ceQueueUserText().
+        original_created_by = str(body.get("_copy_retry_original_user") or "").strip()
+        if original_created_by == created_by:
+            original_created_by = ""
         created_at = r.get("created_at")
         if hasattr(created_at, "timestamp"):
             try:
@@ -244,6 +251,7 @@ def _copy_queue_jobs() -> list[dict]:
             "source_login": source_login,
             "target_login": target_login,
             "created_by": created_by,
+            "original_created_by": original_created_by,
             "elapsed": None,
             # итог сверки: разбивка расхождений / «сверки не было» (copy_verify_issues.py).
             # Без них строка «✅ готово» в очереди молчит о десятках расхождений.

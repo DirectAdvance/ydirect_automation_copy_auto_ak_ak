@@ -116,8 +116,11 @@ def test_copy_retry_body_falls_back_to_all_when_errors_are_not_campaign_specific
 
     assert body["campaign_ids"] == [11, 22]
     assert body["_copy_retry_scope"] == "all"
-    assert "_copy_retry_cleanup_target_ids" not in body
-    assert body["target_cleanup"] == "delete_drafts"
+    # Раньше здесь ожидался delete_drafts без списка id — то есть снос ВСЕХ черновиков
+    # кабинета, включая удачные копии и чужие кампании. Своих target-id у этой джобы нет
+    # (результат пустой), поэтому чистить нечего.
+    assert body["_copy_retry_cleanup_target_ids"] == []
+    assert body["target_cleanup"] == "none"
 
 
 def test_copy_worker_result_preserves_rich_error_payload():
@@ -169,3 +172,77 @@ def test_copy_cleanup_delete_drafts_respects_scoped_target_ids(monkeypatch):
     delete_calls = [payload for method, payload in calls if method == "delete"]
     assert delete_calls == [{"SelectionCriteria": {"Ids": [202]}}]
     assert result["deleted"] == 1
+
+
+def test_retry_on_generic_error_cleans_only_own_copies():
+    """Общая ошибка без id кампаний не должна сносить чужие и удачные черновики кабинета."""
+    row = {
+        "job_id": "generic1",
+        "login": "porg-target",
+        "body": {
+            "source_login": "porg-source",
+            "target_login": "porg-target",
+            "campaign_ids": [101, 102, 103],
+            "created_by": "Ilyin",
+            "target_cleanup": "none",
+        },
+        "result": {
+            "results": [
+                {"id": 900101, "campaign_id": 900101, "ok": True},
+                {"id": 900102, "campaign_id": 900102, "ok": True},
+                {"id": 900103, "campaign_id": 900103, "ok": True},
+            ],
+        },
+        "error": "grid update adaptive: обновлено 278/285 объявлений",
+    }
+
+    body = queue_server._copy_retry_body_from_failed(row)
+
+    assert body["_copy_retry_scope"] == "all"
+    # Чистятся ровно свои копии, а не все DRAFT кабинета.
+    assert body["_copy_retry_cleanup_target_ids"] == [900101, 900102, 900103]
+    assert body["target_cleanup"] == "delete_drafts"
+
+
+def test_retry_without_known_targets_does_not_clean_anything():
+    row = {
+        "job_id": "generic2",
+        "login": "porg-target",
+        "body": {"source_login": "porg-source", "target_login": "porg-target",
+                 "campaign_ids": [101], "created_by": "Ilyin"},
+        "result": {},
+        "error": "grid reauth не получил csrf",
+    }
+
+    body = queue_server._copy_retry_body_from_failed(row)
+
+    assert body["_copy_retry_cleanup_target_ids"] == []
+    # Ничего своего не известно → ничего не удаляем, иначе снесём чужое.
+    assert body["target_cleanup"] == "none"
+
+
+def test_scoped_retry_never_deletes_more_than_it_recreates():
+    """Чистка обязана быть подмножеством пересоздаваемого — иначе копии теряются навсегда."""
+    row = {
+        "job_id": "scoped1",
+        "login": "porg-target",
+        "body": {"source_login": "porg-source", "target_login": "porg-target",
+                 "campaign_ids": [11, 22, 33], "created_by": "Ilyin"},
+        "result": {
+            "id_maps": {"campaigns": {"11": 201, "22": 202, "33": 203}},
+            "results": [
+                {"source_id": 22, "campaign_id": 202, "ok": False, "error": "не создалась"},
+                {"source_id": 11, "campaign_id": 201, "ok": True},
+                {"source_id": 33, "campaign_id": 203, "ok": True},
+            ],
+        },
+        # Текстовый разбор подхватывает и посторонние target-id из логов.
+        "error": "не создалась кампания target 202; ранее в логе встречались 777 и 888",
+    }
+
+    scope = queue_server._copy_retry_failed_scope(row)
+
+    assert scope["mode"] == "failed_campaigns"
+    assert scope["campaign_ids"] == [22]
+    # 777/888 не имеют пары source в этом повторе — удалять их нельзя.
+    assert scope["cleanup_target_ids"] == [202]

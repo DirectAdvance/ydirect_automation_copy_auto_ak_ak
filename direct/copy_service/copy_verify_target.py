@@ -297,8 +297,22 @@ def build_target_profile(target_login: str,
                         "DynamicTextCampaignFieldNames": ["Settings", "BiddingStrategy"],
                         "SmartCampaignFieldNames": ["Settings", "BiddingStrategy"],
                         "CpmBannerCampaignFieldNames": ["Settings", "BiddingStrategy"],
+                        # ⛔ НЕ добавлять сюда UnifiedAdCampaignFieldNames: такого параметра в v5
+                        # НЕТ, весь запрос падает 8000 «Указан неизвестный параметр» (проверено
+                        # live 2026-08-07 на porg-c6rxuenb). Ошибка ниже проглатывалась, ответ
+                        # приходил пустым → strategy_name="" → все строки сверки становились
+                        # `unreadable`, а гейт их пропускает. Итог: копии уехали на чужой
+                        # стратегии (AVERAGE_CPC вместо AVERAGE_CPA_MULTIPLE_GOALS), а джоба
+                        # была зелёной. ЕПК, если понадобится, читать ОТДЕЛЬНЫМ запросом.
                         "Page": {"Limit": 10000, "Offset": 0},
                     })
+                    # v5 отвечает ошибкой в теле, а не исключением: без явной проверки провал
+                    # чтения неотличим от «кампаний нет» и молча превращается в unreadable.
+                    _camp_err = (_camp_r or {}).get("error") or {}
+                    if _camp_err:
+                        _log("copy_verify: v5 campaigns.get вернул ошибку "
+                             f"{_camp_err.get('error_code')}: {str(_camp_err.get('error_string') or '')[:120]}"
+                             f" / {str(_camp_err.get('error_detail') or '')[:160]}")
                     for _camp in ((_camp_r.get("result") or {}).get("Campaigns") or []):
                         try:
                             _cid3 = int(_camp.get("Id") or 0)
@@ -332,6 +346,14 @@ def build_target_profile(target_login: str,
                         counts[_cid2]["keywords_read"] = True
                 # ads → adaptive_total + shopping/listing counts.
                 # Добавляем Type в FieldNames — тот же запрос, 0 доп. обращений.
+                # adaptive_total сравнивается 1:1 с source-профилем, который считает ТОЛЬКО
+                # Grid GdAdaptiveTextAd (grid_read.py:462-488). Продуктовые типы (SHOPPING_AD/
+                # SMART_AD/LISTING_AD) исключаются из _ads_cnt, иначе fallback пишет в
+                # adaptive_total число товарных/каталожных объявлений, а source honestly
+                # отдаёт 0 → ложный mismatch (37/13 issues на f796730ec616/f05b2ea54d6f).
+                # Type=null (389 объявлений в кэше) НЕ исключается — намеренно: неизвестный тип
+                # не переквалифицируем молча, старое поведение (учитывать) сохраняется.
+                _PRODUCT_AD_TYPES = ("SHOPPING_AD", "SMART_AD", "LISTING_AD")
                 _ads_cnt: Dict[int, int] = {}
                 _shop_cnt: Dict[int, int] = {}
                 _listing_cnt: Dict[int, int] = {}
@@ -342,10 +364,12 @@ def build_target_profile(target_login: str,
                         continue
                     if _ad_cid <= 0:
                         continue
-                    _ads_cnt[_ad_cid] = _ads_cnt.get(_ad_cid, 0) + 1
-                    if (_ad.get("Type") or "") in ("SHOPPING_AD", "SMART_AD"):
+                    _ad_type = _ad.get("Type") or ""
+                    if _ad_type not in _PRODUCT_AD_TYPES:
+                        _ads_cnt[_ad_cid] = _ads_cnt.get(_ad_cid, 0) + 1
+                    if _ad_type in ("SHOPPING_AD", "SMART_AD"):
                         _shop_cnt[_ad_cid] = _shop_cnt.get(_ad_cid, 0) + 1
-                    if (_ad.get("Type") or "") == "LISTING_AD":
+                    if _ad_type == "LISTING_AD":
                         _listing_cnt[_ad_cid] = _listing_cnt.get(_ad_cid, 0) + 1
                 for _cid2, _n in _ads_cnt.items():
                     if _cid2 in counts and counts[_cid2].get("adaptive_total") in (None, 0):
@@ -435,9 +459,27 @@ def build_target_profile(target_login: str,
     )
 
     # ── Строим профиль per target campaign ──────────────────────────────────
+    # FIX B (2026-08-05): campaign_content_counts ВСЕГДА возвращает blank-заглушку на КАЖДЫЙ
+    # запрошенный id (grid_read.py:601 ``{cid: _blank() for cid in ids}``) — этот словарь не
+    # годится сигналом «Grid реально нашёл кампанию». А вот edit_rows/invariants/target_campaign_v5
+    # добавляют запись ТОЛЬКО для id, реально вернувшихся в ответе Grid/v5 — то есть если кампания
+    # удалена/недоступна, её там не будет вовсе. Раньше профиль строился безусловно для каждого
+    # tgt_camp_ids → удалённая кампания получала «существует и пустая», и diff_profiles сравнивал
+    # source(N) vs target(0) по ~20 измерениям (371 ложных строк на job с удалёнными target-кампаниями).
+    # diff_profiles.py:140-145 уже умеет свернуть это в ОДНУ campaign_exists=MISSING строку, если
+    # tgt_profile.get(tgt_id) отдаёт None — нужно только не класть заведомо отсутствующую кампанию
+    # в profile. Срабатывает лишь когда САМИ чтения реально что-то вернули (иначе это тотальный сбой
+    # чтения, а не факт удаления — тогда старое поведение/tri-state None остаётся как есть).
+    _present_tgt_cids = set(edit_rows.keys()) | set(invariants.keys()) | set(target_campaign_v5.keys())
+    _target_reads_functioning = bool(edit_rows) or bool(invariants) or bool(target_campaign_v5)
+
     profile: Dict[str, dict] = {}
 
     for tgt_id in tgt_camp_ids:
+        if _target_reads_functioning and tgt_id not in _present_tgt_cids:
+            _log(f"copy_verify: target campaign {tgt_id} отсутствует во всех target-чтениях "
+                 f"(edit_rows/invariants/v5) — считаем удалённой, campaign_exists=missing")
+            continue
         counts_c = counts.get(tgt_id) or {}
         edit_c = edit_rows.get(tgt_id) or {}
         inv_c = invariants.get(tgt_id) or {}
@@ -492,12 +534,16 @@ def build_target_profile(target_login: str,
         # D5/D6: titles and bodies — approximated from adaptive_total (per-campaign count)
         ads_with_titles = adaptive_total  # adaptive = has titles by definition
 
-        # D12: strategy name
+        # D12: strategy name — сверяем на ТОЙ ЖЕ поверхности, что и источник (v5
+        # BiddingStrategyType). build_source_profile берёт strategy_name из v5, поэтому и цель
+        # обязана брать v5-значение, а НЕ Grid strategyData.strategyName: Grid отдаёт write-enum
+        # (AUTOBUDGET / AUTOBUDGET_AVG_CPA / DEFAULT_), это другая номенклатура → у исправно
+        # скопированных РСЯ-кампаний давал ложный strategy_name mismatch (source=SERVING_OFF vs
+        # target=AUTOBUDGET) и осаживал verification-gate (porg-x7wkhs7d→porg-c6rxuenb, 2026-08).
+        # Если v5 у цели не прочитался — strategy_name="" → diff даст UNREADABLE (fail-safe,
+        # repairable), а не ложный MISMATCH против Grid-имени.
         camp_v5 = target_campaign_v5.get(tgt_id) or {}
-        strat_data = edit_c.get("strategyData") or {}
-        strategy_name = (strat_data.get("strategyName") or
-                         edit_c.get("strategyName") or
-                         _strategy_name_from_campaign(camp_v5))
+        strategy_name = _strategy_name_from_campaign(camp_v5)
         site_monitoring = _setting_yes(camp_v5, "ENABLE_SITE_MONITORING")
 
         # D13/D14: video (hasVideo) и button/CTA (hasButton) — из adaptive_ads_for_update.

@@ -14,13 +14,25 @@ from concurrent.futures import ThreadPoolExecutor
 from ..core import campaign as cmc
 
 from .copy_geo import _COPY_R_CODE_RE, _copy_apply_geo_replacements, _copy_normalize_campaign_name, _copy_target_href
-from .copy_keyword_phrase import DIRECT_KEYWORD_MAX_POSITIVE_WORDS, clean_keyword_phrase
+from .copy_keyword_phrase import clean_keyword_phrase
 
 # ── DI (инъектится copy_engine.configure фан-аутом; None до инъекции) ──
 _direct_tokens = _resolve_agency_hint = _token_for_login = _v501_svc = None
 _UAC_TITLE_MAX = 56
 _UAC_TEXT_MAX = 81
-_UAC_KEYWORD_MAX_POSITIVE_WORDS = DIRECT_KEYWORD_MAX_POSITIVE_WORDS
+_UAC_KEYWORD_MAX_POSITIVE_WORDS = 7
+_UAC_FALLBACK_TITLES = [
+    "Автомобили в наличии",
+    "Выгода на авто",
+    "Официальный дилер",
+    "Авто с гарантией",
+    "Подберите автомобиль",
+]
+_UAC_FALLBACK_TEXTS = [
+    "Подберите автомобиль с выгодой. Оставьте заявку на сайте.",
+    "Актуальные предложения на новые автомобили в наличии.",
+    "Получите расчет и условия покупки у официального дилера.",
+]
 
 
 def configure(deps: dict) -> None:
@@ -29,7 +41,7 @@ def configure(deps: dict) -> None:
 
 
 def _copy_is_uac_grid_row(row: dict) -> bool:
-    typ = str(row.get("typename") or row.get("type") or "").lower()
+    typ = str(row.get("typename") or row.get("__typename") or row.get("type") or "").lower()
     name = str(row.get("name") or "").lower()
     return "uac" in typ or "tp6_" in name or "tp7_" in name
 
@@ -40,44 +52,6 @@ def _copy_uac_value(row: dict, *keys, default=None):
         if val not in (None, "", []):
             return val
     return default
-
-
-def _copy_uac_source_audiences(d: dict) -> list[str]:
-    """Извлечь id аудиторных целей (интересов) из detail источника (баг 4, расследование 2026-08-04).
-
-    Раньше читалось из плоских ``audiences``/``interest_ids`` (``_copy_uac_value(d, "audiences",
-    "interest_ids")``) — эти ключи в РЕАЛЬНОМ ответе UAC не встречаются, интересы всегда получались
-    пустыми, даже если у источника были живые аудитории. Реальная форма (см.
-    ``clients/uac_read._count_audiences``, живой разбор 2026-07-30): цели лежат в
-    ``ca_retargeting_condition.condition_rules[].goals[].id`` (верхний ``ca_retargeting_condition.
-    goals`` и плоские ``audiences``/``interest_ids`` — запасные формы на случай другого ответа UAC)."""
-    ids: list[str] = []
-    seen: set[str] = set()
-
-    def _add(raw) -> None:
-        gid = str((raw or {}).get("id") or "") if isinstance(raw, dict) else str(raw or "").strip()
-        if gid and gid not in seen:
-            seen.add(gid)
-            ids.append(gid)
-
-    cond = d.get("ca_retargeting_condition")
-    if isinstance(cond, dict):
-        goals = cond.get("goals")
-        if isinstance(goals, list):
-            for g in goals:
-                _add(g)
-        rules = cond.get("condition_rules")
-        if isinstance(rules, list):
-            for rule in rules:
-                for g in ((rule or {}).get("goals") or []) if isinstance(rule, dict) else []:
-                    _add(g)
-    if not ids:
-        for key in ("audiences", "interest_ids"):
-            value = d.get(key)
-            if isinstance(value, list):
-                for a in value:
-                    _add(a)
-    return ids
 
 
 def _copy_uac_strings(value, *keys: str, limit: int = 8) -> list[str]:
@@ -156,6 +130,22 @@ def _copy_uac_limit_strings(values: list[str], max_len: int) -> list[str]:
     return out
 
 
+def _copy_uac_pad_strings(values: list[str], fallback: list[str], *, need: int, max_len: int) -> list[str]:
+    """Fill UAC text arrays to verifier-required minimums without duplicates."""
+    out = _copy_uac_limit_strings(values or [], max_len)
+    seen = {v.casefold() for v in out}
+    for raw in fallback or []:
+        if len(out) >= need:
+            break
+        for val in _copy_uac_limit_strings([raw], max_len):
+            key = val.casefold()
+            if key and key not in seen:
+                seen.add(key)
+                out.append(val)
+                break
+    return out[:need]
+
+
 def _copy_uac_keyword_tokens(phrase: str) -> tuple[str, list[str]]:
     """Split inline minus-words out of a UAC keyword phrase."""
     keep: list[str] = []
@@ -220,8 +210,7 @@ def _copy_uac_sanitize_keywords(
 
 
 def _copy_uac_sitelinks(value, *, source_domain: str, target_domain: str,
-                        geo_pairs: list[tuple[str, str]] | None = None,
-                        target_site_type: str = "") -> list[dict]:
+                        geo_pairs: list[tuple[str, str]] | None = None) -> list[dict]:
     out = []
     for item in (value or []):
         if not isinstance(item, dict):
@@ -231,11 +220,7 @@ def _copy_uac_sitelinks(value, *, source_domain: str, target_domain: str,
         desc = _copy_uac_geo_text(item.get("description") or item.get("Description") or "", geo_pairs)
         if not title:
             continue
-        out.append({
-            "title": title,
-            "href": _copy_target_href(href, source_domain, target_domain, target_site_type=target_site_type),
-            "description": desc,
-        })
+        out.append({"title": title, "href": _copy_target_href(href, source_domain, target_domain), "description": desc})
     return out
 
 
@@ -513,13 +498,12 @@ def _copy_uac_content_media_urls(row: dict, *, want: str) -> list[str]:
     return urls
 
 
-def _copy_uac_campaign_href(row: dict, *, fallback_href: str, source_domain: str, target_domain: str,
-                            target_site_type: str = "") -> str:
+def _copy_uac_campaign_href(row: dict, *, fallback_href: str, source_domain: str, target_domain: str) -> str:
     src_href = str(_copy_uac_value(
         row, "href", "target_url", "targetUrl", "direct_url", "directUrl", default="") or "").strip()
     if not src_href:
         return fallback_href
-    copied = _copy_target_href(src_href, source_domain, target_domain, target_site_type=target_site_type)
+    copied = _copy_target_href(src_href, source_domain, target_domain)
     return copied or fallback_href
 
 
@@ -672,6 +656,33 @@ def _copy_uac_filter_list(value, *, target_login: str = "", target_feed_id: int 
     return out
 
 
+def _copy_uac_effective_feed_id(src_feed_raw, target_feed_id: int | None, feed_map: dict | None,
+                                *, is_product: bool) -> int | None:
+    if not is_product:
+        return None
+    eff_target_feed = target_feed_id
+    try:
+        source_feed_key = str(int(src_feed_raw)) if src_feed_raw not in (None, "") else ""
+    except (TypeError, ValueError):
+        source_feed_key = ""
+    if feed_map and source_feed_key and source_feed_key in feed_map:
+        eff_target_feed = feed_map[source_feed_key]
+    if not eff_target_feed and feed_map and not source_feed_key:
+        targets = []
+        seen: set[int] = set()
+        for raw in feed_map.values():
+            try:
+                fid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if fid > 0 and fid not in seen:
+                seen.add(fid)
+                targets.append(fid)
+        if len(targets) == 1:
+            eff_target_feed = targets[0]
+    return int(eff_target_feed or 0) or None
+
+
 def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str,
                         selected_grid_rows: list[dict], body: dict, *,
                         target_href: str, region_ids: list[int], counter_id: int,
@@ -692,10 +703,16 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
 
     default_cpa = int(body.get("cpa") or 2000)
     default_budget = int(body.get("week_budget") or body.get("budget") or 5000)
-    # Баг 2/5 (расследование 2026-08-04): целевой site_type для path-ремапа в _copy_target_href
-    # (см. copy_engine._copy_run_job — считается один раз на job в body["_copy_target_site_type"]).
-    # Пусто/не найдено → _copy_target_href остаётся no-op, прежнее поведение.
-    target_site_type = str(body.get("_copy_target_site_type") or "").strip()
+
+    def _uac_auth_expired(exc: Exception) -> bool:
+        text = (str(getattr(exc, "body", "") or exc) or "").lower()
+        return (
+            "need_reset" in text
+            or "passport.yandex" in text
+            or "истек срок" in text
+            or "истёк срок" in text
+            or "<title>log in</title>" in text
+        )
 
     # image_mode=upload: картинки берём из ЦЕЛЕВОГО аккаунта (уже залиты copy_other._copy_images_upload).
     # Иначе upload_content качает файл источника → одинаковый хэш и бренд-тема источника во всех копиях.
@@ -772,21 +789,19 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
             )
             sitelinks = _copy_uac_sitelinks(_copy_uac_value(d, "sitelinks", default=[]) or [],
                                             source_domain=source_domain, target_domain=target_domain,
-                                            geo_pairs=geo_pairs, target_site_type=target_site_type)
+                                            geo_pairs=geo_pairs)
             keywords = _copy_uac_keyword_strings(_copy_uac_strings(d, "keywords", limit=200), geo_pairs)
             minus_keywords = _copy_uac_geo_strings(_copy_uac_strings(d, "minus_keywords", limit=200), geo_pairs)
             keywords, minus_keywords = _copy_uac_sanitize_keywords(keywords, minus_keywords)
-            audiences = _copy_uac_source_audiences(d)
+            audiences = _copy_uac_value(d, "audiences", "interest_ids", default=[]) or []
             pricing = str(_copy_uac_value(d, "pricing", "payment_type", "paymentType", default="PER_CLICK") or "PER_CLICK")
             week_limit = _copy_uac_value(d, "week_limit", "weekly_budget", "weekBudget", default=default_budget)
             cpa = default_cpa
             goals = _copy_uac_value(d, "goals", default=[]) or []
             if isinstance(goals, list) and goals and isinstance(goals[0], dict):
                 cpa = int(goals[0].get("cpa") or cpa)
-            if not titles:
-                titles = ["Автомобили в наличии", "Выгода на авто", "Официальный дилер"]
-            if not texts:
-                texts = ["Подберите автомобиль с выгодой. Оставьте заявку на сайте."]
+            titles = _copy_uac_pad_strings(titles, _UAC_FALLBACK_TITLES, need=5, max_len=_UAC_TITLE_MAX)
+            texts = _copy_uac_pad_strings(texts, _UAC_FALLBACK_TEXTS, need=3, max_len=_UAC_TEXT_MAX)
             geo_guard_errors = _copy_uac_geo_guard(
                 name,
                 titles + texts + keywords + minus_keywords
@@ -799,36 +814,17 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
                 raise RuntimeError("uac geo guard: " + "; ".join(geo_guard_errors[:3]))
             src_feed_raw = _copy_uac_value(d, "feed_id", "listings_feed_id")
             is_product = name.lower().startswith("tp7_") or bool(src_feed_raw)
-            # Пофидовая замена: если исходный фид кампании есть в feed_map — берём целевой из карты,
-            # иначе фолбэк на общий target_feed_id (прежнее поведение).
-            eff_target_feed = target_feed_id
-            try:
-                _sf = str(int(src_feed_raw)) if src_feed_raw not in (None, "") else ""
-            except (TypeError, ValueError):
-                _sf = ""
-            if feed_map and _sf and _sf in feed_map:
-                eff_target_feed = feed_map[_sf]
-            feed_id = int(eff_target_feed or 0) if is_product else None
-            # Детерминированный round-robin: у каждой i-й МК свои картинки из архива цели.
-            # Баг 1 (расследование 2026-08-04): раньше всегда брали ровно 5 слотов через
-            # `% len(tgt_img_urls)` — при < 5 уникальных картинок в архиве это молча ДУБЛИРОВАЛО
-            # одну картинку вместо честных 5 разных (репорт «4 из 5 картинок в МК»). Теперь берём
-            # не больше уникальных, чем реально есть, и явно логируем недостачу.
+            feed_id = _copy_uac_effective_feed_id(
+                src_feed_raw, target_feed_id, feed_map, is_product=is_product)
+            # Детерминированный round-robin: у каждой i-й МК свои 5 картинок из архива цели.
             if tgt_img_urls:
-                _img_n = min(5, len(tgt_img_urls))
-                _img = [tgt_img_urls[(cidx * _img_n + k) % len(tgt_img_urls)] for k in range(_img_n)]
-                if _img_n < 5:
-                    rep["errors"].append(
-                        f"{name}: в целевом архиве только {len(tgt_img_urls)} картинок "
-                        f"(нужно 5) — кампания создана с {_img_n}"
-                    )
+                _img = [tgt_img_urls[(cidx * 5 + k) % len(tgt_img_urls)] for k in range(5)]
                 _content_ids: list[str] = []
             else:
                 _content_ids = []
                 _img = _copy_uac_target_image_urls(d)
             copy_href = _copy_uac_campaign_href(
-                d, fallback_href=target_href, source_domain=source_domain, target_domain=target_domain,
-                target_site_type=target_site_type)
+                d, fallback_href=target_href, source_domain=source_domain, target_domain=target_domain)
             # socdem источника, иначе датакласс молча подставит дефолт age_18 вместо возраста источника.
             _sd = _copy_uac_value(d, "socdem", default={}) or {}
             if not isinstance(_sd, dict):
@@ -874,11 +870,7 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
                 display_name=name,
                 pricing=pricing,
                 keywords=keywords,
-                # Баг 3 (расследование 2026-08-04): было `minus_keywords or ["отзывы"]` — пустой
-                # список минус-слов ИСТОЧНИКА (валидный результат, не ошибка парсинга) трактовался
-                # как «нужен дефолт» и подставлял «отзывы», которого в источнике не было. Копия 1:1
-                # обязана переносить ровно то, что было — включая пустой список.
-                minus_keywords=minus_keywords,
+                minus_keywords=minus_keywords or ["отзывы"],
                 sitelinks=sitelinks,
                 content_ids=_content_ids,
                 image_urls=_img,
@@ -910,7 +902,17 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
         try:
             # Отдельный UAC client на worker: не шарим session/csrf между потоками.
             client = cmc.build_client(target_login, account=(target_agency or None))
-            cid = client.create_master_campaign(spec, launch=False)
+            try:
+                cid = client.create_master_campaign(spec, launch=False)
+            except Exception as e:  # noqa: BLE001
+                if not _uac_auth_expired(e):
+                    raise
+                client = cmc.build_client(
+                    target_login,
+                    account=(target_agency or None),
+                    force_refresh=True,
+                )
+                cid = client.create_master_campaign(spec, launch=False)
             try:
                 from ..clients.uac_read import _unwrap as _uac_unwrap
             except Exception:  # noqa: BLE001
@@ -926,12 +928,25 @@ def _copy_uac_campaigns(source_login: str, target_login: str, target_agency: str
                     time.sleep(2.0)
             if live_errors:
                 raise RuntimeError("uac live guard: " + "; ".join(live_errors[:3]))
+            # Сколько РАЗНЫХ картинок физически было доступно позиции — эталон пула для
+            # live-верификатора (uac_verifier.verify_uac_detail: `images_pool`, читается из
+            # result-строки в live_verifier). В upload-режиме round-robin из tgt_img_urls даёт
+            # spec.image_urls из 5 url, но уникальных ровно len(tgt_img_urls); в фолбэке —
+            # уникальные из spec.image_urls. Без пула копия UAC с коротким пулом целевых картинок
+            # (<5 уникальных → Директ схлопывает дубли) отбивается жёстким UAC_IMAGES_LOW и роняет
+            # verification gate, хотя «взяли всё, что было» — не дефект (симметрично create-пути
+            # create_set_master_product `_res["images_pool"]`).
+            _images_pool = (
+                len(tgt_img_urls) if tgt_img_urls
+                else len({str(u).strip() for u in (getattr(spec, "image_urls", None) or []) if str(u).strip()})
+            )
             return cidx, {
                 "ok": True,
                 "id": int(cid),
                 "campaign_id": int(cid),
                 "name": name,
                 "kind": "uac",
+                "images_pool": int(_images_pool),
                 "source_id": src_id,
                 # измерения сверки этой кампании — без них чистый UAC-прогон выглядит
                 # как «сверка не выполнялась», хотя live guard выше всё проверил

@@ -21,6 +21,7 @@ from ..slepki_code import slepki_editor as _sed
 from . import write_gate as _write_gate
 from ..copy_service.copy_engine import (
     _copy_run_job, _copy_jobs_recover, _COPY_JOBS, _COPY_JOBS_LOCK,
+    _copy_reverify_settled_startup_scan,
 )
 from .direct_repository import (
     victory_conn as _victory_conn,
@@ -30,6 +31,7 @@ from .direct_repository import (
 from .job_repository import (
     _JOB_DB_LAST,
     _jobs_db_init, _job_db_save, _job_db_get, _job_db_active_by_login,
+    _job_db_insert_with_login_slot, JobQueuePersistError,
     _job_db_set_status, _job_control_set, _jobs_db_mark_stale_running,
     _deferred_db_init, _deferred_save, _deferred_set_status, _deferred_bump_resume_at,
     _delayed_repair_db_init, _delayed_repair_set_status, _delayed_content_repair_save,
@@ -45,6 +47,7 @@ from ..clients.yandex_gateway import (
     units_alive_for_login as _units_alive_for_login, grid_list_campaigns as _grid_list_campaigns,
     resolve_agency_hint as _resolve_agency_hint,
 )
+from .swallow import swallowed as _swallowed
 
 
 _CREATE_JOBS: dict = {}
@@ -189,8 +192,8 @@ def _worker_request_drain() -> None:
     try:
         with _CREATE_COND:
             _CREATE_COND.notify_all()
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as _swx:  # noqa: BLE001
+        _swallowed("queue_server._worker_request_drain:194", _swx)
 
 def _worker_is_draining() -> bool:
     return bool(_CREATE_DRAIN.get("on"))
@@ -357,8 +360,8 @@ def _jobs_db_recover() -> None:
                                      "step": None, "stream_content": False}   # step/stream не хранятся в БД
         finally:
             conn.close()
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as _swx:  # noqa: BLE001
+        _swallowed("queue_server._jobs_db_recover:362", _swx)
     # АВТО-ОЧИСТКА ПУСТЫШЕК: для аккаунтов прерванных джоб удаляем пустые ЕПК-черновики (0 групп —
     # кампания создалась, но рестарт убил сборку). В фоне (не блокируем старт) и ТОЛЬКО при старте,
     # когда активного создания ещё нет (гонок с наполнением групп нет). По куке, без баллов.
@@ -384,8 +387,8 @@ def _jobs_db_recover() -> None:
                     n = _sweep_empty_drafts(lg)
                     if n:
                         print(f"[startup-sweep] {lg}: удалено пустых ЕПК-черновиков: {n}", flush=True)
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as _swx:  # noqa: BLE001
+                    _swallowed("queue_server._bg_sweep:389", _swx)
             # RECONCILER: после сноса пустышек сверяем план vs. кабинет для каждой прерванной
             # джобы и доставляем недостающие позиции повторной джобой. Гейты внутри
             # _requeue_missing_positions_once: (1) _requeue_of → без внучек;
@@ -402,8 +405,8 @@ def _jobs_db_recover() -> None:
                     if new_jids:
                         print(f"[startup-reconcile] {lg}: восстановление прерванных позиций "
                               f"→ джобы {','.join(new_jids)} (родитель {job_id})", flush=True)
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as _swx:  # noqa: BLE001
+                    _swallowed("queue_server._bg_sweep:407", _swx)
         threading.Thread(target=_bg_sweep, args=(list(_interrupted_logins), _interrupted_jobs), daemon=True).start()
 
 def _jobs_purge_old() -> None:
@@ -426,8 +429,8 @@ def _jobs_purge_old() -> None:
             conn.commit()
         finally:
             conn.close()
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as _swx:  # noqa: BLE001
+        _swallowed("queue_server._jobs_purge_old:431", _swx)
 
 def _create_watchdog_tick() -> None:
     """Одиночный проход watchdog: локальные зависшие running-джобы и stale running в БД."""
@@ -486,6 +489,7 @@ def _create_watchdog_tick() -> None:
             if (_started
                     and _kind in ("set", "slepok")
                     and int(job.get("created") or 0) <= 0
+                    and int(job.get("done") or 0) <= 0
                     and (now - _started) > _CREATE_FIRST_CAMPAIGN_TIMEOUT
                     and _silent > _CREATE_FIRST_CAMPAIGN_STALL):
                 job["status"] = "error"
@@ -596,8 +600,8 @@ def _create_watchdog_tick() -> None:
             import logging as _lg
             _lg.getLogger("direct.watchdog").warning(
                 "watchdog kill %s — стеки тредов: %s", [j for j, _ in timed_out], _tr_path)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _swx:  # noqa: BLE001
+            _swallowed("queue_server._create_watchdog_tick:602", _swx)
     for jid, snap in timed_out:
         _job_db_save(jid, snap, full=True)
     # Финализ-стак: воркер осиротел на зависшей финализации → его done-блок (delayed content_repair,
@@ -608,8 +612,8 @@ def _create_watchdog_tick() -> None:
     for jid, snap in finalize_stuck:
         try:
             _schedule_delayed_content_repair_after_done(jid, snap)
-        except Exception:  # noqa: BLE001 — watchdog не должен падать на постановке добивки
-            pass
+        except Exception as _swx:  # noqa: BLE001 — watchdog не должен падать на постановке добивки
+            _swallowed("queue_server._create_watchdog_tick:614", _swx)
     _jobs_db_mark_stale_running(_CREATE_RUNNING_TIMEOUT)
     _agency_gate_sweep()                                  # освободить слоты агентств крашнутых/терминальных джоб
 
@@ -638,8 +642,8 @@ def _create_watchdog_loop() -> None:
         try:
             _create_watchdog_tick_async()
             _jobs_purge_old()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _swx:  # noqa: BLE001
+            _swallowed("queue_server._create_watchdog_loop:644", _swx)
         time.sleep(_CREATE_WATCHDOG_POLL)
 
 def _ensure_create_watchdog() -> None:
@@ -722,8 +726,8 @@ def _ready_logins_track(jid: str, job: dict) -> None:
             elapsed_seconds=int(result.get("elapsed_seconds") or job.get("elapsed") or 0),
             add=bool(str(body.get("_requeue_of") or "").strip()),   # доставка → прибавляем
         )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as _swx:  # noqa: BLE001
+        _swallowed("queue_server._ready_logins_track:728", _swx)
 
 def _requeue_missing_positions_once(parent_job_id: str, login: str, body: dict) -> str | None:
     """Доставить потерянные позиции набора повторной create-джобой (ОДИН раз на родителя).
@@ -1094,8 +1098,8 @@ def _parent_absorb_child_start(parent_jid: str, child_jid: str, child_total: int
         return True
     try:
         _parent_update(parent_jid, _m)
-    except Exception:  # noqa: BLE001 — вливание best-effort
-        pass
+    except Exception as _swx:  # noqa: BLE001 — вливание best-effort
+        _swallowed("queue_server._m:1100", _swx)
 
 def _parent_absorb_child_progress(parent_jid: str, child_jid: str, created: int,
                                   failed: int, done_units: int, *, final: bool = False) -> None:
@@ -1145,8 +1149,8 @@ def _parent_absorb_child_progress(parent_jid: str, child_jid: str, created: int,
         return True
     try:
         _parent_update(parent_jid, _m)
-    except Exception:  # noqa: BLE001 — вливание best-effort
-        pass
+    except Exception as _swx:  # noqa: BLE001 — вливание best-effort
+        _swallowed("queue_server._m:1151", _swx)
 
 def _parent_mark_complete_if_live_full(parent_jid: str, login: str, body: dict) -> bool:
     """Clear stale abort metadata when child resumes made every planned position live."""
@@ -1216,8 +1220,8 @@ def _merge_resume_into_parent(jid: str, job_final: dict, body: dict) -> None:
             return
         if total and (failed > 0 or created < total):
             _requeue_missing_positions_once(parent_jid, parent.get("login") or "", pbody)
-    except Exception:  # noqa: BLE001 - parent merge is done; requeue is best-effort
-        pass
+    except Exception as _swx:  # noqa: BLE001 - parent merge is done; requeue is best-effort
+        _swallowed("queue_server._merge_resume_into_parent:1222", _swx)
 
 def _cancel_children_of(parent_jid: str) -> int:
     """Отмена родителя каскадом гасит его активные дочерние джобы (докрутка/доставка/recreate)
@@ -1260,8 +1264,8 @@ def _cancel_children_of(parent_jid: str) -> int:
                         _CREATE_QUEUE.remove(cjid)
                         mem["status"] = "cancelled"
             n += 1
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _swx:  # noqa: BLE001
+            _swallowed("queue_server._cancel_children_of:1266", _swx)
     return n
 
 def _record_delayed_content_repair(parent_job_id: str, row: dict) -> None:
@@ -1420,8 +1424,8 @@ def _run_delayed_content_repair(row: dict) -> None:
                 # последней итерации → финальный отчёт должен отражать реальное состояние после неё.
                 try:
                     last_live, _fp, remaining, last_summ = _live_plan()
-                except Exception:  # noqa: BLE001 — best-effort, не сбиваем бюджет-break
-                    pass
+                except Exception as _swx:  # noqa: BLE001 — best-effort, не сбиваем бюджет-break
+                    _swallowed("queue_server._live_plan:1426", _swx)
                 break
             live_report, plan, inplace_cnt, last_summ = _live_plan()
             last_live = live_report
@@ -1604,8 +1608,8 @@ def _run_delayed_finalize(row: dict) -> None:
                     return True
                 return False
             _parent_update(parent_job_id, _clear_pending)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _swx:  # noqa: BLE001
+            _swallowed("queue_server._clear_pending:1610", _swx)
         _parent_absorb_child_progress(parent_job_id, f"fin:{did}", 0, 0, 0, final=True)
 
 def _delayed_repair_daemon_loop(app) -> None:
@@ -1637,8 +1641,8 @@ def _delayed_repair_daemon_loop(app) -> None:
                 _wconn.commit()
             finally:
                 _wconn.close()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _swx:  # noqa: BLE001
+            _swallowed("queue_server._delayed_repair_daemon_loop:1643", _swx)
         # Задача F (DIRECT_ASYNC_FINALIZE): watchdog пометил застрявшую finalize-строку failed, но
         # child fin:{did} остаётся ОТКРЫТ (не пройден терминальный путь _run_delayed_finalize) →
         # карточка вечно «running» с невыставленными инвариантами (Карты OFF / места показа #3-#6).
@@ -1659,8 +1663,8 @@ def _delayed_repair_daemon_loop(app) -> None:
                     continue
                 try:
                     _parent_update(_fparent, _clear_pending_wd)
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as _swx:  # noqa: BLE001
+                    _swallowed("queue_server._clear_pending_wd:1665", _swx)
                 _parent_absorb_child_progress(_fparent, f"fin:{_fdid}", 0, 0, 0, final=True)
         # К1 (2026-07-09): watchdog пометил застрявшую content_repair-строку failed (напр. spec_audit-
         # фиксер завис на мёртвом M3 до фикса idle/circuit-breaker — тогда весь delayed-repair
@@ -1679,16 +1683,16 @@ def _delayed_repair_daemon_loop(app) -> None:
                         "id": _cdid, "status": "failed", "uses_direct_units": False,
                         "error": ("watchdog: content_repair stuck running >"
                                   f"{_DELAYED_REPAIR_STUCK_TIMEOUT_SECONDS // 60} мин без прогресса")})
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as _swx:  # noqa: BLE001
+                    _swallowed("queue_server._clear_pending_wd:1685", _swx)
                 _parent_absorb_child_progress(_cparent, f"dcr:{_cdid}", 0, 0, 0, final=True)
                 # Баг B (2026-07-22): watchdog убил content_repair с остатком действий.
                 # Возвращаем строку в waiting с бэкоффом, если не исчерпан кап попыток.
                 # С фиксом Бага A (IMAGE_NO_POOL) повтор быстро завершится нечинимым стопом.
                 try:
                     _delayed_content_repair_requeue_after_watchdog(_cdid)
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as _swx:  # noqa: BLE001
+                    _swallowed("queue_server._clear_pending_wd:1693", _swx)
         rows = []
         try:
             conn = _victory_conn_rw()
@@ -1710,8 +1714,8 @@ def _delayed_repair_daemon_loop(app) -> None:
                     _run_delayed_finalize(row)               # Задача F: async-финализация
                 else:
                     _run_delayed_content_repair(row)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as _swx:  # noqa: BLE001
+                _swallowed("queue_server._clear_pending_wd:1716", _swx)
         time.sleep(_DELAYED_REPAIR_POLL)
 
 def _ensure_delayed_repair_daemon(app) -> None:
@@ -1971,8 +1975,8 @@ def _resume_daemon_loop(app) -> None:
         rows = []
         try:
             _schedule_agent_board_create_content_resumes(app)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _swx:  # noqa: BLE001
+            _swallowed("queue_server._resume_daemon_loop:1977", _swx)
         try:
             conn = _victory_conn_rw()
             try:
@@ -1999,12 +2003,12 @@ def _resume_daemon_loop(app) -> None:
                 _res = _resume_one_deferred(app, row)
                 if _rlogin and _res:
                     _busy_launched.add(_rlogin)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as _swx:  # noqa: BLE001
+                _swallowed("queue_server._resume_daemon_loop:2005", _swx)
         try:
             _jobs_purge_old()                            # бэкстоп-чистка истории джоб (память+БД)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _swx:  # noqa: BLE001
+            _swallowed("queue_server._resume_daemon_loop:2009", _swx)
         time.sleep(_RESUME_POLL)
 
 def _ensure_resume_daemon(app) -> None:
@@ -2036,13 +2040,6 @@ def _job_new_web(total: int, login: str, body: dict, saved_session: dict,
     priority=True — добивка/доставка остатка: body['_priority']=true → воркер клеймит такие
     джобы РАНЬШЕ обычных (см. _worker_claim_web_jobs) и ставит в НАЧАЛО in-memory очереди
     (_worker_adopt_job). Семён 2026-07-06: «добивка сразу, а не в конец очереди»."""
-    if dedup_login:
-        existing = _job_db_active_by_login(login)
-        if existing:
-            if body is not None:
-                body["_job_id"] = existing
-                body["_dedup_existing"] = True
-            return existing
     jid = uuid.uuid4().hex[:12]
     initial_status = "queued"
     if body is not None:
@@ -2064,9 +2061,20 @@ def _job_new_web(total: int, login: str, body: dict, saved_session: dict,
            "stream_content": bool((body or {}).get("stream_content")),
            "step": None, "_id": jid, "body": body,
            "session": None, "agency": (body or {}).get("agency")}
-    _job_db_save(jid, job)                                # INSERT: пишет body (с session+маркерами)+agency
-    if dedup_login:   # дедуп не сработал (старая джоба уже terminal) → это ПЕРЕЗАПУСК на тот же login
-        _supersede_delayed_repairs_for_login(login)
+    if not dedup_login:
+        _job_db_save(jid, job)                            # INSERT: пишет body (с session+маркерами)+agency
+        return jid
+    # Пользовательский submit: проверка активной джобы и INSERT — в ОДНОЙ транзакции под
+    # advisory-локом по логину. Раздельные SELECT+INSERT (как было) пропускали два
+    # одновременных сабмита на один логин → два набора кампаний в кабинет клиента.
+    placed = _job_db_insert_with_login_slot(jid, job, login)
+    if placed != jid:
+        if body is not None:
+            body["_job_id"] = placed          # прогресс/отмена смотрят на СУЩЕСТВУЮЩУЮ джобу
+            body["_dedup_existing"] = True    # авторитетный признак дедупа для вызывающего
+        return placed
+    # дедуп не сработал (старая джоба уже terminal) → это ПЕРЕЗАПУСК на тот же login
+    _supersede_delayed_repairs_for_login(login)
     return jid
 
 def _job_new(total: int, login: str, body: dict, saved_session: dict,
@@ -2094,12 +2102,14 @@ def _job_new(total: int, login: str, body: dict, saved_session: dict,
                 if _ej.get("status") not in _JOB_TERMINAL and (_ej.get("login") or "").strip() == _login:
                     if body is not None:
                         body["_job_id"] = _ejid           # прогресс/отмена смотрят на СУЩЕСТВУЮЩУЮ джобу
+                        body["_dedup_existing"] = True    # тот же признак, что у web-ветки
                     return _ejid                          # дубль не создаём — отдаём активный job_id
         # _job_id ДОЛЖЕН быть в body ДО notify (и под этим же локом): иначе воркер (его будит
         # _CREATE_COND.notify ниже) успевает забрать body и сериализовать его в JSON ДО того, как
         # вызывающий код проставит body["_job_id"] → внутри create_set _job=None → прогресс/счётчик
         # «создано K из N» застывает на 0, хотя кампании реально создаются (гонка). Ставим здесь.
         if body is not None:
+            body.pop("_dedup_existing", None)   # новая джоба: признак дедупа обязан быть чистым
             body["_job_id"] = jid
         _is_stream = bool((body or {}).get("stream_content"))
         job = {"status": "queued", "login": login, "done": 0,
@@ -2196,6 +2206,20 @@ def _copy_retry_failed_scope(row: dict) -> dict:
 
     bad_source: set[int] = set()
     cleanup_target: set[int] = set()
+    # Все target-кампании, созданные ИМЕННО этой copy-джобой. Нужны ветке "all": чистить
+    # можно только свои копии, чужие черновики кабинета (ручные, системные вроде
+    # «Системная кампания eLama») трогать нельзя.
+    known_target: set[int] = set(target_to_source)
+    for item in result.get("results") or []:
+        if not isinstance(item, dict):
+            continue
+        for key in ("campaign_id", "id"):
+            try:
+                tgt_id = int(item.get(key) or 0)
+            except (TypeError, ValueError):
+                continue
+            if tgt_id > 0:
+                known_target.add(tgt_id)
 
     def add_source(src_id: int, tgt_id: int = 0) -> None:
         if src_id in selected_set:
@@ -2250,13 +2274,30 @@ def _copy_retry_failed_scope(row: dict) -> dict:
         return {
             "mode": "all",
             "campaign_ids": selected,
-            "cleanup_target_ids": [],
+            # Раньше здесь был пустой список, а target_cleanup оставался delete_drafts —
+            # то есть повтор по ОБЩЕЙ ошибке («обновлено 278/285 объявлений», без id кампаний)
+            # сносил ВСЕ черновики кабинета: и удачные копии, и чужие кампании, а пересоздавал
+            # только campaign_ids своей джобы. Чистим строго свои копии.
+            "cleanup_target_ids": sorted(known_target),
             "reason": "no_campaign_specific_errors",
         }
+    # Инвариант: удаляем ровно то, что этот же повтор создаст заново. cleanup_target
+    # наполняется в том числе текстовым разбором логов/ошибок и бывает ШИРЕ списка
+    # пересоздаваемых кампаний — тогда лишние копии удалялись бы навсегда (лайв 06.08:
+    # повтор porg-24xhy7h6 снёс бы 8 копий, а создал 3). Оставляем только те target,
+    # чей source входит в bad_selected: остальные без пары пересоздать нечем.
+    bad_selected_set = set(bad_selected)
+    recreatable_targets = {
+        tgt for tgt in cleanup_target
+        if target_to_source.get(tgt) in bad_selected_set
+    }
+    recreatable_targets.update(
+        source_to_target[src] for src in bad_selected_set if src in source_to_target
+    )
     return {
         "mode": "failed_campaigns",
         "campaign_ids": bad_selected,
-        "cleanup_target_ids": sorted(cleanup_target),
+        "cleanup_target_ids": sorted(recreatable_targets),
         "all_campaign_ids": selected,
     }
 
@@ -2297,9 +2338,12 @@ def _copy_retry_body_from_failed(row: dict) -> dict:
     else:
         body["_copy_retry_scope"] = "all"
         body["_copy_retry_scope_reason"] = scope.get("reason") or ""
-    # Failed copy attempts can leave partial Direct drafts. Retry cleans only the broken target
-    # drafts when we can isolate them; otherwise it falls back to the legacy full draft cleanup.
-    body["target_cleanup"] = "delete_drafts"
+        body["_copy_retry_cleanup_target_ids"] = scope.get("cleanup_target_ids") or []
+    # Упавшее копирование оставляет частичные черновики — их повтор чистит перед заливкой.
+    # Чистка ВСЕГДА адресная: только копии, которые создала эта же цепочка копирования.
+    # Если ни одного своего target-id не известно, чистить нечего — иначе delete_drafts
+    # снёс бы удачные копии и чужие черновики кабинета целиком.
+    body["target_cleanup"] = "delete_drafts" if body.get("_copy_retry_cleanup_target_ids") else "none"
     return body
 
 
@@ -2331,6 +2375,15 @@ def _copy_worker_db_bootstrap() -> None:
         _copy_jobs_recover()                              # crash-cleanup ТОЛЬКО своих copy-джоб
     except Exception as e:  # noqa: BLE001
         print(f"[copy-startup] db bootstrap skipped: {str(e)[:160]}", flush=True)
+    try:
+        # Backstop: settled copy-verify hard gate (_copy_mark_reverify_blockers) runs
+        # exactly once, at the end of the heal loop — a restart mid-loop leaves the job
+        # 'done' forever with unresolved hard blockers (root cause 2026-08-05).
+        _touched = _copy_reverify_settled_startup_scan(limit=20)
+        if _touched:
+            print(f"[copy-startup-reverify] closed {len(_touched)} stale settled jobs: {_touched}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[copy-startup-reverify] scan skipped: {str(e)[:160]}", flush=True)
 
 
 def _copy_agent_retry_daemon_loop(app) -> None:
@@ -2338,6 +2391,18 @@ def _copy_agent_retry_daemon_loop(app) -> None:
     while True:
         try:
             with app.app_context():
+                try:
+                    from ..agent_board_bridge import notify_unreported_copy_errors
+                    # Backstop (root cause 2026-08-05, job 7e9b14314848): a copy job can
+                    # go status='error' but die before the immediate notify_copy_job_error
+                    # call right after it, leaving agent_board_task_id NULL forever —
+                    # copy_jobs_ready_for_agent_retry() below never sees such rows because
+                    # it only selects agent_board_task_id IS NOT NULL. Same cadence as the
+                    # retry scan itself.
+                    for _task_id in notify_unreported_copy_errors(_victory_conn_rw, limit=10):
+                        print(f"[copy-agent-board] backstop task #{_task_id} created", flush=True)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[copy-agent-board] backstop scan failed: {str(e)[:160]}", flush=True)
                 try:
                     from ..agent_board_bridge import (
                         copy_jobs_ready_for_agent_retry,
@@ -2741,22 +2806,22 @@ def _create_worker_loop(app):
         finally:
             try:
                 _set_llm_heartbeat_job(None)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as _swx:  # noqa: BLE001
+                _swallowed("queue_server._create_worker_loop:2808", _swx)
             # Задача F: гарантированно закрыть окно захвата (при error/cancel done-блок не отработал →
             # иначе recorder висит в реестре и глотает финализацию следующего набора того же login).
             # Идемпотентно: если done-блок уже снял — pop вернёт None.
             if _fin_login:
                 try:
                     _finalize_queue_module().unregister(_fin_login)
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as _swx:  # noqa: BLE001
+                    _swallowed("queue_server._create_worker_loop:2816", _swx)
             if not _is_delete_drafts and not _is_edit_job and (body or {}).get("_kind") != "copy_campaigns":
                 try:
                     from ..create.create_set_prefetch import cleanup_job_cache as _cleanup_create_prepare_cache
                     _cleanup_create_prepare_cache(jid)
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as _swx:  # noqa: BLE001
+                    _swallowed("queue_server._create_worker_loop:2822", _swx)
             # освобождаем слот агентства и будим пул
             with _CREATE_COND:
                 active = max(0, int(_CREATE_ACTIVE_AGENCIES.get(agency, 0)) - 1)
@@ -2853,8 +2918,8 @@ def _slepki_jobs_recover() -> None:
             conn.commit()
         finally:
             conn.close()
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as _swx:  # noqa: BLE001
+        _swallowed("queue_server._slepki_jobs_recover:2920", _swx)
 
 
 def _ensure_slepki_worker(app):
@@ -2976,8 +3041,8 @@ def _worker_adopt_job(app, row) -> None:
     if body.get("_kind") not in _sed._EDIT_KINDS:         # edit-джобам не нужен прогрев логина/куки
         try:
             _prefetch_start(login, body)                 # Фаза 1: греем кэши процесса-ИСПОЛНИТЕЛЯ
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _swx:  # noqa: BLE001
+            _swallowed("queue_server._worker_adopt_job:3043", _swx)
 
 def _worker_expire_awaiting_feed() -> None:
     """web-роль поставила ожидание решения по фиду; дедлайн истёк → запускаем без фида (worker-время)."""
@@ -3001,8 +3066,8 @@ def _worker_expire_awaiting_feed() -> None:
             conn.commit()
         finally:
             conn.close()
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as _swx:  # noqa: BLE001
+        _swallowed("queue_server._worker_expire_awaiting_feed:3068", _swx)
 
 def _worker_apply_controls() -> None:
     """Применить команды web→worker из колонки control (сейчас: 'cancel' running-джобы) и обнулить её.
@@ -3057,8 +3122,8 @@ def _worker_apply_controls() -> None:
                 conn.commit()
             finally:
                 conn.close()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _swx:  # noqa: BLE001
+            _swallowed("queue_server._worker_apply_controls:3124", _swx)
 
 def _worker_reclaim_stuck_claimed() -> None:
     """Watchdog: джоба, заклеймленная (queued→claimed), но НЕ заведённая в in-memory очередь
@@ -3094,8 +3159,8 @@ def _worker_reclaim_stuck_claimed() -> None:
                 print(f"[claimed-watchdog] зависшие claimed возвращены в очередь: {stale}", flush=True)
         finally:
             conn.close()
-    except Exception:  # noqa: BLE001 — watchdog best-effort, поллер не валим
-        pass
+    except Exception as _swx:  # noqa: BLE001 — watchdog best-effort, поллер не валим
+        _swallowed("queue_server._worker_reclaim_stuck_claimed:3161", _swx)
 
 def _tg_alert(text: str) -> None:
     """Best-effort Telegram-алерт Direct automation через профиль .secret TG_DIRECT_*."""
@@ -3105,8 +3170,8 @@ def _tg_alert(text: str) -> None:
         tok, chat = tg.get("bot_token"), tg.get("chat_id")
         if tok and chat:
             send_telegram_message(tok, chat, text)
-    except Exception:  # noqa: BLE001 — алерт не критичен, не валим поллер
-        pass
+    except Exception as _swx:  # noqa: BLE001 — алерт не критичен, не валим поллер
+        _swallowed("queue_server._tg_alert:3172", _swx)
 
 
 def _monitor_stuck_edit_queue() -> None:
@@ -3143,8 +3208,8 @@ def _monitor_stuck_edit_queue() -> None:
                 _tg_alert(f"⚠️ Нейродиректолог: {n} правок слепков зависли в очереди "
                           f">{_EDIT_STUCK_AGE_SEC // 60} мин. Проверь direct-slepki-worker.service "
                           f"(systemctl status direct-slepki-worker).")
-    except Exception:  # noqa: BLE001 — монитор best-effort, поллер не валим
-        pass
+    except Exception as _swx:  # noqa: BLE001 — монитор best-effort, поллер не валим
+        _swallowed("queue_server._monitor_stuck_edit_queue:3210", _swx)
 
 
 def _worker_poll_once(app) -> None:
@@ -3165,8 +3230,8 @@ def _worker_poll_loop(app) -> None:
     while not _CREATE_DRAIN.get("on"):
         try:
             _worker_poll_once(app)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _swx:  # noqa: BLE001
+            _swallowed("queue_server._worker_poll_loop:3232", _swx)
         time.sleep(_WORKER_POLL_SEC)
 
 def _ensure_worker_poller(app) -> None:

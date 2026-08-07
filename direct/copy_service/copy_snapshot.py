@@ -257,7 +257,7 @@ def _copy_rewrite_snapshot_context(src_dir: Path, source_ctx: dict, target_ctx: 
 
 
 def _copy_snapshot_preflight(src_dir: Path, *, target_feed_url: str, target_city: str, target_region: str,
-                             geo_mode: str = "") -> dict:
+                             geo_mode: str = "", geo_region_ids: list | tuple | None = None) -> dict:
     campaigns = _copy_read_json(src_dir / "campaigns.json")
     adgroups = _copy_read_json(src_dir / "adgroups.json")
     ads = _copy_read_json(src_dir / "ads.json")
@@ -294,7 +294,11 @@ def _copy_snapshot_preflight(src_dir: Path, *, target_feed_url: str, target_city
         critical.append("есть ShoppingAd без выбранных кампаний — snapshot неконсистентен")
 
     target_geo = " ".join(x for x in (target_city, target_region) if x).strip()
-    if not target_geo and geo_mode != "keep":
+    target_geo_ids = [
+        int(x) for x in (geo_region_ids or [])
+        if str(x).lstrip("-").isdigit() and int(x) > 0
+    ]
+    if not target_geo and geo_mode != "keep" and not (geo_mode == "change" and target_geo_ids):
         critical.append("целевое гео пустое")
 
     return {

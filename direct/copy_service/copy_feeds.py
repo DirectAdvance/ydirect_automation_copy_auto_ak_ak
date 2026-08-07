@@ -21,6 +21,31 @@ def configure(deps: dict) -> None:
 _COPY_DEFAULT_FEED_PATH = "/dostup-k-rasprodazhe-live-01-b.xml"
 
 
+def _copy_listing_fallback_feed_id(rows: list[dict]) -> int | None:
+    """Pick an existing ecom/listings target feed when create allow-list has no match."""
+    candidates = [f for f in (rows or []) if f.get("listings") or f.get("Listings")]
+    if not candidates:
+        return None
+
+    def _score(row: dict) -> tuple[int, int, int, int]:
+        raw = " ".join(str(row.get(k) or "") for k in ("name", "url", "href", "source", "SourceUrl")).lower()
+        return (
+            1 if "yandex" in raw else 0,
+            1 if "used" in raw or "пробег" in raw else 0,
+            1 if "auto" in raw else 0,
+            len(row.get("listings") or row.get("Listings") or []),
+        )
+
+    for row in sorted(candidates, key=_score, reverse=True):
+        try:
+            fid = int(row.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if fid > 0:
+            return fid
+    return None
+
+
 def _copy_grid_validate_feed_map(target_login: str, target_agency: str, body: dict,
                                  *, log=lambda m: None) -> dict:
     """Разобрать и провалидировать body.feed_map для ЕПК-ветки (та же логика, что _copy_run_job).
@@ -65,7 +90,8 @@ def _copy_target_feed_id(target_login: str, target_agency: str, workdir: Path,
         if fid > 0:
             return fid
     try:
-        rows = _filter_allowed_feed_rows(_grid_feeds(target_login, target_agency))
+        all_rows = _grid_feeds(target_login, target_agency)
+        rows = _filter_allowed_feed_rows(all_rows)
         wanted_key = _feed_key(_COPY_DEFAULT_FEED_PATH)
         wanted_domain = (target_domain or "").strip().lower()
 
@@ -86,6 +112,7 @@ def _copy_target_feed_id(target_login: str, target_agency: str, workdir: Path,
                 fid = 0
             if fid > 0:
                 return fid
+        return _copy_listing_fallback_feed_id(all_rows)
     except Exception:  # noqa: BLE001
         pass
     return None

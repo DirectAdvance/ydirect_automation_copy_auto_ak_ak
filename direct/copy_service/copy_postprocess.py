@@ -16,6 +16,8 @@ from ..repair import repair_executor as rex
 from ..repair import repair_gate as rgate
 from .copy_step_utils import _chunks, _invalidate_target_edit_rows, _source_edit_rows, _subset_rows
 
+_COPY_TIMED_HEARTBEAT_SEC = 20.0
+
 
 def _engine():
     from . import copy_engine as ce  # lazy to avoid import-time cycle
@@ -41,7 +43,24 @@ def _copy_timed(job_id: str, label: str, fn, *, timeout_sec: int | None = None):
         executor = ThreadPoolExecutor(max_workers=1)
         try:
             fut = executor.submit(fn)
-            return fut.result(timeout=timeout_sec)
+            # float, а не int: `int(0.5)` = 0 → `max(1, 0)` = 1 с, то есть дробный таймаут молча
+            # округлялся ВВЕРХ до секунды и шаг ждал дольше запрошенного. Прод передаёт целые
+            # (600/900), но тесты просят доли секунды и получали ложное «таймаут не сработал».
+            # Нижняя граница остаётся, чтобы отрицательное/нулевое значение не делало дедлайн
+            # в прошлом (0 как «без таймаута» отсекается веткой `if not timeout_sec` выше).
+            deadline = time.monotonic() + max(0.01, float(timeout_sec))
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f"{label} timeout>{timeout_sec}s")
+                try:
+                    return fut.result(timeout=min(_COPY_TIMED_HEARTBEAT_SEC, remaining))
+                except FuturesTimeout as exc:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"{label} timeout>{timeout_sec}s") from exc
+                    # Long Grid/postprocess calls can be legitimate on 40+ campaign copies.
+                    # A no-op upsert refreshes the mirrored create-job heartbeat for watchdog.
+                    ce._copy_job_upsert(job_id)
         except FuturesTimeout as exc:
             raise TimeoutError(f"{label} timeout>{timeout_sec}s") from exc
         finally:
@@ -279,7 +298,41 @@ _COPY_VERIFY_REPORT_ONLY_DIMENSIONS = {
     "ad_price",          # цены в copy сверяются через live NO_ADPRICE_LIVE, не source=target
     "bid_modifiers",     # copy намеренно ставит стандарт
     "campaign_neg_count",  # копируем то, что было в источнике; глобальные правила создания сюда не применяются
+    # Решение Семёна 2026-08-05: обе строки — намеренные copy-стандарты, а не дефекты.
+    # button_cta — copy добавляет CTA-кнопку «Получить скидку»/GET_DISCOUNT на адаптивные
+    # текстовые объявления; живая сверка 77/77 объявлений (4 job'а) подтвердила
+    # source hasButton=False → target hasButton=True при полном Grid payload с обеих сторон
+    # (не непрочитанный snapshot). site_monitoring — grid_finalize.py:1200-1202
+    # set_campaign_invariants форсирует hasSiteMonitoring=True при любом invariant-репейре
+    # (~24-32 строк across jobs). Асимметрия обязательна для обоих: только
+    # target⊃source (0→N / False→True) — excluded_intentional; source⊃target
+    # (потеря кнопки/мониторинга в target) остаётся mismatch (copy_verify_diff.py D14/D17).
+    "button_cta",
+    "site_monitoring",
 }
+
+def _copy_strategy_restore_error(target_id, exc, *, source_goals: list | None = None,
+                                 target_counter=None) -> str:
+    """Человекочитаемая причина, почему multi-goal стратегия не восстановилась.
+
+    Сырой текст Grid (`CollectionDefectIds.Size.SIZE_CANNOT_BE_LESS_THAN_MIN` /
+    `MUST_BE_IN_COLLECTION`) на доске Agent Board ничего не объясняет, и каждый раз
+    приходится расследовать заново. Оба кода означают одно и то же (проверено live
+    2026-08-07): `AUTOBUDGET_MULTIPLE_CPA` требует МИНИМУМ ДВЕ цели, а цели принадлежат
+    счётчику целевого аккаунта — id целей источника туда не переносятся. Это НЕ баг кода:
+    нужно задать соответствие целей, поэтому пишем прямо, что требуется от человека.
+    """
+    raw = str(exc or "")
+    goals_n = len([g for g in (source_goals or []) if int((g or {}).get("goal_id") or 0) > 0])
+    if "SIZE_CANNOT_BE_LESS_THAN_MIN" in raw or "MUST_BE_IN_COLLECTION" in raw:
+        return (
+            f"кампания {target_id}: стратегия источника multi-goal, требует ≥2 целей целевого "
+            f"счётчика{f' {target_counter}' if target_counter else ''}, соответствие не задано "
+            f"(у источника целей: {goals_n}; id целей между аккаунтами не переносятся). "
+            "Нужен маппинг целей источник→цель, правка кода не поможет."
+        )[:400]
+    return f"кампания {target_id}: {raw[:220]}"
+
 
 _COPY_HARD_VERIFY_DIMENSIONS = {
     "adgroup_count",
@@ -295,6 +348,12 @@ _COPY_HARD_VERIFY_DIMENSIONS = {
     "minus_places",
     "shopping_filter_count",
     "listing_filter_count",
+    # FIX B (2026-08-05): campaign_exists=missing (кампания есть в id_maps, но не читается ни в
+    # одном target-чтении — build_target_profile больше не синтезирует ей fallback-профиль из
+    # нулей, см. copy_verify_target.py) — реальная потеря кампании, не должна тонуть в soft/
+    # report-only. UAC tp6/tp7-исключение (кампания законно не попадает в id_maps) остаётся
+    # НИЖЕ — _copy_verify_blockers:416 по repair_hint "UAC tp6/tp7".
+    "campaign_exists",
 }
 
 # Расхождение реальное, но джобу не роняем: перенос идёт отдельным шагом постпроцесса и
@@ -303,10 +362,10 @@ _COPY_HARD_VERIFY_DIMENSIONS = {
 _COPY_SOFT_VERIFY_DIMENSIONS = {
     "callout_count",              # step_attach_callouts, привязка индексируется с задержкой
     "promo_attached",             # step_attach_promos
-    "site_monitoring",            # v5 Settings.ENABLE_SITE_MONITORING
+    # site_monitoring и button_cta ПЕРЕЕХАЛИ в _COPY_VERIFY_REPORT_ONLY_DIMENSIONS выше
+    # (решение Семёна 2026-08-05, намеренные copy-стандарты) — не дублировать здесь.
     "utm_tracking",               # Grid bannerHrefParams
     "audiences",                  # Grid GdRetargeting, авто-writer'а нет
-    "button_cta",                 # отдельного repair-шага нет
     "shopping_filter_signature",  # чинится run_copy_repair, но незакрытое — не блокер
     "listing_filter_signature",
     "shared_set_count",           # чинится _repair_shared_sets
@@ -314,8 +373,6 @@ _COPY_SOFT_VERIFY_DIMENSIONS = {
     # зависит от ветки копирования — классифицируем явно, чтобы не попали в «неизвестные»
     "geo_kw_source_residual",
     "geo_neg_target_blocked",
-    # UAC tp6/tp7: у _copy_verify_blockers для него отдельное исключение по repair_hint
-    "campaign_exists",
     # измерения UAC-копий (copy_uac._copy_uac_verify_rows). Не блокеры: расхождение контента
     # уже роняет саму кампанию в _copy_uac_create_live_guard ДО этих строк, а здесь они
     # нужны как видимый факт проверки и как покрытие того, что guard не смотрит.
@@ -1307,35 +1364,65 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
             _tgt_id = maps.get("campaigns", {}).get(_src_id)
             if not _tgt_id:
                 continue
-            # Ищем PAY_FOR_CONVERSION_MULTIPLE_GOALS в любом из struct_key.BiddingStrategy.Search/Network
+            # Ищем ЛЮБУЮ multi-goal стратегию источника. Обе создаются как WB_MAXIMUM_CLICKS
+            # (v5 не принимает их без счётчика+целей) и обе обязаны быть восстановлены — иначе
+            # копия уезжает на чужой стратегии. AVERAGE_CPA_MULTIPLE_GOALS раньше сюда не
+            # попадал: 12 копий porg-c6rxuenb остались на AVERAGE_CPC при зелёной джобе
+            # (2026-08-07), а докстринг патча обещал восстановление, которого не было.
+            _MULTI_GOAL = {
+                "PAY_FOR_CONVERSION_MULTIPLE_GOALS": "PayForConversionMultipleGoals",
+                "AVERAGE_CPA_MULTIPLE_GOALS": "AverageCpaMultipleGoals",
+            }
             _weekly_rub = None
+            _src_goals: list[dict] = []
             for _struct_key in ("TextCampaign", "DynamicTextCampaign", "UnifiedAdCampaign"):
                 _td = _sc.get(_struct_key) or {}
                 _bs = _td.get("BiddingStrategy") or {}
                 for _side in ("Search", "Network"):
                     _sb = _bs.get(_side) or {}
-                    if _sb.get("BiddingStrategyType") == "PAY_FOR_CONVERSION_MULTIPLE_GOALS":
-                        _blk = _sb.get("PayForConversionMultipleGoals") or {}
-                        _weekly_micro = int(_blk.get("WeeklySpendLimit") or 300_000_000_000)
-                        _weekly_rub = _weekly_micro / 1_000_000  # микро → рубли
-                        break
+                    _blk_key = _MULTI_GOAL.get(str(_sb.get("BiddingStrategyType") or ""))
+                    if not _blk_key:
+                        continue
+                    _blk = _sb.get(_blk_key) or {}
+                    _weekly_micro = int(_blk.get("WeeklySpendLimit") or 300_000_000_000)
+                    _weekly_rub = _weekly_micro / 1_000_000  # микро → рубли
+                    break
                 if _weekly_rub is not None:
+                    # Цели берём из PriorityGoals источника ЦЕЛИКОМ: их обычно несколько
+                    # (у porg-x7wkhs7d — две по 2000 ₽), одна цель вместо двух — уже не 1:1.
+                    _pg = (_td.get("PriorityGoals") or _sc.get("PriorityGoals") or {})
+                    for _it in (_pg.get("Items") or []):
+                        try:
+                            _gid = int(_it.get("GoalId") or 0)
+                        except (TypeError, ValueError):
+                            continue
+                        if _gid <= 0:
+                            continue
+                        _src_goals.append({
+                            "goal_id": _gid,
+                            "value_rub": int(_it.get("Value") or 0) / 1_000_000,
+                            "is_metrika_source_of_value":
+                                str(_it.get("IsMetrikaSourceOfValue") or "NO").upper() == "YES",
+                        })
                     break
             if _weekly_rub is None:
                 continue
             _g_id = goal_id_body or 0
-            ce._copy_job_log(job_id, f"restore PFCMG стратегии: кампания {_src_id}→{_tgt_id} "
-                                  f"goal={_g_id} weekly_rub={int(_weekly_rub)}")
+            ce._copy_job_log(job_id, f"restore multi-goal стратегии: кампания {_src_id}→{_tgt_id} "
+                                  f"goals={[g['goal_id'] for g in _src_goals] or [_g_id]} "
+                                  f"weekly_rub={int(_weekly_rub)}")
             try:
                 _updated = grid.restore_pay_for_conversion_strategy(
-                    int(_tgt_id), _g_id, _weekly_rub)
+                    int(_tgt_id), _g_id, _weekly_rub, goals=_src_goals)
                 if _updated:
                     _pfcmg_restored += 1
-                    ce._copy_job_log(job_id, f"PFCMG стратегия восстановлена: {_tgt_id}")
+                    ce._copy_job_log(job_id, f"multi-goal стратегия восстановлена: {_tgt_id}")
                 else:
                     _pfcmg_errors.append(f"кампания {_tgt_id}: Grid вернул пустой updatedCampaigns")
             except Exception as _e:  # noqa: BLE001
-                _pfcmg_errors.append(f"кампания {_tgt_id}: {str(_e)[:220]}")
+                _pfcmg_errors.append(
+                    _copy_strategy_restore_error(_tgt_id, _e, source_goals=_src_goals,
+                                                 target_counter=body.get("counter_id")))
         rep["strategy_restore"] = {"restored": _pfcmg_restored, "errors": _pfcmg_errors}
         rep["errors"] += _pfcmg_errors
     except Exception as e:  # noqa: BLE001
@@ -1398,11 +1485,21 @@ def _copy_cookie_postprocess(job_id: str, target_login: str, target_agency: str,
     # ФАЗА 3c: video_file_resolver теперь заполнен (originalUrl из Grid-интроспекции) → видео
     # реально переносится (скачать mp4 → аплоуд по куки → RMW-привязка). Нет URL/скачивания —
     # честный report-only (внутри step_videos).
+    # Видео — best-effort добивка фидельности (скачать mp4 → аплоуд по куки → RMW-привязка), сам шаг
+    # документирован как report-only «не роняя job». Её ошибки/таймаут НЕ должны валить копию:
+    # кампании уже созданы, а реальную потерю видео независимо ловит copy_verify D13 `ads_with_video`
+    # (НЕ report-only → blocker → verification gate). Раньше и внутренние ошибки шага, и таймаут-обёртка
+    # попадали в hard `rep["errors"]` → `_copy_terminal_status_from_postprocess` метил здоровую копию
+    # как failed (инцидент copy|…|verification_gate: «videos: videos timeout>120s», 12 РК созданы ОК).
+    # Теперь → warnings. Таймаут поднят 120→600s (как keywords): скачать+залить mp4 для сотен
+    # объявлений с видео заведомо медленнее 120s на крупных РСЯ-Комби+Фид копиях.
     try:
-        rep["videos"] = _copy_timed(job_id, "videos", lambda: csteps.step_videos(cstep_ctx), timeout_sec=120)
-        rep["errors"] += rep["videos"].get("errors") or []
+        rep["videos"] = _copy_timed(job_id, "videos", lambda: csteps.step_videos(cstep_ctx), timeout_sec=600)
+        _vid_errs = rep["videos"].get("errors") or []
+        if _vid_errs:
+            rep.setdefault("warnings", []).extend(f"videos: {e}" for e in _vid_errs)
     except Exception as e:  # noqa: BLE001
-        rep["errors"].append(f"videos: {str(e)[:200]}")
+        rep.setdefault("warnings", []).append(f"videos: {str(e)[:200]}")
 
     # Grid-only инварианты tp2/TEXT_CAMPAIGN: enableCompanyInfo=False + EXACT_V2_MARK/WITHOUT_BRAND.
     # Форсируется ДО live_verification, чтобы verify увидел правильные значения (WRONG_AUTOTARGET=0,

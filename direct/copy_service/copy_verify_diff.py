@@ -103,19 +103,32 @@ def diff_profiles(src_profile: Dict[str, dict],
             )
         return base
 
+    def _group_sig_is_empty(sigs: Any) -> bool:
+        """FIX D (2026-08-05): a group whose every recorded signature is ``[]`` (an ad with
+        zero FeedFilterConditions) carries no real filter — e.g. ``{gid: [[]]}``. That must
+        compare as equivalent to the group being absent entirely, not as a mismatch against
+        the other side which genuinely has no entry for this group (11 ложных строк)."""
+        return not any(sig for sig in (sigs or []))
+
     def _project_group_signatures(raw: Any) -> dict:
         projected: dict = {}
         for src_gid, sigs in (raw or {}).items():
+            sorted_sigs = sorted(sigs or [])
+            if _group_sig_is_empty(sorted_sigs):
+                continue
             tgt_gid = adgroup_maps.get(str(src_gid))
             key = str(tgt_gid) if tgt_gid else f"MISSING_GROUP:{src_gid}"
-            projected[key] = sorted(sigs or [])
+            projected[key] = sorted_sigs
         return dict(sorted(projected.items()))
 
     def _target_group_signatures(raw: Any) -> dict:
-        return {
-            str(gid): sorted(sigs or [])
-            for gid, sigs in sorted((raw or {}).items(), key=lambda kv: str(kv[0]))
-        }
+        projected: dict = {}
+        for gid, sigs in sorted((raw or {}).items(), key=lambda kv: str(kv[0])):
+            sorted_sigs = sorted(sigs or [])
+            if _group_sig_is_empty(sorted_sigs):
+                continue
+            projected[str(gid)] = sorted_sigs
+        return projected
 
     for src_id, src_c in src_profile.items():
         tgt_id_raw = camp_maps.get(src_id)
@@ -381,22 +394,50 @@ def diff_profiles(src_profile: Dict[str, dict],
                                 repair_hint=_hint_with_ad_cap("step_videos copy_steps.py:1110", _st13)))
 
         # D14: button/CTA — проверяем, если target adaptive_ads_for_update прочитан.
+        # Semen 2026-08-05: copy добавляет CTA-кнопку «Получить скидку» (GET_DISCOUNT) на
+        # адаптивные текстовые объявления, которых не было у источника — намеренный
+        # copy-стандарт (live 77/77 объявлений, полный Grid payload с обеих сторон, не
+        # непрочитанный snapshot), см. _COPY_VERIFY_REPORT_ONLY_DIMENSIONS. Асимметрия:
+        # только target⊃source (0→N) исключается через _target_extra_optional_status —
+        # source⊃target (кнопка была и пропала) остаётся mismatch как раньше.
         s14 = src_c["ads_with_button"]
         t14 = tgt_c["ads_with_button"]
+        s14_readable = src_c.get("ads_with_button_readable", True)
         if t14 is None:
             results.append(_row(scope, "button_cta", _UNREADABLE, s14, None,
                                 repairable=False,
                                 repair_hint="hasButton из adaptive_ads_for_update не прочитан"))
+        elif not s14_readable:
+            # Latent-bug guard: Grid snapshot без payload для всех подходящих ads кампании
+            # — TextAd fallback hasButton не несёт вовсе, значит source "0" здесь неизвестен,
+            # не "нет кнопок". Не путать с target-extra-стандартом выше: unreadable source
+            # никогда не может быть молча признан excluded_intentional.
+            results.append(_row(scope, "button_cta", _UNREADABLE, None, t14,
+                                repairable=False,
+                                repair_hint="hasButton источника не прочитан: Grid snapshot без "
+                                            "payload для объявлений кампании, TextAd fallback "
+                                            "hasButton не поддерживает (copy_verify_source.py)"))
         else:
             _st14 = _status_with_ad_cap(src_c, "button_cta", s14, t14)
+            if _st14 == _MISMATCH:
+                _st14 = _target_extra_optional_status(s14, t14)
+            if _st14 == _EXCLUDED and _is_accepted_ad_cap(src_c, s14, t14):
+                _hint14 = _hint_with_ad_cap(
+                    "CTA должен сохраняться RMW в update_adaptive_ads; "
+                    "отдельного repair-шага пока нет",
+                    _st14,
+                )
+            elif _st14 == _EXCLUDED:
+                _hint14 = ("Решение Семёна 2026-08-05: copy намеренно добавляет CTA-кнопку "
+                           "«Получить скидку» (GET_DISCOUNT) на адаптивные объявления — "
+                           "источник её не нёс, это стандарт копирования, не потеря")
+            else:
+                _hint14 = ("CTA должен сохраняться RMW в update_adaptive_ads; "
+                           "отдельного repair-шага пока нет")
             results.append(_row(scope, "button_cta",
                                 _st14, s14, t14,
                                 repairable=False,
-                                repair_hint=_hint_with_ad_cap(
-                                    "CTA должен сохраняться RMW в update_adaptive_ads; "
-                                    "отдельного repair-шага пока нет",
-                                    _st14,
-                                )))
+                                repair_hint=_hint14))
 
         # D15: adPrice — excluded intentional
         results.append(_row(scope, "ad_price", _EXCLUDED, None, None,
@@ -422,17 +463,37 @@ def diff_profiles(src_profile: Dict[str, dict],
 
         # D17: site_monitoring — читаем через v5 Settings, потому Grid CampaignsEditData
         # это поле не отдаёт стабильно.
+        # Semen 2026-08-05: grid_finalize.py:1200-1202 set_campaign_invariants форсирует
+        # hasSiteMonitoring=True при любом invariant-репейре — намеренный copy-стандарт
+        # (~24-32 строк across jobs), см. _COPY_VERIFY_REPORT_ONLY_DIMENSIONS. Асимметрия:
+        # source False → target True — excluded_intentional; source True → target False
+        # (мониторинг был включён и пропал) — реальная потеря, остаётся mismatch.
         s17 = src_c.get("site_monitoring")
         t17 = tgt_c.get("site_monitoring")
         if t17 is None:
             results.append(_row(scope, "site_monitoring", _UNREADABLE, s17, None,
                                 repairable=True,
                                 repair_hint="v5 campaigns.get не вернул ENABLE_SITE_MONITORING для цели"))
-        else:
-            results.append(_row(scope, "site_monitoring",
-                                _OK if bool(s17) == bool(t17) else _MISMATCH, s17, t17,
+        elif s17 is None:
+            results.append(_row(scope, "site_monitoring", _UNREADABLE, None, t17,
+                                repairable=False,
+                                repair_hint="v5 campaigns.get не вернул ENABLE_SITE_MONITORING для источника"))
+        elif bool(s17) == bool(t17):
+            results.append(_row(scope, "site_monitoring", _OK, s17, t17,
                                 repairable=True,
                                 repair_hint="Settings.ENABLE_SITE_MONITORING должен совпадать с источником"))
+        elif not bool(s17) and bool(t17):
+            results.append(_row(scope, "site_monitoring", _EXCLUDED, s17, t17,
+                                repairable=False,
+                                repair_hint="Решение Семёна 2026-08-05: grid_finalize.py:1200-1202 "
+                                            "set_campaign_invariants форсирует hasSiteMonitoring=True "
+                                            "при любом invariant-репейре — намеренный copy-стандарт, "
+                                            "не потеря"))
+        else:
+            results.append(_row(scope, "site_monitoring", _MISMATCH, s17, t17,
+                                repairable=True,
+                                repair_hint="Settings.ENABLE_SITE_MONITORING должен совпадать с "
+                                            "источником — источник включён, цель выключена, реальная потеря"))
 
         # D18: minus_places — copy 1в1 из source ExcludedSites в target disabledPlaces.
         s18 = src_c.get("minus_places")

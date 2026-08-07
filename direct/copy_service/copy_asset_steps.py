@@ -248,7 +248,15 @@ def step_disabled_places(ctx: CopyCtx) -> dict:
     return rep
 
 
-def step_attach_callouts(ctx: CopyCtx, per_campaign_cap: int = 8) -> dict:
+# FIX C (2026-08-05): единственное место, где живёт литерал 8 — DI-путь (copy_postprocess.py:1081
+# передаёт per_campaign_cap=copy_engine._CALLOUT_PER_CAMPAIGN_CAP, сконфигурированный из
+# core/automation_runtime.py:2177) переопределяет этот дефолт значением из единого источника; этот
+# дефолт используется только когда шаг вызван БЕЗ DI (тесты/ручной вызов). copy_verify_source.py
+# импортирует именно эту константу — не второй захардкоженный литерал.
+_CALLOUT_PER_CAMPAIGN_CAP_DEFAULT = 8
+
+
+def step_attach_callouts(ctx: CopyCtx, per_campaign_cap: int = _CALLOUT_PER_CAMPAIGN_CAP_DEFAULT) -> dict:
     """П.11. Привязать к КАЖДОЙ целевой кампании только ремапленные callout-id ЕЁ исходной
     кампании (по campaign_callouts.json + maps['callouts']), а не общий union всех уточнений.
 
