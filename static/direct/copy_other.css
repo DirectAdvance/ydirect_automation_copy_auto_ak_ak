@@ -26,11 +26,11 @@
 .geo-radio-row label:hover { background:var(--bg-hover, rgba(255,255,255,.07)); color:var(--text-primary); }
 .geo-radio-row label:active { transform:translateY(1px); }
 .geo-radio-row label:has(input[type=radio]:checked) {
-  background:linear-gradient(180deg, var(--violet-500,#8b5cf6), var(--violet-600,#7c3aed));
-  border-color:var(--violet-400,#a78bfa); color:var(--text-primary); font-weight:600;
+  background:linear-gradient(180deg, var(--violet-500), var(--violet-600));
+  border-color:var(--violet-400); color:var(--text-primary); font-weight:600;
   box-shadow:0 4px 12px -4px var(--violet-glow, rgba(139,92,246,.35)); }
 .geo-radio-row label:has(input[type=radio]:focus-visible) {
-  outline:2px solid var(--violet-400,#a78bfa); outline-offset:2px; }
+  outline:2px solid var(--violet-400); outline-offset:2px; }
 /* Очистка цели: недоступный вариант — задизабленная кнопка сегмент-контрола */
 .geo-radio-row label.cleanup-disabled { opacity: 0.38; pointer-events: none; cursor: not-allowed; }
 
@@ -39,24 +39,24 @@
 .geo-tree-trigger {
   display: flex; align-items: center; justify-content: space-between;
   width: 100%; box-sizing: border-box;
-  background: var(--bg, #0e1016); color: var(--text-primary);
+  background: var(--bg-base); color: var(--text-primary);
   border: 1px solid var(--border); border-radius: 8px;
   padding: 9px 11px; font-size: 13px; font-family: inherit;
   cursor: pointer; user-select: none; }
-.geo-tree-trigger:hover { border-color: var(--violet-400, #8b7cff); }
-.geo-tree-trigger.open { border-color: var(--violet-400, #8b7cff); }
+.geo-tree-trigger:hover { border-color: var(--violet-400); }
+.geo-tree-trigger.open { border-color: var(--violet-400); }
 .geo-tree-arrow { color: var(--text-muted); font-size: 11px; transition: transform .18s; flex-shrink: 0; }
 .geo-tree-trigger.open .geo-tree-arrow { transform: rotate(180deg); }
 .geo-tree-panel {
   position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 200;
-  background: var(--surface, #1a1d27);
+  background: var(--bg-elevated);
   border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 8px 28px rgba(0,0,0,.5);
   max-height: 400px; display: flex; flex-direction: column; overflow: hidden; }
 .geo-tree-search-wrap { padding: 8px; border-bottom: 1px solid rgba(255,255,255,.06); flex-shrink: 0; }
 .geo-tree-search {
   width: 100%; box-sizing: border-box;
-  background: var(--bg, #0e1016); color: var(--text-primary);
+  background: var(--bg-base); color: var(--text-primary);
   border: 1px solid var(--border); border-radius: 6px;
   padding: 7px 10px; font-size: 13px; font-family: inherit; }
 .geo-tree-body { flex: 1; overflow-y: auto; padding: 4px 0; min-height: 0; }
@@ -71,7 +71,7 @@
 .geo-expander-empty { cursor: default; pointer-events: none; }
 .geo-cb { width: 18px; min-width: 18px; text-align: center; cursor: pointer; font-size: 14px; }
 .geo-cb-empty { color: var(--text-muted); }
-.geo-cb-checked { color: var(--violet-400, #8b7cff); }
+.geo-cb-checked { color: var(--violet-400); }
 .geo-cb-excluded { color: #ff7b72; }
 .geo-cb-indet { color: #e3b341; }
 .geo-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
@@ -93,7 +93,7 @@
 /* ── Загрузка изображений ───────────────────────── */
 .img-drop-zone { border:2px dashed var(--border); border-radius:10px; padding:22px 16px; text-align:center;
   color:var(--text-muted); font-size:13px; cursor:pointer; transition:border-color .2s; }
-.img-drop-zone.drag-over { border-color:var(--violet-400,#8b7cff); color:var(--text-primary); }
+.img-drop-zone.drag-over { border-color:var(--violet-400); color:var(--text-primary); }
 .img-upload-list { margin-top:10px; max-height:120px; overflow:auto; }
 .img-upload-row { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-secondary);
   padding:4px 0; border-bottom:1px solid rgba(255,255,255,.05); }

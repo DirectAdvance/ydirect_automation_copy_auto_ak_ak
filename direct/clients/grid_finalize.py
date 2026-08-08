@@ -276,6 +276,34 @@ def _permalink_with_phone_inherit(raw: dict | None = None) -> dict:
     return {"policy": "INHERIT"}
 
 
+def permalink_with_phone_echo(pwp: dict | None) -> dict | None:
+    """RMW-эхо визитки объявления: ПРОЧИТАННАЯ политика в write-форме; None — не читалась.
+
+    `UpdateAdaptiveTextAds` — full-replace, и `permalinkWithPhone` при ОТСУТСТВИИ ключа он НЕ
+    сохраняет: живой замер 2026-08-07 на `porg-x7wkhs7d` (объявление `1917698482441538138`)
+    показал `INHERIT|63326958928` → `CLEAR` ровно от того, что ключ не был отправлен, при том
+    что соседнее нетронутое объявление осталось `INHERIT`. Запись в `ERRORS_JOURNAL`
+    «не-отправка = сохранение» (`ADAPTIVE_RMW_WRITER_CHOICE`) проверялась на кабинете, где
+    состояние и так было `CLEAR`, — на не-`CLEAR` она неверна.
+
+    `_permalink_with_phone_inherit` для эха НЕ годится: любую не-`OVERRIDE` политику он делает
+    `INHERIT` и на кабинете с `CLEAR` включил бы контакты кампании у всех объявлений разом.
+    """
+    if not isinstance(pwp, dict):
+        return None
+    policy = str(pwp.get("policy") or "").upper()
+    if policy == "OVERRIDE":
+        out = {"policy": "OVERRIDE"}
+        if pwp.get("permalinkId") is not None:
+            out["permalinkId"] = pwp.get("permalinkId")
+        if pwp.get("phoneId") is not None:
+            out["phoneId"] = pwp.get("phoneId")
+        return out
+    if policy in ("INHERIT", "CLEAR"):
+        return {"policy": policy}
+    return None
+
+
 def _grid_inheritable_write(raw, value_key: str | None) -> dict | None:
     """Прочитанный ``{policy, assetValue}`` → write-shape для UpdateAdaptiveTextAds.
 
@@ -1556,6 +1584,13 @@ class GridClient:
         sd["sum"] = str(int(weekly_rub))
         sd["budgetType"] = "WEEKLY"
         sd.pop("avgCpa", None)           # не нужен для MULTIPLE_CPA
+        # avgBid — поле ИСКЛЮЧИТЕЛЬНО AUTOBUDGET_AVG_CLICK: _strategy_update_payload:952
+        # подставляет его (реальное или UI-дефолт 100 ₽) любой кампании, которую Grid читает
+        # как OPTIMIZE_CLICKS. Именно так на 9 черновиках porg-c6rxuenb осел отпечаток
+        # AverageCpc = 100000000. Если не снять его здесь, «100 ₽» уезжает в payload вместе
+        # с AUTOBUDGET_MULTIPLE_CPA. Живой эталон (porg-x7wkhs7d 12/12 и porg-c6rxuenb
+        # 713356304, 2026-08-07) в strategyData avgBid НЕ содержит.
+        sd.pop("avgBid", None)           # AUTOBUDGET_AVG_CLICK-специфичное, не для MULTIPLE_CPA
         sd.setdefault("payForShows", False)
         sd.setdefault("autoApplyRecommendationOptions", {"budgetIncreasePercent": None})
         sd.setdefault("isExplorationBudgetValueCustom", None)
@@ -2500,17 +2535,40 @@ class GridClient:
         → число обновлённых. Бросает GridFinalizeError при ошибке (UNKNOWN_FIELD — тоже:
         вызывающий решает, пропускать ли фид без поля)."""
         if len(items or []) > _GRID_MUTATION_CHUNK:
+            # Отказ чанка НЕЛЬЗЯ глотать: до 2026-08-07 здесь был «chunk потерян, skip» — Grid
+            # отвергал весь чанк (UNAVAILABLE_FIELD), метод возвращал число уцелевших, шаг
+            # рапортовал успех, и ретрай вызывающего (copy_postprocess._copy_set_product_feed_filters)
+            # никогда не срабатывал: джоба оставалась зелёной при 0 проставленных фильтрах
+            # (live porg-c6rxuenb, job a94c7a6f2751 — 18 строк «chunk потерян», 1704 ListingAd
+            # с feedFilter=null). Теперь: успешные чанки применяются, но по итогу цикла ошибка
+            # летит наверх с текстом ВСЕХ отказов.
             total = 0
+            _pff_failures: list[str] = []
             for i in range(0, len(items), _GRID_MUTATION_CHUNK):
                 try:
                     total += self.set_product_feed_filters(
                         items[i:i + _GRID_MUTATION_CHUNK], listing=listing)
                 except GridFinalizeError as _pff_ce:
                     import logging as _log_pff
+                    # Индексы adUpdateItems[N] в ответе Grid — ОТНОСИТЕЛЬНО чанка. Вызывающий
+                    # (_copy_drop_unavailable_feed_filter_conditions) режет условия по этим
+                    # индексам в ПОЛНОМ списке items, поэтому переводим их в абсолютные —
+                    # иначе ретрай снял бы условия у чужих объявлений.
+                    _pff_txt = re.sub(
+                        r"adUpdateItems\[(\d+)\]",
+                        lambda m: f"adUpdateItems[{int(m.group(1)) + i}]",
+                        str(_pff_ce))
                     _log_pff.getLogger("direct.finalize").warning(
-                        "set_product_feed_filters chunk %d потерян, skip: %s",
-                        i // _GRID_MUTATION_CHUNK + 1, str(_pff_ce)[:200])
+                        "set_product_feed_filters chunk %d отклонён Grid: %s",
+                        i // _GRID_MUTATION_CHUNK + 1, _pff_txt[:200])
+                    _pff_failures.append(f"chunk {i // _GRID_MUTATION_CHUNK + 1}: {_pff_txt}")
                 time.sleep(0.15)
+            if _pff_failures:
+                _pff_chunks = (len(items) + _GRID_MUTATION_CHUNK - 1) // _GRID_MUTATION_CHUNK
+                raise GridFinalizeError(
+                    f"set_product_feed_filters: отклонено чанков "
+                    f"{len(_pff_failures)}/{_pff_chunks}, обновлено {total} из {len(items)}; "
+                    + " | ".join(_pff_failures))
             return total
         upd = []
         for it in (items or []):

@@ -112,7 +112,7 @@ def _copy_queue_allowed_directologists() -> list[str] | None:
 
 
 def _copy_repair_pending(job_id: str) -> bool:
-    """True если для copy-job есть незавершённая запись в public.direct_delayed_repairs.
+    """True если для copy-job есть незавершённая запись в delayed repairs.
 
     Persistent добивка (kind='content_repair') создаётся queue_server после done copy-job
     (_schedule_delayed_content_repair_after_done) и выполняется демоном direct-create-worker.
@@ -127,7 +127,7 @@ def _copy_repair_pending(job_id: str) -> bool:
         try:
             cur = conn.cursor()
             cur.execute(
-                "SELECT 1 FROM public.direct_delayed_repairs "
+                "SELECT 1 FROM victoryads_direct_automation.delayed_repairs "
                 "WHERE parent_job_id = %s "
                 "  AND status IN ('waiting', 'running') "
                 "LIMIT 1",
@@ -322,6 +322,7 @@ def create_app() -> Flask:
         repair_pending_func=_copy_repair_pending,  # persistent добивка direct_delayed_repairs
         job_db_get_func=queue._job_db_get,
         copy_queue_func=_copy_queue_jobs,           # список джоб для вкладки «Очередь»
+        role_is_web=lambda: queue._direct_role() == "web",
     )
     # Программный API /api/v1/copy для внешних клиентов (auth по X-API-Key, fail-closed).
     register_copy_api(

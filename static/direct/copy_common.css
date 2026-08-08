@@ -12,35 +12,35 @@
    чтобы разметка и JS совпадали с эталоном «Очередь создания».
    ============================================================================ */
 
-body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-base, #0a0a0f);
-       color: var(--text-primary, #f4f4f5); margin: 0; }
+body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-base);
+       color: var(--text-primary); margin: 0; }
 .cp-wrap { max-width: 1800px; margin: 0 auto; padding: 22px 40px 80px; }
 .cp-head { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
 .cp-head h1 { font-size: 20px; font-weight: 700; margin: 0; }
 .cp-head .cp-sub { font-size: 12.5px; color: var(--text-muted); }
 .cp-back { font-size: 13px; color: var(--text-secondary); text-decoration: none;
            border: 1px solid var(--border); border-radius: 8px; padding: 7px 13px; }
-.cp-back:hover { border-color: var(--violet-400,#8b7cff); color: var(--text-primary); }
+.cp-back:hover { border-color: var(--violet-400); color: var(--text-primary); }
 
-.da-card { background: var(--surface, #161922); border: 1px solid var(--border); border-radius: 12px; padding: 20px 22px; margin-bottom: 18px; }
+.da-card { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 12px; padding: 20px 22px; margin-bottom: 18px; }
 .da-card h2 { font-size: 14px; font-weight: 600; color: var(--text-secondary); margin: 0 0 16px; text-transform: uppercase; letter-spacing: .04em; }
 .da-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .da-field { margin-bottom: 14px; }
 .da-field label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
 .da-field input, .da-field textarea, .da-field select {
-  width: 100%; box-sizing: border-box; background: var(--bg, #0e1016); color: var(--text-primary);
+  width: 100%; box-sizing: border-box; background: var(--bg-base); color: var(--text-primary);
   border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; font-size: 13px; font-family: inherit; }
 .da-hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
 .da-actions { display: flex; align-items: center; gap: 16px; margin-top: 8px; }
-.da-btn { background: var(--violet-500, #7c5cff); color: #fff; border: 0; border-radius: 8px; padding: 11px 24px; font-size: 14px; font-weight: 600; cursor: pointer; }
-.da-btn.da-btn-sm { padding: 5px 12px; font-size: 11.5px; font-weight: 500; background: #2b2f3a; color: var(--text, #c9d1d9); }
+.da-btn { background: var(--violet-500); color: #fff; border: 0; border-radius: 8px; padding: 11px 24px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.da-btn.da-btn-sm { padding: 5px 12px; font-size: 11.5px; font-weight: 500; background: #2b2f3a; color: var(--text-primary); }
 /* Главное действие карточки «Цель» (Копировать РК): стоит на месте бывшей инструкции,
    поэтому крупная и во всю ширину колонки — на 390px тоже читается одной целью. */
 .da-btn.da-btn-lg { width: 100%; padding: 14px 28px; font-size: 15px; border-radius: var(--r-md, 12px); }
 .da-actions.da-actions-primary { margin-top: 16px; }
 .da-btn:disabled { opacity: .5; cursor: default; }
 .da-btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text-secondary); }
-.da-btn.ghost:hover { border-color: var(--violet-400,#8b7cff); color: var(--text-primary); }
+.da-btn.ghost:hover { border-color: var(--violet-400); color: var(--text-primary); }
 .err { color: #ff7b72; }
 
 /* Модалка подтверждения (uiConfirm в copy_common.js) — .modal/.modal-box/.btn из style.css.
@@ -57,7 +57,7 @@ body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-base, #
 
 .ulogin-wrap { position: relative; }
 .ulogin-dd { display: none; position: absolute; z-index: 60; top: calc(100% + 4px); left: 0; right: 0; max-height: 300px; overflow-y: auto;
-  background: var(--surface,#1a1d27); border: 1px solid var(--border); border-radius: 10px; padding: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 10px; padding: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
 .ulogin-dd.open { display: block; }
 .ulogin-dd .opt { display: flex; align-items: baseline; gap: 8px; padding: 7px 9px; border-radius: 6px; font-size: 13px; color: var(--text-secondary); cursor: pointer; }
 .ulogin-dd .opt:hover, .ulogin-dd .opt.active { background: rgba(255,255,255,.06); }
@@ -68,9 +68,9 @@ body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-base, #
 /* Обе панели одинаковой высоты, лог в правой растягивается */
 .copy-grid { display:grid; grid-template-columns: 1.2fr .9fr; gap:18px; align-items:stretch; }
 .copy-grid > .da-card { display:flex; flex-direction:column; }
-.copy-list-wrap { border:1px solid var(--border); border-radius:10px; background:var(--bg,#0e1016); flex:1; display:flex; flex-direction:column; min-height:0; }
+.copy-list-wrap { border:1px solid var(--border); border-radius:10px; background:var(--bg-base); flex:1; display:flex; flex-direction:column; min-height:0; }
 .copy-toolbar { display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap; }
-.copy-toolbar input.search { flex:1; min-width:220px; background:var(--bg,#0e1016); color:var(--text-primary); border:1px solid var(--border); border-radius:8px; padding:9px 12px; font-size:13px; }
+.copy-toolbar input.search { flex:1; min-width:220px; background:var(--bg-base); color:var(--text-primary); border:1px solid var(--border); border-radius:8px; padding:9px 12px; font-size:13px; }
 .copy-camps { flex:1; overflow:auto; }
 .copy-camp-row { display:grid; grid-template-columns: 28px 96px 1fr 108px; gap:10px; align-items:center; padding:8px 10px; border-bottom:1px solid rgba(255,255,255,.05); font-size:12.5px; color:var(--text-secondary); }
 .copy-camp-row:hover { background:rgba(255,255,255,.03); }
@@ -89,7 +89,7 @@ body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-base, #
 .tab-nav { display:flex; gap:4px; margin-bottom:18px; border-bottom:1px solid var(--border); padding-bottom:0; }
 .tab-btn { background:transparent; border:0; border-bottom:2px solid transparent; border-radius:0; padding:9px 18px; font-size:13.5px; font-weight:600; color:var(--text-secondary); cursor:pointer; margin-bottom:-1px; font-family:inherit; }
 .tab-btn:hover { color:var(--text-primary); }
-.tab-btn.active { color:var(--violet-400,#8b7cff); border-bottom-color:var(--violet-400,#8b7cff); }
+.tab-btn.active { color:var(--violet-400); border-bottom-color:var(--violet-400); }
 
 /* ════════════════════════════════════════════════════════════════════
    Очередь копирования — 1:1 стиль «Очереди создания» (templates/direct/index.html:127-165).
@@ -99,19 +99,19 @@ body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-base, #
   width: 360px; max-width: calc(100vw - 40px); max-height: calc(100vh - 110px); overflow-y: auto; }
 #copy-job-stack:empty { display: none; }
 .job-stack-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  background: rgba(13,16,22,.97); border: 1px solid var(--violet-400,#8b7cff); border-radius: 10px;
+  background: rgba(13,16,22,.97); border: 1px solid var(--violet-400); border-radius: 10px;
   padding: 6px 10px; box-shadow: 0 8px 28px rgba(0,0,0,.55); }
 .job-stack-title { font-size: 11.5px; color: var(--text-secondary); font-weight: 600; white-space: nowrap;
   flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .job-stack-actions { display:flex; flex-direction:column; align-items:stretch; gap:4px; flex-shrink:0; }
-.job-stack-toggle, .job-stack-clear { background: transparent; border: 1px solid var(--border,#30363d); color: var(--text-secondary);
+.job-stack-toggle, .job-stack-clear { background: transparent; border: 1px solid var(--border); color: var(--text-secondary);
   font-size: 10.5px; border-radius: 6px; padding: 2px 8px; cursor: pointer; flex-shrink: 0; text-align:center; }
-.job-stack-toggle:hover, .job-stack-clear:hover { border-color: var(--violet-400,#8b7cff); color: var(--text-primary); }
+.job-stack-toggle:hover, .job-stack-clear:hover { border-color: var(--violet-400); color: var(--text-primary); }
 .job-stack-clear { display:none; }
 .job-stack-clear.visible { display:inline-flex; }
 #copy-job-stack.collapsed { max-height: none; width: 270px; }
 #copy-job-stack.collapsed .job-card { display: none; }
-.job-card { background: rgba(13,16,22,.97); border: 1px solid var(--violet-400,#8b7cff); border-radius: 10px;
+.job-card { background: rgba(13,16,22,.97); border: 1px solid var(--violet-400); border-radius: 10px;
   padding: 10px 12px; box-shadow: 0 8px 28px rgba(0,0,0,.55); }
 .job-card.queued { border-color: #6b7280; opacity: .92; }
 .job-card.done { border-color: rgba(46,160,67,.55); }
@@ -127,7 +127,7 @@ body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-base, #
 .job-timer { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; margin-top: 3px; }
 /* Прогресс-бар джобы — те же .da-progress/.da-progress-bar, что в index.html (эталон) */
 .da-progress { width: 100%; height: 8px; background: rgba(255,255,255,.08); border-radius: 5px; overflow: hidden; }
-.da-progress-bar { height: 100%; width: 0; background: linear-gradient(90deg, var(--violet-500,#7c5cff), var(--violet-400,#8b7cff)); transition: width .25s ease; }
+.da-progress-bar { height: 100%; width: 0; background: linear-gradient(90deg, var(--violet-500), var(--violet-400)); transition: width .25s ease; }
 .job-verify { display: none; margin-top: 7px; padding: 7px 8px; border-radius: 7px; border: 1px solid rgba(139,124,255,.25);
   background: rgba(255,255,255,.035); font-size: 11px; line-height: 1.35; color: var(--text-secondary); }
 .job-verify.pass { border-color: rgba(63,185,80,.45); color: #8ddb8a; }
@@ -147,12 +147,12 @@ body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-base, #
 
 /* Лог и проверки: свёрнуты по умолчанию — карточка очереди должна оставаться компактной. */
 .job-log-toggle, .job-checks-toggle { display: none; margin-top: 7px; background: transparent;
-  border: 1px solid var(--border,#30363d); color: var(--text-secondary);
+  border: 1px solid var(--border); color: var(--text-secondary);
   font-size: 10.5px; border-radius: 6px; padding: 2px 8px; cursor: pointer; font-family: inherit; }
 .job-log-toggle.visible, .job-checks-toggle.visible { display: inline-block; }
-.job-log-toggle:hover, .job-checks-toggle:hover { border-color: var(--violet-400,#8b7cff); color: var(--text-primary); }
+.job-log-toggle:hover, .job-checks-toggle:hover { border-color: var(--violet-400); color: var(--text-primary); }
 .job-checks { display: none; margin-top: 6px; padding: 8px 9px; border-radius: var(--r-md, 12px);
-  background: rgba(255,255,255,.035); border: 1px solid var(--border,#30363d);
+  background: rgba(255,255,255,.035); border: 1px solid var(--border);
   max-height: 260px; overflow-y: auto; }
 .job-checks.open { display: block; }
 .job-checks .copy-check-grp { margin-top: 8px; font-size: 10px; letter-spacing: .08em; }
@@ -161,7 +161,7 @@ body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-base, #
 .job-checks .copy-check-item small { font-size: 10px; }
 .job-checks .cv-rep { color:#3fb950; font-size:10px; white-space:nowrap; }
 .job-log { display: none; margin-top: 6px; padding: 8px 9px; border-radius: var(--r-md, 12px);
-  background: rgba(0,0,0,.5); border: 1px solid var(--border,#30363d);
+  background: rgba(0,0,0,.5); border: 1px solid var(--border);
   font-family: 'JetBrains Mono','Cascadia Code',ui-monospace,monospace; font-size: 11px; line-height: 1.45;
   color: var(--text-secondary); white-space: pre-wrap; word-break: break-word;
   max-height: 220px; overflow-y: auto; }
@@ -178,8 +178,8 @@ body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-base, #
   color: var(--text-secondary); }
 .cf-missing-radios label { display: flex; align-items: center; gap: 5px; cursor: pointer;
   user-select: none; }
-.cf-missing-radios input[type="radio"] { accent-color: var(--violet-400,#8b7cff); }
-.of-feed-sel { background: var(--bg,#0e1016); color: var(--text-primary);
+.cf-missing-radios input[type="radio"] { accent-color: var(--violet-400); }
+.of-feed-sel { background: var(--bg-base); color: var(--text-primary);
   border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
   font-size: 12.5px; font-family: inherit; width: 100%; box-sizing: border-box; }
 .ofmiss-section { margin-top: 8px; }
@@ -204,39 +204,39 @@ body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-base, #
 .copy-head-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
 .copy-check-btn {
   font-size:12px; padding:5px 10px; border-radius:8px; white-space:nowrap; cursor:pointer;
-  border:1px solid var(--border, #2a2d34); background:var(--bg-hover, rgba(255,255,255,.05));
-  color:var(--text-secondary, #9aa0aa);
+  border:1px solid var(--border); background:var(--bg-hover, rgba(255,255,255,.05));
+  color:var(--text-secondary);
 }
-.copy-check-btn:hover { color:var(--text-primary, #fff); border-color:var(--violet-400, #8b7cff); }
+.copy-check-btn:hover { color:var(--text-primary); border-color:var(--violet-400); }
 .copy-check-ov {
   position:fixed; inset:0; z-index:1000; display:flex; align-items:center; justify-content:center;
   background:rgba(0,0,0,.55);
 }
 .copy-check-modal {
-  background:var(--bg-card, #16181d); border:1px solid var(--border, #2a2d34); border-radius:14px;
+  background:var(--bg-elevated); border:1px solid var(--border); border-radius:14px;
   max-width:560px; width:92%; max-height:82vh; overflow:auto; padding:20px 22px;
   box-shadow:0 12px 40px rgba(0,0,0,.5);
 }
 .copy-check-modal h3 { margin:0 0 4px; }
-.copy-check-modal .sub { color:var(--text-secondary, #9aa0aa); font-size:13px; margin-bottom:12px; }
+.copy-check-modal .sub { color:var(--text-secondary); font-size:13px; margin-bottom:12px; }
 .copy-check-grp {
   margin:14px 0 4px; font-size:12px; text-transform:uppercase; letter-spacing:.5px;
-  color:var(--violet-400, #8b7cff);
+  color:var(--violet-400);
 }
 .copy-check-item { display:flex; gap:8px; align-items:flex-start; padding:5px 0; font-size:14px; }
 .copy-check-item .mk { color:#3fb950; flex:0 0 auto; }
 .copy-check-item .mk.ok { color:#3fb950; }
 .copy-check-item .mk.bad { color:#ff7b72; }
 .copy-check-item .mk.warn { color:#e3b341; }
-.copy-check-item .mk.muted { color:var(--text-muted,#8a909c); }
-.copy-check-item small { color:var(--text-muted,#8a909c); font-size:11.5px; }
+.copy-check-item .mk.muted { color:var(--text-muted); }
+.copy-check-item small { color:var(--text-muted); font-size:11.5px; }
 
 .copy-check-foot {
   margin-top:14px; padding:10px 12px; border-radius:9px; font-size:12.5px; line-height:1.4;
   background:rgba(139,124,255,.08); border:1px solid rgba(139,124,255,.25);
-  color:var(--text-secondary, #9aa0aa);
+  color:var(--text-secondary);
 }
 .copy-check-close {
   margin-top:14px; width:100%; padding:9px; border-radius:9px; border:none; cursor:pointer;
-  background:var(--violet-500, #7c6cff); color:#fff; font-size:14px;
+  background:var(--violet-500); color:#fff; font-size:14px;
 }

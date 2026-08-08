@@ -85,6 +85,12 @@ def register_copy_routes(
     metrika_pair_problem: Callable | None = None,  # (counter, goal, login) -> (kind, msg) | None
     login_allowed_func: Callable[[str], tuple[bool, str]] | None = None,  # scoped content-user guard
     archived_campaign_ids_func: Callable | None = None,  # login, ids, agency -> set[int] archived by v5
+    role_is_web: Callable[[], bool] = lambda: False,  # DIRECT_ROLE=web: execution lives in the
+    # separate copy-worker process, so this process's OWN copy_jobs dict only ever holds the
+    # stale initial {status:"queued"} snapshot from copy_job_upsert() at job creation — it is
+    # NEVER updated by the worker (separate process memory). Mirrors create's role_is_web()
+    # pattern (web/routes_jobs.py:377): when true, status is read from the DB unconditionally,
+    # not from the in-memory dict (see api_copy_status).
 ) -> None:
     def _copy_ts(value):
         if hasattr(value, "timestamp"):
@@ -455,17 +461,33 @@ def register_copy_routes(
     @bp.route("/api/copy_status/<job_id>")
     @access
     def api_copy_status(job_id: str):
-        with copy_jobs_lock:
-            job = dict(copy_jobs.get(job_id) or {})
-        if not job and job_db_get_func is not None:
-            try:
-                row = job_db_get_func(job_id)
-            except Exception:  # noqa: BLE001
-                row = None
-            if row and row.get("kind") == "copy_campaigns":
-                job = _copy_status_from_db(row)
-        if not job:
-            return jsonify({"error": "job не найден"}), 404
+        # role=web: execution happens in direct-copy-worker.service, a SEPARATE process — this
+        # process's copy_jobs dict only ever holds the stale {status:"queued"} stub written by
+        # copy_job_upsert() at job-creation time (never touched again by the executing worker's
+        # own in-memory state). Reading it first (old behaviour below) meant "job" was always
+        # truthy → the `if not job` DB fallback never triggered → status stuck at queued/0%
+        # forever, live progress only ever came from the worker's local dict — the exact
+        # "/api/copy_status вечно показывал queued" symptom from the 2026-07-17 incident,
+        # reintroduced by the 2026-08-07 worker split (see role.conf history). DB IS fresh here:
+        # the worker's _copy_job_upsert mirrors done/total/status/result into this same row via
+        # _copy_mirror_create_job → _job_db_save on every update, not just at the end.
+        if role_is_web():
+            row = job_db_get_func(job_id) if job_db_get_func is not None else None
+            if not row or row.get("kind") != "copy_campaigns":
+                return jsonify({"error": "job не найден"}), 404
+            job = _copy_status_from_db(row)
+        else:
+            with copy_jobs_lock:
+                job = dict(copy_jobs.get(job_id) or {})
+            if not job and job_db_get_func is not None:
+                try:
+                    row = job_db_get_func(job_id)
+                except Exception:  # noqa: BLE001
+                    row = None
+                if row and row.get("kind") == "copy_campaigns":
+                    job = _copy_status_from_db(row)
+            if not job:
+                return jsonify({"error": "job не найден"}), 404
         # repair_pending: persistent добивка в direct_delayed_repairs (content_repair).
         # Проверяем только для done-статуса — в остальных случаях основная работа ещё идёт.
         # Best-effort: Victory недоступна → False (не подвешиваем поллинг).

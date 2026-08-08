@@ -152,7 +152,7 @@
   (⚠️ значение — dict, не строка).
 - Рабочие папки джобов на LXC101: `/tmp/direct-copy-<job8>-*` (внутри `source/keywords.json`,
   `id_maps.json`) — годятся для доливки без пересоздания.
-- Отчёты джобов: Victory `public.direct_automation_jobs` (колонка `result`, НЕ `report`;
+- Отчёты джобов: Victory `victoryads_direct_automation.jobs` (колонка `result`, НЕ `report`;
   `body` содержит `image_hashes`). `psql` на Victory сломан → `ssh victory '~/venv/bin/python3 ~/pgq.py "SQL"'`.
 - Скрипты сверки/починки (одноразовые, в scratchpad): kwcount/cmp/negfix/imgfix/domfix/stratfix.
 

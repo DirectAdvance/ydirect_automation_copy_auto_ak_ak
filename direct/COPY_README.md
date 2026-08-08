@@ -181,7 +181,7 @@ graceful drain здесь НЕТ (в отличие от `direct-content-worker.
 **Перед ЛЮБЫМ `systemctl restart direct-copy.service` — сначала обязательный SQL-чек:**
 
 ```sql
-SELECT id, status, created_at FROM public.direct_automation_jobs
+SELECT id, status, created_at FROM victoryads_direct_automation.jobs
 WHERE kind = 'copy_campaigns' AND status IN ('queued', 'claimed', 'running')
 ORDER BY created_at DESC;
 ```
@@ -198,10 +198,10 @@ ssh proxmox-ts "pct exec 101 -- journalctl -u direct-copy.service -n 100 --no-pa
 
 **Порт:** `127.0.0.1:5022` (локально на LXC 101), за nginx на `/direct/api/copy_*`.
 
-**Логи copy-job'а:** Victory БД `public.direct_automation_jobs` (колонка `result`, НЕ `report`; `body` содержит `image_hashes`, `kind='copy_campaigns'`).
+**Логи copy-job'а:** Victory БД `victoryads_direct_automation.jobs` (колонка `result`, НЕ `report`; `body` содержит `image_hashes`, `kind='copy_campaigns'`).
 
 ```sql
-SELECT id, status, created_at, result->>'errors' FROM public.direct_automation_jobs
+SELECT id, status, created_at, result->>'errors' FROM victoryads_direct_automation.jobs
 WHERE kind = 'copy_campaigns'
 ORDER BY created_at DESC LIMIT 10;
 ```
